@@ -188,6 +188,7 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
     try:
         context = browser.new_context()
         page = context.new_page()
+        page.set_default_timeout(5000)
         requests: list[str] = []
         page.on("request", lambda request: requests.append(request.url))
         root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
@@ -204,6 +205,49 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         context.set_offline(True)
         page.goto(f"{root}/subjects/101/index.html")
         assert page.locator("[data-subject-detail]").count() == 1
+        context.set_offline(False)
+        subject = published_root / "subjects" / "101" / "index.html"
+        subject.write_bytes(subject.read_bytes() + b"\n<!-- release two -->\n")
+        next_entries = index_candidate(published_root, "/bangumi-side-b/")
+        next_manifest = build_snapshot_manifest(
+            next_entries,
+            release_version="2026.07.30.2",
+            app_version="0.1.0",
+            deployment_path="/bangumi-side-b/",
+        )
+        next_manifest_text = manifest_json(next_manifest)
+        (published_root / "snapshot-manifest.json").write_bytes(
+            next_manifest_text.encode()
+        )
+        release.update(
+            {
+                "release_version": "2026.07.30.2",
+                "content_hash": next_manifest.content_hash,
+                "total_bytes": sum(entry.size_bytes for entry in next_entries),
+                "manifest_sha256": hashlib.sha256(
+                    next_manifest_text.encode()
+                ).hexdigest(),
+                "summary": {"system": [], "data": ["资料更新"]},
+            }
+        )
+        (published_root / "release.json").write_text(json.dumps(release), "utf-8")
+        page.goto(f"{root}/settings/index.html")
+        page.wait_for_timeout(2000)
+        settings_state = page.evaluate("window.BsbPwa.state()")
+        assert settings_state["active"], settings_state
+        page.locator("[data-pwa-check]").click()
+        page.locator("[data-pwa-update-dialog]").wait_for(state="visible")
+        page.locator("[data-pwa-update-start]").click()
+        page.wait_for_function(
+            "window.BsbPwa.state().active?.release_version === '2026.07.30.2'",
+            timeout=5000,
+        )
+        page.once("dialog", lambda dialog: dialog.accept())
+        page.locator("[data-pwa-clear]").click()
+        page.wait_for_function("window.BsbPwa.state().active === null", timeout=5000)
+        context.set_offline(True)
+        page.goto(f"{root}/subjects/101/index.html")
+        assert page.locator(".pwa-reference").count() == 1
         context.close()
     finally:
         server.shutdown()

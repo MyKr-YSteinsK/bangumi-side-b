@@ -176,6 +176,13 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .pwa-actions button:disabled { background: var(--surface-muted); border-color: var(--rule); color: var(--ink-muted); cursor: not-allowed; }
 .pwa-reference { border-top: 3px double var(--rule-strong); max-width: 54rem; min-height: 50vh; padding: clamp(2rem, 6vw, 5rem) 0; }
 .pwa-note { color: var(--ink-muted); max-width: 60ch; }
+.pwa-update-dialog { background: var(--paper-raised); border: 3px double var(--rule-strong); color: var(--ink); max-width: min(34rem, calc(100% - 2rem)); padding: 0; }
+.pwa-update-dialog::backdrop { background: rgb(23 32 29 / 32%); }
+.pwa-update-dialog > div { padding: 1.5rem; }
+.pwa-update-dialog h2 { margin: .35rem 0 .8rem; }
+.pwa-update-dialog dl { border-bottom: 1px solid var(--rule); border-top: 1px solid var(--rule); display: grid; grid-template-columns: repeat(2, 1fr); margin: 1rem 0; padding: .5rem 0; }
+.pwa-update-dialog dt { color: var(--ink-muted); font-size: .7rem; }
+.pwa-update-dialog dd { margin: 0; }
 
 @media (min-width: 1800px) { .subject-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); } }
 @media (min-width: 1440px) and (max-width: 1799px) { .subject-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }

@@ -43,9 +43,16 @@ async function registerWorker() {
 window.BsbPwa = {
   state: () => ({ ...pwaState }),
   initialize: () => workerMessage("start", { reason: "first-install" }),
+  checkUpdate: () => workerMessage("check"),
+  update: () => workerMessage("start", { reason: "manual-update" }),
+  redownload: () => workerMessage("redownload"),
   pause: () => workerMessage("pause"),
   resume: () => workerMessage("resume"),
   cancel: () => workerMessage("cancel"),
+  clear: () => workerMessage("clear"),
 };
 
 registerWorker();
+window.addEventListener("pagehide", () => {
+  if (pwaState.status === "downloading") window.BsbPwa.pause().catch(() => {});
+});

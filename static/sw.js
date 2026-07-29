@@ -139,7 +139,7 @@ async function begin(reason, clientId) {
     } else {
       state.staging.owner = clientId; state.staging.lease_until = new Date(Date.now() + 120000).toISOString();
     }
-    state.status = "initializing"; await writeState(state); return await download(state, bundle);
+    state.available_update = null; state.status = "initializing"; await writeState(state); return await download(state, bundle);
   } catch (error) {
     state.status = state.active ? "ready" : "failed";
     state.last_error = safeError(error);
@@ -148,13 +148,44 @@ async function begin(reason, clientId) {
     await writeState(state); return state;
   }
 }
+async function checkUpdate() {
+  const state = await readState();
+  try {
+    const bundle = await fetchRelease();
+    const current = state.active;
+    if (current && current.release_version === bundle.release.release_version && current.manifest_hash === bundle.manifestHash) {
+      state.available_update = null; state.last_error = null;
+    } else {
+      const summary = bundle.release.summary || {};
+      state.available_update = {
+        release_version: bundle.release.release_version,
+        app_version: bundle.release.app_version,
+        quarter_count: bundle.release.quarter_count,
+        subject_count: bundle.release.subject_count,
+        total_bytes: bundle.manifest.total_bytes,
+        summary: [...(summary.system || []), ...(summary.data || [])].join("；"),
+      };
+      state.last_error = null;
+    }
+  } catch (error) { state.last_error = safeError(error); }
+  state.status = state.active ? "ready" : "first-install-required";
+  await writeState(state); return state;
+}
 async function pause() { const state = await readState(); if (state.staging?.status === "downloading") { state.staging.status = "paused"; state.status = "paused"; aborter?.abort(); await writeState(state); } return state; }
 async function cancel() { const state = await readState(); aborter?.abort(); if (state.staging) await caches.delete(state.staging.cache_name); state.staging = null; state.status = state.active ? "ready" : "first-install-required"; await writeState(state); return state; }
+async function clearSnapshots() {
+  const state = await readState(); aborter?.abort();
+  const names = await caches.keys();
+  const targets = names.filter((name) => name.startsWith("bsb-snapshot-"));
+  const results = await Promise.all(targets.map((name) => caches.delete(name)));
+  state.active = null; state.staging = null; state.available_update = null; state.last_error = results.every(Boolean) ? null : "cache-cleanup-incomplete"; state.status = "first-install-required";
+  await writeState(state); await broadcast({ type: "bsb-cleared" }); return state;
+}
 
 self.addEventListener("message", (event) => {
   const reply = (state) => event.ports[0]?.postMessage(state);
   const type = event.data?.type;
-  const work = type === "state" ? readState() : type === "start" || type === "resume" ? begin(event.data.reason || "resume", event.source?.id || "unknown") : type === "pause" ? pause() : type === "cancel" ? cancel() : Promise.resolve({ error: "message-invalid" });
+  const work = type === "state" ? readState() : type === "start" || type === "resume" || type === "redownload" ? begin(event.data.reason || (type === "redownload" ? "redownload" : "resume"), event.source?.id || "unknown") : type === "check" ? checkUpdate() : type === "pause" ? pause() : type === "cancel" ? cancel() : type === "clear" ? clearSnapshots() : Promise.resolve({ error: "message-invalid" });
   event.waitUntil(work.then(reply));
 });
 

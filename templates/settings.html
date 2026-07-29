@@ -5,6 +5,7 @@
   <p class="eyebrow">ARCHIVE SETTINGS</p><h1>本地资料库</h1>
   <p>Pages PWA 只在完整快照校验后浏览资料；不会自动检查或下载新版本。</p>
   <dl class="pwa-settings__facts"><div><dt>程序版本</dt><dd>{{ app_version }}</dd></div><div><dt>当前资料版本</dt><dd data-pwa-active-release>尚未初始化</dd></div><div><dt>资料生成时间</dt><dd data-pwa-generated-at>—</dd></div><div><dt>季度 / 作品</dt><dd data-pwa-counts>—</dd></div><div><dt>快照大小</dt><dd data-pwa-snapshot-size>—</dd></div><div><dt>浏览器存储</dt><dd data-pwa-storage>检查中</dd></div><div><dt>状态</dt><dd data-pwa-status>等待控制器</dd></div></dl>
-  <div class="pwa-actions"><button type="button" data-pwa-check disabled>检查资料库更新</button><button type="button" data-pwa-redownload disabled>重新下载当前版本</button><button type="button" data-pwa-clear disabled>清除本地资料</button></div>
+  <div class="pwa-actions"><button type="button" data-pwa-check disabled>检查资料库更新</button><button type="button" data-pwa-redownload disabled>重新下载当前版本</button><button type="button" data-pwa-resume-settings hidden>继续未完成下载</button><button type="button" data-pwa-cancel-settings hidden>取消未完成下载</button><button type="button" data-pwa-clear disabled>清除本地资料</button></div>
+  <dialog class="pwa-update-dialog" data-pwa-update-dialog aria-labelledby="pwa-update-title"><div><p class="eyebrow">RELEASE AVAILABLE</p><h2 id="pwa-update-title">发现资料更新</h2><dl data-pwa-update-facts></dl><p data-pwa-update-summary></p><div class="pwa-actions"><button type="button" data-pwa-update-start>开始更新</button><button type="button" data-pwa-update-later>暂不更新</button></div></div></dialog>
 </article>
 {% endblock %}

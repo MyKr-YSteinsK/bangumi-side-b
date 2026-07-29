@@ -1,0 +1,48 @@
+# These are intentionally limited exact rules. They are not a claim that every
+# Bangumi Infobox spelling or community tag has been verified or is supported.
+[sources]
+values = [
+  "manga",
+  "light_novel",
+  "novel",
+  "game",
+  "visual_novel",
+  "original",
+  "other",
+  "unknown",
+]
+order = [
+  "manga",
+  "light_novel",
+  "novel",
+  "visual_novel",
+  "game",
+  "original",
+  "other",
+  "unknown",
+]
+
+[infobox]
+# Only these exact Infobox keys are considered source evidence.
+source_keys = ["原作", "原案", "原著"]
+
+[infobox.exact_values]
+"漫画" = "manga"
+"轻小说" = "light_novel"
+"ライトノベル" = "light_novel"
+"小说" = "novel"
+"小説" = "novel"
+"游戏" = "game"
+"ゲーム" = "game"
+"视觉小说" = "visual_novel"
+"ビジュアルノベル" = "visual_novel"
+"原创" = "original"
+"オリジナル" = "original"
+
+[tag_fallback.exact_values]
+"漫画改编" = "manga"
+"轻小说改编" = "light_novel"
+"小说改编" = "novel"
+"游戏改编" = "game"
+"视觉小说改编" = "visual_novel"
+"原创" = "original"

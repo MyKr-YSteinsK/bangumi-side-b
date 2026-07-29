@@ -1,0 +1,7 @@
+[filters]
+excluded_subject_ids = []
+
+[sync]
+api_concurrency = 3
+request_timeout_seconds = 20
+max_retries = 3

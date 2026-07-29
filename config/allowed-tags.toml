@@ -1,0 +1,7 @@
+# Display order is the whitelist order. Tags outside this list remain raw facts
+# but are not selected for display.
+allowed_tags = [
+  "喜剧", "恋爱", "奇幻", "科幻", "冒险", "战斗", "悬疑", "推理", "恐怖", "惊悚",
+  "历史", "武侠", "运动", "音乐", "美食", "职场", "校园", "青春", "日常", "异世界",
+  "穿越", "机战", "百合", "BL", "后宫", "乙女", "治愈", "热血", "萌系",
+]

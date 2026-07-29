@@ -25,6 +25,7 @@ class ProjectSettings:
     excluded_subject_ids: frozenset[int]
     sync: SyncSettings
     main_character_relations: frozenset[str]
+    end_date_infobox_keys: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -57,8 +58,11 @@ def load_project_settings(path: Path) -> ProjectSettings:
     filters = data["filters"]
     sync = data["sync"]
     roles = data.get("roles")
-    if not all(isinstance(value, dict) for value in (filters, sync, roles)):
-        raise ValueError("bangumi.toml must define filters, sync, and roles tables")
+    infobox = data.get("infobox")
+    if not all(isinstance(value, dict) for value in (filters, sync, roles, infobox)):
+        raise ValueError(
+            "bangumi.toml must define filters, sync, roles, and infobox tables"
+        )
 
     excluded = filters["excluded_subject_ids"]
     valid_excluded = isinstance(excluded, list) and all(
@@ -86,6 +90,14 @@ def load_project_settings(path: Path) -> ProjectSettings:
     if len(set(main_relations)) != len(main_relations):
         raise ValueError("main_character_relations must not contain duplicates")
 
+    end_date_keys = infobox.get("end_date_keys")
+    if not isinstance(end_date_keys, list) or not end_date_keys or not all(
+        isinstance(value, str) and value for value in end_date_keys
+    ):
+        raise ValueError("end_date_keys must be a non-empty string array")
+    if len(set(end_date_keys)) != len(end_date_keys):
+        raise ValueError("end_date_keys must not contain duplicates")
+
     return ProjectSettings(
         excluded_subject_ids=frozenset(excluded),
         sync=SyncSettings(
@@ -94,6 +106,7 @@ def load_project_settings(path: Path) -> ProjectSettings:
             max_retries=sync["max_retries"],
         ),
         main_character_relations=frozenset(main_relations),
+        end_date_infobox_keys=frozenset(end_date_keys),
     )
 
 

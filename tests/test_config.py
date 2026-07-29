@@ -14,6 +14,7 @@ def test_checked_in_configuration_loads() -> None:
     assert settings.excluded_subject_ids == frozenset()
     assert settings.sync.api_concurrency == 3
     assert settings.main_character_relations == frozenset({"主角"})
+    assert settings.end_date_infobox_keys == frozenset({"播放结束"})
     assert tag_rules.allowed_tags[:2] == ("喜剧", "恋爱")
     assert source_rules.order[-1] == "unknown"
 

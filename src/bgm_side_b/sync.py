@@ -7,10 +7,11 @@ import json
 import re
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from bgm_side_b.api import (
+    ApiEpisode,
     ApiInfoboxItem,
     BangumiApiClient,
     BangumiApiError,
@@ -21,6 +22,7 @@ from bgm_side_b.api import (
 )
 from bgm_side_b.config import ProjectSettings, SourceRules, TagRules
 from bgm_side_b.repository import (
+    EpisodeRecord,
     RawTag,
     SubjectInfoboxItem,
     SubjectQuarter,
@@ -160,8 +162,13 @@ class SubjectSynchronizer:
         self._cleanup_blacklisted_subjects(year, month)
         result = self.discovery.discover(year, month, self.settings.excluded_subject_ids)
         self._apply_discovery(result, stats)
+        discovered_ids: set[int] = set()
         for candidate in result.candidates:
+            discovered_ids.add(candidate.subject_id)
             self._sync_candidate(candidate, year, month, force, stats)
+        for subject_id in self.repository.list_tv_subject_ids():
+            if subject_id not in discovered_ids:
+                self._sync_existing_tv_episodes(subject_id, year, month, force, stats)
         return stats
 
     def _apply_discovery(self, result: DiscoveryResult, stats: QuarterStats) -> None:
@@ -193,13 +200,17 @@ class SubjectSynchronizer:
     ) -> None:
         if not force and self._refresh_stable_subject(candidate):
             stats.skipped += 1
+            self._sync_existing_tv_episodes(
+                candidate.subject_id, target_year, target_month, force, stats
+            )
             return
         try:
             detail = self.api.get_subject(candidate.subject_id)
         except BangumiApiError as error:
             self._record_failure(candidate.subject_id, error, stats)
             return
-        self._store_detail(detail, target_year, target_month, stats)
+        if self._store_detail(detail, target_year, target_month, stats):
+            self._sync_subject_episodes(detail.subject_id, stats)
 
     def _refresh_stable_subject(self, candidate: CandidateSubject) -> bool:
         state = self.repository.get_sync_state(
@@ -222,17 +233,17 @@ class SubjectSynchronizer:
         target_year: int,
         target_month: int,
         stats: QuarterStats,
-    ) -> None:
+    ) -> bool:
         media_format = normalize_format(detail.platform)
         if media_format not in {"tv", "movie"} or not is_supported_format(detail.platform):
             stats.unsupported += 1
-            return
+            return False
         if detail.air_date is None:
             stats.missing_date += 1
-            return
+            return False
         if quarter_for_date(detail.air_date).year != target_year or quarter_for_date(detail.air_date).month != target_month:
             stats.ownership_mismatch += 1
-            return
+            return False
         title = preferred_title(detail.name_cn, detail.name)
         if title is None:
             self._record_failure(
@@ -240,7 +251,7 @@ class SubjectSynchronizer:
                 BangumiApiError("missing_title", "subject has no usable title"),
                 stats,
             )
-            return
+            return False
         was_present = self.repository.subject_exists(detail.subject_id)
         source_result = derive_sources(_source_infobox(detail.infobox), (tag.name for tag in detail.tags), self.source_rules)
         titles = _titles(detail, title)
@@ -258,6 +269,10 @@ class SubjectSynchronizer:
                         detail.eps,
                         detail.rating_score,
                         detail.rating_total,
+                        total_episode_count=detail.total_episodes,
+                        end_date=_end_date_from_infobox(
+                            detail.infobox, self.settings.end_date_infobox_keys
+                        ),
                     ),
                 )
                 self.repository.replace_titles(connection, detail.subject_id, titles)
@@ -301,12 +316,183 @@ class SubjectSynchronizer:
                 stats,
             )
             stats.warnings.append(type(error).__name__)
-            return
+            return False
         if was_present:
             stats.updated += 1
         else:
             stats.created += 1
         stats.warnings.extend(source_result.warnings)
+        return True
+
+    def _sync_existing_tv_episodes(
+        self,
+        subject_id: int,
+        target_year: int,
+        target_month: int,
+        force: bool,
+        stats: QuarterStats,
+    ) -> None:
+        if self._should_refresh_episodes(subject_id, target_year, target_month, force):
+            self._sync_subject_episodes(subject_id, stats)
+
+    def _should_refresh_episodes(
+        self, subject_id: int, target_year: int, target_month: int, force: bool
+    ) -> bool:
+        subject = self.repository.get_stored_subject(subject_id)
+        if subject is None:
+            return False
+        if subject.media_format != "tv":
+            return force
+        state = self.repository.get_sync_state("subject", subject_id, "episodes")
+        if force or state is None or state.status != "success":
+            return True
+        current_count = self.repository.main_episode_count(subject_id)
+        declared_counts = {
+            count
+            for count in (subject.episode_count, subject.total_episode_count)
+            if count is not None
+        }
+        if any(current_count < count for count in declared_counts):
+            return True
+        if subject.end_date is not None:
+            end_quarter = quarter_for_date(subject.end_date)
+            return (end_quarter.year, end_quarter.month) >= (target_year, target_month)
+        if len(declared_counts) != 1 or current_count < next(iter(declared_counts)):
+            return True
+        air_dates = self.repository.main_episode_air_dates(subject_id)
+        if not air_dates:
+            return True
+        last_quarter = quarter_for_date(max(air_dates))
+        return (last_quarter.year, last_quarter.month) >= (target_year, target_month)
+
+    def _sync_subject_episodes(self, subject_id: int, stats: QuarterStats) -> None:
+        previous = self.repository.get_sync_state("subject", subject_id, "episodes")
+        metrics = getattr(self.api, "metrics", None)
+        before_failures = getattr(metrics, "json_item_failures", 0)
+        try:
+            api_episodes = self.api.get_episodes(subject_id)
+        except BangumiApiError as error:
+            self._record_episode_failure(subject_id, error, previous, stats)
+            return
+        parse_failures = getattr(metrics, "json_item_failures", 0)
+        if parse_failures > before_failures:
+            stats.warnings.append(
+                f"episode_parse_failures:{parse_failures - before_failures}"
+            )
+        episodes = tuple(_episode_record(episode) for episode in api_episodes)
+        try:
+            with self.repository.transaction() as connection:
+                self.repository.replace_main_episodes(connection, subject_id, episodes)
+                self.repository.write_sync_state(
+                    connection,
+                    SyncState(
+                        "subject",
+                        subject_id,
+                        "episodes",
+                        "success",
+                        _utc_timestamp(),
+                        _utc_timestamp(),
+                    ),
+                )
+        except (ValueError, TypeError) as error:
+            self._record_episode_failure(
+                subject_id,
+                BangumiApiError("episode_store_error", "episodes could not be stored"),
+                previous,
+                stats,
+            )
+            stats.warnings.append(type(error).__name__)
+            return
+        self._warn_episode_count_conflict(subject_id, stats)
+        self._rebuild_continuing_quarters(subject_id)
+
+    def _record_episode_failure(
+        self,
+        subject_id: int,
+        error: BangumiApiError,
+        previous: SyncState | None,
+        stats: QuarterStats,
+    ) -> None:
+        stats.failed += 1
+        stats.failures.append(
+            {
+                "stage": "episodes",
+                "subject_id": subject_id,
+                "code": error.code,
+                "summary": error.summary,
+            }
+        )
+        with self.repository.transaction() as connection:
+            self.repository.write_sync_state(
+                connection,
+                SyncState(
+                    "subject",
+                    subject_id,
+                    "episodes",
+                    "failed",
+                    _utc_timestamp(),
+                    failure_count=(previous.failure_count if previous else 0) + 1,
+                    error_code=error.code,
+                    error_summary=error.summary,
+                ),
+            )
+
+    def _warn_episode_count_conflict(
+        self, subject_id: int, stats: QuarterStats
+    ) -> None:
+        subject = self.repository.get_stored_subject(subject_id)
+        if subject is None:
+            return
+        values = {
+            value
+            for value in (
+                subject.episode_count,
+                subject.total_episode_count,
+                self.repository.main_episode_count(subject_id),
+            )
+            if value is not None
+        }
+        if len(values) > 1:
+            stats.warnings.append(f"episode_count_conflict:{subject_id}")
+
+    def _rebuild_continuing_quarters(self, subject_id: int) -> None:
+        subject = self.repository.get_stored_subject(subject_id)
+        if subject is None:
+            return
+        if subject.media_format != "tv" or subject.air_date is None:
+            with self.repository.transaction() as connection:
+                self.repository.replace_continuing_quarters(connection, subject_id, ())
+            return
+        permanent = quarter_for_date(subject.air_date)
+        evidence: dict[tuple[int, int], tuple[str, str]] = {}
+        if subject.end_date is not None:
+            end_quarter = quarter_for_date(subject.end_date)
+            evidence[(end_quarter.year, end_quarter.month)] = (
+                "end_date",
+                subject.end_date.isoformat(),
+            )
+        for air_date in self.repository.main_episode_air_dates(subject_id):
+            episode_quarter = quarter_for_date(air_date)
+            evidence[(episode_quarter.year, episode_quarter.month)] = (
+                "episode_air_date",
+                air_date.isoformat(),
+            )
+        evidence.pop((permanent.year, permanent.month), None)
+        quarters = tuple(
+            SubjectQuarter(
+                year,
+                month,
+                "continuing",
+                evidence_type,
+                evidence_value,
+                position,
+            )
+            for position, ((year, month), (evidence_type, evidence_value)) in enumerate(
+                sorted(evidence.items())
+            )
+        )
+        with self.repository.transaction() as connection:
+            self.repository.replace_continuing_quarters(connection, subject_id, quarters)
 
     def _record_failure(
         self, subject_id: int, error: BangumiApiError, stats: QuarterStats
@@ -408,6 +594,34 @@ def _infobox_string_values(value: object) -> tuple[str, ...]:
         item["v"]
         for item in value
         if isinstance(item, dict) and isinstance(item.get("v"), str)
+    )
+
+
+def _end_date_from_infobox(
+    items: Iterable[ApiInfoboxItem], keys: frozenset[str]
+) -> date | None:
+    """Read only a configured, explicit Infobox end-date key in ISO form."""
+    for item in items:
+        if item.key not in keys or not isinstance(item.value, str):
+            continue
+        try:
+            return date.fromisoformat(item.value)
+        except ValueError:
+            continue
+    return None
+
+
+def _episode_record(episode: ApiEpisode) -> EpisodeRecord:
+    return EpisodeRecord(
+        episode_id=episode.episode_id,
+        episode_number=episode.episode_number,
+        sort_number=episode.sort_number,
+        name=episode.name,
+        name_cn=episode.name_cn,
+        air_date=episode.air_date,
+        duration_seconds=episode.duration_seconds,
+        raw_duration=episode.raw_duration,
+        position=episode.position,
     )
 
 

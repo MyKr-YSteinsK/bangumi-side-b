@@ -75,6 +75,33 @@ class SubjectQuarter:
 
 
 @dataclass(frozen=True)
+class EpisodeRecord:
+    """One main-story episode retained in its API response order."""
+
+    episode_id: int
+    episode_number: float | None
+    sort_number: float | None
+    name: str | None
+    name_cn: str | None
+    air_date: date | None
+    duration_seconds: int | None
+    raw_duration: str | None
+    position: int
+
+
+@dataclass(frozen=True)
+class StoredSubject:
+    """Subject facts required to decide whether episode refresh is necessary."""
+
+    subject_id: int
+    media_format: str
+    air_date: date | None
+    episode_count: int | None
+    total_episode_count: int | None
+    end_date: date | None
+
+
+@dataclass(frozen=True)
 class SyncState:
     """The latest result for one entity/data-type synchronisation unit."""
 
@@ -372,6 +399,39 @@ class SubjectRepository:
             ),
         )
 
+    def replace_main_episodes(
+        self,
+        connection: sqlite3.Connection,
+        subject_id: int,
+        episodes: Sequence[EpisodeRecord],
+    ) -> None:
+        """Replace one subject's complete main-story episode snapshot."""
+        _validate_episodes(episodes)
+        connection.execute("DELETE FROM episodes WHERE subject_id = ?", (subject_id,))
+        connection.executemany(
+            """
+            INSERT INTO episodes (
+                id, subject_id, episode_type, episode_number, sort_number, name,
+                name_cn, air_date, duration_seconds, raw_duration, position
+            ) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    episode.episode_id,
+                    subject_id,
+                    episode.episode_number,
+                    episode.sort_number,
+                    episode.name,
+                    episode.name_cn,
+                    _date_value(episode.air_date),
+                    episode.duration_seconds,
+                    episode.raw_duration,
+                    episode.position,
+                )
+                for episode in episodes
+            ),
+        )
+
     def write_sync_state(
         self, connection: sqlite3.Connection, state: SyncState
     ) -> None:
@@ -430,6 +490,76 @@ class SubjectRepository:
                 (entity_type, entity_id, data_type),
             ).fetchone()
             return SyncState(**dict(row)) if row is not None else None
+        finally:
+            connection.close()
+
+    def get_stored_subject(self, subject_id: int) -> StoredSubject | None:
+        """Return the persisted facts used by incremental episode decisions."""
+        connection = self.database.connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT id, media_format, air_date, episode_count,
+                       total_episode_count, end_date
+                FROM subjects WHERE id = ?
+                """,
+                (subject_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return StoredSubject(
+                subject_id=row["id"],
+                media_format=row["media_format"],
+                air_date=_stored_date(row["air_date"]),
+                episode_count=row["episode_count"],
+                total_episode_count=row["total_episode_count"],
+                end_date=_stored_date(row["end_date"]),
+            )
+        finally:
+            connection.close()
+
+    def list_tv_subject_ids(self) -> tuple[int, ...]:
+        """Return already stored TV subjects in stable ID order."""
+        connection = self.database.connect()
+        try:
+            rows = connection.execute(
+                "SELECT id FROM subjects WHERE media_format = 'tv' ORDER BY id"
+            ).fetchall()
+            return tuple(row["id"] for row in rows)
+        finally:
+            connection.close()
+
+    def main_episode_count(self, subject_id: int) -> int:
+        """Return the count of persisted main-story episodes only."""
+        connection = self.database.connect()
+        try:
+            return connection.execute(
+                """
+                SELECT COUNT(*) FROM episodes
+                WHERE subject_id = ? AND episode_type = 0
+                """,
+                (subject_id,),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+
+    def main_episode_air_dates(self, subject_id: int) -> tuple[date, ...]:
+        """Read complete main-story air dates in stable episode order."""
+        connection = self.database.connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT air_date FROM episodes
+                WHERE subject_id = ? AND episode_type = 0 AND air_date IS NOT NULL
+                ORDER BY position, episode_number, sort_number, air_date, id
+                """,
+                (subject_id,),
+            ).fetchall()
+            return tuple(
+                parsed
+                for row in rows
+                if (parsed := _stored_date(row["air_date"])) is not None
+            )
         finally:
             connection.close()
 
@@ -528,6 +658,27 @@ def _validate_quarters(quarters: Sequence[SubjectQuarter]) -> None:
             raise ValueError("quarter appearance kind is invalid")
         if quarter.position < 0:
             raise ValueError("quarter position must not be negative")
+
+
+def _validate_episodes(episodes: Sequence[EpisodeRecord]) -> None:
+    seen_ids: set[int] = set()
+    for episode in episodes:
+        if episode.episode_id <= 0 or episode.episode_id in seen_ids:
+            raise ValueError("episode ids must be unique positive integers")
+        if episode.position < 0:
+            raise ValueError("episode position must not be negative")
+        if episode.duration_seconds is not None and episode.duration_seconds <= 0:
+            raise ValueError("episode duration must be positive when present")
+        seen_ids.add(episode.episode_id)
+
+
+def _stored_date(value: object) -> date | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _utc_now() -> str:

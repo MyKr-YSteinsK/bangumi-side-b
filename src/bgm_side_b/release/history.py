@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -52,11 +54,15 @@ def read_history(path: Path) -> list[dict[str, object]]:
 
 def write_history(path: Path, history: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(history, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        + "\n",
-        encoding="utf-8",
-    )
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, delete=False
+    ) as stream:
+        json.dump(
+            history, stream, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        stream.write("\n")
+        temporary = stream.name
+    os.replace(temporary, path)
 
 
 def history_entry(

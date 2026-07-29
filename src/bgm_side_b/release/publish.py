@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -57,6 +58,9 @@ class PublishRun:
     report_path: Path
     published: bool
     remote_commit: str | None
+    local_mirror_updated: bool = False
+    local_state_updated: bool = False
+    warnings: tuple[str, ...] = ()
 
 
 class Publisher:
@@ -80,7 +84,7 @@ class Publisher:
         marker = read_pages_build_marker(self.workspace)
         build_snapshot = self._validate_candidate(marker)
         remote_release, remote_history = self._remote_state(
-            remote, branch, required=not dry_run
+            remote, branch, required=True
         )
         previous_version = (
             str(remote_release["release_version"]) if remote_release else None
@@ -98,6 +102,13 @@ class Publisher:
             remote_release, candidate_hash, rules_hash, system_changes
         ):
             raise PublishError("Pages candidate has no publishable changes")
+        release_system_changes = (
+            system_changes
+            if not remote_release
+            or remote_release.get("system_changelog_hash")
+            != _system_hash(system_changes)
+            else ()
+        )
         version = next_release_version(previous_version)
         staging = self._staging_directory()
         try:
@@ -107,10 +118,11 @@ class Publisher:
                 version,
                 marker,
                 changes,
-                system_changes,
+                release_system_changes,
                 remote_history,
                 candidate_hash,
                 rules_hash,
+                _system_hash(system_changes),
             )
             self._validate_staging(staging, manifest, release)
             if dry_run:
@@ -123,7 +135,9 @@ class Publisher:
                 )
                 return PublishRun(True, version, report, False, None)
             remote_commit = self._publish_tree(staging, remote, branch, version)
-            self._record_success(snapshot, history, staging, release, remote_commit)
+            local_mirror_updated, local_state_updated, warnings = self._record_success(
+                snapshot, history, staging
+            )
             report = self._write_report(
                 dry_run=False,
                 release=release,
@@ -131,8 +145,20 @@ class Publisher:
                 bytes=manifest.payload()["total_bytes"],
                 push_result="success",
                 remote_commit=remote_commit,
+                local_mirror_updated=local_mirror_updated,
+                local_state_updated=local_state_updated,
+                warnings=warnings,
             )
-            return PublishRun(False, version, report, True, remote_commit)
+            return PublishRun(
+                False,
+                version,
+                report,
+                True,
+                remote_commit,
+                local_mirror_updated,
+                local_state_updated,
+                tuple(warnings),
+            )
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
@@ -287,6 +313,7 @@ class Publisher:
         remote_history: list[dict[str, object]],
         candidate_hash: str,
         rules_hash: str,
+        system_changelog_hash: str,
     ) -> tuple[dict[str, object], object, list[dict[str, object]]]:
         change_kind = _change_kind(changes, system_changes)
         history = list(remote_history)
@@ -323,7 +350,7 @@ class Publisher:
             "content_hash": manifest.content_hash,
             "candidate_content_hash": candidate_hash,
             "rules_hash": rules_hash,
-            "system_changelog_hash": _system_hash(system_changes),
+            "system_changelog_hash": system_changelog_hash,
             "manifest_url": "snapshot-manifest.json",
             "manifest_sha256": hashlib.sha256(manifest_text.encode()).hexdigest(),
             "change_kind": change_kind,
@@ -404,21 +431,32 @@ class Publisher:
         snapshot: dict[str, object],
         history: list[dict[str, object]],
         staging: Path,
-        release: dict[str, object],
-        remote_commit: str,
-    ) -> None:
-        write_snapshot(self.workspace / "releases" / "current-snapshot.json", snapshot)
-        write_history(self.workspace / "releases" / "history.json", history)
+    ) -> tuple[bool, bool, list[str]]:
+        warnings: list[str] = []
+        try:
+            write_snapshot(
+                self.workspace / "releases" / "current-snapshot.json", snapshot
+            )
+            write_history(self.workspace / "releases" / "history.json", history)
+            local_state_updated = True
+        except OSError:
+            local_state_updated = False
+            warnings.append("local-state-update-failed")
         mirror = self.root / "dist" / "pages"
         backup = self.root / "dist" / ".staging" / f"pages-published-{uuid.uuid4().hex}"
-        backup.parent.mkdir(parents=True, exist_ok=True)
-        mirror.replace(backup)
         try:
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            mirror.replace(backup)
             shutil.copytree(staging, mirror)
         except OSError:
-            backup.replace(mirror)
-            raise PublishError("remote publish succeeded but local Pages mirror failed")
-        shutil.rmtree(backup, ignore_errors=True)
+            if backup.exists() and not mirror.exists():
+                backup.replace(mirror)
+            local_mirror_updated = False
+            warnings.append("local-mirror-update-failed")
+        else:
+            local_mirror_updated = True
+            shutil.rmtree(backup, ignore_errors=True)
+        return local_mirror_updated, local_state_updated, warnings
 
     def _write_report(
         self,
@@ -429,6 +467,9 @@ class Publisher:
         bytes: object,
         push_result: str,
         remote_commit: str | None = None,
+        local_mirror_updated: bool | None = None,
+        local_state_updated: bool | None = None,
+        warnings: list[str] | None = None,
     ) -> Path:
         payload = {
             "dry_run": dry_run,
@@ -442,12 +483,21 @@ class Publisher:
             "push_result": push_result,
             "remote_commit": remote_commit,
             "success": push_result in {"success", "not-published"},
+            "remote_published": push_result == "success",
+            "local_mirror_updated": local_mirror_updated,
+            "local_state_updated": local_state_updated,
+            "warnings": warnings or [],
         }
         reports = self.workspace / "reports"
         reports.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         destination = reports / f"publish-{release['release_version']}-{timestamp}.json"
-        destination.write_text(_json(payload), encoding="utf-8", newline="\n")
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=reports, delete=False
+        ) as stream:
+            stream.write(_json(payload))
+            temporary = stream.name
+        os.replace(temporary, destination)
         return destination
 
     def _git(self, *args: str) -> str:

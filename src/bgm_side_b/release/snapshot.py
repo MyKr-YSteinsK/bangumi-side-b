@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -32,7 +34,19 @@ def snapshot_index(
             roles = [
                 (
                     character.character_id,
-                    tuple(actor.person_id for actor in character.voice_actors),
+                    character.preferred_name,
+                    character.original_name,
+                    character.position,
+                    tuple(
+                        (
+                            actor.person_id,
+                            actor.preferred_name,
+                            actor.original_name,
+                            actor.language,
+                            actor.position,
+                        )
+                        for actor in character.voice_actors
+                    ),
                 )
                 for character in detail.characters
             ]
@@ -40,8 +54,13 @@ def snapshot_index(
                 "facts_hash": _hash(
                     (
                         card.subject_id,
+                        card.preferred_title,
+                        card.original_title,
+                        card.aliases,
+                        drawer.summary,
                         card.media_format,
                         card.air_date,
+                        drawer.end_date,
                         card.declared_episode_count,
                         card.total_episode_count,
                         card.rating_score,
@@ -52,7 +71,16 @@ def snapshot_index(
                 ),
                 "episode_hash": _hash(
                     tuple(
-                        (episode.episode_id, episode.air_date, episode.duration_seconds)
+                        (
+                            episode.episode_id,
+                            episode.episode_number,
+                            episode.sort_number,
+                            episode.chinese_title,
+                            episode.original_title,
+                            episode.air_date,
+                            episode.duration_seconds,
+                            episode.position,
+                        )
                         for episode in detail.episodes
                     )
                 ),
@@ -60,9 +88,9 @@ def snapshot_index(
                 "roles_hash": _hash(roles),
                 "role_count": len(detail.characters),
                 "persons_hash": _hash(
-                    tuple(person for _, people in roles for person in people)
+                    tuple(actor[0] for role in roles for actor in role[-1])
                 ),
-                "person_count": sum(len(people) for _, people in roles),
+                "person_count": sum(len(role[-1]) for role in roles),
             }
             if card.cover.content_hash:
                 covers[str(card.subject_id)] = card.cover.content_hash
@@ -93,10 +121,12 @@ def diff_snapshots(
                 _int(item, "episode_count") for item in current_subjects.values()
             ),
             "episodes_removed": 0,
+            "episodes_updated": 0,
             "roles_added": sum(
                 _int(item, "role_count") for item in current_subjects.values()
             ),
             "roles_removed": 0,
+            "roles_updated": 0,
             "persons_added": sum(
                 _int(item, "person_count") for item in current_subjects.values()
             ),
@@ -134,13 +164,18 @@ def diff_snapshots(
             )
             for key in current_subjects
         ),
-        "episodes_removed": sum(
+            "episodes_removed": sum(
             max(
                 0,
                 _int(previous_subjects[key], "episode_count")
                 - _int(current_subjects.get(key, {}), "episode_count"),
             )
             for key in previous_subjects
+            ),
+        "episodes_updated": sum(
+            previous_subjects[key].get("episode_hash")
+            != current_subjects[key].get("episode_hash")
+            for key in shared
         ),
         "roles_added": sum(
             max(
@@ -157,6 +192,11 @@ def diff_snapshots(
                 - _int(current_subjects.get(key, {}), "role_count"),
             )
             for key in previous_subjects
+        ),
+        "roles_updated": sum(
+            previous_subjects[key].get("roles_hash")
+            != current_subjects[key].get("roles_hash")
+            for key in shared
         ),
         "persons_added": sum(
             max(
@@ -202,11 +242,19 @@ def read_snapshot(path: Path) -> dict[str, object] | None:
 
 def write_snapshot(path: Path, index: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(index, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        + "\n",
-        encoding="utf-8",
-    )
+    _atomic_json(path, index)
+
+
+def _atomic_json(path: Path, value: object) -> None:
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, delete=False
+    ) as stream:
+        json.dump(
+            value, stream, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        stream.write("\n")
+        temporary = stream.name
+    os.replace(temporary, path)
 
 
 def _hash(value: object) -> str:

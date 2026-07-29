@@ -21,24 +21,30 @@ it will not read SQLite or call the Bangumi API.
 
 ## Current status
 
-This repository currently provides the installable Python package and the
-`bgmb` command shell. Synchronisation is planned but is not implemented yet.
+The installable package now synchronises subject facts into local SQLite and
+writes local sync and tag-audit reports. It does not yet build a site, publish,
+download images, or synchronise episodes, characters, or voice actors.
 
 ```powershell
 python -m bgm_side_b --help
 bgmb --help
 bgmb --version
+bgmb sync 2022 1
 ```
 
-Planned command surface:
+Available sync scopes:
 
 ```text
 bgmb sync YEAR QUARTER_MONTH
 bgmb sync YEAR
 bgmb sync START-END
+bgmb sync YEAR QUARTER_MONTH --force
 ```
 
 `sync`, `build`, and `publish` will remain separate commands.
+
+See [the subject-sync notes](docs/subject-sync.md) for the current API field
+verification, deterministic refresh strategy, and SQLite schema outline.
 
 ## Development
 

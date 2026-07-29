@@ -1,0 +1,49 @@
+{
+  "tv": {
+    "id": 101,
+    "type": 2,
+    "name": "TV Original",
+    "name_cn": "电视中文名",
+    "summary": "A TV fixture.",
+    "date": "2022-01-08",
+    "platform": "TV",
+    "eps": 12,
+    "total_episodes": 12,
+    "rating": {"score": 7.5, "total": 123},
+    "tags": [{"name": "喜剧", "count": 12, "total_count": 300}],
+    "infobox": [{"key": "原作", "value": "漫画"}]
+  },
+  "movie": {
+    "id": 102,
+    "type": 2,
+    "name": "Movie Original",
+    "name_cn": "剧场版中文名",
+    "date": "2022-01-15",
+    "platform": "剧场版"
+  },
+  "web": {"id": 103, "type": 2, "name": "Web", "platform": "WEB"},
+  "ova": {"id": 104, "type": 2, "name": "OVA", "platform": "OVA"},
+  "missing_date": {"id": 105, "type": 2, "name": "No Date", "platform": "TV"},
+  "no_chinese_title": {
+    "id": 106,
+    "type": 2,
+    "name": "Original Only",
+    "name_cn": "",
+    "platform": "TV"
+  },
+  "no_rating": {"id": 107, "type": 2, "name": "No Rating", "platform": "TV"},
+  "infobox_multi_value": {
+    "id": 108,
+    "type": 2,
+    "name": "Multi Infobox",
+    "platform": "TV",
+    "infobox": [{"key": "别名", "value": [{"v": "Alias A"}, {"v": "Alias B"}]}]
+  },
+  "raw_tags": {
+    "id": 109,
+    "type": 2,
+    "name": "Raw Tags",
+    "platform": "TV",
+    "tags": [{"name": "未映射", "count": 4, "total_count": 999}]
+  }
+}

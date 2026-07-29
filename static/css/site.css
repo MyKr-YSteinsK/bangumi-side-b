@@ -92,6 +92,7 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .subject-card__score { color: var(--accent-ink); display: block; font-family: var(--font-mono); font-size: 1.05rem; font-weight: 700; margin-top: .25rem; }
 .subject-card__score.is-unrated { color: var(--ink-muted); font-family: var(--font-sans); font-size: .72rem; font-weight: 500; }
 .subject-card__tags { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .5rem; }
+.subject-card__detail-link { color: var(--accent-ink); display: inline-block; font-size: .72rem; font-weight: 650; margin-top: .55rem; }
 .tag { border: 1px solid var(--rule); border-radius: 999px; color: var(--ink-muted); font-size: .63rem; line-height: 1.25; padding: .18rem .4rem; }
 .tag--source { border-color: color-mix(in srgb, var(--accent) 55%, var(--rule)); color: var(--accent-ink); }
 

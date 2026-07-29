@@ -46,6 +46,8 @@ def test_shared_quarter_shell_has_landmarks_headings_and_no_remote_resources() -
     assert "Original Title" in rendered
     assert "暂无评分" in rendered
     assert "tag--source" in rendered
+    assert 'aria-pressed="false"' in rendered
+    assert "完整资料" in rendered
 
 
 def test_templates_are_componentized_and_static_sources_keep_accessibility_rules(

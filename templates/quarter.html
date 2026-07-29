@@ -25,10 +25,10 @@
       </select>
     </div>
     <div class="archive-controls__filters" aria-label="资料筛选">
-      <div class="filter-group" data-filter-group="source"><span>来源</span>{% for source in filter_sources %}<button type="button" class="filter-chip" data-filter-value="{{ source }}">{{ source }}</button>{% endfor %}</div>
-      <div class="filter-group" data-filter-group="tag"><span>标签</span>{% for tag in filter_tags %}<button type="button" class="filter-chip" data-filter-value="{{ tag }}">{{ tag }}</button>{% endfor %}</div>
-      <div class="filter-group" data-filter-group="format"><span>形式</span><button type="button" class="filter-chip" data-filter-value="tv">TV</button><button type="button" class="filter-chip" data-filter-value="movie">剧场版</button><span class="filter-chip is-disabled" aria-disabled="true">WEB / OVA 暂未收录</span></div>
-      <div class="filter-group" data-filter-group="section"><span>分区</span>{% for section in quarter.sections %}<button type="button" class="filter-chip" data-filter-value="{{ section.kind }}">{{ section.label }}</button>{% endfor %}</div>
+      <div class="filter-group" data-filter-group="source"><span>来源</span>{% for source in filter_sources %}<button type="button" class="filter-chip" data-filter-value="{{ source }}" aria-pressed="false">{{ source }}</button>{% endfor %}</div>
+      <div class="filter-group" data-filter-group="tag"><span>标签</span>{% for tag in filter_tags %}<button type="button" class="filter-chip" data-filter-value="{{ tag }}" aria-pressed="false">{{ tag }}</button>{% endfor %}</div>
+      <div class="filter-group" data-filter-group="format"><span>形式</span><button type="button" class="filter-chip" data-filter-value="tv" aria-pressed="false">TV</button><button type="button" class="filter-chip" data-filter-value="movie" aria-pressed="false">剧场版</button><button type="button" class="filter-chip is-disabled" disabled>WEB / OVA 暂未收录</button></div>
+      <div class="filter-group" data-filter-group="section"><span>分区</span>{% for section in quarter.sections %}<button type="button" class="filter-chip" data-filter-value="{{ section.kind }}" aria-pressed="false">{{ section.label }}</button>{% endfor %}</div>
     </div>
     <div class="archive-controls__status"><span data-visible-count>{{ quarter.metadata.subject_count }}</span> / {{ quarter.metadata.subject_count }} 部可见 <button type="button" class="clear-filters" data-clear-filters hidden>清除筛选</button></div>
   </section>

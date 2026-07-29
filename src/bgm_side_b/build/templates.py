@@ -72,6 +72,7 @@ class TemplateRenderer:
             navigation_hrefs=navigation_hrefs,
             cover_media=media,
             drawer_data=drawer_json(quarter, cover_hrefs, details),
+            detail_hrefs=details,
             filter_sources=_filter_values(quarter, "sources", "source"),
             filter_tags=_filter_values(quarter, "tags", "name"),
         )

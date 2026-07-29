@@ -25,4 +25,5 @@
     {% if card.source_overflow_count %}<span class="tag tag--source">+{{ card.source_overflow_count }}</span>{% endif %}
     {% for tag in card.card_tags %}{{ community_tag(tag) }}{% endfor %}
   </span>
+  {% if detail_hrefs.get(card.subject_id) %}<a class="subject-card__detail-link" href="{{ detail_hrefs.get(card.subject_id) }}" data-detail-link>完整资料</a>{% endif %}
 </article>

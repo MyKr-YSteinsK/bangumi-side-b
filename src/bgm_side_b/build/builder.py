@@ -359,23 +359,36 @@ def _index_html(models: tuple[object, ...], profile: BuildProfile) -> str:
 
 def _validate_output(stage: Path, profile: BuildProfile) -> None:
     windows_path = re.compile(r"[A-Za-z]:[\\/](?!/)")
+    allowed_external = re.compile(r"https://bgm\.tv/subject/\d+")
+    text_files = tuple(
+        path
+        for path in stage.rglob("*")
+        if path.is_file() and path.suffix in {".html", ".css", ".js"}
+    )
+    for path in text_files:
+        content = path.read_text(encoding="utf-8")
+        relative = path.relative_to(stage).as_posix()
+        if windows_path.search(content):
+            raise BuildError(f"generated output contains a local path: {relative}")
+        if any(value in content for value in ("api.bgm.tv", "XMLHttpRequest")):
+            raise BuildError("generated output contains a runtime data request")
+        external_urls = re.findall(r"https?://[^\"'\s)<]+", content)
+        if any(not allowed_external.fullmatch(url) for url in external_urls):
+            raise BuildError("generated output contains a forbidden external resource")
+        if path.name == "site.js" and "fetch(" in content:
+            raise BuildError("archive interaction JavaScript must stay offline")
     for html in stage.rglob("*.html"):
         content = html.read_text(encoding="utf-8")
-        if windows_path.search(content):
-            relative_html = html.relative_to(stage).as_posix()
-            raise BuildError(
-                f"generated HTML contains a local path: {relative_html}"
-            )
         if ".sqlite3" in content:
             raise BuildError("generated HTML contains a database filename")
-        if any(
-            value in content for value in ("fetch(", "XMLHttpRequest", "api.bgm.tv")
-        ):
-            raise BuildError("generated HTML contains runtime data requests")
         if "javascript:" in content.lower():
             raise BuildError("generated HTML contains unsafe links")
         for href in re.findall(r"(?:href|src)=\"([^\"]+)\"", content):
-            if href.startswith(("https://", "http://", "#")):
+            if href.startswith("#"):
+                continue
+            if href.startswith(("https://", "http://")):
+                if not allowed_external.fullmatch(href):
+                    raise BuildError("generated HTML contains an external resource")
                 continue
             target = href.split("?", 1)[0].split("#", 1)[0]
             candidate = (html.parent / target).resolve()

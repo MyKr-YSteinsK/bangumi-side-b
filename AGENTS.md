@@ -48,6 +48,13 @@ Do not create empty future services, fake interfaces, or unusable UI.
 - Missing data is omitted or reported, never invented.
 - Blacklisted subjects are physically removed within cleanup scope; shared entities are removed only when orphaned.
 
+## PWA and release invariants
+
+- Pages PWA uses only complete, verified snapshots; normal startup never checks for updates.
+- Keep the previous active snapshot until a replacement has completely verified and activated.
+- Pages never publishes character images; `publish` never calls `sync` or `build`.
+- Plan execution must never push to a real remote.
+
 ## Repository boundaries
 
 Track source, config, templates, static source assets, tests, docs, and project metadata.

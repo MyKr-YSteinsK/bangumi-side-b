@@ -35,7 +35,8 @@ def test_native_frontend_stays_offline_and_uses_only_supported_sort_contract() -
         assert value in template
     assert "history.pushState" in script
     assert "bsbArchive" in script
-    assert "pageshow" in script
+    assert "scrollRestoration" in script
+    assert "popstate" in script
     assert "history.back" in script
     assert "fetch(" not in script
     assert "XMLHttpRequest" not in script

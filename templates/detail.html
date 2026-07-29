@@ -14,10 +14,10 @@
         {% if card.aliases %}
           <div class="alias-block">
             <p>别名</p>
-            <ul class="alias-list">
+            <ul class="alias-list" id="subject-aliases">
               {% for alias in card.aliases %}<li{% if loop.index > 3 %} hidden data-extra-alias{% endif %}>{{ alias }}</li>{% endfor %}
             </ul>
-            {% if card.aliases|length > 3 %}<button type="button" class="text-button" data-toggle-aliases aria-expanded="false">展开全部别名</button>{% endif %}
+            {% if card.aliases|length > 3 %}<button type="button" class="text-button" data-toggle-aliases aria-controls="subject-aliases" aria-expanded="false">展开全部别名</button>{% endif %}
           </div>
         {% endif %}
         <dl class="subject-detail__facts">
@@ -41,7 +41,7 @@
     <section class="detail-section" aria-labelledby="episodes-title">
       <div class="detail-section__heading"><div><p class="eyebrow">EPISODE LOG</p><h2 id="episodes-title">正片章节</h2></div><p>已收录 {{ card.stored_main_episode_count }} 条正片章节</p></div>
       {% if detail.episodes %}
-        <ol class="episode-list">
+        <ol class="episode-list" id="episode-list">
           {% for episode in detail.episodes %}
             <li{% if detail.episodes|length > 50 and loop.index > 24 %} hidden data-extra-episode{% endif %}>
               <span class="episode-list__number">{{ loop.index }}</span><span class="episode-list__title">{{ episode|episode_title }}</span>
@@ -49,7 +49,7 @@
             </li>
           {% endfor %}
         </ol>
-        {% if detail.episodes|length > 50 %}<button type="button" class="text-button" data-toggle-episodes aria-expanded="false">展开剩余 {{ detail.episodes|length - 24 }} 条章节</button>{% endif %}
+        {% if detail.episodes|length > 50 %}<button type="button" class="text-button" data-toggle-episodes aria-controls="episode-list" aria-expanded="false">展开剩余 {{ detail.episodes|length - 24 }} 条章节</button>{% endif %}
       {% else %}<p class="detail-empty">暂无已收录的正片章节。</p>{% endif %}
     </section>
     {% if detail.characters %}

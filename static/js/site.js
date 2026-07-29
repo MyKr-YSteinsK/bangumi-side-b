@@ -1,6 +1,8 @@
 (() => {
   "use strict";
 
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+
   const detailReturn = document.querySelector("[data-detail-return]");
   const fromQuarter = new URLSearchParams(window.location.search).get("from");
   if (detailReturn && /^\d{4}-(01|04|07|10)$/.test(fromQuarter || "")) {
@@ -119,7 +121,7 @@
   function saveArchiveState() {
     const state = { ...(history.state || {}), bsbArchive: archiveState() };
     delete state.bsbDrawer;
-    history.replaceState(state, "");
+    history.replaceState(state, "", window.location.pathname + window.location.search);
   }
 
   function restoreArchiveState(state) {
@@ -304,16 +306,17 @@
       first.focus();
     }
   });
-  window.addEventListener("popstate", () => {
-    if (!drawer.open) return;
-    closingFromHistory = true;
-    drawer.close();
-    closingFromHistory = false;
-  });
-  window.addEventListener("pageshow", (event) => {
-    if (event.persisted) restoreArchiveState(history.state);
+  window.addEventListener("popstate", (event) => {
+    if (drawer.open) {
+      closingFromHistory = true;
+      drawer.close();
+      closingFromHistory = false;
+    }
+    restoreArchiveState(event.state);
   });
 
   applyAll();
+  const navigation = performance.getEntriesByType("navigation")[0];
+  if (navigation?.type !== "reload") restoreArchiveState(history.state);
   document.documentElement.classList.add("js-ready");
 })();

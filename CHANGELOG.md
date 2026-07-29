@@ -27,3 +27,9 @@ All notable changes to this project will be documented in this file.
   independent detail pages, main episodes, and subject-scoped cast display.
 - Local-only verified character images; Pages WebP covers with a hard character
   media exclusion.
+- Chromium regression coverage for `file://`, Pages subpaths, history state,
+  and static-resource boundaries.
+- Pages PWA shell, deterministic icons, verified full Cache Storage snapshots,
+  pause/resume, manual updates, redownload, and clear controls.
+- Deterministic release metadata and manual transactional `gh-pages` publishing
+  with dry-run and local bare-remote coverage.

@@ -60,14 +60,21 @@ def load_project_settings(path: Path) -> ProjectSettings:
 
     excluded = filters["excluded_subject_ids"]
     valid_excluded = isinstance(excluded, list) and all(
-        isinstance(item, int) for item in excluded
+        isinstance(item, int) and not isinstance(item, bool) and item > 0
+        for item in excluded
     )
     if not valid_excluded:
-        raise ValueError("excluded_subject_ids must be an array of integers")
+        raise ValueError("excluded_subject_ids must be an array of positive integers")
 
     values = ("api_concurrency", "request_timeout_seconds", "max_retries")
-    if not all(isinstance(sync.get(value), int) for value in values):
+    if not all(_is_integer(sync.get(value)) for value in values):
         raise ValueError("sync settings must be integers")
+    if sync["api_concurrency"] < 1:
+        raise ValueError("api_concurrency must be at least 1")
+    if sync["request_timeout_seconds"] <= 0:
+        raise ValueError("request_timeout_seconds must be greater than 0")
+    if sync["max_retries"] < 0:
+        raise ValueError("max_retries must not be negative")
 
     return ProjectSettings(
         excluded_subject_ids=frozenset(excluded),
@@ -162,3 +169,7 @@ def load_rules(config_directory: Path) -> tuple[ProjectSettings, TagRules, Sourc
         ),
         load_source_rules(config_directory / "source-rules.toml"),
     )
+
+
+def _is_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)

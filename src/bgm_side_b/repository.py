@@ -24,6 +24,9 @@ class SubjectRecord:
     episode_count: int | None
     rating_score: float | None
     rating_count: int | None
+    total_episode_count: int | None = None
+    end_date: date | None = None
+    availability_status: str = "available"
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,9 @@ class SubjectQuarter:
     year: int
     month: int
     appearance_kind: str
+    evidence_type: str | None = None
+    evidence_value: str | None = None
+    position: int = 0
 
 
 @dataclass(frozen=True)
@@ -76,8 +82,9 @@ class SyncState:
     entity_id: int
     data_type: str
     status: str
-    attempted_at: str
-    completed_at: str | None = None
+    last_attempt_at: str
+    last_success_at: str | None = None
+    failure_count: int = 0
     error_code: str | None = None
     error_summary: str | None = None
 
@@ -113,15 +120,20 @@ class SubjectRepository:
             """
             INSERT INTO subjects (
                 id, media_format, summary, air_date, episode_count,
-                rating_score, rating_count, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                total_episode_count, end_date, availability_status, rating_score,
+                rating_count, first_seen_at, last_seen_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 media_format = excluded.media_format,
                 summary = excluded.summary,
                 air_date = excluded.air_date,
                 episode_count = excluded.episode_count,
+                total_episode_count = excluded.total_episode_count,
+                end_date = excluded.end_date,
+                availability_status = excluded.availability_status,
                 rating_score = excluded.rating_score,
                 rating_count = excluded.rating_count,
+                last_seen_at = excluded.last_seen_at,
                 updated_at = excluded.updated_at
             """,
             (
@@ -130,8 +142,13 @@ class SubjectRepository:
                 subject.summary,
                 _date_value(subject.air_date),
                 subject.episode_count,
+                subject.total_episode_count,
+                _date_value(subject.end_date),
+                subject.availability_status,
                 subject.rating_score,
                 subject.rating_count,
+                timestamp,
+                timestamp,
                 timestamp,
                 timestamp,
             ),
@@ -264,19 +281,93 @@ class SubjectRepository:
         subject_id: int,
         quarters: Sequence[SubjectQuarter],
     ) -> None:
-        """Replace unique quarter appearances for one subject."""
-        if any(quarter.month not in {1, 4, 7, 10} for quarter in quarters):
-            raise ValueError("quarter month must be one of 1, 4, 7, or 10")
+        """Replace every quarter relationship for legacy callers only."""
+        _validate_quarters(quarters)
         connection.execute(
             "DELETE FROM subject_quarters WHERE subject_id = ?", (subject_id,)
         )
         connection.executemany(
             """
-            INSERT INTO subject_quarters (subject_id, year, month, appearance_kind)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO subject_quarters (
+                subject_id, year, month, appearance_kind, evidence_type,
+                evidence_value, position
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                (subject_id, quarter.year, quarter.month, quarter.appearance_kind)
+                (
+                    subject_id,
+                    quarter.year,
+                    quarter.month,
+                    quarter.appearance_kind,
+                    quarter.evidence_type,
+                    quarter.evidence_value,
+                    quarter.position,
+                )
+                for quarter in quarters
+            ),
+        )
+
+    def replace_permanent_quarter(
+        self,
+        connection: sqlite3.Connection,
+        subject_id: int,
+        quarter: SubjectQuarter,
+    ) -> None:
+        """Update permanent ownership without touching continuing appearances."""
+        _validate_quarters((quarter,))
+        if quarter.appearance_kind not in {"new", "movie"}:
+            raise ValueError("permanent quarter kind must be new or movie")
+        connection.execute(
+            """
+            DELETE FROM subject_quarters
+            WHERE subject_id = ? AND appearance_kind IN ('new', 'movie')
+            """,
+            (subject_id,),
+        )
+        self._insert_quarters(connection, subject_id, (quarter,))
+
+    def replace_continuing_quarters(
+        self,
+        connection: sqlite3.Connection,
+        subject_id: int,
+        quarters: Sequence[SubjectQuarter],
+    ) -> None:
+        """Rebuild continuing appearances without touching permanent ownership."""
+        _validate_quarters(quarters)
+        if any(quarter.appearance_kind != "continuing" for quarter in quarters):
+            raise ValueError("continuing quarter kind must be continuing")
+        connection.execute(
+            """
+            DELETE FROM subject_quarters
+            WHERE subject_id = ? AND appearance_kind = 'continuing'
+            """,
+            (subject_id,),
+        )
+        self._insert_quarters(connection, subject_id, quarters)
+
+    def _insert_quarters(
+        self,
+        connection: sqlite3.Connection,
+        subject_id: int,
+        quarters: Sequence[SubjectQuarter],
+    ) -> None:
+        connection.executemany(
+            """
+            INSERT INTO subject_quarters (
+                subject_id, year, month, appearance_kind, evidence_type,
+                evidence_value, position
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    subject_id,
+                    quarter.year,
+                    quarter.month,
+                    quarter.appearance_kind,
+                    quarter.evidence_type,
+                    quarter.evidence_value,
+                    quarter.position,
+                )
                 for quarter in quarters
             ),
         )
@@ -288,13 +379,14 @@ class SubjectRepository:
         connection.execute(
             """
             INSERT INTO sync_states (
-                entity_type, entity_id, data_type, status, attempted_at,
-                completed_at, error_code, error_summary
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                entity_type, entity_id, data_type, status, last_attempt_at,
+                last_success_at, failure_count, error_code, error_summary
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(entity_type, entity_id, data_type) DO UPDATE SET
                 status = excluded.status,
-                attempted_at = excluded.attempted_at,
-                completed_at = excluded.completed_at,
+                last_attempt_at = excluded.last_attempt_at,
+                last_success_at = excluded.last_success_at,
+                failure_count = excluded.failure_count,
                 error_code = excluded.error_code,
                 error_summary = excluded.error_summary
             """,
@@ -303,8 +395,9 @@ class SubjectRepository:
                 state.entity_id,
                 state.data_type,
                 state.status,
-                state.attempted_at,
-                state.completed_at,
+                state.last_attempt_at,
+                state.last_success_at,
+                state.failure_count,
                 state.error_code,
                 state.error_summary,
             ),
@@ -329,8 +422,8 @@ class SubjectRepository:
         try:
             row = connection.execute(
                 """
-                SELECT entity_type, entity_id, data_type, status, attempted_at,
-                       completed_at, error_code, error_summary
+                SELECT entity_type, entity_id, data_type, status, last_attempt_at,
+                       last_success_at, failure_count, error_code, error_summary
                 FROM sync_states
                 WHERE entity_type = ? AND entity_id = ? AND data_type = ?
                 """,
@@ -342,9 +435,26 @@ class SubjectRepository:
 
     def delete_subject(self, connection: sqlite3.Connection, subject_id: int) -> bool:
         """Physically delete a blacklisted subject and its orphaned shared entities."""
+        connection.execute(
+            "DELETE FROM media_files WHERE owner_type = 'subject' AND owner_id = ?",
+            (subject_id,),
+        )
         deleted = connection.execute("DELETE FROM subjects WHERE id = ?", (subject_id,))
         if deleted.rowcount == 0:
             return False
+        orphaned_character_ids = connection.execute(
+            """
+            SELECT id FROM characters
+            WHERE NOT EXISTS (
+                SELECT 1 FROM subject_characters
+                WHERE subject_characters.character_id = characters.id
+            )
+            """
+        ).fetchall()
+        connection.executemany(
+            "DELETE FROM media_files WHERE owner_type = 'character' AND owner_id = ?",
+            ((row["id"],) for row in orphaned_character_ids),
+        )
         connection.execute(
             """
             DELETE FROM characters
@@ -393,6 +503,10 @@ def _validate_subject(subject: SubjectRecord) -> None:
         raise ValueError("subject format must not be empty")
     if subject.episode_count is not None and subject.episode_count < 0:
         raise ValueError("episode count must not be negative")
+    if subject.total_episode_count is not None and subject.total_episode_count < 0:
+        raise ValueError("total episode count must not be negative")
+    if subject.availability_status not in {"available", "unavailable"}:
+        raise ValueError("availability status must be available or unavailable")
     if subject.rating_count is not None and subject.rating_count < 0:
         raise ValueError("rating count must not be negative")
 
@@ -403,6 +517,17 @@ def _date_value(value: date | None) -> str | None:
     if isinstance(value, datetime):
         raise ValueError("air date must not contain a time")
     return value.isoformat()
+
+
+def _validate_quarters(quarters: Sequence[SubjectQuarter]) -> None:
+    allowed_kinds = {"new", "continuing", "movie", "ova", "other"}
+    for quarter in quarters:
+        if quarter.month not in {1, 4, 7, 10}:
+            raise ValueError("quarter month must be one of 1, 4, 7, or 10")
+        if quarter.appearance_kind not in allowed_kinds:
+            raise ValueError("quarter appearance kind is invalid")
+        if quarter.position < 0:
+            raise ValueError("quarter position must not be negative")
 
 
 def _utc_now() -> str:

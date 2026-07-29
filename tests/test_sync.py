@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from bgm_side_b.api import (
+    ApiInfoboxItem,
     CandidateSubject,
     DiscoveryResult,
     DiscoveryStatistics,
@@ -14,7 +15,13 @@ from bgm_side_b.api import (
 from bgm_side_b.config import ProjectSettings, load_rules
 from bgm_side_b.database import Database
 from bgm_side_b.repository import SubjectRepository
-from bgm_side_b.sync import SubjectSynchronizer, SyncScope, parse_sync_scope
+from bgm_side_b.sync import (
+    SubjectSynchronizer,
+    SyncScope,
+    _normalise_summary,
+    _source_infobox,
+    parse_sync_scope,
+)
 
 FIXTURES = json.loads(
     (Path(__file__).parent / "fixtures" / "subject_cases.json").read_text(
@@ -100,6 +107,14 @@ def test_scope_parsing_is_ordered_and_rejects_invalid_quarters() -> None:
     assert parse_sync_scope(["2022-2023"]).quarters[0] == (2022, 1)
     with pytest.raises(ValueError):
         parse_sync_scope(["2022", "2"])
+
+
+def test_summary_paragraphs_and_structured_infobox_values_are_preserved() -> None:
+    assert _normalise_summary(" first\n line\n\n\n second ") == "first line\n\nsecond"
+    values = _source_infobox(
+        [ApiInfoboxItem("source", [{"v": "manga"}, {"v": "novel"}])]
+    )
+    assert [item.value for item in values] == ["manga", "novel"]
 
 
 def test_sync_writes_tv_subject_and_safe_reports(

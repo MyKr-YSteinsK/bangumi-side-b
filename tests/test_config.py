@@ -2,7 +2,9 @@
 
 from pathlib import Path
 
-from bgm_side_b.config import load_rules
+import pytest
+
+from bgm_side_b.config import load_project_settings, load_rules
 
 
 def test_checked_in_configuration_loads() -> None:
@@ -13,3 +15,32 @@ def test_checked_in_configuration_loads() -> None:
     assert settings.sync.api_concurrency == 3
     assert tag_rules.allowed_tags[:2] == ("喜剧", "恋爱")
     assert source_rules.order[-1] == "unknown"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "[filters]\nexcluded_subject_ids = [true]\n[sync]\n"
+            "api_concurrency = 1\nrequest_timeout_seconds = 1\nmax_retries = 0\n"
+        ),
+        (
+            "[filters]\nexcluded_subject_ids = [0]\n[sync]\n"
+            "api_concurrency = 1\nrequest_timeout_seconds = 1\nmax_retries = 0\n"
+        ),
+        (
+            "[filters]\nexcluded_subject_ids = []\n[sync]\n"
+            "api_concurrency = true\nrequest_timeout_seconds = 1\nmax_retries = 0\n"
+        ),
+        (
+            "[filters]\nexcluded_subject_ids = []\n[sync]\n"
+            "api_concurrency = 0\nrequest_timeout_seconds = 1\nmax_retries = 0\n"
+        ),
+    ],
+)
+def test_invalid_project_settings_are_rejected(tmp_path: Path, content: str) -> None:
+    path = tmp_path / "bangumi.toml"
+    path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_project_settings(path)

@@ -25,6 +25,7 @@ class Migration:
     version: int
     name: str
     statements: tuple[str, ...]
+    requires_foreign_keys_off: bool = False
 
 
 MIGRATIONS = (
@@ -200,6 +201,248 @@ MIGRATIONS = (
             """,
         ),
     ),
+    Migration(
+        2,
+        "enriched synchronization fact schema",
+        (
+            """
+            ALTER TABLE subjects ADD COLUMN end_date TEXT
+            """,
+            """
+            ALTER TABLE subjects ADD COLUMN total_episode_count INTEGER CHECK (
+                total_episode_count IS NULL OR total_episode_count >= 0
+            )
+            """,
+            """
+            ALTER TABLE subjects ADD COLUMN availability_status TEXT NOT NULL
+                DEFAULT 'available'
+                CHECK (availability_status IN ('available', 'unavailable'))
+            """,
+            """
+            ALTER TABLE subjects ADD COLUMN first_seen_at TEXT
+            """,
+            """
+            ALTER TABLE subjects ADD COLUMN last_seen_at TEXT
+            """,
+            """
+            UPDATE subjects
+            SET first_seen_at = created_at, last_seen_at = updated_at
+            """,
+            """
+            CREATE TABLE subject_quarters_v2 (
+                subject_id INTEGER NOT NULL,
+                year INTEGER NOT NULL CHECK (year BETWEEN 1 AND 9999),
+                month INTEGER NOT NULL CHECK (month IN (1, 4, 7, 10)),
+                appearance_kind TEXT NOT NULL CHECK (
+                    appearance_kind IN ('new', 'continuing', 'movie', 'ova', 'other')
+                ),
+                evidence_type TEXT,
+                evidence_value TEXT,
+                position INTEGER NOT NULL CHECK (position >= 0),
+                PRIMARY KEY (subject_id, year, month, appearance_kind),
+                FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE
+            )
+            """,
+            """
+            INSERT INTO subject_quarters_v2 (
+                subject_id, year, month, appearance_kind, evidence_type,
+                evidence_value, position
+            )
+            SELECT subject_id, year, month,
+                   CASE WHEN appearance_kind IN (
+                       'new', 'continuing', 'movie', 'ova', 'other'
+                   ) THEN appearance_kind ELSE 'other' END,
+                   NULL, NULL, 0
+            FROM subject_quarters
+            """,
+            """
+            CREATE TABLE episodes_v2 (
+                id INTEGER PRIMARY KEY CHECK (id > 0),
+                subject_id INTEGER NOT NULL,
+                episode_type INTEGER NOT NULL,
+                episode_number REAL,
+                sort_number REAL,
+                name TEXT,
+                name_cn TEXT,
+                air_date TEXT,
+                duration_seconds INTEGER CHECK (
+                    duration_seconds IS NULL OR duration_seconds > 0
+                ),
+                raw_duration TEXT,
+                position INTEGER NOT NULL CHECK (position >= 0),
+                FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE
+            )
+            """,
+            """
+            INSERT INTO episodes_v2 (
+                id, subject_id, episode_type, episode_number, sort_number,
+                name, name_cn, air_date, duration_seconds, raw_duration, position
+            )
+            SELECT id, subject_id, episode_type, NULL, sort_number, title, NULL,
+                   air_date, NULL, NULL,
+                   ROW_NUMBER() OVER (PARTITION BY subject_id ORDER BY id) - 1
+            FROM episodes
+            """,
+            """
+            CREATE TABLE characters_v2 (
+                id INTEGER PRIMARY KEY CHECK (id > 0),
+                original_name TEXT,
+                chinese_name TEXT,
+                summary TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            INSERT INTO characters_v2 (
+                id, original_name, chinese_name, summary, created_at, updated_at
+            )
+            SELECT id, name, NULL, NULL, created_at, updated_at FROM characters
+            """,
+            """
+            CREATE TABLE persons_v2 (
+                id INTEGER PRIMARY KEY CHECK (id > 0),
+                original_name TEXT,
+                chinese_name TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+            """
+            INSERT INTO persons_v2 (
+                id, original_name, chinese_name, created_at, updated_at
+            )
+            SELECT id, name, NULL, created_at, updated_at FROM persons
+            """,
+            """
+            CREATE TABLE subject_characters_v2 (
+                subject_id INTEGER NOT NULL,
+                character_id INTEGER NOT NULL,
+                role TEXT,
+                position INTEGER NOT NULL CHECK (position >= 0),
+                PRIMARY KEY (subject_id, character_id),
+                FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE,
+                FOREIGN KEY (character_id) REFERENCES characters(id)
+            )
+            """,
+            """
+            INSERT INTO subject_characters_v2 (
+                subject_id, character_id, role, position
+            )
+            SELECT subject_id, character_id, role, position FROM subject_characters
+            """,
+            """
+            CREATE TABLE character_voices_v2 (
+                subject_id INTEGER NOT NULL,
+                character_id INTEGER NOT NULL,
+                person_id INTEGER NOT NULL,
+                language TEXT,
+                position INTEGER NOT NULL CHECK (position >= 0),
+                PRIMARY KEY (subject_id, character_id, person_id),
+                FOREIGN KEY (subject_id, character_id)
+                    REFERENCES subject_characters(subject_id, character_id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY (person_id) REFERENCES persons(id)
+            )
+            """,
+            """
+            INSERT INTO character_voices_v2 (
+                subject_id, character_id, person_id, language, position
+            )
+            SELECT subject_id, character_id, person_id, NULL, position
+            FROM character_voices
+            """,
+            """
+            CREATE TABLE media_files_v2 (
+                id INTEGER PRIMARY KEY,
+                owner_type TEXT NOT NULL CHECK (owner_type IN ('subject', 'character')),
+                owner_id INTEGER NOT NULL CHECK (owner_id > 0),
+                media_kind TEXT NOT NULL CHECK (
+                    media_kind IN ('cover', 'character_image')
+                ),
+                source_url TEXT,
+                local_path TEXT,
+                content_hash TEXT,
+                size_bytes INTEGER CHECK (size_bytes IS NULL OR size_bytes >= 0),
+                mime_type TEXT,
+                width INTEGER CHECK (width IS NULL OR width > 0),
+                height INTEGER CHECK (height IS NULL OR height > 0),
+                downloaded_at TEXT,
+                verified_at TEXT,
+                status TEXT NOT NULL,
+                UNIQUE (owner_type, owner_id, media_kind)
+            )
+            """,
+            """
+            INSERT INTO media_files_v2 (
+                id, owner_type, owner_id, media_kind, source_url, local_path,
+                content_hash, size_bytes, mime_type, width, height, downloaded_at,
+                verified_at, status
+            )
+            SELECT id,
+                   CASE WHEN subject_id IS NOT NULL
+                        THEN 'subject' ELSE 'character' END,
+                   CASE WHEN subject_id IS NOT NULL
+                        THEN subject_id ELSE character_id END,
+                   CASE WHEN media_kind = 'cover'
+                        THEN 'cover' ELSE 'character_image' END,
+                   source_url,
+                   CASE
+                       WHEN local_path GLOB '[A-Za-z]:*'
+                            OR substr(local_path, 1, 1) IN ('/', '\\') THEN NULL
+                       ELSE replace(local_path, '\\', '/')
+                   END,
+                   content_hash, NULL, NULL, width, height, NULL, NULL, status
+            FROM media_files
+            WHERE subject_id IS NOT NULL OR character_id IS NOT NULL
+            """,
+            """
+            CREATE TABLE sync_states_v2 (
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER NOT NULL CHECK (entity_id > 0),
+                data_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                last_attempt_at TEXT NOT NULL,
+                last_success_at TEXT,
+                failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
+                error_code TEXT,
+                error_summary TEXT,
+                PRIMARY KEY (entity_type, entity_id, data_type)
+            )
+            """,
+            """
+            INSERT INTO sync_states_v2 (
+                entity_type, entity_id, data_type, status, last_attempt_at,
+                last_success_at, failure_count, error_code, error_summary
+            )
+            SELECT entity_type, entity_id,
+                   CASE WHEN data_type = 'details' THEN 'subject_detail'
+                        ELSE data_type END,
+                   status, attempted_at,
+                   CASE WHEN status = 'success' THEN completed_at ELSE NULL END,
+                   CASE WHEN status = 'failed' THEN 1 ELSE 0 END,
+                   error_code, error_summary
+            FROM sync_states
+            """,
+            "DROP TABLE character_voices",
+            "DROP TABLE subject_characters",
+            "DROP TABLE media_files",
+            "DROP TABLE characters",
+            "DROP TABLE persons",
+            "DROP TABLE subject_quarters",
+            "DROP TABLE episodes",
+            "DROP TABLE sync_states",
+            "ALTER TABLE characters_v2 RENAME TO characters",
+            "ALTER TABLE persons_v2 RENAME TO persons",
+            "ALTER TABLE subject_quarters_v2 RENAME TO subject_quarters",
+            "ALTER TABLE episodes_v2 RENAME TO episodes",
+            "ALTER TABLE subject_characters_v2 RENAME TO subject_characters",
+            "ALTER TABLE character_voices_v2 RENAME TO character_voices",
+            "ALTER TABLE media_files_v2 RENAME TO media_files",
+            "ALTER TABLE sync_states_v2 RENAME TO sync_states",
+        ),
+        requires_foreign_keys_off=True,
+    ),
 )
 
 
@@ -252,6 +495,11 @@ class Database:
             if existed:
                 self._backup(connection)
 
+            requires_foreign_keys_off = any(
+                migration.requires_foreign_keys_off for migration in pending
+            )
+            if requires_foreign_keys_off:
+                connection.execute("PRAGMA foreign_keys = OFF")
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 for migration in pending:
@@ -264,11 +512,15 @@ class Database:
                         """,
                         (migration.version, migration.name, _utc_now()),
                     )
+                self._verify_integrity(connection)
                 connection.commit()
             except sqlite3.Error as error:
                 connection.rollback()
                 message = "migration transaction failed and was rolled back"
                 raise MigrationError(message) from error
+            finally:
+                if requires_foreign_keys_off:
+                    connection.execute("PRAGMA foreign_keys = ON")
 
             self._trim_backups()
             return tuple(migration.version for migration in pending)
@@ -320,6 +572,12 @@ class Database:
             raise ValueError("migration versions must be positive")
         if versions != tuple(sorted(versions)) or len(set(versions)) != len(versions):
             raise ValueError("migration versions must be unique and ascending")
+
+    def _verify_integrity(self, connection: sqlite3.Connection) -> None:
+        foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        if foreign_key_errors or integrity != "ok":
+            raise sqlite3.DatabaseError("migration produced an invalid database")
 
 
 def _utc_now() -> str:

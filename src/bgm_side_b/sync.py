@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -201,7 +202,9 @@ class SubjectSynchronizer:
         self._store_detail(detail, target_year, target_month, stats)
 
     def _refresh_stable_subject(self, candidate: CandidateSubject) -> bool:
-        state = self.repository.get_sync_state("subject", candidate.subject_id, "details")
+        state = self.repository.get_sync_state(
+            "subject", candidate.subject_id, "subject_detail"
+        )
         if state is None or state.status != "success" or not self.repository.subject_exists(candidate.subject_id):
             return False
         with self.repository.transaction() as connection:
@@ -269,17 +272,23 @@ class SubjectSynchronizer:
                     [RawTag(tag.name, tag.count) for tag in detail.tags],
                 )
                 self.repository.replace_sources(connection, detail.subject_id, sources)
-                self.repository.replace_quarters(
+                self.repository.replace_permanent_quarter(
                     connection,
                     detail.subject_id,
-                    [SubjectQuarter(target_year, target_month, appearance_kind)],
+                    SubjectQuarter(
+                        target_year,
+                        target_month,
+                        appearance_kind,
+                        "air_date",
+                        detail.air_date.isoformat(),
+                    ),
                 )
                 self.repository.write_sync_state(
                     connection,
                     SyncState(
                         "subject",
                         detail.subject_id,
-                        "details",
+                        "subject_detail",
                         "success",
                         _utc_timestamp(),
                         _utc_timestamp(),
@@ -306,15 +315,19 @@ class SubjectSynchronizer:
         stats.failures.append(
             {"stage": "detail", "subject_id": subject_id, "code": error.code, "summary": error.summary}
         )
+        previous = self.repository.get_sync_state(
+            "subject", subject_id, "subject_detail"
+        )
         with self.repository.transaction() as connection:
             self.repository.write_sync_state(
                 connection,
                 SyncState(
                     "subject",
                     subject_id,
-                    "details",
+                    "subject_detail",
                     "failed",
                     _utc_timestamp(),
+                    failure_count=(previous.failure_count if previous else 0) + 1,
                     error_code=error.code,
                     error_summary=error.summary,
                 ),
@@ -378,7 +391,24 @@ class SubjectSynchronizer:
 
 
 def _source_infobox(items: Iterable[ApiInfoboxItem]) -> tuple[InfoboxItem, ...]:
-    return tuple(InfoboxItem(item.key, item.value) for item in items if isinstance(item.value, str))
+    """Expand only explicit structured strings without guessing their meaning."""
+    values: list[InfoboxItem] = []
+    for item in items:
+        for value in _infobox_string_values(item.value):
+            values.append(InfoboxItem(item.key, value))
+    return tuple(values)
+
+
+def _infobox_string_values(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if not isinstance(value, list):
+        return ()
+    return tuple(
+        item["v"]
+        for item in value
+        if isinstance(item, dict) and isinstance(item.get("v"), str)
+    )
 
 
 def _titles(detail: SubjectDetail, title: str) -> list[SubjectTitle]:
@@ -422,8 +452,12 @@ def _sources_for_result(sources: tuple[str, ...], evidence: tuple[object, ...], 
 def _normalise_summary(value: str | None) -> str | None:
     if value is None:
         return None
-    lines = [" ".join(line.split()) for line in value.replace("\r\n", "\n").split("\n")]
-    return "\n".join(line for line in lines if line) or None
+    paragraphs = re.split(r"\n[ \t]*\n+", value.replace("\r\n", "\n").replace("\r", "\n"))
+    normalised = [
+        " ".join(" ".join(line.split()) for line in paragraph.split("\n")).strip()
+        for paragraph in paragraphs
+    ]
+    return "\n\n".join(paragraph for paragraph in normalised if paragraph) or None
 
 
 def _parse_year(value: str) -> int:

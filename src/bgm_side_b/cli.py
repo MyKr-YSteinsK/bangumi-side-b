@@ -13,6 +13,15 @@ from bgm_side_b.repository import SubjectRepository
 from bgm_side_b.sync import SubjectSynchronizer, parse_sync_scope
 
 
+def find_project_root(start: Path | None = None) -> Path | None:
+    """Find the nearest project root without exposing local paths on failure."""
+    current = (start or Path.cwd()).resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / "pyproject.toml").is_file() and (candidate / "config").is_dir():
+            return candidate
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line parser for the currently available commands."""
     parser = argparse.ArgumentParser(
@@ -45,8 +54,13 @@ def main(argv: list[str] | None = None) -> int:
             scope = parse_sync_scope(args.scope)
         except ValueError as error:
             build_parser().error(str(error))
-        settings, tag_rules, source_rules = load_rules(Path("config"))
-        database = Database()
+        root = find_project_root()
+        if root is None:
+            build_parser().error(
+                "could not find a project root containing pyproject.toml and config"
+            )
+        settings, tag_rules, source_rules = load_rules(root / "config")
+        database = Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
         repository = SubjectRepository(database)
         client = BangumiApiClient(
             timeout_seconds=settings.sync.request_timeout_seconds,
@@ -60,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
                 settings,
                 tag_rules,
                 source_rules,
+                reports_directory=root / "workspace" / "reports",
             ).run(scope, force=args.force)
         except KeyboardInterrupt:
             return 130

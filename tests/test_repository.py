@@ -127,14 +127,14 @@ def test_blacklist_delete_cascades_subject_data_but_preserves_shared_entities(
         )
         connection.executemany(
             """
-            INSERT INTO characters (id, name, created_at, updated_at)
+            INSERT INTO characters (id, original_name, created_at, updated_at)
             VALUES (?, ?, ?, ?)
             """,
             [(10, "Shared", "2022-01-01T00:00:00Z", "2022-01-01T00:00:00Z")],
         )
         connection.executemany(
             """
-            INSERT INTO persons (id, name, created_at, updated_at)
+            INSERT INTO persons (id, original_name, created_at, updated_at)
             VALUES (?, ?, ?, ?)
             """,
             [(20, "Shared Voice", "2022-01-01T00:00:00Z", "2022-01-01T00:00:00Z")],
@@ -221,3 +221,45 @@ def test_blacklist_cleanup_is_limited_to_the_current_quarter(
 
     assert not repository.subject_exists(1)
     assert repository.subject_exists(2)
+
+
+def test_permanent_and_continuing_quarter_updates_are_independent(
+    repository: SubjectRepository,
+) -> None:
+    with repository.transaction() as connection:
+        repository.upsert_subject(connection, _subject())
+        repository.replace_permanent_quarter(
+            connection,
+            1,
+            SubjectQuarter(2022, 1, "new", "air_date", "2022-01-02"),
+        )
+        repository.replace_continuing_quarters(
+            connection,
+            1,
+            [SubjectQuarter(2022, 4, "continuing", "episode_air_date", "2022-04-02")],
+        )
+        repository.replace_permanent_quarter(
+            connection,
+            1,
+            SubjectQuarter(2022, 1, "new", "air_date", "2022-01-02"),
+        )
+        repository.replace_continuing_quarters(
+            connection,
+            1,
+            [SubjectQuarter(2022, 7, "continuing", "episode_air_date", "2022-07-02")],
+        )
+
+    connection = repository.database.connect()
+    try:
+        rows = connection.execute(
+            """
+            SELECT year, month, appearance_kind FROM subject_quarters
+            WHERE subject_id = 1 ORDER BY month
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    assert [tuple(row) for row in rows] == [
+        (2022, 1, "new"),
+        (2022, 7, "continuing"),
+    ]

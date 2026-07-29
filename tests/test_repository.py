@@ -194,3 +194,30 @@ def test_failed_delete_transaction_rolls_back(repository: SubjectRepository) -> 
             raise RuntimeError("force rollback")
 
     assert repository.subject_exists(1)
+
+
+def test_blacklist_cleanup_is_limited_to_the_current_quarter(
+    repository: SubjectRepository,
+) -> None:
+    with repository.transaction() as connection:
+        repository.upsert_subject(connection, _subject(1))
+        repository.upsert_subject(connection, _subject(2))
+        repository.replace_quarters(
+            connection,
+            1,
+            [SubjectQuarter(2022, 1, "new")],
+        )
+        repository.replace_quarters(
+            connection,
+            2,
+            [SubjectQuarter(2022, 4, "new")],
+        )
+        assert repository.delete_blacklisted_subjects_in_quarter(
+            connection,
+            frozenset({1, 2}),
+            2022,
+            1,
+        ) == 1
+
+    assert not repository.subject_exists(1)
+    assert repository.subject_exists(2)

@@ -63,17 +63,23 @@ class CandidateSubject:
     name: str | None
     name_cn: str | None
     category: int
+    rating_score: float | None
+    rating_total: int | None
 
     @classmethod
     def from_payload(
         cls, payload: Mapping[str, Any], category: int
     ) -> CandidateSubject:
+        rating = payload.get("rating")
+        rating_data = rating if isinstance(rating, Mapping) else {}
         return cls(
             subject_id=_subject_id(payload),
             platform=_optional_string(payload.get("platform")),
             name=_optional_string(payload.get("name")),
             name_cn=_optional_string(payload.get("name_cn")),
             category=category,
+            rating_score=_optional_number(rating_data.get("score")),
+            rating_total=_optional_integer(rating_data.get("total")),
         )
 
 

@@ -365,6 +365,26 @@ class SubjectRepository:
         )
         return True
 
+    def delete_blacklisted_subjects_in_quarter(
+        self,
+        connection: sqlite3.Connection,
+        subject_ids: frozenset[int],
+        year: int,
+        month: int,
+    ) -> int:
+        """Delete only blacklisted subjects already related to one sync quarter."""
+        if not subject_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in subject_ids)
+        rows = connection.execute(
+            f"""
+            SELECT subject_id FROM subject_quarters
+            WHERE year = ? AND month = ? AND subject_id IN ({placeholders})
+            """,
+            (year, month, *sorted(subject_ids)),
+        ).fetchall()
+        return sum(self.delete_subject(connection, row["subject_id"]) for row in rows)
+
 
 def _validate_subject(subject: SubjectRecord) -> None:
     if subject.subject_id <= 0:

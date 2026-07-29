@@ -6,9 +6,9 @@ static sites from that local data. The project is independent of MyKr-ops.
 
 ## First-version scope
 
-The first version will cover only TV animation and theatrical movies. WEB,
-OVA/OAD, specials, characters, voice actors, images, site generation, PWA, and
-publishing are not implemented by this initial project phase.
+The first version covers only TV animation and theatrical movies. WEB,
+OVA/OAD, specials, STAFF, site generation, PWA, and publishing remain out of
+scope.
 
 ## Architecture
 
@@ -21,9 +21,11 @@ it will not read SQLite or call the Bangumi API.
 
 ## Current status
 
-The installable package now synchronises subject facts into local SQLite and
-writes local sync and tag-audit reports. It does not yet build a site, publish,
-download images, or synchronise episodes, characters, or voice actors.
+The installable package synchronises subject facts, main-story episodes, TV
+continuation evidence, configured main characters, all of their listed voice
+actors, and verified cover/character images into local SQLite and workspace
+media. It writes local sync and tag-audit reports. It does not build or publish
+a site.
 
 ```powershell
 python -m bgm_side_b --help
@@ -39,12 +41,20 @@ bgmb sync YEAR QUARTER_MONTH
 bgmb sync YEAR
 bgmb sync START-END
 bgmb sync YEAR QUARTER_MONTH --force
+bgmb sync YEAR QUARTER_MONTH --force-images
 ```
+
+`--force` refreshes non-image structured facts. `--force-images` independently
+revalidates and redownloads verified cover and main-character images. Neither
+option builds or publishes output. Images are stored only below
+`workspace/media/`; the SQLite record keeps a workspace-relative path, verified
+format, hash, size, and dimensions. Voice-actor images are never downloaded.
 
 `sync`, `build`, and `publish` will remain separate commands.
 
-See [the subject-sync notes](docs/subject-sync.md) for the current API field
-verification, deterministic refresh strategy, and SQLite schema outline.
+See [the sync notes](docs/subject-sync.md) and
+[API field notes](docs/api-field-notes.md) for the verified fields, incremental
+strategy, media-cache rules, and SQLite schema outline.
 
 ## Development
 

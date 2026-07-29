@@ -3,10 +3,12 @@
 ## Current command
 
 `bgmb sync YEAR QUARTER_MONTH`, `bgmb sync YEAR`, and
-`bgmb sync START-END` synchronise TV and theatrical-movie subject facts only.
-`--force` refreshes stable details; normal runs refresh ratings from browse
-results while reusing successful detail snapshots. `sync` does not build or
-publish anything.
+`bgmb sync START-END` synchronise TV and theatrical-movie facts only. Every
+discovered candidate is confirmed with subject detail so its rating is refreshed
+from the detail response; an absent rating never clears an existing value.
+`--force` refreshes all non-image structured units. `--force-images` is
+independent and revalidates/redownloads images without implying `--force`.
+`sync` does not build or publish anything.
 
 The API was verified anonymously against the current v0 documentation and a
 small live smoke request. Browse uses animation type `2`, TV category `1`, and
@@ -24,19 +26,32 @@ target quarter; TV is recorded as `new`, and theatrical movies as `movie`.
 Missing dates and ownership mismatches are reported, never guessed.
 
 Each stored subject uses one transaction for facts, titles, Infobox, raw tags,
-source evidence, quarter relation, and sync state. Local per-subject failures
-are recorded safely and do not stop other items. Reports are written under
-`workspace/reports/` and never include response bodies, headers, tokens,
-absolute paths, or stack traces.
+source evidence, permanent quarter relation, and typed sync states. Main-story
+episodes are stored in API order; TV continuation quarters require an exact
+episode-air-date or configured end-date evidence value. Only exact configured
+main-character relations are saved, with every embedded actor retained as a
+subject-local voice relation. Local failures are typed and do not discard other
+successful facts or snapshots.
+
+Reports under `workspace/reports/` contain command flags, timing, per-quarter
+and total counters, and safe typed failures; they omit response bodies, headers,
+tokens, absolute paths, and stack traces. Ctrl+C returns 130 after writing a
+partial usable report.
 
 ## Schema outline
 
 SQLite is the fact source. `subjects` is global; titles, Infobox, raw tags,
-sources, and quarter appearances are subject-owned children. `characters` and
-`persons` are global future entities connected through `subject_characters` and
-`character_voices`, so they are only removed when orphaned. Migrations are
-numbered, transactional, backed up before changes, and enable foreign keys.
+sources, episodes, and quarter appearances are subject-owned children.
+`characters` and `persons` are reusable global entities connected through
+`subject_characters` and `character_voices`, and are removed only when orphaned.
+`media_files` records only subject covers and main-character images with source
+URL, relative path, SHA-256, MIME type, size, dimensions, and status.
 
-The next Plan should cover episodes, characters, voice actors, their relations,
-and image handling. Static build, pages, PWA, and publishing remain out of
-scope.
+Images download through the API client to `workspace/tmp/`, require an image
+Content-Type and Pillow decode check, then atomically replace a verified-format
+target below `workspace/media/`. A failed replacement retains an old valid file.
+Person images are never stored. Migrations are numbered, transactional, backed
+up before changes, and enable foreign keys.
+
+The next Plan can build offline static data views and page structure from this
+local model. Pages, PWA, publishing, and visual-system work remain out of scope.

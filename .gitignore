@@ -5,6 +5,8 @@ __pycache__/
 *.so
 *.egg-info/
 build/
+!src/bgm_side_b/build/
+!src/bgm_side_b/build/*.py
 .venv/
 venv/
 

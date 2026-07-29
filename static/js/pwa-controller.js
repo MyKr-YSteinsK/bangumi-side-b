@@ -36,7 +36,10 @@ async function registerWorker() {
       if (event.data?.type === "bsb-reload") emit({ reload_available: true });
       if (event.data?.type === "bsb-cleared") emit({ status: "first-install-required" });
     });
-    await workerMessage("state");
+    const state = await workerMessage("state");
+    if (!state.active && !state.staging && !state.available_release) {
+      workerMessage("probe").catch((error) => emit({ status: "failed", last_error: error.message }));
+    }
   } catch {
     emit({ status: "failed", last_error: "service-worker-unavailable" });
   }
@@ -44,7 +47,7 @@ async function registerWorker() {
 
 window.BsbPwa = {
   state: () => ({ ...pwaState }),
-  initialize: () => workerMessage("start", { reason: "first-install" }),
+  initialize: () => (!pwaState.active && !pwaState.staging && !pwaState.available_release ? workerMessage("probe") : workerMessage("start", { reason: "first-install" })),
   checkUpdate: () => workerMessage("check"),
   update: () => workerMessage("start", { reason: "manual-update" }),
   redownload: () => workerMessage("redownload"),

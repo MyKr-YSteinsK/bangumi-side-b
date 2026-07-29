@@ -190,14 +190,14 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         context = browser.new_context()
         page = context.new_page()
         page.set_default_timeout(5000)
-        requests: list[str] = []
-        page.on("request", lambda request: requests.append(request.url))
         root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
         page.goto(f"{root}/quarters/2022-01/index.html")
         page.locator("[data-pwa-gate]").wait_for(state="visible")
-        assert not any(
-            url.endswith(("release.json", "snapshot-manifest.json")) for url in requests
+        page.wait_for_function(
+            "window.BsbPwa.state().available_release?.release_version"
+            " === '2026.07.30.1'"
         )
+        assert page.locator("[data-pwa-gate-release]").inner_text() == "2026.07.30.1"
         page.wait_for_function("navigator.serviceWorker.controller !== null")
         context.set_offline(True)
         page.goto(f"{root}/subjects/101/index.html?from=2022-01")
@@ -329,6 +329,7 @@ def test_pages_pwa_accepts_slow_download_then_pauses_and_resumes(
         page.goto(f"{root}/quarters/2022-01/index.html")
         page.locator("[data-pwa-gate]").wait_for(state="visible")
         page.wait_for_function("navigator.serviceWorker.controller !== null")
+        page.wait_for_function("window.BsbPwa.state().available_release !== null")
         started = time.monotonic()
         accepted = page.evaluate("window.BsbPwa.initialize()")
         assert time.monotonic() - started < 2

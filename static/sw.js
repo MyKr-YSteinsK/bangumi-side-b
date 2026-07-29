@@ -14,6 +14,7 @@ const FORBIDDEN_PARTS = [
 const LEASE_MS = 120000;
 const SNAPSHOT_PREFIX = "bsb-snapshot-";
 const aborters = new Map();
+const progressCheckpoints = new Map();
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL_FILES)));
@@ -35,6 +36,7 @@ function emptyState() {
     active: null,
     staging: null,
     status: "first-install-required",
+    available_release: null,
     available_update: null,
     cleanup_warning: null,
   };
@@ -52,6 +54,7 @@ function normalizeState(value) {
     delete state.staging.cache_name;
   }
   state.status ||= state.staging?.status || (state.active ? "ready" : "first-install-required");
+  state.available_release ||= null;
   state.available_update ||= null;
   state.cleanup_warning ||= null;
   return state;
@@ -181,12 +184,14 @@ async function fetchRelease() {
   return { release, manifest, manifestHash: release.manifest_sha256, index: indexFromManifest(manifest, release.manifest_sha256) };
 }
 
-async function storageCheck(total, activeBytes) {
-  if (!self.navigator.storage?.estimate) return;
+async function storageCheck(total) {
+  if (!self.navigator.storage?.estimate) return { available: false };
   const estimate = await self.navigator.storage.estimate();
-  if (!Number.isFinite(estimate.quota) || !Number.isFinite(estimate.usage)) return;
-  const required = total + activeBytes + Math.max(20 * 1024 * 1024, Math.ceil(total * 0.1));
+  if (!Number.isFinite(estimate.quota) || !Number.isFinite(estimate.usage)) return { available: false };
+  const safety_bytes = Math.max(20 * 1024 * 1024, Math.ceil(total * 0.1));
+  const required = total + safety_bytes;
   if (estimate.quota - estimate.usage < required) throw new Error("storage-insufficient");
+  return { available: true, quota_bytes: estimate.quota, usage_bytes: estimate.usage, required_bytes: required, safety_bytes };
 }
 async function validCached(cache, file) {
   const response = await cache.match(entryRequest(file));
@@ -257,7 +262,22 @@ async function failOperation(operationId, error) {
   refreshStatus(state);
   return writeState(state);
 }
-async function checkpoint(operationId, completed, downloaded) {
+async function checkpoint(operationId, completed, downloaded, force = false) {
+  const now = Date.now();
+  const previous = progressCheckpoints.get(operationId) || { count: 0, at: 0, broadcast_at: 0 };
+  const shouldPersist = force || completed.size - previous.count >= 12 || now - previous.at >= 400;
+  if (!shouldPersist) {
+    if (now - previous.broadcast_at >= 350) {
+      const state = await readState();
+      if (ownsOperation(state, operationId)) {
+        state.staging.downloaded_bytes = downloaded;
+        await broadcast({ type: "bsb-state", state });
+      }
+      progressCheckpoints.set(operationId, { ...previous, broadcast_at: now });
+    }
+    return null;
+  }
+  progressCheckpoints.set(operationId, { count: completed.size, at: now, broadcast_at: now });
   return renewLease(operationId, (staging) => {
     staging.completed_urls = [...completed].sort();
     staging.downloaded_bytes = downloaded;
@@ -300,6 +320,7 @@ async function activateSnapshot(operationId, bundle) {
     subject_count: bundle.release.subject_count,
   };
   state.staging = null;
+  progressCheckpoints.delete(operationId);
   state.cleanup_warning = null;
   refreshStatus(state);
   await writeState(state);
@@ -318,7 +339,7 @@ async function download(operationId, bundle) {
     const size = await validCached(cache, file);
     if (size !== null) { completed.add(file.url); downloaded += size; }
   }
-  await checkpoint(operationId, completed, downloaded);
+  await checkpoint(operationId, completed, downloaded, true);
   state = await readState();
   if (!ownsOperation(state, operationId) || state.staging.status === "paused") return state;
   state.staging.status = "downloading";
@@ -354,6 +375,7 @@ async function download(operationId, bundle) {
   } finally {
     aborters.delete(operationId);
   }
+  await checkpoint(operationId, completed, downloaded, true);
   state = await renewLease(operationId, (current) => { current.status = "verifying"; });
   if (state.staging.status === "paused") return state;
   return activateSnapshot(operationId, bundle);
@@ -380,7 +402,8 @@ async function runOperation(operationId) {
     staging.lease_until = leaseUntil();
     refreshStatus(state);
     await writeState(state);
-    await storageCheck(bundle.manifest.total_bytes, state.active?.total_bytes || 0);
+    staging.storage_check = await storageCheck(bundle.manifest.total_bytes);
+    await writeState(state);
     return download(operationId, bundle);
   } catch (error) {
     return failOperation(operationId, error);
@@ -401,12 +424,39 @@ async function checkUpdate() {
         quarter_count: bundle.release.quarter_count,
         subject_count: bundle.release.subject_count,
         total_bytes: bundle.manifest.total_bytes,
-        summary: [...(summary.system || []), ...(summary.data || [])].join("；"),
+        summary: { system: summary.system || [], data: summary.data || [] },
       };
       state.last_error = null;
     }
   } catch (error) { state.last_error = safeError(error); }
   refreshStatus(state);
+  return writeState(state);
+}
+async function probeRelease() {
+  const state = await readState();
+  if (state.active) return state;
+  state.status = "probing-release";
+  state.last_error = null;
+  await writeState(state);
+  try {
+    const bundle = await fetchRelease();
+    const summary = bundle.release.summary || {};
+    state.available_release = {
+      release_version: bundle.release.release_version,
+      app_version: bundle.release.app_version,
+      generated_at: bundle.release.generated_at,
+      quarter_count: bundle.release.quarter_count,
+      subject_count: bundle.release.subject_count,
+      total_bytes: bundle.manifest.total_bytes,
+      summary: { system: summary.system || [], data: summary.data || [] },
+    };
+    state.last_error = null;
+    state.status = "first-install-required";
+  } catch (error) {
+    state.available_release = null;
+    state.last_error = safeError(error);
+    state.status = "failed";
+  }
   return writeState(state);
 }
 async function pause(clientId, operationId) {
@@ -428,6 +478,7 @@ async function cancel(clientId, operationId) {
   if (state.staging.owner_client_id !== clientId && await ownerStillExists(state.staging.owner_client_id)) throw new Error("operation-owner-mismatch");
   aborters.get(state.staging.operation_id)?.abort();
   const cacheName = state.staging.attempt_cache_name;
+  progressCheckpoints.delete(state.staging.operation_id);
   state.staging = null;
   refreshStatus(state);
   await writeState(state);
@@ -445,7 +496,7 @@ async function clearSnapshots(clientId) {
   const names = await caches.keys();
   const targets = names.filter((name) => name.startsWith(SNAPSHOT_PREFIX));
   const results = await Promise.all(targets.map((name) => caches.delete(name)));
-  state.active = null; state.staging = null; state.available_update = null;
+  state.active = null; state.staging = null; state.available_release = null; state.available_update = null;
   state.cleanup_warning = results.every(Boolean) ? null : ["snapshot-clear"];
   refreshStatus(state);
   await writeState(state);
@@ -465,7 +516,7 @@ self.addEventListener("message", (event) => {
     event.waitUntil(task);
     return;
   }
-  const work = type === "state" ? readState() : type === "check" ? checkUpdate() : type === "pause" ? pause(clientId, operationId) : type === "cancel" ? cancel(clientId, operationId) : type === "clear" ? clearSnapshots(clientId) : Promise.resolve({ error: "message-invalid" });
+  const work = type === "state" ? readState() : type === "probe" ? probeRelease() : type === "check" ? checkUpdate() : type === "pause" ? pause(clientId, operationId) : type === "cancel" ? cancel(clientId, operationId) : type === "clear" ? clearSnapshots(clientId) : Promise.resolve({ error: "message-invalid" });
   event.waitUntil(work.then((state) => event.ports[0]?.postMessage(state)).catch((error) => event.ports[0]?.postMessage({ error: safeError(error) })));
 });
 

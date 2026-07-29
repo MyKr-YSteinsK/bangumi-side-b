@@ -230,6 +230,22 @@ class BuildQueries:
         finally:
             connection.close()
 
+    def list_quarters(
+        self, excluded_subject_ids: frozenset[int] = frozenset()
+    ) -> tuple[tuple[int, int], ...]:
+        """Return all buildable database quarters without opening a write path."""
+        if not self.database.path.is_file():
+            raise BuildDataError("database is missing")
+        connection = self.database.connect()
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            _schema_version(connection)
+            return _navigation_rows(connection, excluded_subject_ids)
+        except sqlite3.Error as error:
+            raise BuildDataError("database cannot be read for build") from error
+        finally:
+            connection.close()
+
 
 def _schema_version(connection: sqlite3.Connection) -> int:
     """Reject absent or older schemas instead of attempting a build migration."""

@@ -376,7 +376,7 @@ def test_episode_snapshot_replaces_old_rows_and_builds_continuing_quarters(
         (2022, 1, "new", "air_date"),
         (2022, 4, "continuing", "episode_air_date"),
         (2022, 7, "continuing", "episode_air_date"),
-        (2022, 10, "continuing", "end_date"),
+        (2022, 10, "continuing", "air_end_overlap"),
     ]
 
     api.episodes[101] = episodes[:1]
@@ -395,7 +395,11 @@ def test_episode_snapshot_replaces_old_rows_and_builds_continuing_quarters(
         ).fetchall()
     finally:
         connection.close()
-    assert [tuple(row) for row in continuations] == [(2022, 10)]
+    assert [tuple(row) for row in continuations] == [
+        (2022, 4),
+        (2022, 7),
+        (2022, 10),
+    ]
 
 
 def test_episode_failure_preserves_the_last_successful_snapshot(

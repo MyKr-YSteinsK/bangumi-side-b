@@ -103,6 +103,8 @@ backups, generated sites, caches, temporary files, secrets, and environment
 files are not committed. `dist/pages` belongs on the `gh-pages` branch, not
 `main`.
 
+Before a first real Pages publication, push the reviewed `main`, then run `bgmb build --all` and `bgmb publish --dry-run`. Pages publication consumes only the verified build candidate; sync requires a fresh build before publish.
+
 ## Third-party content
 
 The MIT license applies to this source code only. It does not grant rights to

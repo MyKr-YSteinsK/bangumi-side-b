@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Stabilize complete PWA snapshots, build-bound publication facts, and deterministic TV continuation refreshes.
+
 ### Added
 
 - Installable Python package and `bgmb` command.

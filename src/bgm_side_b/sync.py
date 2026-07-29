@@ -113,6 +113,12 @@ class QuarterStats:
     episodes_stored: int = 0
     episode_conflicts: int = 0
     continuations_created: int = 0
+    continuing_details_requested: int = 0
+    continuing_ratings_updated: int = 0
+    continuation_invalid_before_air: int = 0
+    continuation_after_end_date: int = 0
+    continuation_end_before_air: int = 0
+    continuation_quarters_created: int = 0
     roles_requested: int = 0
     main_characters_stored: int = 0
     persons_stored: int = 0
@@ -248,7 +254,7 @@ class SubjectSynchronizer:
                 )
             for subject_id in self.repository.list_tv_subject_ids():
                 if subject_id not in discovered_ids:
-                    self._sync_existing_tv_episodes(
+                    self._sync_existing_tv(
                         subject_id, year, month, force, stats
                     )
         except KeyboardInterrupt as error:
@@ -300,7 +306,7 @@ class SubjectSynchronizer:
         finally:
             stats.retries += self._json_retries() - retries_before
         if self._store_detail(detail, target_year, target_month, stats):
-            self._sync_existing_tv_episodes(
+            self._sync_existing_tv(
                 detail.subject_id, target_year, target_month, force, stats
             )
             character_image_urls = self._sync_subject_roles(
@@ -320,6 +326,8 @@ class SubjectSynchronizer:
         target_year: int,
         target_month: int,
         stats: QuarterStats,
+        *,
+        continuing_refresh: bool = False,
     ) -> bool:
         media_format = normalize_format(detail.platform)
         if media_format not in {"tv", "movie"} or not is_supported_format(detail.platform):
@@ -328,7 +336,10 @@ class SubjectSynchronizer:
         if detail.air_date is None:
             stats.missing_date += 1
             return False
-        if quarter_for_date(detail.air_date).year != target_year or quarter_for_date(detail.air_date).month != target_month:
+        if not continuing_refresh and (
+            quarter_for_date(detail.air_date).year != target_year
+            or quarter_for_date(detail.air_date).month != target_month
+        ):
             stats.ownership_mismatch += 1
             return False
         title = preferred_title(detail.name_cn, detail.name)
@@ -374,17 +385,18 @@ class SubjectSynchronizer:
                     [RawTag(tag.name, tag.count) for tag in detail.tags],
                 )
                 self.repository.replace_sources(connection, detail.subject_id, sources)
-                self.repository.replace_permanent_quarter(
-                    connection,
-                    detail.subject_id,
-                    SubjectQuarter(
-                        target_year,
-                        target_month,
-                        appearance_kind,
-                        "air_date",
-                        detail.air_date.isoformat(),
-                    ),
-                )
+                if not continuing_refresh:
+                    self.repository.replace_permanent_quarter(
+                        connection,
+                        detail.subject_id,
+                        SubjectQuarter(
+                            target_year,
+                            target_month,
+                            appearance_kind,
+                            "air_date",
+                            detail.air_date.isoformat(),
+                        ),
+                    )
                 self.repository.write_sync_state(
                     connection,
                     SyncState(
@@ -424,7 +436,7 @@ class SubjectSynchronizer:
         stats.warnings.extend(source_result.warnings)
         return True
 
-    def _sync_existing_tv_episodes(
+    def _sync_existing_tv(
         self,
         subject_id: int,
         target_year: int,
@@ -432,8 +444,40 @@ class SubjectSynchronizer:
         force: bool,
         stats: QuarterStats,
     ) -> None:
+        if self._appears_in_quarter(subject_id, target_year, target_month):
+            self._refresh_continuing_detail(subject_id, target_year, target_month, stats)
         if self._should_refresh_episodes(subject_id, target_year, target_month, force):
             self._sync_subject_episodes(subject_id, stats)
+
+    def _appears_in_quarter(self, subject_id: int, year: int, month: int) -> bool:
+        subject = self.repository.get_stored_subject(subject_id)
+        if subject is None or subject.air_date is None:
+            return False
+        permanent = quarter_for_date(subject.air_date)
+        if (year, month) <= (permanent.year, permanent.month):
+            return False
+        if subject.end_date is not None and subject.end_date >= subject.air_date:
+            end = quarter_for_date(subject.end_date)
+            if (year, month) <= (end.year, end.month):
+                return True
+        return any(
+            (quarter_for_date(value).year, quarter_for_date(value).month) == (year, month)
+            for value in self.repository.main_episode_air_dates(subject_id)
+            if value >= subject.air_date
+        )
+
+    def _refresh_continuing_detail(
+        self, subject_id: int, year: int, month: int, stats: QuarterStats
+    ) -> None:
+        stats.continuing_details_requested += 1
+        try:
+            detail = self.api.get_subject(subject_id)
+        except BangumiApiError as error:
+            self._record_failure(subject_id, error, stats)
+            return
+        if self._store_detail(detail, year, month, stats, continuing_refresh=True):
+            if detail.rating_score is not None or detail.rating_total is not None:
+                stats.continuing_ratings_updated += 1
 
     def _should_refresh_episodes(
         self, subject_id: int, target_year: int, target_month: int, force: bool
@@ -516,7 +560,7 @@ class SubjectSynchronizer:
         self._warn_episode_count_conflict(subject_id, stats)
         stats.episodes_stored += len(episodes)
         before_continuations = self.repository.continuing_quarter_count(subject_id)
-        self._rebuild_continuing_quarters(subject_id)
+        self._rebuild_continuing_quarters(subject_id, stats)
         stats.continuations_created += max(
             0,
             self.repository.continuing_quarter_count(subject_id) - before_continuations,
@@ -578,7 +622,9 @@ class SubjectSynchronizer:
             stats.warnings.append(f"episode_count_conflict:{subject_id}")
             stats.episode_conflicts += 1
 
-    def _rebuild_continuing_quarters(self, subject_id: int) -> None:
+    def _rebuild_continuing_quarters(
+        self, subject_id: int, stats: QuarterStats | None = None
+    ) -> None:
         subject = self.repository.get_stored_subject(subject_id)
         if subject is None:
             return
@@ -589,12 +635,30 @@ class SubjectSynchronizer:
         permanent = quarter_for_date(subject.air_date)
         evidence: dict[tuple[int, int], tuple[str, str]] = {}
         if subject.end_date is not None:
-            end_quarter = quarter_for_date(subject.end_date)
-            evidence[(end_quarter.year, end_quarter.month)] = (
-                "end_date",
-                subject.end_date.isoformat(),
-            )
+            if subject.end_date < subject.air_date:
+                if stats is not None:
+                    stats.continuation_end_before_air += 1
+                    stats.warnings.append(f"continuation_end_before_air:{subject_id}")
+            else:
+                end_quarter = quarter_for_date(subject.end_date)
+                for year, month in _quarters_after_until(
+                    permanent.year, permanent.month, end_quarter.year, end_quarter.month
+                ):
+                    evidence[(year, month)] = (
+                        "air_end_overlap",
+                        f"{subject.air_date.isoformat()}/{subject.end_date.isoformat()}",
+                    )
         for air_date in self.repository.main_episode_air_dates(subject_id):
+            if air_date < subject.air_date:
+                if stats is not None:
+                    stats.continuation_invalid_before_air += 1
+                    stats.warnings.append(f"continuation_invalid_before_air:{subject_id}")
+                continue
+            if subject.end_date is not None and air_date > subject.end_date:
+                if stats is not None:
+                    stats.continuation_after_end_date += 1
+                    stats.warnings.append(f"continuation_after_end_date:{subject_id}")
+                continue
             episode_quarter = quarter_for_date(air_date)
             evidence[(episode_quarter.year, episode_quarter.month)] = (
                 "episode_air_date",
@@ -616,6 +680,8 @@ class SubjectSynchronizer:
         )
         with self.repository.transaction() as connection:
             self.repository.replace_continuing_quarters(connection, subject_id, quarters)
+        if stats is not None:
+            stats.continuation_quarters_created += len(quarters)
 
     def _sync_subject_roles(
         self, subject_id: int, force: bool, stats: QuarterStats
@@ -1206,6 +1272,21 @@ def _end_date_from_infobox(
         except ValueError:
             continue
     return None
+
+
+def _quarters_after_until(
+    start_year: int, start_month: int, end_year: int, end_month: int
+) -> tuple[tuple[int, int], ...]:
+    values: list[tuple[int, int]] = []
+    year, month = start_year, start_month
+    while (year, month) < (end_year, end_month):
+        month += 3
+        if month > 10:
+            year += 1
+            month = 1
+        if (year, month) <= (end_year, end_month):
+            values.append((year, month))
+    return tuple(values)
 
 
 def _chinese_name(

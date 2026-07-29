@@ -53,5 +53,4 @@ target below `workspace/media/`. A failed replacement retains an old valid file.
 Person images are never stored. Migrations are numbered, transactional, backed
 up before changes, and enable foreign keys.
 
-The next Plan can build offline static data views and page structure from this
-local model. Pages, PWA, publishing, and visual-system work remain out of scope.
+TV continuations are deterministic: a valid structured end date covers every quarter after the permanent air quarter through its end quarter; episode dates may add a later quarter only when they are not before air date or after an explicit end date. When a stored TV appears in a target continuation quarter, sync refreshes its detail rating without forcing roles or media.

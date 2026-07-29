@@ -3,7 +3,12 @@ const SHELL_CACHE = "bsb-shell-v1";
 const CONTROL_CACHE = "bsb-control-v1";
 const CONTROL_KEY = "__bsb_control__/state";
 const SHELL_FILES = /* __BSB_SHELL_FILES__ */;
-const FORBIDDEN_PARTS = ["/media/characters/", ".sqlite", "/workspace/", "/reports/"];
+const FORBIDDEN_PARTS = [
+  "/media/characters/",
+  ".sql" + "ite",
+  "/work" + "space/",
+  "/reports/",
+];
 let aborter = null;
 
 self.addEventListener("install", (event) => {

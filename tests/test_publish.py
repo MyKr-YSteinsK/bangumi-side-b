@@ -80,6 +80,10 @@ def test_publish_dry_run_and_local_bare_remote_transaction(
     assert _git(root, "branch", "--show-current") == "main"
     assert _git(root, "--git-dir", str(remote), "show", "gh-pages:release.json")
     assert (root / "workspace" / "releases" / "history.json").is_file()
+    snapshot = (root / "workspace" / "releases" / "current-snapshot.json").read_text(
+        "utf-8"
+    )
+    assert '"101"' in snapshot
     with pytest.raises(PublishError, match="no publishable changes"):
         publisher.publish(remote="test")
 

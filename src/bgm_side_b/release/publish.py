@@ -15,7 +15,11 @@ from pathlib import Path
 from bgm_side_b import __version__
 from bgm_side_b.build.paths import PathResolver
 from bgm_side_b.build.profiles import pages_profile
+from bgm_side_b.build.projection import BuildProjection
+from bgm_side_b.build.queries import BuildQueries
 from bgm_side_b.build.templates import TemplateRenderer
+from bgm_side_b.config import load_rules
+from bgm_side_b.database import Database
 from bgm_side_b.release.candidate import read_pages_build_marker
 from bgm_side_b.release.history import (
     history_entry,
@@ -31,7 +35,12 @@ from bgm_side_b.release.manifest import (
     manifest_json,
     validate_manifest_payload,
 )
-from bgm_side_b.release.snapshot import diff_snapshots, read_snapshot, write_snapshot
+from bgm_side_b.release.snapshot import (
+    diff_snapshots,
+    read_snapshot,
+    snapshot_index,
+    write_snapshot,
+)
 from bgm_side_b.release.validation import validate_release_payload
 
 
@@ -437,21 +446,34 @@ class Publisher:
 
 
 def _candidate_snapshot(root: Path) -> dict[str, object]:
-    """Hash configuration and retain only release-safe empty fact structure for now."""
+    """Read existing facts without invoking sync or a static build."""
     config = root / "config"
     digest = hashlib.sha256()
     for path in sorted(item for item in config.rglob("*") if item.is_file()):
         digest.update(path.relative_to(config).as_posix().encode())
         digest.update(path.read_bytes())
     blacklist = hashlib.sha256((config / "bangumi.toml").read_bytes()).hexdigest()
-    return {
-        "schema": 1,
-        "quarters": [],
-        "subjects": {},
-        "covers": {},
-        "rules_hash": digest.hexdigest(),
-        "blacklist_hash": blacklist,
-    }
+    database = Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
+    if not database.path.is_file():
+        raise PublishError("publish requires the existing local fact database")
+    settings, tag_rules, source_rules = load_rules(config)
+    queries = BuildQueries(database)
+    models = tuple(
+        BuildProjection(
+            tag_rules,
+            source_rules,
+            root / "workspace",
+            excluded_subject_ids=settings.excluded_subject_ids,
+        ).project_quarter(
+            queries.load_quarter(
+                year, month, excluded_subject_ids=settings.excluded_subject_ids
+            )
+        )
+        for year, month in queries.list_quarters(settings.excluded_subject_ids)
+    )
+    return snapshot_index(
+        models, rules_hash=digest.hexdigest(), blacklist_hash=blacklist
+    )
 
 
 def _render_updates(root: Path, staging: Path, release: dict[str, object]) -> None:

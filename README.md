@@ -7,8 +7,7 @@ static sites from that local data. The project is independent of MyKr-ops.
 ## First-version scope
 
 The first version covers only TV animation and theatrical movies. WEB,
-OVA/OAD, specials, STAFF, site generation, PWA, and publishing remain out of
-scope.
+OVA/OAD, specials, STAFF, PWA, and publishing remain out of scope.
 
 ## Architecture
 
@@ -24,14 +23,16 @@ it will not read SQLite or call the Bangumi API.
 The installable package synchronises subject facts, main-story episodes, TV
 continuation evidence, configured main characters, all of their listed voice
 actors, and verified cover/character images into local SQLite and workspace
-media. It writes local sync and tag-audit reports. It does not build or publish
-a site.
+media. It writes local sync and tag-audit reports, then builds an offline
+local and Pages static archive from that SQLite data. It does not publish a site.
 
 ```powershell
 python -m bgm_side_b --help
 bgmb --help
 bgmb --version
 bgmb sync 2022 1
+bgmb build 2022 1
+bgmb build --all
 ```
 
 Available sync scopes:
@@ -51,6 +52,14 @@ option builds or publishes output. Images are stored only below
 format, hash, size, and dimensions. Voice-actor images are never downloaded.
 
 `sync`, `build`, and `publish` will remain separate commands.
+
+`build` is offline and defaults to `dist/local/` plus `dist/pages/`. Both
+profiles share data projection, Jinja templates, CSS, and native JavaScript.
+Local output includes verified main-character images; Pages output produces
+WebP covers and never publishes character images. The homepage works directly
+through `file://`; runtime pages do not read SQLite, request JSON, or contact
+Bangumi. See [static build notes](docs/static-build.md) and the
+[visual system](docs/visual-system.md).
 
 See [the sync notes](docs/subject-sync.md) and
 [API field notes](docs/api-field-notes.md) for the verified fields, incremental

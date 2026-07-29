@@ -29,6 +29,12 @@ class ProfileBuildReport:
     generated_files: int
     previous_output_preserved: bool
     failures: tuple[str, ...]
+    css_bytes: int = 0
+    js_bytes: int = 0
+    quarter_html_bytes: int = 0
+    drawer_json_bytes: int = 0
+    covers_bytes: int = 0
+    detail_bytes: int = 0
 
 
 def write_build_report(

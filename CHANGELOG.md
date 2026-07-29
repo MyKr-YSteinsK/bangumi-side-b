@@ -20,3 +20,10 @@ All notable changes to this project will be documented in this file.
   SHA-256, atomic replacement, orphan cleanup, and `--force-images`.
 - Typed incremental orchestration, partial Ctrl+C reports, typed failure entries,
   and detail-authoritative rating refresh.
+- Offline `bgmb build` for deterministic local and Pages static archives with
+  shared Jinja templates, native CSS/JavaScript, safe relative paths, staged
+  output replacement, content-hashed assets, and safe build reports.
+- Quarterly archive filtering, sorting, safe embedded quick-drawer data,
+  independent detail pages, main episodes, and subject-scoped cast display.
+- Local-only verified character images; Pages WebP covers with a hard character
+  media exclusion.

@@ -136,6 +136,12 @@ class ArchiveBuilder:
             _tree_files(result.output_directory),
             False,
             (),
+            css_bytes=int(metrics["css_bytes"]),
+            js_bytes=int(metrics["js_bytes"]),
+            quarter_html_bytes=int(metrics["quarter_html_bytes"]),
+            drawer_json_bytes=int(metrics["drawer_json_bytes"]),
+            covers_bytes=int(metrics["covers_bytes"]),
+            detail_bytes=int(metrics["detail_bytes"]),
         )
 
     def _write_profile(
@@ -249,6 +255,25 @@ class ArchiveBuilder:
         _write_text(stage / "index.html", _index_html(models, profile))
         if profile.name == "pages":
             assert_pages_media_policy(stage)
+        quarter_html = tuple(
+            stage / resolver.quarter(model.year, model.month) for model in models
+        )
+        detail_html = tuple(
+            stage / resolver.subject(subject_id) for subject_id in detail_by_subject
+        )
+        drawer_bytes = sum(
+            len(match.encode("utf-8"))
+            for page in quarter_html
+            for match in re.findall(
+                (
+                    r'<script type="application/json" '
+                    r'id="quarter-subject-data">(.*?)</script>'
+                ),
+                page.read_text(encoding="utf-8"),
+                flags=re.DOTALL,
+            )
+        )
+        covers_directory = stage / "media" / "covers"
         return {
             "quarters": len(models),
             "subjects": subject_count,
@@ -257,6 +282,14 @@ class ArchiveBuilder:
             "character_images": character_images,
             "missing_covers": missing_covers,
             "warnings": warnings,
+            "css_bytes": (stage / stylesheet).stat().st_size,
+            "js_bytes": (stage / script).stat().st_size,
+            "quarter_html_bytes": sum(page.stat().st_size for page in quarter_html),
+            "drawer_json_bytes": drawer_bytes,
+            "covers_bytes": (
+                _tree_bytes(covers_directory) if covers_directory.exists() else 0
+            ),
+            "detail_bytes": sum(page.stat().st_size for page in detail_html),
         }
 
     def _verify_database(self) -> None:

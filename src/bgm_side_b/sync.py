@@ -13,17 +13,25 @@ from pathlib import Path
 from bgm_side_b.api import (
     ApiEpisode,
     ApiInfoboxItem,
+    ApiPersonSummary,
     BangumiApiClient,
     BangumiApiError,
     CandidateSubject,
+    CharacterDetail,
     DiscoveryResult,
+    PersonDetail,
     QuarterlyDiscovery,
+    RelatedCharacter,
     SubjectDetail,
 )
 from bgm_side_b.config import ProjectSettings, SourceRules, TagRules
 from bgm_side_b.repository import (
+    CharacterRecord,
+    CharacterVoiceRecord,
     EpisodeRecord,
+    PersonRecord,
     RawTag,
+    SubjectCharacterRecord,
     SubjectInfoboxItem,
     SubjectQuarter,
     SubjectRecord,
@@ -203,6 +211,7 @@ class SubjectSynchronizer:
             self._sync_existing_tv_episodes(
                 candidate.subject_id, target_year, target_month, force, stats
             )
+            self._sync_subject_roles(candidate.subject_id, force, stats)
             return
         try:
             detail = self.api.get_subject(candidate.subject_id)
@@ -211,6 +220,7 @@ class SubjectSynchronizer:
             return
         if self._store_detail(detail, target_year, target_month, stats):
             self._sync_subject_episodes(detail.subject_id, stats)
+            self._sync_subject_roles(detail.subject_id, force, stats)
 
     def _refresh_stable_subject(self, candidate: CandidateSubject) -> bool:
         state = self.repository.get_sync_state(
@@ -494,6 +504,228 @@ class SubjectSynchronizer:
         with self.repository.transaction() as connection:
             self.repository.replace_continuing_quarters(connection, subject_id, quarters)
 
+    def _sync_subject_roles(
+        self, subject_id: int, force: bool, stats: QuarterStats
+    ) -> None:
+        state = self.repository.get_sync_state("subject", subject_id, "roles")
+        if (
+            not force
+            and state is not None
+            and state.status == "success"
+            and not self.repository.role_details_need_refresh(subject_id)
+        ):
+            return
+        try:
+            roles = self.api.get_related_characters(subject_id)
+        except BangumiApiError as error:
+            self._record_roles_failure(subject_id, error, state, stats)
+            return
+
+        characters: dict[int, CharacterRecord] = {}
+        persons: dict[int, PersonRecord] = {}
+        relations: list[SubjectCharacterRecord] = []
+        voices: list[CharacterVoiceRecord] = []
+        successful_details: list[SyncState] = []
+        for position, role in enumerate(roles):
+            if role.relation not in self.settings.main_character_relations:
+                continue
+            character, detail_state = self._resolve_character(role, force, stats)
+            if character is None:
+                stats.warnings.append(f"main_character_missing_name:{role.character_id}")
+                continue
+            if role.character_id in characters:
+                continue
+            characters[role.character_id] = character
+            relations.append(
+                SubjectCharacterRecord(role.character_id, role.relation, position)
+            )
+            if detail_state is not None:
+                successful_details.append(detail_state)
+            seen_people: set[int] = set()
+            for actor_position, actor in enumerate(role.actors):
+                if actor.person_id in seen_people:
+                    continue
+                person, person_state = self._resolve_person(actor, force, stats)
+                if person is None:
+                    stats.warnings.append(f"actor_missing_name:{actor.person_id}")
+                    continue
+                seen_people.add(actor.person_id)
+                persons[actor.person_id] = person
+                voices.append(
+                    CharacterVoiceRecord(
+                        role.character_id, actor.person_id, None, actor_position
+                    )
+                )
+                if person_state is not None:
+                    successful_details.append(person_state)
+
+        try:
+            with self.repository.transaction() as connection:
+                for character in characters.values():
+                    self.repository.upsert_character(connection, character)
+                for person in persons.values():
+                    self.repository.upsert_person(connection, person)
+                self.repository.replace_roles_snapshot(
+                    connection, subject_id, relations, voices
+                )
+                for detail_state in successful_details:
+                    self.repository.write_sync_state(connection, detail_state)
+                self.repository.write_sync_state(
+                    connection,
+                    SyncState(
+                        "subject",
+                        subject_id,
+                        "roles",
+                        "success",
+                        _utc_timestamp(),
+                        _utc_timestamp(),
+                    ),
+                )
+        except (ValueError, TypeError) as error:
+            self._record_roles_failure(
+                subject_id,
+                BangumiApiError("roles_store_error", "roles could not be stored"),
+                state,
+                stats,
+            )
+            stats.warnings.append(type(error).__name__)
+
+    def _resolve_character(
+        self, role: RelatedCharacter, force: bool, stats: QuarterStats
+    ) -> tuple[CharacterRecord | None, SyncState | None]:
+        detail_state = self.repository.get_sync_state(
+            "character", role.character_id, "character_detail"
+        )
+        detail: CharacterDetail | None = None
+        if force or detail_state is None or detail_state.status != "success":
+            try:
+                detail = self.api.get_character(role.character_id)
+            except BangumiApiError as error:
+                self._record_detail_failure(
+                    "character",
+                    role.character_id,
+                    "character_detail",
+                    error,
+                    detail_state,
+                    stats,
+                )
+        original_name = detail.original_name if detail else role.original_name
+        summary = detail.summary if detail and detail.summary is not None else role.summary
+        chinese_name = _chinese_name(
+            detail.infobox if detail else (), self.settings.chinese_name_infobox_keys
+        )
+        if not original_name and not chinese_name:
+            return None, None
+        state = None
+        if detail is not None:
+            state = SyncState(
+                "character",
+                role.character_id,
+                "character_detail",
+                "success",
+                _utc_timestamp(),
+                _utc_timestamp(),
+            )
+        return (
+            CharacterRecord(role.character_id, original_name, chinese_name, summary),
+            state,
+        )
+
+    def _resolve_person(
+        self, actor: ApiPersonSummary, force: bool, stats: QuarterStats
+    ) -> tuple[PersonRecord | None, SyncState | None]:
+        detail_state = self.repository.get_sync_state(
+            "person", actor.person_id, "person_detail"
+        )
+        detail: PersonDetail | None = None
+        if force or detail_state is None or detail_state.status != "success":
+            try:
+                detail = self.api.get_person(actor.person_id)
+            except BangumiApiError as error:
+                self._record_detail_failure(
+                    "person",
+                    actor.person_id,
+                    "person_detail",
+                    error,
+                    detail_state,
+                    stats,
+                )
+        original_name = detail.original_name if detail else actor.original_name
+        chinese_name = _chinese_name(
+            detail.infobox if detail else (), self.settings.chinese_name_infobox_keys
+        )
+        if not original_name and not chinese_name:
+            return None, None
+        state = None
+        if detail is not None:
+            state = SyncState(
+                "person",
+                actor.person_id,
+                "person_detail",
+                "success",
+                _utc_timestamp(),
+                _utc_timestamp(),
+            )
+        return PersonRecord(actor.person_id, original_name, chinese_name), state
+
+    def _record_roles_failure(
+        self,
+        subject_id: int,
+        error: BangumiApiError,
+        previous: SyncState | None,
+        stats: QuarterStats,
+    ) -> None:
+        self._record_data_failure(
+            "subject", subject_id, "roles", error, previous, "roles", stats
+        )
+
+    def _record_detail_failure(
+        self,
+        entity_type: str,
+        entity_id: int,
+        data_type: str,
+        error: BangumiApiError,
+        previous: SyncState | None,
+        stats: QuarterStats,
+    ) -> None:
+        self._record_data_failure(
+            entity_type, entity_id, data_type, error, previous, data_type, stats
+        )
+
+    def _record_data_failure(
+        self,
+        entity_type: str,
+        entity_id: int,
+        data_type: str,
+        error: BangumiApiError,
+        previous: SyncState | None,
+        stage: str,
+        stats: QuarterStats,
+    ) -> None:
+        stats.failed += 1
+        stats.failures.append(
+            {
+                "stage": stage,
+                "entity_id": entity_id,
+                "code": error.code,
+                "summary": error.summary,
+            }
+        )
+        with self.repository.transaction() as connection:
+            self.repository.write_sync_state(
+                connection,
+                SyncState(
+                    entity_type,
+                    entity_id,
+                    data_type,
+                    "failed",
+                    _utc_timestamp(),
+                    failure_count=(previous.failure_count if previous else 0) + 1,
+                    error_code=error.code,
+                    error_summary=error.summary,
+                ),
+            )
+
     def _record_failure(
         self, subject_id: int, error: BangumiApiError, stats: QuarterStats
     ) -> None:
@@ -608,6 +840,16 @@ def _end_date_from_infobox(
             return date.fromisoformat(item.value)
         except ValueError:
             continue
+    return None
+
+
+def _chinese_name(
+    items: Iterable[ApiInfoboxItem], keys: frozenset[str]
+) -> str | None:
+    """Return only the first configured structured Chinese name, never a translation."""
+    for item in items:
+        if item.key in keys and isinstance(item.value, str) and item.value.strip():
+            return item.value.strip()
     return None
 
 

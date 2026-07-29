@@ -7,7 +7,11 @@ import pytest
 
 from bgm_side_b.database import Database
 from bgm_side_b.repository import (
+    CharacterRecord,
+    CharacterVoiceRecord,
+    PersonRecord,
     RawTag,
+    SubjectCharacterRecord,
     SubjectInfoboxItem,
     SubjectQuarter,
     SubjectRecord,
@@ -263,3 +267,75 @@ def test_permanent_and_continuing_quarter_updates_are_independent(
         (2022, 1, "new"),
         (2022, 7, "continuing"),
     ]
+
+
+def test_role_snapshots_share_entities_but_remove_stale_orphans(
+    repository: SubjectRepository,
+) -> None:
+    with repository.transaction() as connection:
+        repository.upsert_subject(connection, _subject(1))
+        repository.upsert_subject(connection, _subject(2))
+        repository.upsert_character(
+            connection, CharacterRecord(10, "Shared", None, None)
+        )
+        repository.upsert_person(connection, PersonRecord(20, "Cast One", None))
+        repository.replace_roles_snapshot(
+            connection,
+            1,
+            [SubjectCharacterRecord(10, "main", 0)],
+            [CharacterVoiceRecord(10, 20, None, 0)],
+        )
+        repository.upsert_person(connection, PersonRecord(21, "Cast Two", None))
+        repository.replace_roles_snapshot(
+            connection,
+            2,
+            [SubjectCharacterRecord(10, "main", 0)],
+            [CharacterVoiceRecord(10, 21, None, 0)],
+        )
+        repository.replace_roles_snapshot(connection, 1, (), ())
+
+    connection = repository.database.connect()
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM characters").fetchone()[0] == 1
+        people = connection.execute("SELECT id FROM persons ORDER BY id").fetchall()
+        voices = connection.execute(
+            "SELECT subject_id, person_id FROM character_voices"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert [row["id"] for row in people] == [21]
+    assert [tuple(row) for row in voices] == [(2, 21)]
+
+
+def test_role_details_refresh_only_when_a_current_relation_needs_it(
+    repository: SubjectRepository,
+) -> None:
+    with repository.transaction() as connection:
+        repository.upsert_subject(connection, _subject())
+        repository.upsert_character(connection, CharacterRecord(10, "Lead", None, None))
+        repository.upsert_person(connection, PersonRecord(20, "Cast", None))
+        repository.replace_roles_snapshot(
+            connection,
+            1,
+            [SubjectCharacterRecord(10, "main", 0)],
+            [CharacterVoiceRecord(10, 20, None, 0)],
+        )
+    assert repository.role_details_need_refresh(1)
+
+    with repository.transaction() as connection:
+        for entity_type, entity_id, data_type in (
+            ("character", 10, "character_detail"),
+            ("person", 20, "person_detail"),
+        ):
+            repository.write_sync_state(
+                connection,
+                SyncState(
+                    entity_type,
+                    entity_id,
+                    data_type,
+                    "success",
+                    "2022-01-01T00:00:00Z",
+                    "2022-01-01T00:00:00Z",
+                ),
+            )
+    assert not repository.role_details_need_refresh(1)

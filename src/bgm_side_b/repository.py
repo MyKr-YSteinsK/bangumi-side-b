@@ -90,6 +90,44 @@ class EpisodeRecord:
 
 
 @dataclass(frozen=True)
+class CharacterRecord:
+    """One global displayable character fact snapshot."""
+
+    character_id: int
+    original_name: str | None
+    chinese_name: str | None
+    summary: str | None
+
+
+@dataclass(frozen=True)
+class PersonRecord:
+    """One global voice-actor fact snapshot without any image fields."""
+
+    person_id: int
+    original_name: str | None
+    chinese_name: str | None
+
+
+@dataclass(frozen=True)
+class SubjectCharacterRecord:
+    """A main-character relation in one subject-local roles snapshot."""
+
+    character_id: int
+    role: str | None
+    position: int
+
+
+@dataclass(frozen=True)
+class CharacterVoiceRecord:
+    """One subject-scoped cast relation in the API actor order."""
+
+    character_id: int
+    person_id: int
+    language: str | None
+    position: int
+
+
+@dataclass(frozen=True)
 class StoredSubject:
     """Subject facts required to decide whether episode refresh is necessary."""
 
@@ -432,6 +470,129 @@ class SubjectRepository:
             ),
         )
 
+    def upsert_character(
+        self, connection: sqlite3.Connection, character: CharacterRecord
+    ) -> None:
+        """Insert global character facts without overwriting known values with gaps."""
+        _validate_display_entity(
+            character.character_id, character.original_name, character.chinese_name
+        )
+        timestamp = _utc_now()
+        connection.execute(
+            """
+            INSERT INTO characters (
+                id, original_name, chinese_name, summary, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                original_name = COALESCE(
+                    excluded.original_name, characters.original_name
+                ),
+                chinese_name = COALESCE(
+                    excluded.chinese_name, characters.chinese_name
+                ),
+                summary = COALESCE(excluded.summary, characters.summary),
+                updated_at = excluded.updated_at
+            """,
+            (
+                character.character_id,
+                character.original_name,
+                character.chinese_name,
+                character.summary,
+                timestamp,
+                timestamp,
+            ),
+        )
+
+    def upsert_person(
+        self, connection: sqlite3.Connection, person: PersonRecord
+    ) -> None:
+        """Insert global person facts without storing or requesting person images."""
+        _validate_display_entity(
+            person.person_id, person.original_name, person.chinese_name
+        )
+        timestamp = _utc_now()
+        connection.execute(
+            """
+            INSERT INTO persons (
+                id, original_name, chinese_name, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                original_name = COALESCE(excluded.original_name, persons.original_name),
+                chinese_name = COALESCE(excluded.chinese_name, persons.chinese_name),
+                updated_at = excluded.updated_at
+            """,
+            (
+                person.person_id,
+                person.original_name,
+                person.chinese_name,
+                timestamp,
+                timestamp,
+            ),
+        )
+
+    def replace_roles_snapshot(
+        self,
+        connection: sqlite3.Connection,
+        subject_id: int,
+        characters: Sequence[SubjectCharacterRecord],
+        voices: Sequence[CharacterVoiceRecord],
+    ) -> None:
+        """Replace one subject's main roles and cast without touching other works."""
+        _validate_roles_snapshot(characters, voices)
+        connection.execute(
+            "DELETE FROM subject_characters WHERE subject_id = ?", (subject_id,)
+        )
+        connection.executemany(
+            """
+            INSERT INTO subject_characters (subject_id, character_id, role, position)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                (subject_id, item.character_id, item.role, item.position)
+                for item in characters
+            ),
+        )
+        connection.executemany(
+            """
+            INSERT INTO character_voices (
+                subject_id, character_id, person_id, language, position
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    subject_id,
+                    item.character_id,
+                    item.person_id,
+                    item.language,
+                    item.position,
+                )
+                for item in voices
+            ),
+        )
+        self.cleanup_orphaned_entities(connection)
+
+    def cleanup_orphaned_entities(self, connection: sqlite3.Connection) -> None:
+        """Remove only global entities no subject-local relation still references."""
+        connection.execute(
+            """
+            DELETE FROM persons
+            WHERE NOT EXISTS (
+                SELECT 1 FROM character_voices
+                WHERE character_voices.person_id = persons.id
+            )
+            """
+        )
+        connection.execute(
+            """
+            DELETE FROM characters
+            WHERE NOT EXISTS (
+                SELECT 1 FROM subject_characters
+                WHERE subject_characters.character_id = characters.id
+            )
+            """
+        )
+
     def write_sync_state(
         self, connection: sqlite3.Connection, state: SyncState
     ) -> None:
@@ -490,6 +651,44 @@ class SubjectRepository:
                 (entity_type, entity_id, data_type),
             ).fetchone()
             return SyncState(**dict(row)) if row is not None else None
+        finally:
+            connection.close()
+
+    def role_details_need_refresh(self, subject_id: int) -> bool:
+        """Return whether a current role relation lacks successful detail data."""
+        connection = self.database.connect()
+        try:
+            character_needs_refresh = connection.execute(
+                """
+                SELECT 1
+                FROM subject_characters AS relation
+                LEFT JOIN sync_states AS state
+                    ON state.entity_type = 'character'
+                    AND state.entity_id = relation.character_id
+                    AND state.data_type = 'character_detail'
+                WHERE relation.subject_id = ?
+                  AND (state.status IS NULL OR state.status != 'success')
+                LIMIT 1
+                """,
+                (subject_id,),
+            ).fetchone()
+            if character_needs_refresh is not None:
+                return True
+            person_needs_refresh = connection.execute(
+                """
+                SELECT 1
+                FROM character_voices AS voice
+                LEFT JOIN sync_states AS state
+                    ON state.entity_type = 'person'
+                    AND state.entity_id = voice.person_id
+                    AND state.data_type = 'person_detail'
+                WHERE voice.subject_id = ?
+                  AND (state.status IS NULL OR state.status != 'success')
+                LIMIT 1
+                """,
+                (subject_id,),
+            ).fetchone()
+            return person_needs_refresh is not None
         finally:
             connection.close()
 
@@ -670,6 +869,38 @@ def _validate_episodes(episodes: Sequence[EpisodeRecord]) -> None:
         if episode.duration_seconds is not None and episode.duration_seconds <= 0:
             raise ValueError("episode duration must be positive when present")
         seen_ids.add(episode.episode_id)
+
+
+def _validate_display_entity(
+    entity_id: int, original_name: str | None, chinese_name: str | None
+) -> None:
+    if entity_id <= 0:
+        raise ValueError("entity id must be positive")
+    if not original_name and not chinese_name:
+        raise ValueError("display entity must have an original or Chinese name")
+
+
+def _validate_roles_snapshot(
+    characters: Sequence[SubjectCharacterRecord], voices: Sequence[CharacterVoiceRecord]
+) -> None:
+    character_ids: set[int] = set()
+    for character in characters:
+        if character.character_id <= 0 or character.character_id in character_ids:
+            raise ValueError("role characters must have unique positive ids")
+        if character.position < 0:
+            raise ValueError("role position must not be negative")
+        character_ids.add(character.character_id)
+    voice_keys: set[tuple[int, int]] = set()
+    for voice in voices:
+        key = (voice.character_id, voice.person_id)
+        if (
+            voice.character_id not in character_ids
+            or voice.person_id <= 0
+            or key in voice_keys
+            or voice.position < 0
+        ):
+            raise ValueError("voice relations must reference snapshot characters")
+        voice_keys.add(key)
 
 
 def _stored_date(value: object) -> date | None:

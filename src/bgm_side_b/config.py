@@ -26,6 +26,7 @@ class ProjectSettings:
     sync: SyncSettings
     main_character_relations: frozenset[str]
     end_date_infobox_keys: frozenset[str]
+    chinese_name_infobox_keys: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,14 @@ def load_project_settings(path: Path) -> ProjectSettings:
     if len(set(end_date_keys)) != len(end_date_keys):
         raise ValueError("end_date_keys must not contain duplicates")
 
+    chinese_name_keys = infobox.get("chinese_name_keys")
+    if not isinstance(chinese_name_keys, list) or not chinese_name_keys or not all(
+        isinstance(value, str) and value for value in chinese_name_keys
+    ):
+        raise ValueError("chinese_name_keys must be a non-empty string array")
+    if len(set(chinese_name_keys)) != len(chinese_name_keys):
+        raise ValueError("chinese_name_keys must not contain duplicates")
+
     return ProjectSettings(
         excluded_subject_ids=frozenset(excluded),
         sync=SyncSettings(
@@ -107,6 +116,7 @@ def load_project_settings(path: Path) -> ProjectSettings:
         ),
         main_character_relations=frozenset(main_relations),
         end_date_infobox_keys=frozenset(end_date_keys),
+        chinese_name_infobox_keys=frozenset(chinese_name_keys),
     )
 
 

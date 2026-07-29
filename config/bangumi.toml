@@ -11,3 +11,4 @@ main_character_relations = ["\u4e3b\u89d2"]
 
 [infobox]
 end_date_keys = ["\u64ad\u653e\u7ed3\u675f"]
+chinese_name_keys = ["\u7b80\u4f53\u4e2d\u6587\u540d"]

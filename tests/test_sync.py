@@ -10,8 +10,11 @@ from bgm_side_b.api import (
     ApiInfoboxItem,
     BangumiApiError,
     CandidateSubject,
+    CharacterDetail,
     DiscoveryResult,
     DiscoveryStatistics,
+    PersonDetail,
+    RelatedCharacter,
     SubjectDetail,
 )
 from bgm_side_b.config import ProjectSettings, load_rules
@@ -27,6 +30,11 @@ from bgm_side_b.sync import (
 
 FIXTURES = json.loads(
     (Path(__file__).parent / "fixtures" / "subject_cases.json").read_text(
+        encoding="utf-8"
+    )
+)
+ENRICHED_FIXTURES = json.loads(
+    (Path(__file__).parent / "fixtures" / "enriched_sync.json").read_text(
         encoding="utf-8"
     )
 )
@@ -63,13 +71,28 @@ class FakeApi:
         failures: set[int] | None = None,
         episodes: dict[int, tuple[ApiEpisode, ...]] | None = None,
         episode_failures: set[int] | None = None,
+        roles: dict[int, tuple[RelatedCharacter, ...]] | None = None,
+        role_failures: set[int] | None = None,
+        characters: dict[int, CharacterDetail] | None = None,
+        character_failures: set[int] | None = None,
+        persons: dict[int, PersonDetail] | None = None,
+        person_failures: set[int] | None = None,
     ) -> None:
         self.details = details
         self.failures = failures or set()
         self.episodes = episodes or {}
         self.episode_failures = episode_failures or set()
+        self.roles = roles or {}
+        self.role_failures = role_failures or set()
+        self.characters = characters or {}
+        self.character_failures = character_failures or set()
+        self.persons = persons or {}
+        self.person_failures = person_failures or set()
         self.calls: list[int] = []
         self.episode_calls: list[int] = []
+        self.role_calls: list[int] = []
+        self.character_calls: list[int] = []
+        self.person_calls: list[int] = []
 
     def get_subject(self, subject_id: int) -> SubjectDetail:
         self.calls.append(subject_id)
@@ -82,6 +105,24 @@ class FakeApi:
         if subject_id in self.episode_failures:
             raise BangumiApiError("network", "network request failed")
         return self.episodes.get(subject_id, ())
+
+    def get_related_characters(self, subject_id: int) -> tuple[RelatedCharacter, ...]:
+        self.role_calls.append(subject_id)
+        if subject_id in self.role_failures:
+            raise BangumiApiError("network", "network request failed")
+        return self.roles.get(subject_id, ())
+
+    def get_character(self, character_id: int) -> CharacterDetail:
+        self.character_calls.append(character_id)
+        if character_id in self.character_failures:
+            raise BangumiApiError("network", "network request failed")
+        return self.characters[character_id]
+
+    def get_person(self, person_id: int) -> PersonDetail:
+        self.person_calls.append(person_id)
+        if person_id in self.person_failures:
+            raise BangumiApiError("network", "network request failed")
+        return self.persons[person_id]
 
 
 @pytest.fixture
@@ -448,3 +489,137 @@ def test_unknown_completion_keeps_refreshing_and_movies_never_continue(
     finally:
         connection.close()
     assert movie_continuations == 0
+
+
+def test_main_role_snapshot_keeps_all_actors_when_one_detail_fails(
+    tmp_path: Path, rules: tuple[ProjectSettings, object, object]
+) -> None:
+    roles = tuple(
+        RelatedCharacter.from_payload(payload)
+        for payload in ENRICHED_FIXTURES["roles"]
+    )
+    api = FakeApi(
+        {101: SubjectDetail.from_payload(FIXTURES["tv"])},
+        roles={101: roles},
+        characters={
+            100: CharacterDetail.from_payload(ENRICHED_FIXTURES["character_detail"])
+        },
+        persons={
+            200: PersonDetail.from_payload(ENRICHED_FIXTURES["person_detail"])
+        },
+        person_failures={201},
+    )
+    sync = _synchronizer(tmp_path, rules, api, FakeDiscovery((_candidate(101),)))
+
+    run = sync.run(SyncScope((2022,), 1))
+
+    assert run.exit_code == 1
+    assert api.role_calls == [101]
+    assert api.character_calls == [100]
+    assert api.person_calls == [200, 201]
+    connection = sync.repository.database.connect()
+    try:
+        characters = connection.execute(
+            "SELECT id, original_name, chinese_name FROM characters ORDER BY id"
+        ).fetchall()
+        persons = connection.execute(
+            "SELECT id, original_name, chinese_name FROM persons ORDER BY id"
+        ).fetchall()
+        relations = connection.execute(
+            """
+            SELECT character_id, role, position FROM subject_characters
+            WHERE subject_id = 101 ORDER BY position
+            """
+        ).fetchall()
+        voices = connection.execute(
+            """
+            SELECT character_id, person_id, language, position FROM character_voices
+            WHERE subject_id = 101 ORDER BY position
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    assert [tuple(row) for row in characters] == [
+        (100, "Original Character", "中文角色名")
+    ]
+    assert [tuple(row) for row in persons] == [
+        (200, "Actor One", "中文声优名"),
+        (201, "Actor Two", None),
+    ]
+    assert [tuple(row) for row in relations] == [(100, "主角", 0)]
+    assert [tuple(row) for row in voices] == [(100, 200, None, 0), (100, 201, None, 1)]
+    person_state = sync.repository.get_sync_state("person", 201, "person_detail")
+    assert person_state is not None and person_state.status == "failed"
+
+    api.role_calls.clear()
+    retry = sync.run(SyncScope((2022,), 1))
+    assert retry.exit_code == 1
+    assert api.role_calls == [101]
+    assert api.character_calls == [100]
+    assert api.person_calls == [200, 201, 201]
+
+    api.person_failures.clear()
+    api.persons[201] = PersonDetail.from_payload(
+        ENRICHED_FIXTURES["person_detail_missing"]
+    )
+    completed = sync.run(SyncScope((2022,), 1))
+    assert completed.exit_code == 0
+    assert api.role_calls == [101, 101]
+    assert api.person_calls == [200, 201, 201, 201]
+    person_state = sync.repository.get_sync_state("person", 201, "person_detail")
+    assert person_state is not None and person_state.status == "success"
+
+    api.role_calls.clear()
+    sync.run(SyncScope((2022,), 1))
+    assert api.role_calls == []
+
+    api.role_failures.add(101)
+    rerun = sync.run(SyncScope((2022,), 1), force=True)
+    assert rerun.exit_code == 1
+    assert sync.repository.get_sync_state("subject", 101, "roles").status == "failed"
+    connection = sync.repository.database.connect()
+    try:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM character_voices WHERE subject_id = 101"
+        ).fetchone()[0] == 2
+    finally:
+        connection.close()
+
+
+def test_character_detail_failure_keeps_relation_and_records_failed_state(
+    tmp_path: Path, rules: tuple[ProjectSettings, object, object]
+) -> None:
+    role = RelatedCharacter.from_payload(
+        {
+            "id": 100,
+            "name": "Fallback Character",
+            "summary": "Fallback summary",
+            "relation": "主角",
+            "actors": [],
+        }
+    )
+    api = FakeApi(
+        {101: SubjectDetail.from_payload(FIXTURES["tv"])},
+        roles={101: (role,)},
+        character_failures={100},
+    )
+    sync = _synchronizer(tmp_path, rules, api, FakeDiscovery((_candidate(101),)))
+
+    run = sync.run(SyncScope((2022,), 1))
+
+    assert run.exit_code == 1
+    assert api.character_calls == [100]
+    state = sync.repository.get_sync_state("character", 100, "character_detail")
+    assert state is not None and state.status == "failed"
+    connection = sync.repository.database.connect()
+    try:
+        row = connection.execute(
+            "SELECT original_name, summary FROM characters WHERE id = 100"
+        ).fetchone()
+        relation = connection.execute(
+            "SELECT role FROM subject_characters WHERE subject_id = 101"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert tuple(row) == ("Fallback Character", "Fallback summary")
+    assert relation["role"] == "主角"

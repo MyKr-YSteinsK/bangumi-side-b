@@ -66,14 +66,19 @@ function setGate(state) {
 
 window.addEventListener("bsb-pwa-state", (event) => setGate(event.detail));
 setGate(window.BsbPwa?.state?.() || { status: "checking-local-state" });
-start?.addEventListener("click", () => window.BsbPwa?.initialize());
-pause?.addEventListener("click", () => window.BsbPwa?.pause());
-resume?.addEventListener("click", () => window.BsbPwa?.resume());
-cancel?.addEventListener("click", () => window.BsbPwa?.cancel());
-check?.addEventListener("click", () => window.BsbPwa?.checkUpdate());
-redownload?.addEventListener("click", () => window.BsbPwa?.redownload());
-resumeSettings?.addEventListener("click", () => window.BsbPwa?.resume());
-cancelSettings?.addEventListener("click", () => window.BsbPwa?.cancel());
-clear?.addEventListener("click", () => { if (window.confirm("将删除已下载的季度、详情与封面，应用 Shell 会保留。确定继续吗？")) window.BsbPwa?.clear(); });
-document.querySelector("[data-pwa-update-start]")?.addEventListener("click", () => { updateDialog?.close(); window.BsbPwa?.update(); });
+function command(action) {
+  Promise.resolve(action()).catch((error) => {
+    window.dispatchEvent(new CustomEvent("bsb-pwa-state", { detail: { ...window.BsbPwa?.state?.(), last_error: error?.message || "worker-command-timeout" } }));
+  });
+}
+start?.addEventListener("click", () => command(() => window.BsbPwa?.initialize()));
+pause?.addEventListener("click", () => command(() => window.BsbPwa?.pause()));
+resume?.addEventListener("click", () => command(() => window.BsbPwa?.resume()));
+cancel?.addEventListener("click", () => command(() => window.BsbPwa?.cancel()));
+check?.addEventListener("click", () => command(() => window.BsbPwa?.checkUpdate()));
+redownload?.addEventListener("click", () => command(() => window.BsbPwa?.redownload()));
+resumeSettings?.addEventListener("click", () => command(() => window.BsbPwa?.resume()));
+cancelSettings?.addEventListener("click", () => command(() => window.BsbPwa?.cancel()));
+clear?.addEventListener("click", () => { if (window.confirm("将删除已下载的季度、详情与封面，应用 Shell 会保留。确定继续吗？")) command(() => window.BsbPwa?.clear()); });
+document.querySelector("[data-pwa-update-start]")?.addEventListener("click", () => { updateDialog?.close(); command(() => window.BsbPwa?.update()); });
 document.querySelector("[data-pwa-update-later]")?.addEventListener("click", () => updateDialog?.close());

@@ -13,11 +13,13 @@ async function workerMessage(type, payload = {}) {
   const channel = new MessageChannel();
   const response = new Promise((resolve, reject) => {
     channel.port1.onmessage = (event) => resolve(event.data);
-    setTimeout(() => reject(new Error("worker-timeout")), 8000);
+    const timeout = setTimeout(() => reject(new Error("worker-command-timeout")), 8000);
+    channel.port1.addEventListener("message", () => clearTimeout(timeout), { once: true });
   });
   target.postMessage({ type, ...payload }, [channel.port2]);
-  const state = await response;
-  if (state?.error) throw new Error(state.error);
+  const reply = await response;
+  if (reply?.error) throw new Error(reply.error);
+  const state = reply?.state || reply;
   emit(state);
   return state;
 }
@@ -46,9 +48,9 @@ window.BsbPwa = {
   checkUpdate: () => workerMessage("check"),
   update: () => workerMessage("start", { reason: "manual-update" }),
   redownload: () => workerMessage("redownload"),
-  pause: () => workerMessage("pause"),
-  resume: () => workerMessage("resume"),
-  cancel: () => workerMessage("cancel"),
+  pause: () => workerMessage("pause", { operation_id: pwaState.staging?.operation_id }),
+  resume: () => workerMessage("resume", { operation_id: pwaState.staging?.operation_id }),
+  cancel: () => workerMessage("cancel", { operation_id: pwaState.staging?.operation_id }),
   clear: () => workerMessage("clear"),
 };
 

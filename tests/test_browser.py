@@ -8,6 +8,7 @@ import http.server
 import json
 import shutil
 import threading
+import time
 from datetime import date
 from pathlib import Path
 
@@ -197,14 +198,33 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         assert not any(
             url.endswith(("release.json", "snapshot-manifest.json")) for url in requests
         )
-        page.locator("[data-pwa-start]").click()
-        page.wait_for_timeout(2000)
+        page.wait_for_function("navigator.serviceWorker.controller !== null")
+        context.set_offline(True)
+        page.goto(f"{root}/subjects/101/index.html?from=2022-01")
+        assert page.get_by_role("heading", name="需要初始化资料快照").count() == 1
+        context.set_offline(False)
+        page.goto(f"{root}/settings/index.html")
+        page.wait_for_function("window.BsbPwa !== undefined")
+        page.evaluate("window.BsbPwa.initialize()")
+        page.wait_for_function(
+            "window.BsbPwa.state().status === 'ready'", timeout=15000
+        )
         state = page.evaluate("window.BsbPwa.state()")
         assert state["status"] == "ready", state
+        page.goto(f"{root}/quarters/2022-01/index.html")
         page.locator("[data-pwa-gate]").wait_for(state="hidden", timeout=15000)
         context.set_offline(True)
-        page.goto(f"{root}/subjects/101/index.html")
+        page.goto(f"{root}/subjects/101/index.html?from=2022-01")
         assert page.locator("[data-subject-detail]").count() == 1
+        assert page.evaluate(
+            """async () => {
+              const href = document.querySelector('link[rel="stylesheet"]').href;
+              try {
+                const response = await fetch(`${href}?unexpected=1`);
+                return response.status;
+              } catch { return 0; }
+            }"""
+        ) == 503
         context.set_offline(False)
         subject = published_root / "subjects" / "101" / "index.html"
         subject.write_bytes(subject.read_bytes() + b"\n<!-- release two -->\n")
@@ -247,7 +267,93 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         page.wait_for_function("window.BsbPwa.state().active === null", timeout=5000)
         context.set_offline(True)
         page.goto(f"{root}/subjects/101/index.html")
-        assert page.locator(".pwa-reference").count() == 1
+        assert page.get_by_role("heading", name="需要初始化资料快照").count() == 1
+        context.close()
+    finally:
+        server.shutdown()
+        thread.join()
+
+
+def test_pages_pwa_accepts_slow_download_then_pauses_and_resumes(
+    static_site: Path, browser: Browser
+) -> None:
+    published_root = static_site.parent / "slow-published" / "bangumi-side-b"
+    shutil.copytree(static_site / "pages", published_root)
+    entries = index_candidate(published_root, "/bangumi-side-b/")
+    manifest = build_snapshot_manifest(
+        entries,
+        release_version="2026.07.30.1",
+        app_version="0.1.0",
+        deployment_path="/bangumi-side-b/",
+    )
+    manifest_text = manifest_json(manifest)
+    (published_root / "snapshot-manifest.json").write_bytes(manifest_text.encode())
+    (published_root / "release.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "release_version": "2026.07.30.1",
+                "app_version": "0.1.0",
+                "generated_at": "2026-07-30T00:00:00Z",
+                "published_at": "2026-07-30T00:00:00Z",
+                "quarter_count": 2,
+                "subject_count": 2,
+                "total_bytes": sum(entry.size_bytes for entry in entries),
+                "content_hash": manifest.content_hash,
+                "manifest_url": "snapshot-manifest.json",
+                "manifest_sha256": hashlib.sha256(manifest_text.encode()).hexdigest(),
+                "change_kind": "data",
+                "summary": {"system": [], "data": []},
+            }
+        ),
+        "utf-8",
+    )
+
+    class DelayedHandler(http.server.SimpleHTTPRequestHandler):
+        delay_seconds = 9.0
+
+        def do_GET(self) -> None:  # noqa: N802 - stdlib handler hook
+            if "/assets/.gitkeep" in self.path and type(self).delay_seconds:
+                time.sleep(type(self).delay_seconds)
+            super().do_GET()
+
+    handler = functools.partial(DelayedHandler, directory=str(published_root.parent))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        context = browser.new_context()
+        page = context.new_page()
+        page.set_default_timeout(5000)
+        root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+        page.goto(f"{root}/quarters/2022-01/index.html")
+        page.locator("[data-pwa-gate]").wait_for(state="visible")
+        page.wait_for_function("navigator.serviceWorker.controller !== null")
+        started = time.monotonic()
+        accepted = page.evaluate("window.BsbPwa.initialize()")
+        assert time.monotonic() - started < 2
+        assert accepted["staging"]["operation_id"]
+        page.wait_for_timeout(1000)
+        state = page.evaluate("window.BsbPwa.state()")
+        assert state["status"] == "downloading", state["staging"]["last_error"]
+        page.wait_for_function(
+            "window.BsbPwa.state().staging.downloaded_bytes > 0", timeout=5000
+        )
+        paused = page.evaluate("window.BsbPwa.pause()")
+        assert paused["status"] == "paused"
+        page.wait_for_timeout(250)
+        assert page.evaluate("window.BsbPwa.state().status") == "paused"
+        page.close()
+        DelayedHandler.delay_seconds = 0
+        resumed_page = context.new_page()
+        resumed_page.goto(f"{root}/settings/index.html")
+        resumed_page.wait_for_function("window.BsbPwa !== undefined")
+        assert resumed_page.evaluate("window.BsbPwa.state().status") == "paused"
+        resumed_page.evaluate("window.BsbPwa.resume()")
+        resumed_page.wait_for_function(
+            "window.BsbPwa.state().status === 'ready'", timeout=15000
+        )
+        assert resumed_page.evaluate("window.BsbPwa.state().active")
         context.close()
     finally:
         server.shutdown()

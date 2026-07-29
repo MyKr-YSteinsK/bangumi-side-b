@@ -13,13 +13,21 @@ from bgm_side_b.api import (
     TV_CATEGORY,
     BangumiApiClient,
     BangumiApiError,
+    CharacterDetail,
+    PersonDetail,
     QuarterlyDiscovery,
     ResponseShapeError,
     SubjectDetail,
+    is_default_image_url,
 )
 
 FIXTURES = json.loads(
     (Path(__file__).parent / "fixtures" / "subject_cases.json").read_text(
+        encoding="utf-8"
+    )
+)
+ENRICHED_FIXTURES = json.loads(
+    (Path(__file__).parent / "fixtures" / "enriched_sync.json").read_text(
         encoding="utf-8"
     )
 )
@@ -110,6 +118,7 @@ def test_browse_paginates_and_retries_rate_limits() -> None:
     assert [subject.subject_id for subject in subjects] == [101, 102, 103]
     assert delays == [2.0]
     assert calls == 3
+    assert client.metrics.json_retries == 1
 
 
 def test_non_transient_errors_do_not_retry() -> None:
@@ -226,3 +235,102 @@ def test_discovery_records_a_failed_month_and_continues() -> None:
     assert result.statistics.failed == 1
     assert result.failures[0].month == 2
     assert result.failures[0].code == "http_500"
+
+
+def test_episodes_paginate_filter_non_main_entries_and_skip_bad_items() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v0/episodes"
+        assert request.url.params["subject_id"] == "101"
+        assert request.url.params["type"] == "0"
+        assert request.url.params["limit"] == "200"
+        if request.url.params["offset"] == "0":
+            return httpx.Response(
+                200,
+                json={
+                    "total": 4,
+                    "data": ENRICHED_FIXTURES["episodes_page_1"],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"total": 4, "data": ENRICHED_FIXTURES["episodes_page_2"]},
+        )
+
+    client = _client(handler)
+    episodes = client.get_episodes(101)
+
+    assert [episode.episode_id for episode in episodes] == [500, 502]
+    assert [episode.position for episode in episodes] == [0, 3]
+    assert episodes[0].duration_seconds == 1440
+    assert episodes[1].duration_seconds is None
+    assert episodes[1].air_date is None
+    assert client.metrics.json_item_failures == 1
+
+
+def test_role_and_detail_dtos_preserve_order_and_explicit_images() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths = {
+            "/v0/subjects/101/characters": ENRICHED_FIXTURES["roles"],
+            "/v0/characters/100": ENRICHED_FIXTURES["character_detail"],
+            "/v0/persons/200": ENRICHED_FIXTURES["person_detail"],
+            "/v0/persons/201": ENRICHED_FIXTURES["person_detail_missing"],
+        }
+        return httpx.Response(200, json=paths[request.url.path])
+
+    client = _client(handler)
+    roles = client.get_related_characters(101)
+    character = client.get_character(100)
+    person = client.get_person(200)
+    missing_person = client.get_person(201)
+
+    assert [role.character_id for role in roles] == [100, 101]
+    assert roles[0].relation == "主角"
+    assert [actor.person_id for actor in roles[0].actors] == [200, 201]
+    assert roles[0].images.largest_available == "https://img.example/character-large.jpg"
+    assert roles[1].images.largest_available is None
+    assert isinstance(character, CharacterDetail)
+    assert character.infobox[0].value == "中文角色名"
+    assert isinstance(person, PersonDetail)
+    assert person.infobox[0].value == "中文声优名"
+    assert missing_person.infobox == ()
+
+
+def test_image_requests_are_separate_and_recognise_default_urls() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            200,
+            content=b"image",
+            headers={"Content-Type": "image/jpeg"},
+        )
+
+    client = _client(handler)
+    image = client.fetch_image("https://img.example/cover.jpg")
+
+    assert image.content == b"image"
+    assert image.content_type == "image/jpeg"
+    assert calls == ["https://img.example/cover.jpg"]
+    assert client.metrics.image_requests == 1
+    assert client.metrics.json_requests == 0
+    assert is_default_image_url(ENRICHED_FIXTURES["default_image"])
+    assert not is_default_image_url("https://img.example/cover.jpg")
+
+
+def test_image_404_is_not_retried_or_counted_as_a_json_failure() -> None:
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(404)
+
+    client = _client(handler)
+    with pytest.raises(BangumiApiError) as error:
+        client.fetch_image("https://img.example/missing.jpg")
+
+    assert error.value.code == "image_http_404"
+    assert calls == 1
+    assert client.metrics.image_retries == 0
+    assert client.metrics.json_requests == 0

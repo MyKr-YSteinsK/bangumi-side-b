@@ -24,6 +24,7 @@ class ProjectSettings:
 
     excluded_subject_ids: frozenset[int]
     sync: SyncSettings
+    main_character_relations: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -55,8 +56,9 @@ def load_project_settings(path: Path) -> ProjectSettings:
     data = _read_toml(path)
     filters = data["filters"]
     sync = data["sync"]
-    if not isinstance(filters, dict) or not isinstance(sync, dict):
-        raise ValueError("bangumi.toml must define filters and sync tables")
+    roles = data.get("roles")
+    if not all(isinstance(value, dict) for value in (filters, sync, roles)):
+        raise ValueError("bangumi.toml must define filters, sync, and roles tables")
 
     excluded = filters["excluded_subject_ids"]
     valid_excluded = isinstance(excluded, list) and all(
@@ -76,6 +78,14 @@ def load_project_settings(path: Path) -> ProjectSettings:
     if sync["max_retries"] < 0:
         raise ValueError("max_retries must not be negative")
 
+    main_relations = roles.get("main_character_relations")
+    if not isinstance(main_relations, list) or not main_relations or not all(
+        isinstance(value, str) and value for value in main_relations
+    ):
+        raise ValueError("main_character_relations must be a non-empty string array")
+    if len(set(main_relations)) != len(main_relations):
+        raise ValueError("main_character_relations must not contain duplicates")
+
     return ProjectSettings(
         excluded_subject_ids=frozenset(excluded),
         sync=SyncSettings(
@@ -83,6 +93,7 @@ def load_project_settings(path: Path) -> ProjectSettings:
             request_timeout_seconds=sync["request_timeout_seconds"],
             max_retries=sync["max_retries"],
         ),
+        main_character_relations=frozenset(main_relations),
     )
 
 

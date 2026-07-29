@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -23,6 +24,9 @@ DISCOVERY_CATEGORIES = (TV_CATEGORY, MOVIE_CATEGORY)
 DEFAULT_USER_AGENT = (
     "Bangumi-Side-B/0.1.0 (+https://github.com/MyKr-YSteinsK/bangumi-side-b)"
 )
+MAIN_EPISODE_TYPE = 0
+IMAGE_SIZE_ORDER = ("large", "medium", "common", "grid", "small")
+DEFAULT_IMAGE_FILENAME = "no_icon_subject.png"
 
 
 class BangumiApiError(RuntimeError):
@@ -52,6 +56,184 @@ class ApiInfoboxItem:
 
     key: str
     value: Any
+
+
+@dataclass(frozen=True)
+class ImageUrls:
+    """Explicit API image URLs, with no-image placeholders excluded."""
+
+    large: str | None = None
+    medium: str | None = None
+    common: str | None = None
+    grid: str | None = None
+    small: str | None = None
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> ImageUrls:
+        data = payload if isinstance(payload, Mapping) else {}
+        values = {
+            size: _usable_image_url(data.get(size)) for size in IMAGE_SIZE_ORDER
+        }
+        return cls(**values)
+
+    @property
+    def largest_available(self) -> str | None:
+        """Return the largest explicit non-placeholder image URL if one exists."""
+        return next(
+            (getattr(self, size) for size in IMAGE_SIZE_ORDER if getattr(self, size)),
+            None,
+        )
+
+
+@dataclass(frozen=True)
+class ApiEpisode:
+    """One API episode, retaining only the facts required for persistence."""
+
+    episode_id: int
+    episode_type: int | None
+    episode_number: float | None
+    sort_number: float | None
+    name: str | None
+    name_cn: str | None
+    air_date: date | None
+    duration_seconds: int | None
+    raw_duration: str | None
+    position: int
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any], position: int) -> ApiEpisode:
+        duration_seconds = _optional_integer(payload.get("duration_seconds"))
+        return cls(
+            episode_id=_required_id(payload, "episode"),
+            episode_type=_optional_integer(payload.get("type")),
+            episode_number=_optional_number(payload.get("ep")),
+            sort_number=_optional_number(payload.get("sort")),
+            name=_optional_string(payload.get("name")),
+            name_cn=_optional_string(payload.get("name_cn")),
+            air_date=_optional_date(payload.get("airdate")),
+            duration_seconds=(
+                duration_seconds
+                if duration_seconds is not None and duration_seconds > 0
+                else None
+            ),
+            raw_duration=_optional_string(payload.get("duration")),
+            position=position,
+        )
+
+
+@dataclass(frozen=True)
+class ApiPersonSummary:
+    """A person embedded in a role response, without retaining person media."""
+
+    person_id: int
+    original_name: str | None
+    person_type: int | None
+    career: tuple[str, ...]
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> ApiPersonSummary:
+        return cls(
+            person_id=_required_id(payload, "person"),
+            original_name=_optional_string(payload.get("name")),
+            person_type=_optional_integer(payload.get("type")),
+            career=_string_tuple(payload.get("career")),
+        )
+
+
+@dataclass(frozen=True)
+class RelatedCharacter:
+    """One subject-local character relationship and its embedded actors."""
+
+    character_id: int
+    original_name: str | None
+    summary: str | None
+    character_type: int | None
+    relation: str | None
+    images: ImageUrls
+    actors: tuple[ApiPersonSummary, ...]
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> RelatedCharacter:
+        actors = payload.get("actors")
+        return cls(
+            character_id=_required_id(payload, "character"),
+            original_name=_optional_string(payload.get("name")),
+            summary=_optional_string(payload.get("summary")),
+            character_type=_optional_integer(payload.get("type")),
+            relation=_optional_string(payload.get("relation")),
+            images=ImageUrls.from_payload(payload.get("images")),
+            actors=tuple(
+                ApiPersonSummary.from_payload(actor)
+                for actor in actors
+                if isinstance(actor, Mapping)
+            )
+            if isinstance(actors, list)
+            else (),
+        )
+
+
+@dataclass(frozen=True)
+class CharacterDetail:
+    """Global character detail; missing optional fields remain absent."""
+
+    character_id: int
+    original_name: str | None
+    summary: str | None
+    character_type: int | None
+    infobox: tuple[ApiInfoboxItem, ...]
+    images: ImageUrls
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> CharacterDetail:
+        return cls(
+            character_id=_required_id(payload, "character"),
+            original_name=_optional_string(payload.get("name")),
+            summary=_optional_string(payload.get("summary")),
+            character_type=_optional_integer(payload.get("type")),
+            infobox=_infobox_from_payload(payload.get("infobox")),
+            images=ImageUrls.from_payload(payload.get("images")),
+        )
+
+
+@dataclass(frozen=True)
+class PersonDetail:
+    """Global voice-actor detail, deliberately excluding person image storage."""
+
+    person_id: int
+    original_name: str | None
+    person_type: int | None
+    career: tuple[str, ...]
+    infobox: tuple[ApiInfoboxItem, ...]
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> PersonDetail:
+        return cls(
+            person_id=_required_id(payload, "person"),
+            original_name=_optional_string(payload.get("name")),
+            person_type=_optional_integer(payload.get("type")),
+            career=_string_tuple(payload.get("career")),
+            infobox=_infobox_from_payload(payload.get("infobox")),
+        )
+
+
+@dataclass
+class RequestMetrics:
+    """Counts of actual JSON and binary requests, kept independently."""
+
+    json_requests: int = 0
+    json_retries: int = 0
+    json_item_failures: int = 0
+    image_requests: int = 0
+    image_retries: int = 0
+
+
+@dataclass(frozen=True)
+class ImageResponse:
+    """A binary image response, separate from JSON DTO handling."""
+
+    content: bytes
+    content_type: str | None
+    final_url: str
 
 
 @dataclass(frozen=True)
@@ -100,6 +282,7 @@ class SubjectDetail:
     rating_total: int | None
     tags: tuple[ApiTag, ...]
     infobox: tuple[ApiInfoboxItem, ...]
+    images: ImageUrls
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> SubjectDetail:
@@ -119,6 +302,7 @@ class SubjectDetail:
             rating_total=_optional_integer(rating_data.get("total")),
             tags=_tags_from_payload(payload.get("tags")),
             infobox=_infobox_from_payload(payload.get("infobox")),
+            images=ImageUrls.from_payload(payload.get("images")),
         )
 
 
@@ -170,6 +354,7 @@ class BangumiApiClient:
             raise ValueError("timeout, retry count, and concurrency must be valid")
         self.max_retries = max_retries
         self.concurrency = concurrency
+        self.metrics = RequestMetrics()
         self._sleeper = sleeper
         self._jitter = jitter
         self._owns_client = client is None
@@ -232,9 +417,88 @@ class BangumiApiClient:
 
     def get_subject(self, subject_id: int) -> SubjectDetail:
         """Fetch a subject detail DTO without database writes or inference."""
-        if subject_id <= 0:
-            raise ValueError("subject id must be positive")
+        _validate_positive_id(subject_id, "subject")
         return SubjectDetail.from_payload(self._request_json(f"/subjects/{subject_id}"))
+
+    def get_episodes(self, subject_id: int) -> tuple[ApiEpisode, ...]:
+        """Fetch all main-story episode pages and preserve their API positions."""
+        _validate_positive_id(subject_id, "subject")
+        offset = 0
+        episodes: list[ApiEpisode] = []
+        while True:
+            body = self._request_json(
+                "/episodes",
+                {
+                    "subject_id": subject_id,
+                    "type": MAIN_EPISODE_TYPE,
+                    "limit": 200,
+                    "offset": offset,
+                },
+            )
+            data = body.get("data")
+            if not isinstance(data, list):
+                raise ResponseShapeError(
+                    "invalid_page", "episode response has no data list"
+                )
+            for index, item in enumerate(data):
+                if not isinstance(item, Mapping):
+                    self.metrics.json_item_failures += 1
+                    continue
+                try:
+                    episode = ApiEpisode.from_payload(item, offset + index)
+                except ResponseShapeError:
+                    self.metrics.json_item_failures += 1
+                    continue
+                if episode.episode_type == MAIN_EPISODE_TYPE:
+                    episodes.append(episode)
+            if not data:
+                return tuple(episodes)
+            next_offset = offset + len(data)
+            total = _optional_integer(body.get("total"))
+            if total is not None and next_offset >= total:
+                return tuple(episodes)
+            if total is None and len(data) < 200:
+                return tuple(episodes)
+            offset = next_offset
+
+    def get_related_characters(self, subject_id: int) -> tuple[RelatedCharacter, ...]:
+        """Fetch subject-local character relations in the API response order."""
+        _validate_positive_id(subject_id, "subject")
+        body = self._request_json_list(f"/subjects/{subject_id}/characters")
+        relations: list[RelatedCharacter] = []
+        for item in body:
+            if not isinstance(item, Mapping):
+                self.metrics.json_item_failures += 1
+                continue
+            try:
+                relations.append(RelatedCharacter.from_payload(item))
+            except ResponseShapeError:
+                self.metrics.json_item_failures += 1
+        return tuple(relations)
+
+    def get_character(self, character_id: int) -> CharacterDetail:
+        """Fetch a global character detail DTO without persistence."""
+        _validate_positive_id(character_id, "character")
+        return CharacterDetail.from_payload(
+            self._request_json(f"/characters/{character_id}")
+        )
+
+    def get_person(self, person_id: int) -> PersonDetail:
+        """Fetch a global person detail DTO without persistence."""
+        _validate_positive_id(person_id, "person")
+        return PersonDetail.from_payload(self._request_json(f"/persons/{person_id}"))
+
+    def fetch_image(self, url: str) -> ImageResponse:
+        """Download binary image content separately from API JSON requests."""
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("image URL must be absolute HTTP or HTTPS")
+        response = self._request_binary(url)
+        return ImageResponse(
+            content=response.content,
+            content_type=response.headers.get("Content-Type"),
+            final_url=str(response.url),
+        )
 
     def _request_json(
         self,
@@ -243,6 +507,7 @@ class BangumiApiClient:
     ) -> dict[str, Any]:
         retry_after: float | None = None
         for attempt in range(self.max_retries + 1):
+            self.metrics.json_requests += 1
             try:
                 response = self._client.get(path, params=params)
             except httpx.TimeoutException:
@@ -274,6 +539,82 @@ class BangumiApiClient:
 
             if attempt == self.max_retries:
                 raise failure
+            self.metrics.json_retries += 1
+            delay = retry_after if retry_after is not None else _backoff_delay(
+                attempt, self._jitter
+            )
+            self._sleeper(delay)
+
+        raise AssertionError("unreachable")
+
+    def _request_json_list(self, path: str) -> list[Any]:
+        retry_after: float | None = None
+        for attempt in range(self.max_retries + 1):
+            self.metrics.json_requests += 1
+            try:
+                response = self._client.get(path)
+            except httpx.TimeoutException:
+                retry_after = None
+                failure = BangumiApiError("timeout", "request timed out")
+            except httpx.TransportError:
+                retry_after = None
+                failure = BangumiApiError("network", "network request failed")
+            else:
+                if 200 <= response.status_code < 300:
+                    try:
+                        body = response.json()
+                    except ValueError as error:
+                        raise ResponseShapeError(
+                            "invalid_json", "response did not contain JSON"
+                        ) from error
+                    if not isinstance(body, list):
+                        raise ResponseShapeError(
+                            "invalid_json", "response JSON was not an array"
+                        )
+                    return body
+                retry_after = _retry_after_seconds(response)
+                failure = BangumiApiError(
+                    f"http_{response.status_code}", f"HTTP {response.status_code}"
+                )
+                if not _is_transient_status(response.status_code):
+                    raise failure
+
+            if attempt == self.max_retries:
+                raise failure
+            self.metrics.json_retries += 1
+            delay = retry_after if retry_after is not None else _backoff_delay(
+                attempt, self._jitter
+            )
+            self._sleeper(delay)
+
+        raise AssertionError("unreachable")
+
+    def _request_binary(self, url: str) -> httpx.Response:
+        retry_after: float | None = None
+        for attempt in range(self.max_retries + 1):
+            self.metrics.image_requests += 1
+            try:
+                response = self._client.get(url, follow_redirects=True)
+            except httpx.TimeoutException:
+                retry_after = None
+                failure = BangumiApiError("image_timeout", "image request timed out")
+            except httpx.TransportError:
+                retry_after = None
+                failure = BangumiApiError("image_network", "image request failed")
+            else:
+                if 200 <= response.status_code < 300:
+                    return response
+                retry_after = _retry_after_seconds(response)
+                failure = BangumiApiError(
+                    f"image_http_{response.status_code}",
+                    f"image HTTP {response.status_code}",
+                )
+                if not _is_transient_status(response.status_code):
+                    raise failure
+
+            if attempt == self.max_retries:
+                raise failure
+            self.metrics.image_retries += 1
             delay = retry_after if retry_after is not None else _backoff_delay(
                 attempt, self._jitter
             )
@@ -368,16 +709,25 @@ def _filter_candidates(
 
 
 def _subject_id(payload: Mapping[str, Any]) -> int:
-    subject_id = payload.get("id")
+    return _required_id(payload, "subject")
+
+
+def _required_id(payload: Mapping[str, Any], entity: str) -> int:
+    entity_id = payload.get("id")
     if (
-        not isinstance(subject_id, int)
-        or isinstance(subject_id, bool)
-        or subject_id <= 0
+        not isinstance(entity_id, int)
+        or isinstance(entity_id, bool)
+        or entity_id <= 0
     ):
         raise ResponseShapeError(
-            "missing_subject_id", "subject response has no valid id"
+            f"missing_{entity}_id", f"{entity} response has no valid id"
         )
-    return subject_id
+    return entity_id
+
+
+def _validate_positive_id(entity_id: int, entity: str) -> None:
+    if not isinstance(entity_id, int) or isinstance(entity_id, bool) or entity_id <= 0:
+        raise ValueError(f"{entity} id must be positive")
 
 
 def _optional_string(value: Any) -> str | None:
@@ -401,6 +751,29 @@ def _optional_date(value: Any) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
+
+
+def is_default_image_url(url: str | None) -> bool:
+    """Identify the documented default no-image endpoint by its exact filename."""
+    return (
+        isinstance(url, str)
+        and urlsplit(url).path.rsplit("/", 1)[-1] == DEFAULT_IMAGE_FILENAME
+    )
+
+
+def _usable_image_url(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or is_default_image_url(value):
+        return None
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return value
 
 
 def _tags_from_payload(value: Any) -> tuple[ApiTag, ...]:

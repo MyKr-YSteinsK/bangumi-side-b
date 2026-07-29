@@ -5,3 +5,6 @@ excluded_subject_ids = []
 api_concurrency = 3
 request_timeout_seconds = 20
 max_retries = 3
+
+[roles]
+main_character_relations = ["\u4e3b\u89d2"]

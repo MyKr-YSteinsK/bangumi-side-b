@@ -1,0 +1,120 @@
+{
+  "episodes_page_1": [
+    {
+      "id": 500,
+      "type": 0,
+      "ep": 1,
+      "sort": 1,
+      "name": "Episode One",
+      "name_cn": "\u7b2c\u4e00\u8bdd",
+      "airdate": "2022-01-08",
+      "duration": "24:00",
+      "duration_seconds": 1440,
+      "unknown": true
+    },
+    {
+      "id": 501,
+      "type": 2,
+      "sort": 1,
+      "name": "Opening",
+      "name_cn": "",
+      "airdate": "",
+      "duration": "",
+      "duration_seconds": 0
+    },
+    {
+      "type": 0,
+      "name": "Bad item"
+    }
+  ],
+  "episodes_page_2": [
+    {
+      "id": 502,
+      "type": 0,
+      "ep": 2,
+      "sort": 2,
+      "name": "Episode Two",
+      "name_cn": "",
+      "airdate": "",
+      "duration": "unknown",
+      "duration_seconds": 0
+    }
+  ],
+  "roles": [
+    {
+      "id": 100,
+      "name": "Original Character",
+      "summary": "Lead",
+      "type": 1,
+      "relation": "\u4e3b\u89d2",
+      "images": {
+        "large": "https://img.example/character-large.jpg",
+        "small": "https://img.example/character-small.jpg"
+      },
+      "actors": [
+        {
+          "id": 200,
+          "name": "Actor One",
+          "type": 1,
+          "career": ["seiyu"]
+        },
+        {
+          "id": 201,
+          "name": "Actor Two",
+          "type": 1,
+          "career": ["seiyu"]
+        }
+      ]
+    },
+    {
+      "id": 101,
+      "name": "Supporting Character",
+      "summary": "Support",
+      "type": 1,
+      "relation": "\u914d\u89d2",
+      "images": {
+        "large": "https://lain.bgm.tv/img/no_icon_subject.png"
+      },
+      "actors": []
+    }
+  ],
+  "character_detail": {
+    "id": 100,
+    "name": "Original Character",
+    "summary": "Lead detail",
+    "type": 1,
+    "images": {
+      "large": "https://img.example/character-large.jpg",
+      "grid": "https://img.example/character-grid.jpg"
+    },
+    "infobox": [
+      {
+        "key": "\u7b80\u4f53\u4e2d\u6587\u540d",
+        "value": "\u4e2d\u6587\u89d2\u8272\u540d"
+      }
+    ],
+    "unknown": "ignored"
+  },
+  "person_detail": {
+    "id": 200,
+    "name": "Actor One",
+    "type": 1,
+    "career": ["seiyu"],
+    "infobox": [
+      {
+        "key": "\u7b80\u4f53\u4e2d\u6587\u540d",
+        "value": "\u4e2d\u6587\u58f0\u4f18\u540d"
+      }
+    ],
+    "images": {
+      "large": "https://img.example/person-large.jpg"
+    }
+  },
+  "person_detail_missing": {
+    "id": 201,
+    "name": "Actor Two",
+    "type": 1,
+    "career": ["seiyu"]
+  },
+  "default_image": "https://lain.bgm.tv/img/no_icon_subject.png"
+}

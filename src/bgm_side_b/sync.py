@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -100,16 +100,30 @@ class QuarterStats:
     blacklisted: int = 0
     unsupported: int = 0
     details_requested: int = 0
+    subject_details_requested: int = 0
     created: int = 0
     updated: int = 0
+    ratings_updated: int = 0
     skipped: int = 0
     missing_date: int = 0
     ownership_mismatch: int = 0
     failed: int = 0
     retries: int = 0
+    episodes_requested: int = 0
+    episodes_stored: int = 0
+    episode_conflicts: int = 0
+    continuations_created: int = 0
+    roles_requested: int = 0
+    main_characters_stored: int = 0
+    persons_stored: int = 0
+    voice_relations_stored: int = 0
+    covers_downloaded: int = 0
+    character_images_downloaded: int = 0
     media_downloaded: int = 0
     media_skipped: int = 0
     media_failed: int = 0
+    cleanup_deleted: int = 0
+    cleanup_failed: int = 0
     warnings: list[str] = field(default_factory=list)
     failures: list[dict[str, object]] = field(default_factory=list)
 
@@ -122,6 +136,13 @@ class SyncRun:
     sync_report: Path
     tag_audit_report: Path
     exit_code: int
+
+
+class _SyncInterrupted(KeyboardInterrupt):
+    """Carry the safe partial quarter summary to the top-level report writer."""
+
+    def __init__(self, stats: QuarterStats) -> None:
+        self.stats = stats
 
 
 class SubjectSynchronizer:
@@ -154,14 +175,23 @@ class SubjectSynchronizer:
         self, scope: SyncScope, *, force: bool = False, force_images: bool = False
     ) -> SyncRun:
         """Synchronise subject facts for a validated scope and write safe reports."""
+        started_at = _utc_timestamp()
         self.repository.database.migrate()
         all_stats: list[QuarterStats] = []
-        for year, month in scope.quarters:
-            stats = self._sync_quarter(year, month, force, force_images)
-            all_stats.append(stats)
-        sync_report = self._write_sync_report(scope, force, force_images, all_stats)
+        interrupted = False
+        try:
+            for year, month in scope.quarters:
+                stats = self._sync_quarter(year, month, force, force_images)
+                all_stats.append(stats)
+        except _SyncInterrupted as error:
+            error.stats.warnings.append("interrupted")
+            all_stats.append(error.stats)
+            interrupted = True
+        sync_report = self._write_sync_report(
+            scope, force, force_images, started_at, all_stats
+        )
         audit_report = self._write_tag_audit_report()
-        exit_code = 1 if any(stats.failed for stats in all_stats) else 0
+        exit_code = 130 if interrupted else int(any(stats.failed for stats in all_stats))
         return SyncRun(tuple(all_stats), sync_report, audit_report, exit_code)
 
     def _cleanup_blacklisted_subjects(
@@ -177,9 +207,11 @@ class SubjectSynchronizer:
                 month,
             )
         cleanup = self.media_cache.cleanup_orphaned()
+        stats.cleanup_deleted += cleanup.deleted
         if cleanup.failures:
             stats.failed += len(cleanup.failures)
             stats.media_failed += len(cleanup.failures)
+            stats.cleanup_failed += len(cleanup.failures)
             stats.failures.extend(
                 {
                     "stage": media_kind,
@@ -193,16 +225,32 @@ class SubjectSynchronizer:
         self, year: int, month: int, force: bool, force_images: bool
     ) -> QuarterStats:
         stats = QuarterStats(year, month)
-        self._cleanup_blacklisted_subjects(year, month, stats)
-        result = self.discovery.discover(year, month, self.settings.excluded_subject_ids)
-        self._apply_discovery(result, stats)
-        discovered_ids: set[int] = set()
-        for candidate in result.candidates:
-            discovered_ids.add(candidate.subject_id)
-            self._sync_candidate(candidate, year, month, force, force_images, stats)
-        for subject_id in self.repository.list_tv_subject_ids():
-            if subject_id not in discovered_ids:
-                self._sync_existing_tv_episodes(subject_id, year, month, force, stats)
+        try:
+            self._cleanup_blacklisted_subjects(year, month, stats)
+            retries_before = self._json_retries()
+            result = self.discovery.discover(
+                year, month, self.settings.excluded_subject_ids
+            )
+            stats.retries += self._json_retries() - retries_before
+            self._apply_discovery(result, stats)
+            discovered_ids: set[int] = set()
+            for candidate in result.candidates:
+                if candidate.subject_id in self.settings.excluded_subject_ids:
+                    stats.blacklisted += 1
+                    continue
+                discovered_ids.add(candidate.subject_id)
+                self._sync_candidate(
+                    candidate, year, month, force, force_images, stats
+                )
+            for subject_id in self.repository.list_tv_subject_ids():
+                if subject_id not in discovered_ids:
+                    self._sync_existing_tv_episodes(
+                        subject_id, year, month, force, stats
+                    )
+        except KeyboardInterrupt as error:
+            if isinstance(error, _SyncInterrupted):
+                raise
+            raise _SyncInterrupted(stats) from error
         return stats
 
     def _apply_discovery(self, result: DiscoveryResult, stats: QuarterStats) -> None:
@@ -211,7 +259,6 @@ class SubjectSynchronizer:
         stats.duplicates = discovered.duplicates
         stats.blacklisted += discovered.blacklisted
         stats.unsupported = discovered.unsupported
-        stats.details_requested = discovered.needs_detail
         stats.failed += discovered.failed
         for failure in result.failures:
             stats.failures.append(
@@ -233,25 +280,25 @@ class SubjectSynchronizer:
         force_images: bool,
         stats: QuarterStats,
     ) -> None:
-        if not force and self._refresh_stable_subject(candidate):
-            stats.skipped += 1
-            self._sync_existing_tv_episodes(
-                candidate.subject_id, target_year, target_month, force, stats
-            )
-            character_image_urls = self._sync_subject_roles(
-                candidate.subject_id, force, stats
-            )
-            self._sync_media_for_subject(
-                candidate.subject_id, None, character_image_urls, force_images, stats
-            )
-            return
+        stats.details_requested += 1
+        stats.subject_details_requested += 1
+        retries_before = self._json_retries()
         try:
             detail = self.api.get_subject(candidate.subject_id)
         except BangumiApiError as error:
-            self._record_failure(candidate.subject_id, error, stats)
+            self._record_failure(
+                candidate.subject_id,
+                error,
+                stats,
+                retry_count=self._json_retries() - retries_before,
+            )
             return
+        finally:
+            stats.retries += self._json_retries() - retries_before
         if self._store_detail(detail, target_year, target_month, stats):
-            self._sync_subject_episodes(detail.subject_id, stats)
+            self._sync_existing_tv_episodes(
+                detail.subject_id, target_year, target_month, force, stats
+            )
             character_image_urls = self._sync_subject_roles(
                 detail.subject_id, force, stats
             )
@@ -262,21 +309,6 @@ class SubjectSynchronizer:
                 force_images,
                 stats,
             )
-
-    def _refresh_stable_subject(self, candidate: CandidateSubject) -> bool:
-        state = self.repository.get_sync_state(
-            "subject", candidate.subject_id, "subject_detail"
-        )
-        if state is None or state.status != "success" or not self.repository.subject_exists(candidate.subject_id):
-            return False
-        with self.repository.transaction() as connection:
-            self.repository.refresh_rating(
-                connection,
-                candidate.subject_id,
-                candidate.rating_score,
-                candidate.rating_total,
-            )
-        return True
 
     def _store_detail(
         self,
@@ -360,6 +392,17 @@ class SubjectSynchronizer:
                         _utc_timestamp(),
                     ),
                 )
+                self.repository.write_sync_state(
+                    connection,
+                    SyncState(
+                        "subject",
+                        detail.subject_id,
+                        "rating",
+                        "success",
+                        _utc_timestamp(),
+                        _utc_timestamp(),
+                    ),
+                )
         except (ValueError, TypeError) as error:
             self._record_failure(
                 detail.subject_id,
@@ -372,6 +415,8 @@ class SubjectSynchronizer:
             stats.updated += 1
         else:
             stats.created += 1
+        if detail.rating_score is not None or detail.rating_total is not None:
+            stats.ratings_updated += 1
         stats.warnings.extend(source_result.warnings)
         return True
 
@@ -392,11 +437,11 @@ class SubjectSynchronizer:
         subject = self.repository.get_stored_subject(subject_id)
         if subject is None:
             return False
-        if subject.media_format != "tv":
-            return force
         state = self.repository.get_sync_state("subject", subject_id, "episodes")
         if force or state is None or state.status != "success":
             return True
+        if subject.media_format != "tv":
+            return False
         current_count = self.repository.main_episode_count(subject_id)
         declared_counts = {
             count
@@ -420,11 +465,21 @@ class SubjectSynchronizer:
         previous = self.repository.get_sync_state("subject", subject_id, "episodes")
         metrics = getattr(self.api, "metrics", None)
         before_failures = getattr(metrics, "json_item_failures", 0)
+        retries_before = self._json_retries()
+        stats.episodes_requested += 1
         try:
             api_episodes = self.api.get_episodes(subject_id)
         except BangumiApiError as error:
-            self._record_episode_failure(subject_id, error, previous, stats)
+            self._record_episode_failure(
+                subject_id,
+                error,
+                previous,
+                stats,
+                retry_count=self._json_retries() - retries_before,
+            )
             return
+        finally:
+            stats.retries += self._json_retries() - retries_before
         parse_failures = getattr(metrics, "json_item_failures", 0)
         if parse_failures > before_failures:
             stats.warnings.append(
@@ -455,7 +510,13 @@ class SubjectSynchronizer:
             stats.warnings.append(type(error).__name__)
             return
         self._warn_episode_count_conflict(subject_id, stats)
+        stats.episodes_stored += len(episodes)
+        before_continuations = self.repository.continuing_quarter_count(subject_id)
         self._rebuild_continuing_quarters(subject_id)
+        stats.continuations_created += max(
+            0,
+            self.repository.continuing_quarter_count(subject_id) - before_continuations,
+        )
 
     def _record_episode_failure(
         self,
@@ -463,14 +524,20 @@ class SubjectSynchronizer:
         error: BangumiApiError,
         previous: SyncState | None,
         stats: QuarterStats,
+        *,
+        retry_count: int = 0,
     ) -> None:
         stats.failed += 1
         stats.failures.append(
             {
                 "stage": "episodes",
                 "subject_id": subject_id,
+                "entity_type": "subject",
+                "entity_id": subject_id,
+                "data_type": "episodes",
                 "code": error.code,
                 "summary": error.summary,
+                "retry_count": retry_count,
             }
         )
         with self.repository.transaction() as connection:
@@ -505,6 +572,7 @@ class SubjectSynchronizer:
         }
         if len(values) > 1:
             stats.warnings.append(f"episode_count_conflict:{subject_id}")
+            stats.episode_conflicts += 1
 
     def _rebuild_continuing_quarters(self, subject_id: int) -> None:
         subject = self.repository.get_stored_subject(subject_id)
@@ -556,11 +624,21 @@ class SubjectSynchronizer:
             and not self.repository.role_details_need_refresh(subject_id)
         ):
             return {}
+        retries_before = self._json_retries()
+        stats.roles_requested += 1
         try:
             roles = self.api.get_related_characters(subject_id)
         except BangumiApiError as error:
-            self._record_roles_failure(subject_id, error, state, stats)
+            self._record_roles_failure(
+                subject_id,
+                error,
+                state,
+                stats,
+                retry_count=self._json_retries() - retries_before,
+            )
             return {}
+        finally:
+            stats.retries += self._json_retries() - retries_before
 
         characters: dict[int, CharacterRecord] = {}
         persons: dict[int, PersonRecord] = {}
@@ -636,6 +714,9 @@ class SubjectSynchronizer:
             )
             stats.warnings.append(type(error).__name__)
             return {}
+        stats.main_characters_stored += len(relations)
+        stats.persons_stored += len(persons)
+        stats.voice_relations_stored += len(voices)
         return character_image_urls
 
     def _resolve_character(
@@ -646,6 +727,7 @@ class SubjectSynchronizer:
         )
         detail: CharacterDetail | None = None
         if force or detail_state is None or detail_state.status != "success":
+            retries_before = self._json_retries()
             try:
                 detail = self.api.get_character(role.character_id)
             except BangumiApiError as error:
@@ -656,7 +738,10 @@ class SubjectSynchronizer:
                     error,
                     detail_state,
                     stats,
+                    retry_count=self._json_retries() - retries_before,
                 )
+            finally:
+                stats.retries += self._json_retries() - retries_before
         original_name = detail.original_name if detail else role.original_name
         summary = detail.summary if detail and detail.summary is not None else role.summary
         chinese_name = _chinese_name(
@@ -716,6 +801,10 @@ class SubjectSynchronizer:
             stats.retries += result.retries
             if result.status == "downloaded":
                 stats.media_downloaded += 1
+                if target.media_kind == "cover":
+                    stats.covers_downloaded += 1
+                else:
+                    stats.character_images_downloaded += 1
             elif result.status == "skipped":
                 stats.media_skipped += 1
             else:
@@ -724,9 +813,19 @@ class SubjectSynchronizer:
                 stats.failures.append(
                     {
                         "stage": target.media_kind,
+                        "entity_type": target.owner_type,
                         "entity_id": target.owner_id,
+                        "subject_id": (
+                            target.owner_id if target.owner_type == "subject" else None
+                        ),
+                        "data_type": (
+                            "cover_image"
+                            if target.media_kind == "cover"
+                            else "character_image"
+                        ),
                         "code": result.error_code,
                         "summary": result.error_summary,
+                        "retry_count": result.retries,
                     }
                 )
             if result.error_code == "media_cleanup_failed":
@@ -735,15 +834,27 @@ class SubjectSynchronizer:
                 stats.failures.append(
                     {
                         "stage": target.media_kind,
+                        "entity_type": target.owner_type,
                         "entity_id": target.owner_id,
+                        "subject_id": (
+                            target.owner_id if target.owner_type == "subject" else None
+                        ),
+                        "data_type": (
+                            "cover_image"
+                            if target.media_kind == "cover"
+                            else "character_image"
+                        ),
                         "code": result.error_code,
                         "summary": result.error_summary,
+                        "retry_count": result.retries,
                     }
                 )
         cleanup = self.media_cache.cleanup_orphaned()
+        stats.cleanup_deleted += cleanup.deleted
         if cleanup.failures:
             stats.failed += len(cleanup.failures)
             stats.media_failed += len(cleanup.failures)
+            stats.cleanup_failed += len(cleanup.failures)
             stats.failures.extend(
                 {
                     "stage": media_kind,
@@ -761,6 +872,7 @@ class SubjectSynchronizer:
         )
         detail: PersonDetail | None = None
         if force or detail_state is None or detail_state.status != "success":
+            retries_before = self._json_retries()
             try:
                 detail = self.api.get_person(actor.person_id)
             except BangumiApiError as error:
@@ -771,7 +883,10 @@ class SubjectSynchronizer:
                     error,
                     detail_state,
                     stats,
+                    retry_count=self._json_retries() - retries_before,
                 )
+            finally:
+                stats.retries += self._json_retries() - retries_before
         original_name = detail.original_name if detail else actor.original_name
         chinese_name = _chinese_name(
             detail.infobox if detail else (), self.settings.chinese_name_infobox_keys
@@ -796,9 +911,18 @@ class SubjectSynchronizer:
         error: BangumiApiError,
         previous: SyncState | None,
         stats: QuarterStats,
+        *,
+        retry_count: int = 0,
     ) -> None:
         self._record_data_failure(
-            "subject", subject_id, "roles", error, previous, "roles", stats
+            "subject",
+            subject_id,
+            "roles",
+            error,
+            previous,
+            "roles",
+            stats,
+            retry_count=retry_count,
         )
 
     def _record_detail_failure(
@@ -809,9 +933,18 @@ class SubjectSynchronizer:
         error: BangumiApiError,
         previous: SyncState | None,
         stats: QuarterStats,
+        *,
+        retry_count: int = 0,
     ) -> None:
         self._record_data_failure(
-            entity_type, entity_id, data_type, error, previous, data_type, stats
+            entity_type,
+            entity_id,
+            data_type,
+            error,
+            previous,
+            data_type,
+            stats,
+            retry_count=retry_count,
         )
 
     def _record_data_failure(
@@ -823,14 +956,20 @@ class SubjectSynchronizer:
         previous: SyncState | None,
         stage: str,
         stats: QuarterStats,
+        *,
+        retry_count: int = 0,
     ) -> None:
         stats.failed += 1
         stats.failures.append(
             {
                 "stage": stage,
+                "entity_type": entity_type,
                 "entity_id": entity_id,
+                "data_type": data_type,
+                "subject_id": entity_id if entity_type == "subject" else None,
                 "code": error.code,
                 "summary": error.summary,
+                "retry_count": retry_count,
             }
         )
         with self.repository.transaction() as connection:
@@ -849,11 +988,25 @@ class SubjectSynchronizer:
             )
 
     def _record_failure(
-        self, subject_id: int, error: BangumiApiError, stats: QuarterStats
+        self,
+        subject_id: int,
+        error: BangumiApiError,
+        stats: QuarterStats,
+        *,
+        retry_count: int = 0,
     ) -> None:
         stats.failed += 1
         stats.failures.append(
-            {"stage": "detail", "subject_id": subject_id, "code": error.code, "summary": error.summary}
+            {
+                "stage": "detail",
+                "subject_id": subject_id,
+                "entity_type": "subject",
+                "entity_id": subject_id,
+                "data_type": "subject_detail",
+                "code": error.code,
+                "summary": error.summary,
+                "retry_count": retry_count,
+            }
         )
         previous = self.repository.get_sync_state(
             "subject", subject_id, "subject_detail"
@@ -873,24 +1026,34 @@ class SubjectSynchronizer:
                 ),
             )
 
+    def _json_retries(self) -> int:
+        """Read the client's actual JSON retry counter when it is available."""
+        metrics = getattr(self.api, "metrics", None)
+        value = getattr(metrics, "json_retries", 0)
+        return value if isinstance(value, int) else 0
+
     def _write_sync_report(
         self,
         scope: SyncScope,
         force: bool,
         force_images: bool,
+        started_at: str,
         stats: list[QuarterStats],
     ) -> Path:
+        quarter_payloads = [_report_quarter(item) for item in stats]
         payload = {
             "command": "sync",
-            "version": _version(),
-            "generated_at": _utc_timestamp(),
+            "app_version": _version(),
+            "started_at": started_at,
+            "finished_at": _utc_timestamp(),
             "scope": {
                 "years": list(scope.years),
                 "quarter_month": scope.quarter_month,
                 "force": force,
                 "force_images": force_images,
             },
-            "quarters": [asdict(item) for item in stats],
+            "quarters": quarter_payloads,
+            "totals": _report_totals(quarter_payloads),
         }
         return _write_json(self.reports_directory, f"sync-{scope.label}", payload)
 
@@ -918,8 +1081,13 @@ class SubjectSynchronizer:
                 mapped = self.tag_rules.aliases.get(raw_tag, raw_tag)
                 samples = connection.execute(
                     """
-                    SELECT subject_id FROM subject_raw_tags
-                    WHERE tag_name = ? ORDER BY subject_id LIMIT 5
+                    SELECT tags.subject_id, titles.title
+                    FROM subject_raw_tags AS tags
+                    LEFT JOIN subject_titles AS titles
+                        ON titles.subject_id = tags.subject_id
+                        AND titles.title_kind = 'preferred'
+                    WHERE tags.tag_name = ?
+                    ORDER BY tags.subject_id LIMIT 5
                     """,
                     (raw_tag,),
                 ).fetchall()
@@ -928,7 +1096,13 @@ class SubjectSynchronizer:
                         "raw_tag": raw_tag,
                         "subject_count": tag["subject_count"],
                         "count_total": tag["count_total"],
-                        "examples": [row["subject_id"] for row in samples],
+                        "examples": [
+                            {
+                                "subject_id": row["subject_id"],
+                                "title": row["title"],
+                            }
+                            for row in samples
+                        ],
                         "mapped_to": mapped if mapped != raw_tag or mapped in allowed else None,
                         "displayed": mapped in allowed,
                         "whitelist_status": "allowed" if mapped in allowed else "not_allowed",
@@ -946,6 +1120,62 @@ def _source_infobox(items: Iterable[ApiInfoboxItem]) -> tuple[InfoboxItem, ...]:
         for value in _infobox_string_values(item.value):
             values.append(InfoboxItem(item.key, value))
     return tuple(values)
+
+
+def _report_quarter(stats: QuarterStats) -> dict[str, object]:
+    """Expose stable public report names while retaining useful legacy counters."""
+    payload = {
+        key: value
+        for key, value in vars(stats).items()
+        if key not in {"failures"}
+    }
+    payload.update(
+        {
+            "subjects_created": stats.created,
+            "subjects_updated": stats.updated,
+            "failures": [_report_failure(stats, failure) for failure in stats.failures],
+        }
+    )
+    return payload
+
+
+def _report_failure(
+    stats: QuarterStats, failure: dict[str, object]
+) -> dict[str, object]:
+    stage = failure.get("stage") if isinstance(failure.get("stage"), str) else "unknown"
+    entity_id = failure.get("entity_id", failure.get("subject_id"))
+    subject_id = failure.get("subject_id")
+    data_type = failure.get("data_type")
+    if not isinstance(data_type, str):
+        data_type = {
+            "detail": "subject_detail",
+            "episodes": "episodes",
+            "roles": "roles",
+            "cover": "cover_image",
+            "character_image": "character_image",
+        }.get(stage, stage)
+    entity_type = failure.get("entity_type")
+    if not isinstance(entity_type, str):
+        entity_type = "subject" if subject_id is not None else "unknown"
+    return {
+        "quarter": {"year": stats.year, "month": stats.month},
+        "subject_id": subject_id,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "data_type": data_type,
+        "error_code": failure.get("code"),
+        "summary": failure.get("summary"),
+        "retry_count": failure.get("retry_count", 0),
+    }
+
+
+def _report_totals(quarters: list[dict[str, object]]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for quarter in quarters:
+        for key, value in quarter.items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                totals[key] = totals.get(key, 0) + value
+    return totals
 
 
 def _infobox_string_values(value: object) -> tuple[str, ...]:

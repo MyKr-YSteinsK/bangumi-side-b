@@ -215,8 +215,8 @@ class SubjectRepository:
                 total_episode_count = excluded.total_episode_count,
                 end_date = excluded.end_date,
                 availability_status = excluded.availability_status,
-                rating_score = excluded.rating_score,
-                rating_count = excluded.rating_count,
+                rating_score = COALESCE(excluded.rating_score, subjects.rating_score),
+                rating_count = COALESCE(excluded.rating_count, subjects.rating_count),
                 last_seen_at = excluded.last_seen_at,
                 updated_at = excluded.updated_at
             """,
@@ -871,6 +871,20 @@ class SubjectRepository:
         finally:
             connection.close()
 
+    def continuing_quarter_count(self, subject_id: int) -> int:
+        """Return persisted continuing-quarter relations for one subject."""
+        connection = self.database.connect()
+        try:
+            return connection.execute(
+                """
+                SELECT COUNT(*) FROM subject_quarters
+                WHERE subject_id = ? AND appearance_kind = 'continuing'
+                """,
+                (subject_id,),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+
     def main_episode_air_dates(self, subject_id: int) -> tuple[date, ...]:
         """Read complete main-story air dates in stable episode order."""
         connection = self.database.connect()
@@ -896,6 +910,36 @@ class SubjectRepository:
         deleted = connection.execute("DELETE FROM subjects WHERE id = ?", (subject_id,))
         if deleted.rowcount == 0:
             return False
+        orphaned_character_ids = connection.execute(
+            """
+            SELECT id FROM characters
+            WHERE NOT EXISTS (
+                SELECT 1 FROM subject_characters
+                WHERE subject_characters.character_id = characters.id
+            )
+            """
+        ).fetchall()
+        orphaned_person_ids = connection.execute(
+            """
+            SELECT id FROM persons
+            WHERE NOT EXISTS (
+                SELECT 1 FROM character_voices
+                WHERE character_voices.person_id = persons.id
+            )
+            """
+        ).fetchall()
+        connection.execute(
+            "DELETE FROM sync_states WHERE entity_type = 'subject' AND entity_id = ?",
+            (subject_id,),
+        )
+        connection.executemany(
+            "DELETE FROM sync_states WHERE entity_type = 'character' AND entity_id = ?",
+            ((row["id"],) for row in orphaned_character_ids),
+        )
+        connection.executemany(
+            "DELETE FROM sync_states WHERE entity_type = 'person' AND entity_id = ?",
+            ((row["id"],) for row in orphaned_person_ids),
+        )
         connection.execute(
             """
             DELETE FROM characters

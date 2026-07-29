@@ -1,6 +1,7 @@
 """Tests for subject-only sync orchestration and safe reports."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,7 @@ class FakeApi:
         persons: dict[int, PersonDetail] | None = None,
         person_failures: set[int] | None = None,
         image_failures: set[str] | None = None,
+        interruptions: set[int] | None = None,
     ) -> None:
         self.details = details
         self.failures = failures or set()
@@ -97,6 +99,7 @@ class FakeApi:
         self.persons = persons or {}
         self.person_failures = person_failures or set()
         self.image_failures = image_failures or set()
+        self.interruptions = interruptions or set()
         self.calls: list[int] = []
         self.episode_calls: list[int] = []
         self.role_calls: list[int] = []
@@ -106,6 +109,8 @@ class FakeApi:
 
     def get_subject(self, subject_id: int) -> SubjectDetail:
         self.calls.append(subject_id)
+        if subject_id in self.interruptions:
+            raise KeyboardInterrupt
         if subject_id in self.failures:
             raise BangumiApiError("network", "network request failed")
         return self.details[subject_id]
@@ -215,11 +220,18 @@ def test_sync_writes_tv_subject_and_safe_reports(
     payload = run.sync_report.read_text(encoding="utf-8")
     assert str(tmp_path) not in payload
     assert "authorization" not in payload.lower()
+    report = json.loads(payload)
+    assert report["app_version"]
+    assert report["scope"]["force_images"] is False
+    assert report["quarters"][0]["subject_details_requested"] == 1
     audit = json.loads(run.tag_audit_report.read_text(encoding="utf-8"))
     assert audit["tags"][0]["raw_tag"] == "喜剧"
+    assert audit["tags"][0]["examples"] == [
+        {"subject_id": 101, "title": "电视中文名"}
+    ]
 
 
-def test_incremental_sync_refreshes_rating_without_detail_request(
+def test_incremental_sync_refreshes_detail_rating_and_preserves_missing_values(
     tmp_path: Path, rules: tuple[ProjectSettings, object, object]
 ) -> None:
     detail = SubjectDetail.from_payload(FIXTURES["tv"])
@@ -229,17 +241,32 @@ def test_incremental_sync_refreshes_rating_without_detail_request(
     sync.run(SyncScope((2022,), 1))
 
     api.calls.clear()
+    api.details[101] = SubjectDetail.from_payload(
+        {**FIXTURES["tv"], "rating": {"score": 8.2, "total": 200}}
+    )
     sync.discovery = FakeDiscovery((_candidate(101, 8.2),))
     run = sync.run(SyncScope((2022,), 1))
 
-    assert api.calls == []
-    assert run.quarter_stats[0].skipped == 1
+    assert api.calls == [101]
+    assert run.quarter_stats[0].subject_details_requested == 1
+    assert run.quarter_stats[0].ratings_updated == 1
     connection = sync.repository.database.connect()
     try:
         score = connection.execute(
             "SELECT rating_score FROM subjects WHERE id = 101"
         ).fetchone()[0]
         assert score == 8.2
+    finally:
+        connection.close()
+
+    api.calls.clear()
+    api.details[101] = SubjectDetail.from_payload({**FIXTURES["tv"], "rating": {}})
+    sync.run(SyncScope((2022,), 1))
+    connection = sync.repository.database.connect()
+    try:
+        assert connection.execute(
+            "SELECT rating_score FROM subjects WHERE id = 101"
+        ).fetchone()[0] == 8.2
     finally:
         connection.close()
 
@@ -661,3 +688,84 @@ def test_media_failure_keeps_structured_subject_facts(
     record = sync.repository.get_media_record("subject", 101, "cover")
     assert record is not None and record.status == "failed"
     assert run.quarter_stats[0].media_failed == 1
+    report = json.loads(run.sync_report.read_text(encoding="utf-8"))
+    failure = report["quarters"][0]["failures"][0]
+    assert set(failure) == {
+        "quarter",
+        "subject_id",
+        "entity_type",
+        "entity_id",
+        "data_type",
+        "error_code",
+        "summary",
+        "retry_count",
+    }
+
+
+def test_interrupt_writes_partial_safe_report_and_returns_130(
+    tmp_path: Path, rules: tuple[ProjectSettings, object, object]
+) -> None:
+    api = FakeApi(
+        {101: SubjectDetail.from_payload(FIXTURES["tv"])}, interruptions={106}
+    )
+    sync = _synchronizer(
+        tmp_path,
+        rules,
+        api,
+        FakeDiscovery((_candidate(101), _candidate(106))),
+    )
+
+    run = sync.run(SyncScope((2022,), 1))
+
+    assert run.exit_code == 130
+    assert sync.repository.subject_exists(101)
+    report = json.loads(run.sync_report.read_text(encoding="utf-8"))
+    assert "interrupted" in report["quarters"][0]["warnings"]
+    assert not list((tmp_path / "tmp").glob("*.part"))
+
+
+def test_blacklisted_candidate_is_deleted_without_followup_requests(
+    tmp_path: Path, rules: tuple[ProjectSettings, object, object]
+) -> None:
+    settings, tag_rules, source_rules = rules
+    detail = SubjectDetail.from_payload(FIXTURES["tv"])
+    initial_api = FakeApi({101: detail})
+    initial = SubjectSynchronizer(
+        SubjectRepository(Database(tmp_path / "data" / "facts.sqlite3")),
+        initial_api,
+        settings,
+        tag_rules,
+        source_rules,
+        discovery=FakeDiscovery((_candidate(101),)),
+        reports_directory=tmp_path / "reports",
+    )
+    initial.run(SyncScope((2022,), 1))
+    blacklisted_api = FakeApi({101: detail})
+    blocked = SubjectSynchronizer(
+        initial.repository,
+        blacklisted_api,
+        replace(settings, excluded_subject_ids=frozenset({101})),
+        tag_rules,
+        source_rules,
+        discovery=FakeDiscovery((_candidate(101),)),
+        reports_directory=tmp_path / "reports",
+    )
+
+    run = blocked.run(SyncScope((2022,), 1))
+
+    assert run.exit_code == 0
+    assert not blocked.repository.subject_exists(101)
+    assert blacklisted_api.calls == []
+    assert blacklisted_api.episode_calls == []
+    assert blacklisted_api.role_calls == []
+    assert blacklisted_api.image_calls == []
+    connection = blocked.repository.database.connect()
+    try:
+        assert connection.execute(
+            """
+            SELECT COUNT(*) FROM sync_states
+            WHERE entity_type = 'subject' AND entity_id = 101
+            """
+        ).fetchone()[0] == 0
+    finally:
+        connection.close()

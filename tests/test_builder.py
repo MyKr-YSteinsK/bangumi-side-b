@@ -74,7 +74,13 @@ def test_offline_builder_generates_both_profiles_without_mutating_sqlite(
     assert '"profile": "pages"' in report
     marker = json.loads((workspace / "state" / "pages-build.json").read_text("utf-8"))
     assert marker["profile"] == "pages"
+    assert marker["schema"] == 2
     assert marker["source_commit"] != "unavailable"
+    snapshot = json.loads(
+        (workspace / "state" / "pages-snapshot.json").read_text("utf-8")
+    )
+    assert snapshot["candidate_id"] == marker["candidate_id"]
+    assert snapshot["facts_snapshot_hash"] == marker["facts_snapshot_hash"]
 
 
 def test_empty_database_builds_a_safe_empty_local_index(tmp_path: Path) -> None:

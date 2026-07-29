@@ -192,6 +192,10 @@ class SubjectSynchronizer:
         )
         audit_report = self._write_tag_audit_report()
         exit_code = 130 if interrupted else int(any(stats.failed for stats in all_stats))
+        if exit_code == 0:
+            from bgm_side_b.release.candidate import advance_data_generation
+
+            advance_data_generation(self.reports_directory.parent)
         return SyncRun(tuple(all_stats), sync_report, audit_report, exit_code)
 
     def _cleanup_blacklisted_subjects(

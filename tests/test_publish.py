@@ -12,7 +12,8 @@ import pytest
 from bgm_side_b.build.builder import ArchiveBuilder
 from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database
-from bgm_side_b.release.publish import Publisher, PublishError
+from bgm_side_b.release.candidate import advance_data_generation
+from bgm_side_b.release.publish import Publisher, PublishError, _allowed_origin
 from bgm_side_b.repository import (
     SubjectQuarter,
     SubjectRecord,
@@ -50,6 +51,7 @@ def publish_root(tmp_path: Path) -> tuple[Path, Path]:
     remote = tmp_path / "remote.git"
     _git(tmp_path, "init", "--bare", str(remote))
     _git(root, "remote", "add", "test", str(remote))
+    _git(root, "remote", "add", "origin", str(remote))
     workspace = root / "workspace"
     database = Database(workspace / "data" / "bangumi-side-b.sqlite3")
     database.migrate()
@@ -72,6 +74,7 @@ def test_publish_dry_run_and_local_bare_remote_transaction(
 ) -> None:
     root, remote = publish_root
     publisher = Publisher(root)
+    (root / "workspace" / "data" / "bangumi-side-b.sqlite3").unlink()
     dry_run = publisher.publish(dry_run=True, remote="test")
     assert dry_run.dry_run and not dry_run.published
     assert dry_run.report_path.is_file()
@@ -86,6 +89,25 @@ def test_publish_dry_run_and_local_bare_remote_transaction(
     assert '"101"' in snapshot
     with pytest.raises(PublishError, match="no publishable changes"):
         publisher.publish(remote="test")
+
+
+def test_publish_refuses_changed_facts_and_unsafe_origin_branch(
+    publish_root: tuple[Path, Path],
+) -> None:
+    root, _ = publish_root
+    publisher = Publisher(root)
+    with pytest.raises(PublishError, match="gh-pages only"):
+        publisher.publish(dry_run=True, remote="origin", branch="main")
+    advance_data_generation(root / "workspace")
+    with pytest.raises(PublishError, match="facts changed"):
+        publisher.publish(dry_run=True, remote="test")
+
+
+def test_allowed_origin_requires_an_exact_repository_url() -> None:
+    assert _allowed_origin("https://github.com/MyKr-YSteinsK/bangumi-side-b.git")
+    assert _allowed_origin("git@github.com:MyKr-YSteinsK/bangumi-side-b.git")
+    assert not _allowed_origin("https://github.com/other/MyKr-YSteinsK/bangumi-side-b.git")
+    assert not _allowed_origin("https://github.com/MyKr-YSteinsK/bangumi-side-b.git?x=1")
 
 
 def _git(cwd: Path, *args: str) -> str:

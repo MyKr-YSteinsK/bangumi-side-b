@@ -11,16 +11,17 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from bgm_side_b import __version__
 from bgm_side_b.build.paths import PathResolver
 from bgm_side_b.build.profiles import pages_profile
-from bgm_side_b.build.projection import BuildProjection
-from bgm_side_b.build.queries import BuildQueries
 from bgm_side_b.build.templates import TemplateRenderer
-from bgm_side_b.config import load_rules
-from bgm_side_b.database import Database
-from bgm_side_b.release.candidate import read_pages_build_marker
+from bgm_side_b.release.candidate import (
+    read_data_generation,
+    read_pages_build_marker,
+    read_pages_build_snapshot,
+)
 from bgm_side_b.release.history import (
     history_entry,
     next_release_version,
@@ -38,7 +39,6 @@ from bgm_side_b.release.manifest import (
 from bgm_side_b.release.snapshot import (
     diff_snapshots,
     read_snapshot,
-    snapshot_index,
     write_snapshot,
 )
 from bgm_side_b.release.validation import validate_release_payload
@@ -76,16 +76,16 @@ class Publisher:
         branch: str = "gh-pages",
     ) -> PublishRun:
         """Publish one fully verified snapshot, or simulate it without Git writes."""
-        self._preconditions(dry_run=dry_run, remote=remote)
+        self._preconditions(dry_run=dry_run, remote=remote, branch=branch)
         marker = read_pages_build_marker(self.workspace)
-        self._validate_candidate(marker)
+        build_snapshot = self._validate_candidate(marker)
         remote_release, remote_history = self._remote_state(
             remote, branch, required=not dry_run
         )
         previous_version = (
             str(remote_release["release_version"]) if remote_release else None
         )
-        changes, system_changes, snapshot = self._changes()
+        changes, system_changes, snapshot = self._changes(build_snapshot)
         if (
             remote_release
             and remote_release.get("app_version") != __version__
@@ -93,7 +93,7 @@ class Publisher:
         ):
             raise PublishError("app version changed but CHANGELOG Unreleased is empty")
         rules_hash = str(snapshot["rules_hash"])
-        candidate_hash = str(marker["candidate_content_hash"])
+        candidate_hash = str(marker["business_content_hash"])
         if remote_release and self._has_no_changes(
             remote_release, candidate_hash, rules_hash, system_changes
         ):
@@ -136,7 +136,7 @@ class Publisher:
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
-    def _preconditions(self, *, dry_run: bool, remote: str) -> None:
+    def _preconditions(self, *, dry_run: bool, remote: str, branch: str) -> None:
         if self._git("rev-parse", "--abbrev-ref", "HEAD") != "main":
             raise PublishError("publish must run from main")
         dirty = [
@@ -146,10 +146,17 @@ class Publisher:
         ]
         if dirty:
             raise PublishError("publish requires a clean working tree")
+        if not _safe_branch(branch):
+            raise PublishError("publish branch is invalid")
+        if remote == "origin" and branch != "gh-pages":
+            raise PublishError("origin publish may target gh-pages only")
         if not dry_run and remote == "origin":
             url = self._git("remote", "get-url", "origin")
-            if "MyKr-YSteinsK/bangumi-side-b" not in url.replace("\\", "/"):
+            if not _allowed_origin(url):
                 raise PublishError("origin does not match the allowed repository")
+            self._run_git("fetch", "origin", "main")
+            if self._git("rev-parse", "HEAD") != self._git("rev-parse", "origin/main"):
+                raise PublishError("main must be pushed before publishing Pages")
 
     def _validate_candidate(self, marker: dict[str, object]):
         if marker.get("profile") != "pages":
@@ -159,11 +166,25 @@ class Publisher:
         if marker.get("source_commit") != self._git("rev-parse", "HEAD"):
             raise PublishError("Pages build marker is stale")
         try:
+            build_snapshot = read_pages_build_snapshot(self.workspace)
+            generation = read_data_generation(self.workspace)
+        except ValueError as error:
+            raise PublishError(str(error)) from error
+        if (
+            build_snapshot.get("candidate_id") != marker.get("candidate_id")
+            or build_snapshot.get("facts_snapshot_hash")
+            != marker.get("facts_snapshot_hash")
+            or build_snapshot.get("source_commit") != marker.get("source_commit")
+        ):
+            raise PublishError("Pages build marker and facts snapshot disagree")
+        if generation > int(marker.get("data_generation", -1)):
+            raise PublishError("facts changed since the Pages build; rebuild Pages")
+        try:
             entries = index_candidate(self.candidate, self.profile.deployment_path)
         except ManifestError as error:
             raise PublishError(str(error)) from error
         actual_hash = candidate_content_hash(entries)
-        if marker.get("candidate_content_hash") != actual_hash:
+        if marker.get("business_content_hash") != actual_hash:
             release_path = self.candidate / "release.json"
             try:
                 mirrored = json.loads(release_path.read_text("utf-8"))
@@ -174,7 +195,7 @@ class Publisher:
                 ) from error
             if (
                 mirrored.get("candidate_content_hash")
-                != marker.get("candidate_content_hash")
+                != marker.get("business_content_hash")
                 or mirrored.get("content_hash") != actual_hash
             ):
                 raise PublishError(
@@ -190,7 +211,7 @@ class Publisher:
         if not all((self.candidate / item).is_file() for item in required):
             raise PublishError("Pages candidate lacks its PWA shell")
         _scan_public_tree(self.candidate)
-        return entries
+        return build_snapshot
 
     def _remote_state(
         self, remote: str, branch: str, *, required: bool
@@ -224,8 +245,12 @@ class Publisher:
             raise PublishError("remote release history is invalid")
         return release, history
 
-    def _changes(self) -> tuple[dict[str, object], tuple[str, ...], dict[str, object]]:
-        snapshot = _candidate_snapshot(self.root)
+    def _changes(
+        self, build_snapshot: dict[str, object]
+    ) -> tuple[dict[str, object], tuple[str, ...], dict[str, object]]:
+        snapshot = build_snapshot.get("facts")
+        if not isinstance(snapshot, dict):
+            raise PublishError("Pages facts snapshot is invalid; rebuild Pages")
         previous = read_snapshot(self.workspace / "releases" / "current-snapshot.json")
         return (
             diff_snapshots(previous, snapshot),
@@ -445,37 +470,6 @@ class Publisher:
         )
 
 
-def _candidate_snapshot(root: Path) -> dict[str, object]:
-    """Read existing facts without invoking sync or a static build."""
-    config = root / "config"
-    digest = hashlib.sha256()
-    for path in sorted(item for item in config.rglob("*") if item.is_file()):
-        digest.update(path.relative_to(config).as_posix().encode())
-        digest.update(path.read_bytes())
-    blacklist = hashlib.sha256((config / "bangumi.toml").read_bytes()).hexdigest()
-    database = Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
-    if not database.path.is_file():
-        raise PublishError("publish requires the existing local fact database")
-    settings, tag_rules, source_rules = load_rules(config)
-    queries = BuildQueries(database)
-    models = tuple(
-        BuildProjection(
-            tag_rules,
-            source_rules,
-            root / "workspace",
-            excluded_subject_ids=settings.excluded_subject_ids,
-        ).project_quarter(
-            queries.load_quarter(
-                year, month, excluded_subject_ids=settings.excluded_subject_ids
-            )
-        )
-        for year, month in queries.list_quarters(settings.excluded_subject_ids)
-    )
-    return snapshot_index(
-        models, rules_hash=digest.hexdigest(), blacklist_hash=blacklist
-    )
-
-
 def _render_updates(root: Path, staging: Path, release: dict[str, object]) -> None:
     assets = {
         path.name: f"assets/{path.name}"
@@ -607,6 +601,27 @@ def _json(value: object) -> str:
 
 def _system_hash(changes: tuple[str, ...]) -> str:
     return hashlib.sha256("\n".join(changes).encode()).hexdigest()
+
+
+def _safe_branch(branch: str) -> bool:
+    if not branch or any(value in branch for value in (":", "^", "~", "..", "@{", " ")):
+        return False
+    return all(character.isalnum() or character in "._/-" for character in branch)
+
+
+def _allowed_origin(value: str) -> bool:
+    if value.startswith("git@github.com:"):
+        return value.removeprefix("git@github.com:") == (
+            "MyKr-YSteinsK/bangumi-side-b.git"
+        )
+    parsed = urlparse(value)
+    return (
+        parsed.scheme in {"https", "ssh"}
+        and parsed.hostname == "github.com"
+        and parsed.path == "/MyKr-YSteinsK/bangumi-side-b.git"
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def _temporary_plan(line: str) -> bool:

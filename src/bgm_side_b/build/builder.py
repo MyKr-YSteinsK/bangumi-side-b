@@ -120,6 +120,7 @@ class ArchiveBuilder:
                 deployment_path=pages_profile().deployment_path,
                 quarter_count=pages_report.quarters,
                 subject_count=pages_report.subjects,
+                models=models,
             )
         return BuildRun(report, tuple(reports))
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -61,6 +62,9 @@ def test_offline_builder_generates_both_profiles_without_mutating_sqlite(
     assert str(tmp_path) not in report
     assert '"profile": "local"' in report
     assert '"profile": "pages"' in report
+    marker = json.loads((workspace / "state" / "pages-build.json").read_text("utf-8"))
+    assert marker["profile"] == "pages"
+    assert marker["source_commit"] != "unavailable"
 
 
 def test_empty_database_builds_a_safe_empty_local_index(tmp_path: Path) -> None:

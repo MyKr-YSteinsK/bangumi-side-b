@@ -24,6 +24,7 @@ from bgm_side_b.build.report import ProfileBuildReport, write_build_report
 from bgm_side_b.build.templates import RenderMedia, TemplateRenderer
 from bgm_side_b.config import ProjectSettings, SourceRules, TagRules
 from bgm_side_b.database import Database
+from bgm_side_b.release.candidate import write_pages_build_marker
 from bgm_side_b.sync import SyncScope
 
 
@@ -108,6 +109,16 @@ class ArchiveBuilder:
         report = write_build_report(
             self.reports_directory, label, started, finished, tuple(reports)
         )
+        pages_report = next((item for item in reports if item.profile == "pages"), None)
+        if pages_report is not None:
+            write_pages_build_marker(
+                self.workspace_directory,
+                self.distribution_directory / "pages",
+                project_root=self.project_root,
+                deployment_path=pages_profile().deployment_path,
+                quarter_count=pages_report.quarters,
+                subject_count=pages_report.subjects,
+            )
         return BuildRun(report, tuple(reports))
 
     def _build_profile(

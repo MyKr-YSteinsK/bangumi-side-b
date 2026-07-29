@@ -11,6 +11,7 @@ from bgm_side_b.build.builder import ArchiveBuilder, BuildError
 from bgm_side_b.build.queries import BuildDataError
 from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database
+from bgm_side_b.release.publish import Publisher, PublishError
 from bgm_side_b.repository import SubjectRepository
 from bgm_side_b.sync import SubjectSynchronizer, parse_sync_scope
 
@@ -55,6 +56,16 @@ def build_parser() -> argparse.ArgumentParser:
     build_command.add_argument(
         "--all", action="store_true", help="Build every currently stored quarter."
     )
+    publish_command = subparsers.add_parser(
+        "publish", help="Validate and manually publish an existing Pages candidate."
+    )
+    publish_command.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Assemble and validate without Git publication.",
+    )
+    publish_command.add_argument("--remote", default="origin")
+    publish_command.add_argument("--branch", default="gh-pages")
     build_command.add_argument(
         "--target",
         choices=("all", "local", "pages"),
@@ -124,5 +135,23 @@ def main(argv: list[str] | None = None) -> int:
         except (BuildDataError, BuildError) as error:
             build_parser().error(str(error))
         print(f"build report: {run.report_path.as_posix()}")
+        return 0
+    if args.command == "publish":
+        root = find_project_root()
+        if root is None:
+            build_parser().error(
+                "could not find a project root containing pyproject.toml and config"
+            )
+        try:
+            run = Publisher(root).publish(
+                dry_run=args.dry_run, remote=args.remote, branch=args.branch
+            )
+        except PublishError as error:
+            build_parser().error(str(error))
+        print(f"publish report: {run.report_path.as_posix()}")
+        if run.dry_run:
+            print(f"dry run only: {run.release_version} was not published")
+        else:
+            print(f"published release: {run.release_version}")
         return 0
     return 2

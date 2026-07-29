@@ -180,6 +180,8 @@ class TemplateRenderer:
         settings_href: str,
         updates_href: str,
         app_version: str,
+        release: Mapping[str, object] | None = None,
+        history: tuple[Mapping[str, object], ...] = (),
     ) -> str:
         """Render a neutral Pages shell that never pretends to be a quarter."""
         return self.environment.get_template(template_name).render(
@@ -199,6 +201,8 @@ class TemplateRenderer:
             settings_href=settings_href,
             updates_href=updates_href,
             app_version=app_version,
+            release=release,
+            history=history,
         )
 
 

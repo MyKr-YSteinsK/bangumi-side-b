@@ -3,6 +3,13 @@
 {% block content %}
 <article class="pwa-reference" data-pwa-updates>
   <p class="eyebrow">RELEASE LOG</p><h1>更新日志</h1>
-  <p class="pwa-note">等待发布版本信息。正式发布后，此页会随完整快照写入系统变化、资料变化与历史版本。</p>
+  {% if release %}
+    <p class="pwa-note">资料版本 {{ release.release_version }} · 程序 {{ release.app_version }} · {{ release.change_kind }}</p>
+    {% if release.system %}<section><h2>系统变化</h2><ul>{% for item in release.system %}<li>{{ item }}</li>{% endfor %}</ul></section>{% endif %}
+    <section><h2>资料变化</h2><ul>{% for item in release.data %}<li>{{ item }}</li>{% endfor %}</ul></section>
+    {% if history %}<section><h2>历史版本</h2><ul>{% for item in history %}<li>{{ item.release_version }} · {{ item.change_kind }}</li>{% endfor %}</ul></section>{% endif %}
+  {% else %}
+    <p class="pwa-note">等待发布版本信息。正式发布后，此页会随完整快照写入系统变化、资料变化与历史版本。</p>
+  {% endif %}
 </article>
 {% endblock %}

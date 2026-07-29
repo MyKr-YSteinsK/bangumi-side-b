@@ -1,6 +1,35 @@
 (() => {
   "use strict";
 
+  const detailReturn = document.querySelector("[data-detail-return]");
+  const fromQuarter = new URLSearchParams(window.location.search).get("from");
+  if (detailReturn && /^\d{4}-(01|04|07|10)$/.test(fromQuarter || "")) {
+    detailReturn.href = `../../quarters/${fromQuarter}/index.html`;
+    detailReturn.textContent = `返回 ${fromQuarter} 档`;
+  }
+  const aliasToggle = document.querySelector("[data-toggle-aliases]");
+  if (aliasToggle) {
+    aliasToggle.addEventListener("click", () => {
+      const expanded = aliasToggle.getAttribute("aria-expanded") === "true";
+      document.querySelectorAll("[data-extra-alias]").forEach((item) => {
+        item.hidden = expanded;
+      });
+      aliasToggle.setAttribute("aria-expanded", String(!expanded));
+      aliasToggle.textContent = expanded ? "展开全部别名" : "收起别名";
+    });
+  }
+  const episodeToggle = document.querySelector("[data-toggle-episodes]");
+  if (episodeToggle) {
+    episodeToggle.addEventListener("click", () => {
+      const expanded = episodeToggle.getAttribute("aria-expanded") === "true";
+      document.querySelectorAll("[data-extra-episode]").forEach((item) => {
+        item.hidden = expanded;
+      });
+      episodeToggle.setAttribute("aria-expanded", String(!expanded));
+      episodeToggle.textContent = expanded ? "展开剩余章节" : "收起章节";
+    });
+  }
+
   const cards = Array.from(document.querySelectorAll(".subject-card"));
   const drawer = document.querySelector("#subject-drawer");
   const dataNode = document.querySelector("#quarter-subject-data");
@@ -186,6 +215,14 @@
     external.rel = "noopener noreferrer";
     external.textContent = "在 Bangumi 查看";
     drawerContent.append(external);
+    if (record.detail_href) {
+      const detail = document.createElement("a");
+      detail.className = "text-link";
+      detail.href = record.detail_href;
+      detail.dataset.detailLink = "";
+      detail.textContent = "完整资料";
+      drawerContent.append(document.createTextNode(" · "), detail);
+    }
   }
 
   function openDrawer(subjectId, button) {

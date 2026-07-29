@@ -12,11 +12,15 @@ from bgm_side_b.build.models import BuildQuarter, SubjectDrawer
 def drawer_json(
     quarter: BuildQuarter,
     cover_hrefs: Mapping[int, str] | None = None,
+    detail_hrefs: Mapping[int, str] | None = None,
 ) -> str:
     """Serialize quick-drawer data without allowing a script-tag escape."""
     hrefs = cover_hrefs or {}
+    details = detail_hrefs or {}
     payload = {
-        str(detail.drawer.card.subject_id): _drawer_payload(detail.drawer, hrefs)
+        str(detail.drawer.card.subject_id): _drawer_payload(
+            detail.drawer, hrefs, details
+        )
         for detail in quarter.details
     }
     return (
@@ -30,7 +34,9 @@ def drawer_json(
 
 
 def _drawer_payload(
-    drawer: SubjectDrawer, cover_hrefs: Mapping[int, str]
+    drawer: SubjectDrawer,
+    cover_hrefs: Mapping[int, str],
+    detail_hrefs: Mapping[int, str],
 ) -> dict[str, object]:
     card = drawer.card
     return {
@@ -49,5 +55,6 @@ def _drawer_payload(
         "sources": [asdict(source) for source in card.sources],
         "tags": [asdict(tag) for tag in card.tags],
         "cover_href": cover_hrefs.get(card.subject_id),
+        "detail_href": detail_hrefs.get(card.subject_id),
         "bangumi_href": f"https://bgm.tv/subject/{card.subject_id}",
     }

@@ -40,7 +40,8 @@ def test_shared_quarter_shell_has_landmarks_headings_and_no_remote_resources() -
     assert "<style" not in rendered
     assert '<link rel="stylesheet" href="../../assets/site.123.css">' in rendered
     assert '<script src="../../assets/site.456.js" defer></script>' in rendered
-    assert 'rel="noopener noreferrer"' in rendered
+    assert 'id="quarter-subject-data"' in rendered
+    assert '"bangumi_href":"https://bgm.tv/subject/101"' in rendered
     assert "长中文标题" in rendered
     assert "Original Title" in rendered
     assert "暂无评分" in rendered

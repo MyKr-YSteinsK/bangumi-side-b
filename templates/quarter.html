@@ -10,13 +10,35 @@
     </div>
   </section>
   {% include "partials/quarter-nav.html" %}
+  <section class="archive-controls" aria-label="筛选与排序">
+    <div class="archive-controls__search">
+      <label for="subject-search">按标题搜索</label>
+      <input id="subject-search" type="search" autocomplete="off" placeholder="中文、原名或别名" data-search-input>
+    </div>
+    <div class="archive-controls__sort">
+      <label for="subject-sort">排序</label>
+      <select id="subject-sort" data-sort-select>
+        <option value="score-desc">评分：高到低</option>
+        <option value="score-asc">评分：低到高</option>
+        <option value="votes-desc">评分人数：多到少</option>
+        <option value="votes-asc">评分人数：少到多</option>
+      </select>
+    </div>
+    <div class="archive-controls__filters" aria-label="资料筛选">
+      <div class="filter-group" data-filter-group="source"><span>来源</span>{% for source in filter_sources %}<button type="button" class="filter-chip" data-filter-value="{{ source }}">{{ source }}</button>{% endfor %}</div>
+      <div class="filter-group" data-filter-group="tag"><span>标签</span>{% for tag in filter_tags %}<button type="button" class="filter-chip" data-filter-value="{{ tag }}">{{ tag }}</button>{% endfor %}</div>
+      <div class="filter-group" data-filter-group="format"><span>形式</span><button type="button" class="filter-chip" data-filter-value="tv">TV</button><button type="button" class="filter-chip" data-filter-value="movie">剧场版</button><span class="filter-chip is-disabled" aria-disabled="true">WEB / OVA 暂未收录</span></div>
+      <div class="filter-group" data-filter-group="section"><span>分区</span>{% for section in quarter.sections %}<button type="button" class="filter-chip" data-filter-value="{{ section.kind }}">{{ section.label }}</button>{% endfor %}</div>
+    </div>
+    <div class="archive-controls__status"><span data-visible-count>{{ quarter.metadata.subject_count }}</span> / {{ quarter.metadata.subject_count }} 部可见 <button type="button" class="clear-filters" data-clear-filters hidden>清除筛选</button></div>
+  </section>
   <div class="archive-sections">
     {% for section in quarter.sections %}
       <section class="archive-section" aria-labelledby="section-{{ section.kind }}">
         <div class="section-heading">
           <p class="section-heading__code">B/{{ '%02d'|format(quarter.month) }} · {{ '%02d'|format(loop.index) }}</p>
           <h2 id="section-{{ section.kind }}">{{ section.label }}</h2>
-          <p class="section-heading__count">{{ section.subjects|length }} 部</p>
+          <p class="section-heading__count"><span data-section-visible>{{ section.subjects|length }}</span> / {{ section.subjects|length }} 部</p>
         </div>
         <div class="subject-grid" role="list">
           {% for card in section.subjects %}
@@ -31,8 +53,7 @@
       </section>
     {% endfor %}
   </div>
-  {% if quarter.details %}
-    {% set drawer = quarter.details[0].drawer %}
-    {% include "partials/drawer.html" %}
-  {% endif %}
+  <p class="no-results" data-no-results hidden>没有符合当前条件的作品。</p>
+  {% include "partials/drawer.html" %}
+  <script type="application/json" id="quarter-subject-data">{{ drawer_data|safe }}</script>
 {% endblock %}

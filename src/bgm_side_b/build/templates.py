@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
+from bgm_side_b.build.frontend import drawer_json
 from bgm_side_b.build.models import BuildQuarter
 
 
 class TemplateError(RuntimeError):
     """Raised when a shared template source cannot be loaded safely."""
+
+
+@dataclass(frozen=True)
+class RenderMedia:
+    """One profile-published cover as seen from a rendered document."""
+
+    href: str
+    width: int
+    height: int
 
 
 class TemplateRenderer:
@@ -36,12 +47,30 @@ class TemplateRenderer:
         script_href: str,
         profile_label: str,
         navigation_hrefs: Mapping[tuple[int, int], str],
+        cover_media: Mapping[int, RenderMedia] | None = None,
     ) -> str:
         """Render the shared editorial shell used by both output profiles."""
+        media = cover_media or {}
+        cover_hrefs = {subject_id: item.href for subject_id, item in media.items()}
         return self.environment.get_template("quarter.html").render(
             quarter=quarter,
             stylesheet_href=stylesheet_href,
             script_href=script_href,
             profile_label=profile_label,
             navigation_hrefs=navigation_hrefs,
+            cover_media=media,
+            drawer_data=drawer_json(quarter, cover_hrefs),
+            filter_sources=_filter_values(quarter, "sources", "source"),
+            filter_tags=_filter_values(quarter, "tags", "name"),
         )
+
+
+def _filter_values(
+    quarter: BuildQuarter, field: str, attribute: str
+) -> tuple[str, ...]:
+    values: dict[str, None] = {}
+    for section in quarter.sections:
+        for card in section.subjects:
+            for item in getattr(card, field):
+                values.setdefault(getattr(item, attribute), None)
+    return tuple(values)

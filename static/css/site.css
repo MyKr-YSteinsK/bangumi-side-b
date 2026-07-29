@@ -169,6 +169,8 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .pwa-gate__facts dt, .pwa-settings__facts dt { color: var(--ink-muted); font-size: .68rem; }
 .pwa-gate__facts dd, .pwa-settings__facts dd { margin: 0; }
 .pwa-action, .pwa-actions button { background: var(--ink); border: 1px solid var(--ink); color: var(--paper-raised); cursor: pointer; min-height: 2.7rem; padding: .5rem .8rem; }
+.pwa-progress { accent-color: var(--accent); display: block; height: .7rem; margin: 1rem 0 .3rem; width: 100%; }
+.pwa-progress__label { color: var(--ink-muted); font-family: var(--font-mono); font-size: .72rem; }
 .pwa-action:hover, .pwa-actions button:hover { background: var(--accent-ink); border-color: var(--accent-ink); }
 .pwa-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
 .pwa-actions button:disabled { background: var(--surface-muted); border-color: var(--rule); color: var(--ink-muted); cursor: not-allowed; }

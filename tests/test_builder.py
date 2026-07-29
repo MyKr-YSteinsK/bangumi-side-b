@@ -65,7 +65,9 @@ def test_offline_builder_generates_both_profiles_without_mutating_sqlite(
     assert manifest["scope"] == "./"
     assert (tmp_path / "dist" / "pages" / "settings" / "index.html").is_file()
     assert (tmp_path / "dist" / "pages" / "updates" / "index.html").is_file()
+    assert (tmp_path / "dist" / "pages" / "sw.js").is_file()
     assert not (tmp_path / "dist" / "local" / "manifest.webmanifest").exists()
+    assert not (tmp_path / "dist" / "local" / "sw.js").exists()
     report = run.report_path.read_text(encoding="utf-8")
     assert str(tmp_path) not in report
     assert '"profile": "local"' in report

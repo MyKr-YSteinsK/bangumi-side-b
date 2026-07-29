@@ -178,6 +178,7 @@ class ArchiveBuilder:
                 json.dumps(_pwa_manifest(), ensure_ascii=False, separators=(",", ":"))
                 + "\n",
             )
+            _write_service_worker(stage, assets)
         resolver = PathResolver(profile)
         publisher = MediaPublisher(self.workspace_directory, stage)
         warnings: list[str] = []
@@ -432,6 +433,33 @@ def _pwa_manifest() -> dict[str, object]:
     }
 
 
+def _write_service_worker(stage: Path, assets: dict[str, str]) -> None:
+    """Publish a stable worker URL while injecting only generated shell paths."""
+    source = (stage / assets["sw.js"]).read_text(encoding="utf-8")
+    shell_files = [
+        "./index.html",
+        "./offline.html",
+        "./settings/index.html",
+        "./updates/index.html",
+        "./manifest.webmanifest",
+        "./icons/icon-192.png",
+        "./icons/icon-512.png",
+        "./icons/icon-512-maskable.png",
+        "./" + assets["css/site.css"],
+        "./" + assets["js/site.js"],
+        "./" + assets["js/pwa-controller.js"],
+        "./" + assets["js/pwa-ui.js"],
+        "./" + assets["icons/favicon.svg"],
+    ]
+    marker = "/* __BSB_SHELL_FILES__ */"
+    if marker not in source:
+        raise BuildError("service worker shell marker is missing")
+    _write_text(
+        stage / "sw.js",
+        source.replace(marker, json.dumps(shell_files, separators=(",", ":"))),
+    )
+
+
 def _write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8", newline="\n")
@@ -476,7 +504,7 @@ def _validate_output(stage: Path, profile: BuildProfile) -> None:
         external_urls = re.findall(r"https?://[^\"'\s)<]+", content)
         if any(not allowed_external.fullmatch(url) for url in external_urls):
             raise BuildError("generated output contains a forbidden external resource")
-        if path.name == "site.js" and "fetch(" in content:
+        if re.fullmatch(r"site\.[0-9a-f]{12}\.js", path.name) and "fetch(" in content:
             raise BuildError("archive interaction JavaScript must stay offline")
     for html in stage.rglob("*.html"):
         content = html.read_text(encoding="utf-8")

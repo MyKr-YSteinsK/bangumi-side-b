@@ -136,6 +136,34 @@ def assert_pages_media_policy(output_directory: Path) -> None:
         raise AssetError("Pages output contains character media")
 
 
+def generate_pwa_icons(output_directory: Path) -> dict[str, str]:
+    """Create deterministic geometric Side B icons without fonts or third-party art."""
+    icons = {
+        "icon-192.png": (192, False),
+        "icon-512.png": (512, False),
+        "icon-512-maskable.png": (512, True),
+    }
+    destination = output_directory / "icons"
+    destination.mkdir(parents=True, exist_ok=True)
+    generated: dict[str, str] = {}
+    for filename, (size, maskable) in icons.items():
+        image = Image.new("RGB", (size, size), "#f5f1e8")
+        pixels = image.load()
+        center = size / 2
+        outer = size * (0.34 if maskable else 0.42)
+        inner = size * (0.24 if maskable else 0.31)
+        for y in range(size):
+            for x in range(size):
+                distance = ((x - center) ** 2 + (y - center) ** 2) ** 0.5
+                if inner <= distance <= outer:
+                    pixels[x, y] = (23, 32, 29)
+                elif outer - size * 0.025 <= distance <= outer:
+                    pixels[x, y] = (138, 49, 71)
+        image.save(destination / filename, format="PNG", optimize=True)
+        generated[filename] = f"icons/{filename}"
+    return generated
+
+
 def _workspace_media_path(workspace: Path, media: MediaView) -> Path | None:
     if media.relative_path is None:
         return None

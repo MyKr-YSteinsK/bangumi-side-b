@@ -2,14 +2,14 @@
 <header class="site-header" aria-label="资料库页眉">
   <div class="site-header__rule">
     <p>Bangumi Side B by MyKr</p>
-    <p>ARCHIVE / {{ quarter.year }}-{{ '%02d'|format(quarter.month) }}</p>
+    <p>{{ header_code }}</p>
   </div>
   <div class="site-header__brand">
-    <a class="brand" href="{{ navigation_hrefs.get((quarter.year, quarter.month), 'index.html') }}" aria-label="Bangumi Side B 首页">
+    <a class="brand" href="{{ home_href }}" aria-label="Bangumi Side B 首页">
       {{ archive_mark() }}
       <span class="brand__name">Bangumi Side B</span>
       <span class="brand__side">SIDE B</span>
     </a>
-    <p class="site-header__profile">{{ profile_label }}</p>
+    <div class="site-header__utility"><p class="site-header__profile">{{ profile_label }}</p>{% if pwa_enabled %}<nav aria-label="Pages 工具"><a href="{{ settings_href }}">设置</a><a href="{{ updates_href }}">更新日志</a></nav>{% endif %}</div>
   </div>
 </header>

@@ -4,16 +4,20 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
+    {% if pwa_enabled %}<meta name="theme-color" content="#f5f1e8"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><link rel="manifest" href="{{ manifest_href }}"><link rel="apple-touch-icon" href="{{ apple_touch_icon_href }}">{% endif %}
+    <link rel="icon" href="{{ favicon_href }}" type="image/svg+xml">
     <title>{% block title %}Bangumi Side B｜MyKr{% endblock %}</title>
     <link rel="stylesheet" href="{{ stylesheet_href }}">
   </head>
-  <body class="archive-page season-{{ '%02d'|format(quarter.month) }}">
+  <body class="archive-page season-{{ page_season }} page-{{ page_kind }}">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
     {% include "partials/header.html" %}
     <main id="main-content" tabindex="-1">
       {% block content %}{% endblock %}
     </main>
+    {% if pwa_enabled and page_kind in ("quarter", "detail") %}{% include "partials/pwa-gate.html" %}{% endif %}
     {% include "partials/footer.html" %}
     <script src="{{ script_href }}" defer></script>
+    {% if pwa_enabled %}<script type="module" src="{{ pwa_controller_href }}"></script><script type="module" src="{{ pwa_ui_href }}"></script>{% endif %}
   </body>
 </html>

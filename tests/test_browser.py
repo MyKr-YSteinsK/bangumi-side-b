@@ -110,10 +110,10 @@ def test_local_file_archive_restores_state_and_remains_offline(
     page.keyboard.press("Escape")
     page.locator(".subject-card__detail-link").click()
     assert page.locator("[data-subject-detail]").count() == 1
-    page.go_back()
-    assert page.locator("[data-search-input]").input_value() == "标题一"
     page.locator("[data-toggle-episodes]").click()
     assert page.locator("[data-extra-episode][hidden]").count() == 0
+    page.go_back()
+    assert page.locator("[data-search-input]").input_value() == "标题一"
     assert all(url.startswith("file://") for url in requests)
 
 

@@ -13,6 +13,7 @@ from bgm_side_b.build.assets import (
     AssetError,
     MediaPublisher,
     assert_pages_media_policy,
+    generate_pwa_icons,
     publish_static_assets,
 )
 from bgm_side_b.build.models import MediaView
@@ -98,6 +99,16 @@ def test_media_rejects_unsafe_paths_and_pages_policy_fails_closed(
     (characters / "unexpected.png").write_bytes(b"x")
     with pytest.raises(AssetError, match="character media"):
         assert_pages_media_policy(output)
+
+
+def test_pwa_icon_generator_is_deterministic_and_keeps_maskable_safe_margin(
+    tmp_path: Path,
+) -> None:
+    icons = generate_pwa_icons(tmp_path)
+    assert set(icons) == {"icon-192.png", "icon-512.png", "icon-512-maskable.png"}
+    with Image.open(tmp_path / icons["icon-512-maskable.png"]) as image:
+        assert image.size == (512, 512)
+        assert image.getpixel((0, 0)) == (245, 241, 232)
 
 
 def test_atomic_output_replaces_complete_tree_and_preserves_previous_on_failure(

@@ -1,0 +1,10 @@
+<section class="pwa-gate" data-pwa-gate="checking-local-state" data-pwa-gate-label="需要初始化资料快照" aria-live="polite">
+  <div class="pwa-gate__panel">
+    <p class="eyebrow">OFFLINE ARCHIVE / 01</p>
+    <h1>先初始化完整资料快照</h1>
+    <p>此 PWA 不提供在线浏览。完成校验前，季度、详情与封面不会开放。</p>
+    <dl class="pwa-gate__facts"><div><dt>当前发布</dt><dd>{{ pwa_release_label }}</dd></div><div><dt>季度</dt><dd>{{ pwa_quarter_count }}</dd></div><div><dt>作品</dt><dd>{{ pwa_subject_count }}</dd></div><div><dt>候选大小</dt><dd>{{ pwa_total_bytes }} B</dd></div></dl>
+    <p data-pwa-gate-status>正在检查本地状态</p>
+    <button type="button" class="pwa-action" data-pwa-start>开始初始化</button>
+  </div>
+</section>

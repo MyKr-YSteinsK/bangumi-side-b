@@ -15,6 +15,7 @@ class BuildProfile:
     include_character_images: bool
     derive_cover_webp: bool
     local_notice: bool
+    pwa_enabled: bool
 
     def __post_init__(self) -> None:
         if self.name not in {"local", "pages"}:
@@ -27,12 +28,12 @@ class BuildProfile:
 
 def local_profile() -> BuildProfile:
     """Return the full local profile used directly through ``file://``."""
-    return BuildProfile("local", "local", "/", True, False, True)
+    return BuildProfile("local", "local", "/", True, False, True, False)
 
 
 def pages_profile(deployment_path: str = "/bangumi-side-b/") -> BuildProfile:
     """Return the lightweight Pages profile for one repository subpath."""
-    return BuildProfile("pages", "pages", deployment_path, False, True, False)
+    return BuildProfile("pages", "pages", deployment_path, False, True, False, True)
 
 
 def _normalize_deployment_path(value: str) -> str:

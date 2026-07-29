@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from bgm_side_b.build.assets import (
     MediaPublisher,
     PublishedMedia,
     assert_pages_media_policy,
+    generate_pwa_icons,
     publish_static_assets,
 )
 from bgm_side_b.build.output import AtomicOutput
@@ -162,8 +164,20 @@ class ArchiveBuilder:
         assets = publish_static_assets(self.project_root / "static", stage)
         stylesheet = assets.get("css/site.css")
         script = assets.get("js/site.js")
-        if stylesheet is None or script is None:
+        favicon = assets.get("icons/favicon.svg")
+        if stylesheet is None or script is None or favicon is None:
             raise BuildError("required static source assets are missing")
+        if profile.pwa_enabled:
+            pwa_controller = assets.get("js/pwa-controller.js")
+            pwa_ui = assets.get("js/pwa-ui.js")
+            if pwa_controller is None or pwa_ui is None:
+                raise BuildError("required PWA source assets are missing")
+            generate_pwa_icons(stage)
+            _write_text(
+                stage / "manifest.webmanifest",
+                json.dumps(_pwa_manifest(), ensure_ascii=False, separators=(",", ":"))
+                + "\n",
+            )
         resolver = PathResolver(profile)
         publisher = MediaPublisher(self.workspace_directory, stage)
         warnings: list[str] = []
@@ -216,6 +230,7 @@ class ArchiveBuilder:
                     navigation_hrefs=navigation,
                     cover_media=cover_media,
                     detail_hrefs=detail_hrefs,
+                    **_shell_links(profile, resolver, document, assets),
                 ),
             )
             warnings.extend(model.metadata.warnings)
@@ -261,8 +276,33 @@ class ArchiveBuilder:
                     cover_media=cover,
                     character_media=character_media,
                     include_character_images=profile.include_character_images,
+                    **_shell_links(profile, resolver, document, assets),
                 ),
             )
+        if profile.pwa_enabled:
+            for document, template_name in (
+                ("settings/index.html", "settings.html"),
+                ("updates/index.html", "updates.html"),
+                ("offline.html", "offline.html"),
+            ):
+                links = _shell_links(profile, resolver, document, assets)
+                _write_text(
+                    stage / document,
+                    renderer.render_reference_page(
+                        template_name,
+                        stylesheet_href=resolver.asset(document, stylesheet),
+                        script_href=resolver.asset(document, script),
+                        favicon_href=links["favicon_href"],
+                        manifest_href=links["manifest_href"],
+                        apple_touch_icon_href=links["apple_touch_icon_href"],
+                        pwa_controller_href=links["pwa_controller_href"],
+                        pwa_ui_href=links["pwa_ui_href"],
+                        home_href=links["home_href"],
+                        settings_href=links["settings_href"],
+                        updates_href=links["updates_href"],
+                        app_version=__version__,
+                    ),
+                )
         _write_text(stage / "index.html", _index_html(models, profile))
         if profile.name == "pages":
             assert_pages_media_policy(stage)
@@ -342,6 +382,56 @@ def _profile_label(profile: BuildProfile) -> str:
     return "本地完整资料" if profile.name == "local" else "Pages 轻量资料"
 
 
+def _shell_links(
+    profile: BuildProfile,
+    resolver: PathResolver,
+    document: str,
+    assets: dict[str, str],
+) -> dict[str, object]:
+    """Return document-relative shared-shell links for either output profile."""
+    output: dict[str, object] = {
+        "favicon_href": resolver.asset(document, assets["icons/favicon.svg"]),
+        "pwa_enabled": profile.pwa_enabled,
+        "manifest_href": resolver.href(document, "manifest.webmanifest"),
+        "apple_touch_icon_href": resolver.href(document, "icons/icon-192.png"),
+        "settings_href": resolver.href(document, "settings/index.html"),
+        "updates_href": resolver.href(document, "updates/index.html"),
+        "pwa_release_label": "等待发布版本信息",
+        "pwa_total_bytes": 0,
+        "home_href": resolver.href(document, "index.html"),
+    }
+    if profile.pwa_enabled:
+        output["pwa_controller_href"] = resolver.asset(
+            document, assets["js/pwa-controller.js"]
+        )
+        output["pwa_ui_href"] = resolver.asset(document, assets["js/pwa-ui.js"])
+    return output
+
+
+def _pwa_manifest() -> dict[str, object]:
+    """The portable Pages manifest has relative paths for repository subpaths."""
+    return {
+        "name": "Bangumi Side B by MyKr",
+        "short_name": "BGM B",
+        "start_url": "./",
+        "scope": "./",
+        "display": "standalone",
+        "background_color": "#f5f1e8",
+        "theme_color": "#f5f1e8",
+        "lang": "zh-CN",
+        "icons": [
+            {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
+            {
+                "src": "icons/icon-512-maskable.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "maskable",
+            },
+        ],
+    }
+
+
 def _write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8", newline="\n")
@@ -350,7 +440,7 @@ def _write_text(path: Path, content: str) -> None:
 def _index_html(models: tuple[object, ...], profile: BuildProfile) -> str:
     if not models:
         return (
-            "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\">"
+            '<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
             "<title>Bangumi Side B｜MyKr</title><body><main>"
             "<h1>尚无可展示资料</h1><p>本地资料库中没有可构建季度。</p>"
             "</main></body></html>\n"
@@ -358,10 +448,10 @@ def _index_html(models: tuple[object, ...], profile: BuildProfile) -> str:
     latest = max((model.year, model.month) for model in models)
     destination = f"quarters/{latest[0]:04d}-{latest[1]:02d}/index.html"
     return (
-        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
-        f"<meta http-equiv=\"refresh\" content=\"0; url={destination}\">"
+        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+        f'<meta http-equiv="refresh" content="0; url={destination}">'
         "<title>Bangumi Side B｜MyKr</title></head><body><main>"
-        f"<p>正在进入最新季度：<a href=\"{destination}\">"
+        f'<p>正在进入最新季度：<a href="{destination}">'
         f"{latest[0]}-{latest[1]:02d}</a></p>"
         f"<p>{_profile_label(profile)} · {__version__}</p>"
         "</main></body></html>\n"

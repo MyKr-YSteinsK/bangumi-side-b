@@ -59,6 +59,17 @@ class TemplateRenderer:
         navigation_hrefs: Mapping[tuple[int, int], str],
         cover_media: Mapping[int, RenderMedia] | None = None,
         detail_hrefs: Mapping[int, str] | None = None,
+        favicon_href: str = "favicon.svg",
+        pwa_enabled: bool = False,
+        manifest_href: str = "manifest.webmanifest",
+        apple_touch_icon_href: str = "icons/icon-192.png",
+        pwa_controller_href: str = "pwa-controller.js",
+        pwa_ui_href: str = "pwa-ui.js",
+        settings_href: str = "settings/index.html",
+        updates_href: str = "updates/index.html",
+        pwa_release_label: str = "等待发布版本信息",
+        pwa_total_bytes: int = 0,
+        home_href: str | None = None,
     ) -> str:
         """Render the shared editorial shell used by both output profiles."""
         media = cover_media or {}
@@ -75,6 +86,23 @@ class TemplateRenderer:
             detail_hrefs=details,
             filter_sources=_filter_values(quarter, "sources", "source"),
             filter_tags=_filter_values(quarter, "tags", "name"),
+            page_season=f"{quarter.month:02d}",
+            page_kind="quarter",
+            header_code=f"ARCHIVE / {quarter.year:04d}-{quarter.month:02d}",
+            home_href=home_href
+            or navigation_hrefs.get((quarter.year, quarter.month), "index.html"),
+            favicon_href=favicon_href,
+            pwa_enabled=pwa_enabled,
+            manifest_href=manifest_href,
+            apple_touch_icon_href=apple_touch_icon_href,
+            pwa_controller_href=pwa_controller_href,
+            pwa_ui_href=pwa_ui_href,
+            settings_href=settings_href,
+            updates_href=updates_href,
+            pwa_release_label=pwa_release_label,
+            pwa_quarter_count=sum(item.has_subjects for item in quarter.navigation),
+            pwa_subject_count=quarter.metadata.subject_count,
+            pwa_total_bytes=pwa_total_bytes,
         )
 
     def render_detail_page(
@@ -89,6 +117,17 @@ class TemplateRenderer:
         cover_media: RenderMedia | None = None,
         character_media: Mapping[int, RenderMedia] | None = None,
         include_character_images: bool,
+        favicon_href: str = "favicon.svg",
+        pwa_enabled: bool = False,
+        manifest_href: str = "manifest.webmanifest",
+        apple_touch_icon_href: str = "icons/icon-192.png",
+        pwa_controller_href: str = "pwa-controller.js",
+        pwa_ui_href: str = "pwa-ui.js",
+        settings_href: str = "settings/index.html",
+        updates_href: str = "updates/index.html",
+        pwa_release_label: str = "等待发布版本信息",
+        pwa_total_bytes: int = 0,
+        home_href: str | None = None,
     ) -> str:
         """Render one complete fact page without querying data at runtime."""
         drawer = detail.drawer
@@ -103,6 +142,63 @@ class TemplateRenderer:
             cover_media=cover_media,
             character_media=character_media or {},
             include_character_images=include_character_images,
+            page_season=f"{drawer.entered_month:02d}",
+            page_kind="detail",
+            header_code=(
+                f"ARCHIVE / {drawer.entered_year:04d}-{drawer.entered_month:02d}"
+            ),
+            home_href=home_href
+            or navigation_hrefs.get(
+                (drawer.entered_year, drawer.entered_month), return_href
+            ),
+            favicon_href=favicon_href,
+            pwa_enabled=pwa_enabled,
+            manifest_href=manifest_href,
+            apple_touch_icon_href=apple_touch_icon_href,
+            pwa_controller_href=pwa_controller_href,
+            pwa_ui_href=pwa_ui_href,
+            settings_href=settings_href,
+            updates_href=updates_href,
+            pwa_release_label=pwa_release_label,
+            pwa_quarter_count=0,
+            pwa_subject_count=0,
+            pwa_total_bytes=pwa_total_bytes,
+        )
+
+    def render_reference_page(
+        self,
+        template_name: str,
+        *,
+        stylesheet_href: str,
+        script_href: str,
+        favicon_href: str,
+        manifest_href: str,
+        apple_touch_icon_href: str,
+        pwa_controller_href: str,
+        pwa_ui_href: str,
+        home_href: str,
+        settings_href: str,
+        updates_href: str,
+        app_version: str,
+    ) -> str:
+        """Render a neutral Pages shell that never pretends to be a quarter."""
+        return self.environment.get_template(template_name).render(
+            stylesheet_href=stylesheet_href,
+            script_href=script_href,
+            profile_label="Pages 轻量资料",
+            page_season="neutral",
+            page_kind=template_name.removesuffix(".html").replace("_", "-"),
+            header_code="ARCHIVE / REFERENCE",
+            home_href=home_href,
+            favicon_href=favicon_href,
+            pwa_enabled=True,
+            manifest_href=manifest_href,
+            apple_touch_icon_href=apple_touch_icon_href,
+            pwa_controller_href=pwa_controller_href,
+            pwa_ui_href=pwa_ui_href,
+            settings_href=settings_href,
+            updates_href=updates_href,
+            app_version=app_version,
         )
 
 

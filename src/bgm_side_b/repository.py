@@ -154,6 +154,25 @@ class SyncState:
     error_summary: str | None = None
 
 
+@dataclass(frozen=True)
+class MediaRecord:
+    """One workspace-relative verified media cache record."""
+
+    owner_type: str
+    owner_id: int
+    media_kind: str
+    source_url: str | None
+    local_path: str | None
+    content_hash: str | None
+    size_bytes: int | None
+    mime_type: str | None
+    width: int | None
+    height: int | None
+    downloaded_at: str | None
+    verified_at: str | None
+    status: str
+
+
 class SubjectRepository:
     """Repository methods scoped to subjects and their direct fact snapshots."""
 
@@ -654,6 +673,101 @@ class SubjectRepository:
         finally:
             connection.close()
 
+    def get_media_record(
+        self, owner_type: str, owner_id: int, media_kind: str
+    ) -> MediaRecord | None:
+        """Read one media record by its immutable owner and kind key."""
+        connection = self.database.connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT owner_type, owner_id, media_kind, source_url, local_path,
+                       content_hash, size_bytes, mime_type, width, height,
+                       downloaded_at, verified_at, status
+                FROM media_files
+                WHERE owner_type = ? AND owner_id = ? AND media_kind = ?
+                """,
+                (owner_type, owner_id, media_kind),
+            ).fetchone()
+            return MediaRecord(**dict(row)) if row is not None else None
+        finally:
+            connection.close()
+
+    def upsert_media_record(
+        self, connection: sqlite3.Connection, record: MediaRecord
+    ) -> None:
+        """Store one verified or failed media result without absolute paths."""
+        _validate_media_record(record)
+        connection.execute(
+            """
+            INSERT INTO media_files (
+                owner_type, owner_id, media_kind, source_url, local_path,
+                content_hash, size_bytes, mime_type, width, height, downloaded_at,
+                verified_at, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(owner_type, owner_id, media_kind) DO UPDATE SET
+                source_url = excluded.source_url,
+                local_path = excluded.local_path,
+                content_hash = excluded.content_hash,
+                size_bytes = excluded.size_bytes,
+                mime_type = excluded.mime_type,
+                width = excluded.width,
+                height = excluded.height,
+                downloaded_at = excluded.downloaded_at,
+                verified_at = excluded.verified_at,
+                status = excluded.status
+            """,
+            (
+                record.owner_type,
+                record.owner_id,
+                record.media_kind,
+                record.source_url,
+                record.local_path,
+                record.content_hash,
+                record.size_bytes,
+                record.mime_type,
+                record.width,
+                record.height,
+                record.downloaded_at,
+                record.verified_at,
+                record.status,
+            ),
+        )
+
+    def list_orphaned_media_records(self) -> tuple[MediaRecord, ...]:
+        """List media whose subject or character owner no longer exists."""
+        connection = self.database.connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT owner_type, owner_id, media_kind, source_url, local_path,
+                       content_hash, size_bytes, mime_type, width, height,
+                       downloaded_at, verified_at, status
+                FROM media_files AS media
+                WHERE (owner_type = 'subject' AND NOT EXISTS (
+                    SELECT 1 FROM subjects WHERE subjects.id = media.owner_id
+                )) OR (owner_type = 'character' AND NOT EXISTS (
+                    SELECT 1 FROM characters WHERE characters.id = media.owner_id
+                ))
+                ORDER BY owner_type, owner_id, media_kind
+                """
+            ).fetchall()
+            return tuple(MediaRecord(**dict(row)) for row in rows)
+        finally:
+            connection.close()
+
+    def delete_media_record(
+        self, connection: sqlite3.Connection, record: MediaRecord
+    ) -> None:
+        """Remove a media row after its file was removed or became untrustworthy."""
+        connection.execute(
+            """
+            DELETE FROM media_files
+            WHERE owner_type = ? AND owner_id = ? AND media_kind = ?
+            """,
+            (record.owner_type, record.owner_id, record.media_kind),
+        )
+
     def role_details_need_refresh(self, subject_id: int) -> bool:
         """Return whether a current role relation lacks successful detail data."""
         connection = self.database.connect()
@@ -689,6 +803,21 @@ class SubjectRepository:
                 (subject_id,),
             ).fetchone()
             return person_needs_refresh is not None
+        finally:
+            connection.close()
+
+    def list_subject_character_ids(self, subject_id: int) -> tuple[int, ...]:
+        """Return main characters currently related to one subject in API order."""
+        connection = self.database.connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT character_id FROM subject_characters
+                WHERE subject_id = ? ORDER BY position, character_id
+                """,
+                (subject_id,),
+            ).fetchall()
+            return tuple(row["character_id"] for row in rows)
         finally:
             connection.close()
 
@@ -764,26 +893,9 @@ class SubjectRepository:
 
     def delete_subject(self, connection: sqlite3.Connection, subject_id: int) -> bool:
         """Physically delete a blacklisted subject and its orphaned shared entities."""
-        connection.execute(
-            "DELETE FROM media_files WHERE owner_type = 'subject' AND owner_id = ?",
-            (subject_id,),
-        )
         deleted = connection.execute("DELETE FROM subjects WHERE id = ?", (subject_id,))
         if deleted.rowcount == 0:
             return False
-        orphaned_character_ids = connection.execute(
-            """
-            SELECT id FROM characters
-            WHERE NOT EXISTS (
-                SELECT 1 FROM subject_characters
-                WHERE subject_characters.character_id = characters.id
-            )
-            """
-        ).fetchall()
-        connection.executemany(
-            "DELETE FROM media_files WHERE owner_type = 'character' AND owner_id = ?",
-            ((row["id"],) for row in orphaned_character_ids),
-        )
         connection.execute(
             """
             DELETE FROM characters
@@ -878,6 +990,24 @@ def _validate_display_entity(
         raise ValueError("entity id must be positive")
     if not original_name and not chinese_name:
         raise ValueError("display entity must have an original or Chinese name")
+
+
+def _validate_media_record(record: MediaRecord) -> None:
+    if record.owner_type not in {"subject", "character"}:
+        raise ValueError("media owner type must be subject or character")
+    if record.owner_id <= 0:
+        raise ValueError("media owner id must be positive")
+    expected_kind = "cover" if record.owner_type == "subject" else "character_image"
+    if record.media_kind != expected_kind:
+        raise ValueError("media kind does not match its owner type")
+    if record.status not in {"success", "failed", "stale"}:
+        raise ValueError("media status must be success, failed, or stale")
+    if record.local_path is not None:
+        path = record.local_path.replace("\\", "/")
+        if path.startswith("/") or ":" in path or ".." in path.split("/"):
+            raise ValueError("media path must be workspace-relative")
+    if record.size_bytes is not None and record.size_bytes < 0:
+        raise ValueError("media size must not be negative")
 
 
 def _validate_roles_snapshot(

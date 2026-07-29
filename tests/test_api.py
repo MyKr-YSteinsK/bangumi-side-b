@@ -334,3 +334,26 @@ def test_image_404_is_not_retried_or_counted_as_a_json_failure() -> None:
     assert calls == 1
     assert client.metrics.image_retries == 0
     assert client.metrics.json_requests == 0
+
+
+def test_image_retries_transient_responses_and_enforces_byte_limit() -> None:
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503)
+        return httpx.Response(
+            200,
+            content=b"four",
+            headers={"Content-Type": "image/png", "Content-Length": "4"},
+        )
+
+    client = _client(handler)
+    with pytest.raises(BangumiApiError) as error:
+        client.fetch_image("https://img.example/cover.png", max_bytes=3)
+
+    assert error.value.code == "image_too_large"
+    assert calls == 2
+    assert client.metrics.image_retries == 1

@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Refresh stable subject details as well as ratings.",
     )
+    sync_parser.add_argument(
+        "--force-images",
+        action="store_true",
+        help="Revalidate and redownload cached cover and character images.",
+    )
     return parser
 
 
@@ -75,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
                 tag_rules,
                 source_rules,
                 reports_directory=root / "workspace" / "reports",
-            ).run(scope, force=args.force)
+            ).run(scope, force=args.force, force_images=args.force_images)
         except KeyboardInterrupt:
             return 130
         finally:

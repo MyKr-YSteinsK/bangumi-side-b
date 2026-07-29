@@ -13,6 +13,7 @@ from bgm_side_b.api import (
     CharacterDetail,
     DiscoveryResult,
     DiscoveryStatistics,
+    ImageResponse,
     PersonDetail,
     RelatedCharacter,
     SubjectDetail,
@@ -26,6 +27,12 @@ from bgm_side_b.sync import (
     _normalise_summary,
     _source_infobox,
     parse_sync_scope,
+)
+
+_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xcf\xc0\xf0"
+    b"\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00\x00IEND\xaeB`\x82"
 )
 
 FIXTURES = json.loads(
@@ -77,6 +84,7 @@ class FakeApi:
         character_failures: set[int] | None = None,
         persons: dict[int, PersonDetail] | None = None,
         person_failures: set[int] | None = None,
+        image_failures: set[str] | None = None,
     ) -> None:
         self.details = details
         self.failures = failures or set()
@@ -88,11 +96,13 @@ class FakeApi:
         self.character_failures = character_failures or set()
         self.persons = persons or {}
         self.person_failures = person_failures or set()
+        self.image_failures = image_failures or set()
         self.calls: list[int] = []
         self.episode_calls: list[int] = []
         self.role_calls: list[int] = []
         self.character_calls: list[int] = []
         self.person_calls: list[int] = []
+        self.image_calls: list[str] = []
 
     def get_subject(self, subject_id: int) -> SubjectDetail:
         self.calls.append(subject_id)
@@ -123,6 +133,12 @@ class FakeApi:
         if person_id in self.person_failures:
             raise BangumiApiError("network", "network request failed")
         return self.persons[person_id]
+
+    def fetch_image(self, url: str, *, max_bytes: int | None = None) -> ImageResponse:
+        self.image_calls.append(url)
+        if url in self.image_failures:
+            raise BangumiApiError("image_network", "image request failed")
+        return ImageResponse(_PNG, "image/png", url)
 
 
 @pytest.fixture
@@ -517,6 +533,7 @@ def test_main_role_snapshot_keeps_all_actors_when_one_detail_fails(
     assert api.role_calls == [101]
     assert api.character_calls == [100]
     assert api.person_calls == [200, 201]
+    assert api.image_calls == ["https://img.example/character-large.jpg"]
     connection = sync.repository.database.connect()
     try:
         characters = connection.execute(
@@ -623,3 +640,24 @@ def test_character_detail_failure_keeps_relation_and_records_failed_state(
         connection.close()
     assert tuple(row) == ("Fallback Character", "Fallback summary")
     assert relation["role"] == "主角"
+
+
+def test_media_failure_keeps_structured_subject_facts(
+    tmp_path: Path, rules: tuple[ProjectSettings, object, object]
+) -> None:
+    cover_url = "https://img.example/cover.jpg"
+    detail = SubjectDetail.from_payload(
+        {**FIXTURES["tv"], "images": {"large": cover_url}}
+    )
+    api = FakeApi(
+        {101: detail}, image_failures={cover_url}
+    )
+    sync = _synchronizer(tmp_path, rules, api, FakeDiscovery((_candidate(101),)))
+
+    run = sync.run(SyncScope((2022,), 1))
+
+    assert run.exit_code == 1
+    assert sync.repository.subject_exists(101)
+    record = sync.repository.get_media_record("subject", 101, "cover")
+    assert record is not None and record.status == "failed"
+    assert run.quarter_stats[0].media_failed == 1

@@ -25,6 +25,7 @@ from bgm_side_b.api import (
     SubjectDetail,
 )
 from bgm_side_b.config import ProjectSettings, SourceRules, TagRules
+from bgm_side_b.media import MediaCache, MediaTarget
 from bgm_side_b.repository import (
     CharacterRecord,
     CharacterVoiceRecord,
@@ -106,6 +107,9 @@ class QuarterStats:
     ownership_mismatch: int = 0
     failed: int = 0
     retries: int = 0
+    media_downloaded: int = 0
+    media_skipped: int = 0
+    media_failed: int = 0
     warnings: list[str] = field(default_factory=list)
     failures: list[dict[str, object]] = field(default_factory=list)
 
@@ -133,6 +137,7 @@ class SubjectSynchronizer:
         *,
         discovery: QuarterlyDiscovery | None = None,
         reports_directory: Path = Path("workspace/reports"),
+        media_cache: MediaCache | None = None,
     ) -> None:
         self.repository = repository
         self.api = api
@@ -141,39 +146,60 @@ class SubjectSynchronizer:
         self.source_rules = source_rules
         self.discovery = discovery or QuarterlyDiscovery(api)
         self.reports_directory = reports_directory
+        self.media_cache = media_cache or MediaCache(
+            repository, api, reports_directory.parent
+        )
 
-    def run(self, scope: SyncScope, *, force: bool = False) -> SyncRun:
+    def run(
+        self, scope: SyncScope, *, force: bool = False, force_images: bool = False
+    ) -> SyncRun:
         """Synchronise subject facts for a validated scope and write safe reports."""
         self.repository.database.migrate()
         all_stats: list[QuarterStats] = []
         for year, month in scope.quarters:
-            stats = self._sync_quarter(year, month, force)
+            stats = self._sync_quarter(year, month, force, force_images)
             all_stats.append(stats)
-        sync_report = self._write_sync_report(scope, force, all_stats)
+        sync_report = self._write_sync_report(scope, force, force_images, all_stats)
         audit_report = self._write_tag_audit_report()
         exit_code = 1 if any(stats.failed for stats in all_stats) else 0
         return SyncRun(tuple(all_stats), sync_report, audit_report, exit_code)
 
-    def _cleanup_blacklisted_subjects(self, year: int, month: int) -> None:
+    def _cleanup_blacklisted_subjects(
+        self, year: int, month: int, stats: QuarterStats
+    ) -> None:
         if not self.settings.excluded_subject_ids:
             return
         with self.repository.transaction() as connection:
-            self.repository.delete_blacklisted_subjects_in_quarter(
+            stats.blacklisted += self.repository.delete_blacklisted_subjects_in_quarter(
                 connection,
                 self.settings.excluded_subject_ids,
                 year,
                 month,
             )
+        cleanup = self.media_cache.cleanup_orphaned()
+        if cleanup.failures:
+            stats.failed += len(cleanup.failures)
+            stats.media_failed += len(cleanup.failures)
+            stats.failures.extend(
+                {
+                    "stage": media_kind,
+                    "code": code,
+                    "summary": "orphaned media cleanup failed",
+                }
+                for media_kind, code in cleanup.failures
+            )
 
-    def _sync_quarter(self, year: int, month: int, force: bool) -> QuarterStats:
+    def _sync_quarter(
+        self, year: int, month: int, force: bool, force_images: bool
+    ) -> QuarterStats:
         stats = QuarterStats(year, month)
-        self._cleanup_blacklisted_subjects(year, month)
+        self._cleanup_blacklisted_subjects(year, month, stats)
         result = self.discovery.discover(year, month, self.settings.excluded_subject_ids)
         self._apply_discovery(result, stats)
         discovered_ids: set[int] = set()
         for candidate in result.candidates:
             discovered_ids.add(candidate.subject_id)
-            self._sync_candidate(candidate, year, month, force, stats)
+            self._sync_candidate(candidate, year, month, force, force_images, stats)
         for subject_id in self.repository.list_tv_subject_ids():
             if subject_id not in discovered_ids:
                 self._sync_existing_tv_episodes(subject_id, year, month, force, stats)
@@ -183,7 +209,7 @@ class SubjectSynchronizer:
         discovered = result.statistics
         stats.discovered = discovered.discovered
         stats.duplicates = discovered.duplicates
-        stats.blacklisted = discovered.blacklisted
+        stats.blacklisted += discovered.blacklisted
         stats.unsupported = discovered.unsupported
         stats.details_requested = discovered.needs_detail
         stats.failed += discovered.failed
@@ -204,6 +230,7 @@ class SubjectSynchronizer:
         target_year: int,
         target_month: int,
         force: bool,
+        force_images: bool,
         stats: QuarterStats,
     ) -> None:
         if not force and self._refresh_stable_subject(candidate):
@@ -211,7 +238,12 @@ class SubjectSynchronizer:
             self._sync_existing_tv_episodes(
                 candidate.subject_id, target_year, target_month, force, stats
             )
-            self._sync_subject_roles(candidate.subject_id, force, stats)
+            character_image_urls = self._sync_subject_roles(
+                candidate.subject_id, force, stats
+            )
+            self._sync_media_for_subject(
+                candidate.subject_id, None, character_image_urls, force_images, stats
+            )
             return
         try:
             detail = self.api.get_subject(candidate.subject_id)
@@ -220,7 +252,16 @@ class SubjectSynchronizer:
             return
         if self._store_detail(detail, target_year, target_month, stats):
             self._sync_subject_episodes(detail.subject_id, stats)
-            self._sync_subject_roles(detail.subject_id, force, stats)
+            character_image_urls = self._sync_subject_roles(
+                detail.subject_id, force, stats
+            )
+            self._sync_media_for_subject(
+                detail.subject_id,
+                detail.images.largest_available,
+                character_image_urls,
+                force_images,
+                stats,
+            )
 
     def _refresh_stable_subject(self, candidate: CandidateSubject) -> bool:
         state = self.repository.get_sync_state(
@@ -506,7 +547,7 @@ class SubjectSynchronizer:
 
     def _sync_subject_roles(
         self, subject_id: int, force: bool, stats: QuarterStats
-    ) -> None:
+    ) -> dict[int, str]:
         state = self.repository.get_sync_state("subject", subject_id, "roles")
         if (
             not force
@@ -514,28 +555,33 @@ class SubjectSynchronizer:
             and state.status == "success"
             and not self.repository.role_details_need_refresh(subject_id)
         ):
-            return
+            return {}
         try:
             roles = self.api.get_related_characters(subject_id)
         except BangumiApiError as error:
             self._record_roles_failure(subject_id, error, state, stats)
-            return
+            return {}
 
         characters: dict[int, CharacterRecord] = {}
         persons: dict[int, PersonRecord] = {}
         relations: list[SubjectCharacterRecord] = []
         voices: list[CharacterVoiceRecord] = []
         successful_details: list[SyncState] = []
+        character_image_urls: dict[int, str] = {}
         for position, role in enumerate(roles):
             if role.relation not in self.settings.main_character_relations:
                 continue
-            character, detail_state = self._resolve_character(role, force, stats)
+            character, detail_state, image_url = self._resolve_character(
+                role, force, stats
+            )
             if character is None:
                 stats.warnings.append(f"main_character_missing_name:{role.character_id}")
                 continue
             if role.character_id in characters:
                 continue
             characters[role.character_id] = character
+            if image_url is not None:
+                character_image_urls[role.character_id] = image_url
             relations.append(
                 SubjectCharacterRecord(role.character_id, role.relation, position)
             )
@@ -589,10 +635,12 @@ class SubjectSynchronizer:
                 stats,
             )
             stats.warnings.append(type(error).__name__)
+            return {}
+        return character_image_urls
 
     def _resolve_character(
         self, role: RelatedCharacter, force: bool, stats: QuarterStats
-    ) -> tuple[CharacterRecord | None, SyncState | None]:
+    ) -> tuple[CharacterRecord | None, SyncState | None, str | None]:
         detail_state = self.repository.get_sync_state(
             "character", role.character_id, "character_detail"
         )
@@ -615,7 +663,7 @@ class SubjectSynchronizer:
             detail.infobox if detail else (), self.settings.chinese_name_infobox_keys
         )
         if not original_name and not chinese_name:
-            return None, None
+            return None, None, None
         state = None
         if detail is not None:
             state = SyncState(
@@ -629,7 +677,81 @@ class SubjectSynchronizer:
         return (
             CharacterRecord(role.character_id, original_name, chinese_name, summary),
             state,
+            detail.images.largest_available if detail else role.images.largest_available,
         )
+
+    def _sync_media_for_subject(
+        self,
+        subject_id: int,
+        cover_url: str | None,
+        character_image_urls: dict[int, str],
+        force_images: bool,
+        stats: QuarterStats,
+    ) -> None:
+        targets: list[MediaTarget] = []
+        if (
+            cover_url is not None
+            or self.repository.get_media_record("subject", subject_id, "cover")
+            is not None
+        ):
+            targets.append(MediaTarget("subject", subject_id, "cover", cover_url))
+        character_ids = set(self.repository.list_subject_character_ids(subject_id))
+        character_ids.update(character_image_urls)
+        for character_id in sorted(character_ids):
+            source_url = character_image_urls.get(character_id)
+            if (
+                source_url is not None
+                or self.repository.get_media_record(
+                    "character", character_id, "character_image"
+                )
+                is not None
+            ):
+                targets.append(
+                    MediaTarget(
+                        "character", character_id, "character_image", source_url
+                    )
+                )
+        for target in targets:
+            result = self.media_cache.sync_target(target, force_images=force_images)
+            stats.retries += result.retries
+            if result.status == "downloaded":
+                stats.media_downloaded += 1
+            elif result.status == "skipped":
+                stats.media_skipped += 1
+            else:
+                stats.media_failed += 1
+                stats.failed += 1
+                stats.failures.append(
+                    {
+                        "stage": target.media_kind,
+                        "entity_id": target.owner_id,
+                        "code": result.error_code,
+                        "summary": result.error_summary,
+                    }
+                )
+            if result.error_code == "media_cleanup_failed":
+                stats.failed += 1
+                stats.media_failed += 1
+                stats.failures.append(
+                    {
+                        "stage": target.media_kind,
+                        "entity_id": target.owner_id,
+                        "code": result.error_code,
+                        "summary": result.error_summary,
+                    }
+                )
+        cleanup = self.media_cache.cleanup_orphaned()
+        if cleanup.failures:
+            stats.failed += len(cleanup.failures)
+            stats.media_failed += len(cleanup.failures)
+            stats.failures.extend(
+                {
+                    "stage": media_kind,
+                    "code": code,
+                    "summary": "orphaned media cleanup failed",
+                }
+                for media_kind, code in cleanup.failures
+            )
 
     def _resolve_person(
         self, actor: ApiPersonSummary, force: bool, stats: QuarterStats
@@ -752,13 +874,22 @@ class SubjectSynchronizer:
             )
 
     def _write_sync_report(
-        self, scope: SyncScope, force: bool, stats: list[QuarterStats]
+        self,
+        scope: SyncScope,
+        force: bool,
+        force_images: bool,
+        stats: list[QuarterStats],
     ) -> Path:
         payload = {
             "command": "sync",
             "version": _version(),
             "generated_at": _utc_timestamp(),
-            "scope": {"years": list(scope.years), "quarter_month": scope.quarter_month, "force": force},
+            "scope": {
+                "years": list(scope.years),
+                "quarter_month": scope.quarter_month,
+                "force": force,
+                "force_images": force_images,
+            },
             "quarters": [asdict(item) for item in stats],
         }
         return _write_json(self.reports_directory, f"sync-{scope.label}", payload)

@@ -488,12 +488,25 @@ class BangumiApiClient:
         _validate_positive_id(person_id, "person")
         return PersonDetail.from_payload(self._request_json(f"/persons/{person_id}"))
 
-    def fetch_image(self, url: str) -> ImageResponse:
+    def fetch_image(
+        self, url: str, *, max_bytes: int | None = None
+    ) -> ImageResponse:
         """Download binary image content separately from API JSON requests."""
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("image URL must be absolute HTTP or HTTPS")
+        if max_bytes is not None and max_bytes <= 0:
+            raise ValueError("image byte limit must be positive")
         response = self._request_binary(url)
+        content_length = response.headers.get("Content-Length")
+        if max_bytes is not None and content_length is not None:
+            try:
+                if int(content_length) > max_bytes:
+                    raise BangumiApiError("image_too_large", "image exceeds byte limit")
+            except ValueError:
+                pass
+        if max_bytes is not None and len(response.content) > max_bytes:
+            raise BangumiApiError("image_too_large", "image exceeds byte limit")
         return ImageResponse(
             content=response.content,
             content_type=response.headers.get("Content-Type"),

@@ -1,0 +1,8 @@
+<aside class="subject-drawer" id="subject-drawer" aria-label="{{ drawer.card.preferred_title }} 快速资料" hidden>
+  <div class="subject-drawer__handle" aria-hidden="true"></div>
+  <p class="eyebrow">QUICK RECORD</p>
+  <h2>{{ drawer.card.preferred_title }}</h2>
+  {% if drawer.card.original_title %}<p class="subject-drawer__original">{{ drawer.card.original_title }}</p>{% endif %}
+  {% if drawer.summary %}<p class="subject-drawer__summary">{{ drawer.summary }}</p>{% endif %}
+  <a class="text-link" href="https://bgm.tv/subject/{{ drawer.card.subject_id }}" rel="noopener noreferrer">在 Bangumi 查看</a>
+</aside>

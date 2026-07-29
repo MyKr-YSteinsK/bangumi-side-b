@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>{% block title %}Bangumi Side B｜MyKr{% endblock %}</title>
+    <link rel="stylesheet" href="{{ stylesheet_href }}">
+  </head>
+  <body class="archive-page season-{{ '%02d'|format(quarter.month) }}">
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    {% include "partials/header.html" %}
+    <main id="main-content" tabindex="-1">
+      {% block content %}{% endblock %}
+    </main>
+    {% include "partials/footer.html" %}
+    <script src="{{ script_href }}" defer></script>
+  </body>
+</html>

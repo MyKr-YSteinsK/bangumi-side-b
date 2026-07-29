@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ quarter.year }}-{{ '%02d'|format(quarter.month) }}｜Bangumi Side B｜MyKr{% endblock %}
+{% block content %}
+  <section class="archive-intro" aria-labelledby="quarter-title">
+    <div class="archive-intro__code" aria-hidden="true">SIDE B / {{ '%02d'|format(quarter.month) }}</div>
+    <div class="archive-intro__heading">
+      <p class="eyebrow">SEASONAL ANIMATION ARCHIVE</p>
+      <h1 id="quarter-title">{{ quarter.year }} 年 {{ '%02d'|format(quarter.month) }} 月档</h1>
+      <p class="archive-intro__summary">{{ quarter.metadata.subject_count }} 部可见作品 · {{ profile_label }}</p>
+    </div>
+  </section>
+  {% include "partials/quarter-nav.html" %}
+  <div class="archive-sections">
+    {% for section in quarter.sections %}
+      <section class="archive-section" aria-labelledby="section-{{ section.kind }}">
+        <div class="section-heading">
+          <p class="section-heading__code">B/{{ '%02d'|format(quarter.month) }} · {{ '%02d'|format(loop.index) }}</p>
+          <h2 id="section-{{ section.kind }}">{{ section.label }}</h2>
+          <p class="section-heading__count">{{ section.subjects|length }} 部</p>
+        </div>
+        <div class="subject-grid" role="list">
+          {% for card in section.subjects %}
+            {% include "partials/subject-card.html" %}
+          {% endfor %}
+        </div>
+      </section>
+    {% else %}
+      <section class="empty-state" aria-labelledby="empty-title">
+        <h2 id="empty-title">尚无可展示资料</h2>
+        <p>本季度没有完整、可安全构建的作品事实。</p>
+      </section>
+    {% endfor %}
+  </div>
+  {% if quarter.details %}
+    {% set drawer = quarter.details[0].drawer %}
+    {% include "partials/drawer.html" %}
+  {% endif %}
+{% endblock %}

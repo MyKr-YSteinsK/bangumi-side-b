@@ -1,0 +1,15 @@
+{% from "partials/icons.html" import archive_mark %}
+<header class="site-header" aria-label="资料库页眉">
+  <div class="site-header__rule">
+    <p>Bangumi Side B by MyKr</p>
+    <p>ARCHIVE / {{ quarter.year }}-{{ '%02d'|format(quarter.month) }}</p>
+  </div>
+  <div class="site-header__brand">
+    <a class="brand" href="{{ navigation_hrefs.get((quarter.year, quarter.month), 'index.html') }}" aria-label="Bangumi Side B 首页">
+      {{ archive_mark() }}
+      <span class="brand__name">Bangumi Side B</span>
+      <span class="brand__side">SIDE B</span>
+    </a>
+    <p class="site-header__profile">{{ profile_label }}</p>
+  </div>
+</header>

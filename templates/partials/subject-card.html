@@ -1,0 +1,22 @@
+<article class="subject-card" role="listitem" data-subject-id="{{ card.subject_id }}">
+  <button class="subject-card__open" type="button" aria-haspopup="dialog" aria-controls="subject-drawer">
+    <span class="subject-card__poster{% if not card.cover.is_available %} is-missing{% endif %}" aria-hidden="true">
+      <span class="subject-card__poster-mark">B/{{ '%02d'|format(quarter.month) }}</span>
+    </span>
+    <span class="subject-card__body">
+      <span class="subject-card__title">{{ card.preferred_title }}</span>
+      {% if card.original_title %}<span class="subject-card__original">{{ card.original_title }}</span>{% endif %}
+      <span class="subject-card__metadata">
+        <span>{{ 'TV' if card.media_format == 'tv' else '剧场版' }}</span>
+        {% if card.declared_episode_count is not none %}<span>{{ card.declared_episode_count }} 集</span>{% elif card.total_episode_count is not none %}<span>{{ card.total_episode_count }} 集</span>{% endif %}
+      </span>
+      <span class="subject-card__score{% if card.rating_score is none %} is-unrated{% endif %}">
+        {% if card.rating_score is not none %}{{ '%.1f'|format(card.rating_score) }}{% else %}暂无评分{% endif %}
+      </span>
+    </span>
+  </button>
+  <span class="subject-card__tags" aria-label="资料标签">
+    {% for source in card.card_sources %}{% include "partials/tag.html" %}{% endfor %}
+    {% for tag in card.card_tags %}{% include "partials/tag.html" %}{% endfor %}
+  </span>
+</article>

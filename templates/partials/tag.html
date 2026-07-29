@@ -1,0 +1,5 @@
+{% if source is defined %}
+  <span class="tag tag--source">{{ source.source }}</span>
+{% elif tag is defined %}
+  <span class="tag">{{ tag.name }}</span>
+{% endif %}

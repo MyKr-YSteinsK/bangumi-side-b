@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 from dataclasses import replace
@@ -17,6 +18,7 @@ from bgm_side_b.database import Database
 from bgm_side_b.repository import (
     CharacterRecord,
     MediaRecord,
+    RawTag,
     SubjectInfoboxItem,
     SubjectQuarter,
     SubjectRecord,
@@ -35,13 +37,14 @@ def test_audit_reports_missing_workspace_without_creating_it(tmp_path: Path) -> 
     assert not (tmp_path / "workspace").exists()
 
 
-def test_clean_migrated_database_passes_without_creating_media(tmp_path: Path) -> None:
+def test_empty_database_fails_without_creating_media(tmp_path: Path) -> None:
     database = _database(tmp_path)
     before = database.path.read_bytes()
 
     result = _auditor(tmp_path).audit()
 
-    assert result.passed
+    assert not result.passed
+    assert {failure.check for failure in result.failures} == {"subjects"}
     assert result.build_marker_status == "missing"
     assert result.character_count == 0
     assert database.path.read_bytes() == before
@@ -71,7 +74,10 @@ def test_audit_cli_returns_a_non_mutating_success_summary(
 ) -> None:
     shutil.copytree(ROOT / "config", tmp_path / "config")
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'audit'\n", "utf-8")
-    _database(tmp_path)
+    database = _database(tmp_path)
+    repository = SubjectRepository(database)
+    with repository.transaction() as connection:
+        _subject(repository, connection, 101, "tv", "new", "Japan")
     monkeypatch.chdir(tmp_path)
 
     assert main(["audit"]) == 0
@@ -111,6 +117,28 @@ def test_audit_rejects_scope_format_country_and_continuation_data(
 
     assert not result.passed
     assert check in {failure.check for failure in result.failures}
+
+
+def test_audit_accepts_a_seasonal_tv_default_without_country_infobox(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    repository = SubjectRepository(database)
+    with repository.transaction() as connection:
+        _subject(
+            repository,
+            connection,
+            101,
+            "tv",
+            "new",
+            None,
+            subject_type=2,
+        )
+
+    result = _auditor(tmp_path).audit()
+
+    assert result.passed
+    assert result.subject_count == 1
 
 
 def test_audit_rejects_role_data_and_character_media(tmp_path: Path) -> None:
@@ -162,6 +190,39 @@ def test_audit_rejects_blacklist_residue_and_an_invalid_build_marker(
     checks = {failure.check for failure in result.failures}
     assert {"blacklist", "build_marker"}.issubset(checks)
     assert result.build_marker_status == "invalid"
+
+
+def test_audit_reports_only_format_validity_for_a_build_marker(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    repository = SubjectRepository(database)
+    with repository.transaction() as connection:
+        _subject(repository, connection, 101, "tv", "new", "Japan")
+    marker = tmp_path / "workspace" / "state" / "pages-build.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "candidate_id": "candidate",
+                "source_commit": "commit",
+                "app_version": "version",
+                "profile": "pages",
+                "business_content_hash": "content",
+                "facts_snapshot_hash": "facts",
+                "rules_hash": "rules",
+                "blacklist_hash": "blacklist",
+                "data_generation": 0,
+                "deployment_path": "./",
+            }
+        ),
+        "utf-8",
+    )
+
+    result = _auditor(tmp_path).audit()
+
+    assert result.passed
+    assert result.build_marker_status == "format-valid"
+    assert "构建标记 format-valid" in result.render()
 
 
 def test_audit_rejects_unsafe_cover_path_and_foreign_key_violation(
@@ -217,13 +278,24 @@ def _subject(
     subject_id: int,
     media_format: str,
     appearance_kind: str,
-    country: str,
+    country: str | None,
     *,
     year: int = 2026,
+    tags: tuple[str, ...] = (),
+    subject_type: int | None = None,
 ) -> None:
     repository.upsert_subject(
         connection,
-        SubjectRecord(subject_id, media_format, None, date(year, 4, 1), 12, None, None),
+        SubjectRecord(
+            subject_id,
+            media_format,
+            None,
+            date(year, 4, 1),
+            12,
+            None,
+            None,
+            subject_type=subject_type,
+        ),
     )
     repository.replace_titles(
         connection, subject_id, [SubjectTitle("preferred", f"Subject {subject_id}")]
@@ -231,7 +303,14 @@ def _subject(
     repository.replace_infobox(
         connection,
         subject_id,
-        [SubjectInfoboxItem("\u56fd\u5bb6/\u5730\u533a", country)],
+        (
+            []
+            if country is None
+            else [SubjectInfoboxItem("\u56fd\u5bb6/\u5730\u533a", country)]
+        ),
+    )
+    repository.replace_raw_tags(
+        connection, subject_id, [RawTag(tag, 1) for tag in tags]
     )
     repository.replace_quarters(
         connection, subject_id, [SubjectQuarter(year, 4, appearance_kind)]

@@ -443,6 +443,17 @@ MIGRATIONS = (
         ),
         requires_foreign_keys_off=True,
     ),
+    Migration(
+        3,
+        "store Bangumi subject type for release classification",
+        (
+            """
+            ALTER TABLE subjects ADD COLUMN subject_type INTEGER CHECK (
+                subject_type IS NULL OR subject_type > 0
+            )
+            """,
+        ),
+    ),
 )
 
 

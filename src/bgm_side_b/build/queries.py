@@ -20,6 +20,7 @@ class SubjectFacts:
     """Raw immutable facts for one subject, never exposed to templates."""
 
     subject_id: int
+    subject_type: int | None
     section: str
     section_position: int
     media_format: str
@@ -158,6 +159,7 @@ class BuildQueries:
             subjects = tuple(
                 SubjectFacts(
                     subject_id=row["id"],
+                    subject_type=row["subject_type"],
                     section=row["appearance_kind"],
                     section_position=row["position"],
                     media_format=row["media_format"],
@@ -245,8 +247,9 @@ def _subject_rows(
             WHERE quarter.year = ? AND quarter.month = ?
               AND quarter.appearance_kind = 'new'
         )
-        SELECT subject.id, quarter_subjects.appearance_kind, quarter_subjects.position,
-               subject.media_format, subject.summary, subject.air_date,
+        SELECT subject.id, subject.subject_type, quarter_subjects.appearance_kind,
+               quarter_subjects.position, subject.media_format, subject.summary,
+               subject.air_date,
                subject.end_date,
                subject.episode_count, subject.total_episode_count, subject.rating_score,
                subject.rating_count

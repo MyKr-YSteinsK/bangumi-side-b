@@ -7,7 +7,9 @@ from datetime import date
 from io import StringIO
 from pathlib import Path
 
-from bgm_side_b.build.builder import ArchiveBuilder
+import pytest
+
+from bgm_side_b.build.builder import ArchiveBuilder, BuildError
 from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database
 from bgm_side_b.progress import ConsoleProgressReporter
@@ -102,23 +104,34 @@ def test_offline_builder_generates_both_profiles_without_mutating_sqlite(
     assert snapshot["facts_snapshot_hash"] == marker["facts_snapshot_hash"]
 
 
-def test_empty_database_builds_a_safe_empty_local_index(tmp_path: Path) -> None:
+def test_empty_database_refuses_build_and_preserves_existing_output(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     database = Database(workspace / "data" / "facts.sqlite3")
     database.migrate()
     settings, tags, sources = load_rules(ROOT / "config")
-    ArchiveBuilder(
-        ROOT,
-        database,
-        settings,
-        tags,
-        sources,
-        workspace_directory=workspace,
-        distribution_directory=tmp_path / "dist",
-        reports_directory=tmp_path / "reports",
-    ).build(None, target="local")
-    index = (tmp_path / "dist" / "local" / "index.html").read_text(encoding="utf-8")
-    assert "quarters/2026-04/index.html" in index
+    previous = tmp_path / "dist" / "local" / "previous.txt"
+    previous.parent.mkdir(parents=True)
+    previous.write_text("previous output", encoding="utf-8")
+    marker = workspace / "state" / "pages-build.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("previous marker", encoding="utf-8")
+
+    with pytest.raises(BuildError, match="configured release contains no subjects"):
+        ArchiveBuilder(
+            ROOT,
+            database,
+            settings,
+            tags,
+            sources,
+            workspace_directory=workspace,
+            distribution_directory=tmp_path / "dist",
+            reports_directory=tmp_path / "reports",
+        ).build(None, target="local")
+
+    assert previous.read_text(encoding="utf-8") == "previous output"
+    assert marker.read_text(encoding="utf-8") == "previous marker"
 
 
 def test_build_reports_safe_staging_and_atomic_promotion_stages(tmp_path: Path) -> None:
@@ -127,6 +140,21 @@ def test_build_reports_safe_staging_and_atomic_promotion_stages(tmp_path: Path) 
     database.migrate()
     settings, tags, sources = load_rules(ROOT / "config")
     stream = StringIO()
+    repository = SubjectRepository(database)
+    with repository.transaction() as connection:
+        repository.upsert_subject(
+            connection,
+            SubjectRecord(101, "tv", None, date(2026, 4, 1), 12, 7.2, 100),
+        )
+        repository.replace_titles(
+            connection, 101, [SubjectTitle("preferred", "可构建作品")]
+        )
+        repository.replace_infobox(
+            connection, 101, [SubjectInfoboxItem("国家/地区", "Japan")]
+        )
+        repository.replace_quarters(
+            connection, 101, [SubjectQuarter(2026, 4, "new")]
+        )
 
     with ConsoleProgressReporter("build", mode="plain", stream=stream) as reporter:
         ArchiveBuilder(

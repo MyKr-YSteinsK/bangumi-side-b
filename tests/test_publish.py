@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from datetime import date
@@ -14,6 +15,7 @@ from bgm_side_b.build.builder import ArchiveBuilder
 from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database
 from bgm_side_b.progress import ConsoleProgressReporter
+from bgm_side_b.release import publish as publish_module
 from bgm_side_b.release.candidate import advance_data_generation
 from bgm_side_b.release.publish import Publisher, PublishError, _allowed_origin
 from bgm_side_b.repository import (
@@ -120,6 +122,71 @@ def test_publish_refuses_changed_facts_and_unsafe_origin_branch(
     advance_data_generation(root / "workspace")
     with pytest.raises(PublishError, match="facts changed"):
         publisher.publish(dry_run=True, remote="test")
+
+
+def test_publish_dry_run_refuses_an_empty_marker_before_version_allocation(
+    publish_root: tuple[Path, Path],
+) -> None:
+    root, _ = publish_root
+    marker_path = root / "workspace" / "state" / "pages-build.json"
+    marker = json.loads(marker_path.read_text("utf-8"))
+    marker["subject_count"] = 0
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    with pytest.raises(PublishError, match="marker has no subjects"):
+        Publisher(root).publish(dry_run=True, remote="test")
+
+
+def test_publish_rejects_empty_snapshot_and_candidate_pages(
+    publish_root: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = publish_root
+    marker = json.loads(
+        (root / "workspace" / "state" / "pages-build.json").read_text("utf-8")
+    )
+    empty_snapshot = {
+        "candidate_id": marker["candidate_id"],
+        "facts_snapshot_hash": marker["facts_snapshot_hash"],
+        "source_commit": marker["source_commit"],
+        "facts": {"subjects": {}, "quarters": []},
+    }
+    monkeypatch.setattr(
+        publish_module, "read_pages_build_snapshot", lambda _: empty_snapshot
+    )
+    with pytest.raises(PublishError, match="facts snapshot has no subjects"):
+        Publisher(root)._validate_build_snapshot(marker)
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        publish_module,
+        "candidate_content_hash",
+        lambda _: str(marker["business_content_hash"]),
+    )
+    (root / "dist" / "pages" / "subjects" / "101" / "index.html").unlink()
+    with pytest.raises(PublishError, match="no subject detail page"):
+        Publisher(root)._validate_candidate_tree(marker)
+
+
+def test_publish_rejects_a_candidate_without_quarter_cards(
+    publish_root: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = publish_root
+    marker = json.loads(
+        (root / "workspace" / "state" / "pages-build.json").read_text("utf-8")
+    )
+    monkeypatch.setattr(
+        publish_module,
+        "candidate_content_hash",
+        lambda _: str(marker["business_content_hash"]),
+    )
+    page = root / "dist" / "pages" / "quarters" / "2026-04" / "index.html"
+    page.write_text(
+        page.read_text("utf-8").replace("data-subject-id=", "data-card-id="),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PublishError, match="no quarter card"):
+        Publisher(root)._validate_candidate_tree(marker)
 
 
 def test_allowed_origin_requires_an_exact_repository_url() -> None:

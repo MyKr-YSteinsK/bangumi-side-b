@@ -40,6 +40,7 @@ def test_build_projection_keeps_only_japan_tv_new_subjects(tmp_path: Path) -> No
         _subject(repository, connection, 102, "movie", "new", "Japan")
         _subject(repository, connection, 103, "tv", "continuing", "Japan")
         _subject(repository, connection, 104, "tv", "new", "China")
+        _subject(repository, connection, 106, "tv", "new", None, subject_type=2)
         repository.upsert_subject(
             connection,
             SubjectRecord(105, "tv", None, date(2025, 1, 1), 12, None, None),
@@ -67,8 +68,8 @@ def test_build_projection_keeps_only_japan_tv_new_subjects(tmp_path: Path) -> No
     subject_ids = [
         card.subject_id for section in model.sections for card in section.subjects
     ]
-    assert subject_ids == [101]
-    assert model.metadata.subject_count == 1
+    assert subject_ids == [101, 106]
+    assert model.metadata.subject_count == 2
     assert model.metadata.country_filtered_subjects == 1
     assert model.navigation[0].year == 2026
     assert all(
@@ -83,11 +84,22 @@ def _subject(
     subject_id: int,
     media_format: str,
     appearance_kind: str,
-    country: str,
+    country: str | None,
+    *,
+    subject_type: int | None = None,
 ) -> None:
     repository.upsert_subject(
         connection,
-        SubjectRecord(subject_id, media_format, None, date(2026, 4, 1), 12, 7.0, 1),
+        SubjectRecord(
+            subject_id,
+            media_format,
+            None,
+            date(2026, 4, 1),
+            12,
+            7.0,
+            1,
+            subject_type=subject_type,
+        ),
     )
     repository.replace_titles(
         connection, subject_id, [SubjectTitle("preferred", f"Subject {subject_id}")]
@@ -95,7 +107,11 @@ def _subject(
     repository.replace_infobox(
         connection,
         subject_id,
-        [SubjectInfoboxItem("\u56fd\u5bb6/\u5730\u533a", country)],
+        (
+            []
+            if country is None
+            else [SubjectInfoboxItem("\u56fd\u5bb6/\u5730\u533a", country)]
+        ),
     )
     repository.replace_quarters(
         connection, subject_id, [SubjectQuarter(2026, 4, appearance_kind)]

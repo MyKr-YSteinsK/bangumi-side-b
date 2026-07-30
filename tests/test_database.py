@@ -19,7 +19,7 @@ def test_new_database_initializes_idempotently_with_foreign_keys(
 ) -> None:
     database = Database(tmp_path / "workspace" / "data" / "facts.sqlite3")
 
-    assert database.migrate() == (1, 2)
+    assert database.migrate() == (1, 2, 3)
     assert database.migrate() == ()
 
     connection = database.connect()
@@ -66,7 +66,7 @@ def test_existing_database_is_backed_up_and_failed_migration_rolls_back(
     base_database = Database(path)
     base_database.migrate()
     failing_migration = Migration(
-        3,
+        4,
         "broken migration",
         (
             "CREATE TABLE should_not_persist (id INTEGER PRIMARY KEY)",
@@ -89,7 +89,7 @@ def test_existing_database_is_backed_up_and_failed_migration_rolls_back(
         versions = connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert [row["version"] for row in versions] == [1, 2]
+        assert [row["version"] for row in versions] == [1, 2, 3]
     finally:
         connection.close()
     assert list((tmp_path / "workspace" / "backups").glob("*.sqlite3"))
@@ -121,7 +121,7 @@ def test_only_the_five_most_recent_migration_backups_are_kept(
     migrations = list(MIGRATIONS)
     Database(path).migrate()
 
-    for version in range(3, 9):
+    for version in range(4, 10):
         migrations.append(
             Migration(
                 version,
@@ -179,7 +179,7 @@ def test_plan_one_database_upgrades_to_schema_two_without_losing_facts(
         connection.close()
 
     database = Database(path)
-    assert database.migrate() == (2,)
+    assert database.migrate() == (2, 3)
 
     connection = database.connect()
     try:
@@ -196,6 +196,7 @@ def test_plan_one_database_upgrades_to_schema_two_without_losing_facts(
             "availability_status",
             "first_seen_at",
             "last_seen_at",
+            "subject_type",
         }.issubset(subject_columns)
         episode_foreign_keys = connection.execute(
             "PRAGMA foreign_key_list(episodes)"

@@ -27,6 +27,7 @@ class SubjectRecord:
     total_episode_count: int | None = None
     end_date: date | None = None
     availability_status: str = "available"
+    subject_type: int | None = None
 
 
 @dataclass(frozen=True)
@@ -205,8 +206,9 @@ class SubjectRepository:
             INSERT INTO subjects (
                 id, media_format, summary, air_date, episode_count,
                 total_episode_count, end_date, availability_status, rating_score,
-                rating_count, first_seen_at, last_seen_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                rating_count, subject_type, first_seen_at, last_seen_at, created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 media_format = excluded.media_format,
                 summary = excluded.summary,
@@ -215,6 +217,7 @@ class SubjectRepository:
                 total_episode_count = excluded.total_episode_count,
                 end_date = excluded.end_date,
                 availability_status = excluded.availability_status,
+                subject_type = excluded.subject_type,
                 rating_score = COALESCE(excluded.rating_score, subjects.rating_score),
                 rating_count = COALESCE(excluded.rating_count, subjects.rating_count),
                 last_seen_at = excluded.last_seen_at,
@@ -231,6 +234,7 @@ class SubjectRepository:
                 subject.availability_status,
                 subject.rating_score,
                 subject.rating_count,
+                subject.subject_type,
                 timestamp,
                 timestamp,
                 timestamp,
@@ -994,6 +998,12 @@ def _validate_subject(subject: SubjectRecord) -> None:
         raise ValueError("availability status must be available or unavailable")
     if subject.rating_count is not None and subject.rating_count < 0:
         raise ValueError("rating count must not be negative")
+    if subject.subject_type is not None and (
+        not isinstance(subject.subject_type, int)
+        or isinstance(subject.subject_type, bool)
+        or subject.subject_type <= 0
+    ):
+        raise ValueError("subject type must be a positive integer when present")
 
 
 def _date_value(value: date | None) -> str | None:

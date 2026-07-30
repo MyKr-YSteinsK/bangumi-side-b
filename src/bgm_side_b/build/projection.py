@@ -26,6 +26,7 @@ from bgm_side_b.build.queries import QuarterFacts, SubjectFacts
 from bgm_side_b.config import CountryFilter, SourceRules, TagRules
 from bgm_side_b.rules import (
     InfoboxItem,
+    Quarter,
     decide_country,
     normalise_aliases,
     preferred_title,
@@ -67,6 +68,11 @@ class BuildProjection:
             country = decide_country(
                 (InfoboxItem(key, value) for key, value in subject.country_infobox),
                 self.country_filter,
+                raw_tags=subject.raw_tags,
+                subject_type=subject.subject_type,
+                platform=subject.media_format,
+                air_date=subject.air_date,
+                target_quarter=Quarter(facts.year, facts.month),
             )
             if not country.included:
                 country_filtered_subjects += 1

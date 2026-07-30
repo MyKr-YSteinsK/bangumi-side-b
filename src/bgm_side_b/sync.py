@@ -597,6 +597,7 @@ class SubjectSynchronizer:
                         end_date=_end_date_from_infobox(
                             detail.infobox, self.settings.end_date_infobox_keys
                         ),
+                        subject_type=detail.subject_type,
                     ),
                 )
                 self.repository.replace_titles(connection, detail.subject_id, titles)

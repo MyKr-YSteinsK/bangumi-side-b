@@ -7,12 +7,13 @@ import re
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path, PurePosixPath
 
 from bgm_side_b.config import ProjectSettings
 from bgm_side_b.database import MIGRATIONS
 from bgm_side_b.release.candidate import read_pages_build_marker
-from bgm_side_b.rules import InfoboxItem, decide_country
+from bgm_side_b.rules import InfoboxItem, Quarter, decide_country
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,15 @@ class AuditResult:
         return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class _StoredSubject:
+    """Facts needed to rerun the formal country decision without mutation."""
+
+    media_format: str
+    subject_type: int | None
+    air_date: date | None
+
+
 class ReleaseDataAuditor:
     """Inspect one workspace without creating, migrating, or modifying it."""
 
@@ -106,8 +116,14 @@ class ReleaseDataAuditor:
             failures.append(AuditFailure("schema", 1, "schema version is unsupported"))
 
         subjects = {
-            row["id"]: row["media_format"]
-            for row in connection.execute("SELECT id, media_format FROM subjects")
+            row["id"]: _StoredSubject(
+                row["media_format"],
+                row["subject_type"],
+                _date_value(row["air_date"]),
+            )
+            for row in connection.execute(
+                "SELECT id, media_format, subject_type, air_date FROM subjects"
+            )
         }
         quarter_rows = tuple(
             connection.execute(
@@ -139,10 +155,20 @@ class ReleaseDataAuditor:
                     "scope", len(out_of_scope_ids), "subject is outside 2026-04 new"
                 )
             )
+        if not subjects:
+            failures.append(
+                AuditFailure("subjects", 1, "no release subjects were stored")
+            )
+        elif not valid_relation_ids:
+            failures.append(
+                AuditFailure(
+                    "quarter_subjects", 1, "no release subjects were stored"
+                )
+            )
         non_tv = [
             subject_id
-            for subject_id, media_format in subjects.items()
-            if media_format != "tv"
+            for subject_id, subject in subjects.items()
+            if subject.media_format != "tv"
         ]
         if non_tv:
             failures.append(AuditFailure("format", len(non_tv), "subject is not TV"))
@@ -198,7 +224,7 @@ class ReleaseDataAuditor:
         )
 
     def _country_failures(
-        self, connection: sqlite3.Connection, subjects: dict[int, str]
+        self, connection: sqlite3.Connection, subjects: dict[int, _StoredSubject]
     ) -> set[int]:
         rows = connection.execute(
             "SELECT subject_id, item_key, value_json FROM subject_infobox_items "
@@ -209,11 +235,25 @@ class ReleaseDataAuditor:
             value = _json_string(row["value_json"])
             if value is not None:
                 infobox[row["subject_id"]].append(InfoboxItem(row["item_key"], value))
+        tags: defaultdict[int, list[str]] = defaultdict(list)
+        for row in connection.execute(
+            "SELECT subject_id, tag_name FROM subject_raw_tags "
+            "ORDER BY subject_id, position"
+        ):
+            tags[row["subject_id"]].append(row["tag_name"])
+        configured = self.settings.scope.release_quarters[0]
+        target_quarter = Quarter(int(configured[:4]), int(configured[5:]))
         return {
             subject_id
-            for subject_id in subjects
+            for subject_id, subject in subjects.items()
             if not decide_country(
-                infobox[subject_id], self.settings.country_filter
+                infobox[subject_id],
+                self.settings.country_filter,
+                raw_tags=tags[subject_id],
+                subject_type=subject.subject_type,
+                platform=subject.media_format,
+                air_date=subject.air_date,
+                target_quarter=target_quarter,
             ).included
         }
 
@@ -280,7 +320,7 @@ class ReleaseDataAuditor:
             read_pages_build_marker(self.workspace)
         except ValueError:
             return "invalid", AuditFailure("build_marker", 1, "build marker is invalid")
-        return "valid", None
+        return "format-valid", None
 
 
 def _failed_result(check: str, reason: str) -> AuditResult:
@@ -299,6 +339,15 @@ def _json_string(value: object) -> str | None:
     except json.JSONDecodeError:
         return None
     return decoded if isinstance(decoded, str) else None
+
+
+def _date_value(value: object) -> date | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _safe_cover_path(value: object, workspace: Path) -> bool:

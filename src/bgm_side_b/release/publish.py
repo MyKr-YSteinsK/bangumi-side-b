@@ -266,6 +266,8 @@ class Publisher:
     def _validate_marker(self, marker: dict[str, object]) -> None:
         if marker.get("profile") != "pages":
             raise PublishError("Pages build marker has the wrong profile")
+        if not _positive_count(marker.get("subject_count")):
+            raise PublishError("Pages build marker has no subjects")
         if marker.get("source_commit") in (None, "unavailable"):
             raise PublishError("Pages build marker has no usable source commit")
         if marker.get("source_commit") != self._git("rev-parse", "HEAD"):
@@ -285,6 +287,23 @@ class Publisher:
             or build_snapshot.get("source_commit") != marker.get("source_commit")
         ):
             raise PublishError("Pages build marker and facts snapshot disagree")
+        facts = build_snapshot.get("facts")
+        if not isinstance(facts, dict):
+            raise PublishError("Pages facts snapshot is invalid; rebuild Pages")
+        subjects = facts.get("subjects")
+        if not isinstance(subjects, dict) or not subjects:
+            raise PublishError("Pages facts snapshot has no subjects")
+        quarters = facts.get("quarters")
+        if not isinstance(quarters, list) or not any(
+            isinstance(section, dict)
+            and isinstance(section.get("subject_ids"), list)
+            and section["subject_ids"]
+            for quarter in quarters
+            if isinstance(quarter, dict)
+            if isinstance(quarter.get("sections"), list)
+            for section in quarter["sections"]
+        ):
+            raise PublishError("Pages facts snapshot has no quarter cards")
         return build_snapshot
 
     def _validate_data_generation(self, marker: dict[str, object]) -> None:
@@ -327,6 +346,15 @@ class Publisher:
         )
         if not all((self.candidate / item).is_file() for item in required):
             raise PublishError("Pages candidate lacks its PWA shell")
+        detail_pages = tuple((self.candidate / "subjects").glob("*/index.html"))
+        if not detail_pages:
+            raise PublishError("Pages candidate has no subject detail page")
+        quarter_pages = tuple((self.candidate / "quarters").glob("*/index.html"))
+        if not any(
+            'data-subject-id="' in page.read_text(encoding="utf-8")
+            for page in quarter_pages
+        ):
+            raise PublishError("Pages candidate has no quarter card")
         _scan_public_tree(self.candidate)
 
     def _remote_state(
@@ -803,6 +831,10 @@ def _safe_branch(branch: str) -> bool:
     if not branch or any(value in branch for value in (":", "^", "~", "..", "@{", " ")):
         return False
     return all(character.isalnum() or character in "._/-" for character in branch)
+
+
+def _positive_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def _allowed_origin(value: str) -> bool:

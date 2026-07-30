@@ -132,6 +132,12 @@ class ArchiveBuilder:
             message="已加载构建事实",
             counters={"季度": len(models), "作品": subject_count},
         )
+        if subject_count == 0:
+            self.reporter.error(
+                stage="view-model",
+                message="configured release contains no subjects",
+            )
+            raise BuildError("configured release contains no subjects")
         profiles = _profiles(target)
         reports: list[ProfileBuildReport] = []
         for profile in profiles:

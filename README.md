@@ -54,6 +54,23 @@ option builds or publishes output. Images are stored only below
 `workspace/media/`; the SQLite record keeps a workspace-relative path, verified
 format, hash, size, and dimensions. Voice-actor images are never downloaded.
 
+## Command progress
+
+`sync`, `build`, and `publish` show safe progress by default. All three accept
+`--progress auto|plain|off`, `--verbose`, and `--quiet`; `--quiet` is equivalent
+to `--progress off`, and it cannot be combined with `--verbose`. `auto` refreshes
+the current activity on an interactive stderr terminal and uses permanent plain
+lines otherwise. `--verbose` records every item and substep; normal plain output
+is throttled while retries, warnings, failures, quarter summaries, and final
+summaries remain visible.
+
+Progress, heartbeat, and retry notices go to stderr. Final summaries and safe,
+project-relative report paths go to stdout. A heartbeat describes the current
+safe activity after 10 seconds without an event; no ETA is estimated. Ctrl+C
+stops new sync work at a safe boundary and returns 130 after preserving usable
+data and any available partial report. Build interruption keeps the previous
+`dist` output, while interrupted publication never repeats a push automatically.
+
 `sync`, `build`, and `publish` are separate commands. `publish` never syncs or
 builds: it validates the existing successful Pages candidate, produces a
 versioned complete snapshot, and publishes only the `gh-pages` tree.

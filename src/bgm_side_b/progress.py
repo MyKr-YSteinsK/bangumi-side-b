@@ -36,6 +36,7 @@ _STAGE_LABELS = {
     "blacklist-cleanup": "黑名单清理",
     "discovery": "候选发现",
     "candidate-summary": "候选汇总",
+    "quarter-summary": "季度汇总",
     "subject-detail": "作品详情",
     "continuation": "续播刷新",
     "episodes": "章节",

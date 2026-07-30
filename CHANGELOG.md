@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Stabilize complete PWA snapshots, build-bound publication facts, and deterministic TV continuation refreshes.
+- Add unified, safe CLI progress reporting for sync, build, and publish, including
+  plain/verbose/quiet modes, heartbeats, visible retries, and relative reports.
 
 ### Added
 

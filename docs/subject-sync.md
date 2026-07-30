@@ -38,6 +38,23 @@ and total counters, and safe typed failures; they omit response bodies, headers,
 tokens, absolute paths, and stack traces. Ctrl+C returns 130 after writing a
 partial usable report.
 
+## Console progress
+
+`sync` defaults to `--progress auto` and also accepts `--progress plain|off`,
+`--verbose`, and `--quiet`. Progress, retries, warnings, and heartbeats are
+written to stderr; the final `workspace/reports/...` paths are written to
+stdout. Non-interactive output uses permanent, throttled lines; verbose output
+includes each subject and substep. It shows the scope, SQLite check, quarter,
+three-month TV/movie discovery groups, candidate totals, subject work,
+continuation refresh, episodes, roles, media, and quarter/final summaries.
+
+Transient timeout, network, 429, and 5xx retries are reported immediately with
+their safe request label, retry count, and delay; 429 notes when Retry-After is
+used. Full URLs, request parameters, headers, CDN paths, and response bodies
+are never printed. A current API activity emits a heartbeat after 10 seconds
+without output. Ctrl+C reports receipt, stops scheduling later quarters, retains
+completed transactions, writes a partial report when possible, and exits 130.
+
 ## Schema outline
 
 SQLite is the fact source. `subjects` is global; titles, Infobox, raw tags,

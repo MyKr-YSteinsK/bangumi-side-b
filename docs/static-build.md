@@ -13,6 +13,18 @@ bgmb build --all
 
 为避免单季度构建留下旧导航、失效详情或已移除黑名单作品，每次 build 都从当前数据库完整重建全部可用季度、详情与首页；命令 scope 仍会记录在构建报告中。构建在 `dist/.staging/` 完成验证后再整体替换 profile 输出，失败时保留之前的完整输出。
 
+## 控制台进度
+
+`build` 默认使用 `--progress auto`，并支持 `--progress plain|off`、`--verbose` 和
+`--quiet`（quiet 与 verbose 互斥）。进度和 heartbeat 写入 stderr；最终摘要及
+`workspace/reports/...` 构建报告路径写入 stdout。非交互环境使用节流后的永久行，
+verbose 才逐项记录封面、角色图片、季度页和详情页。
+
+构建会显示 SQLite 校验、facts、View Model、local/Pages staging、静态资源、封面、
+页面、PWA shell、marker/snapshot、staging 验证、原子替换和报告。验证前会明确说明
+旧 `dist` 保持不变；成功后才替换目标输出。长时间渲染或图片处理会输出当前 activity
+heartbeat；Ctrl+C 会保留上一版完整输出，不显示虚假 ETA 或 staging 绝对路径。
+
 首页按季度年月进入最新已构建季度，可直接通过 `file://` 打开。所有站内路径为相对路径，Pages 也兼容仓库子路径。页面运行时不读取 SQLite 或 Bangumi 数据；Pages 的 release/manifest 请求只会在用户明确初始化、检查更新或重下时发生。
 
 季度页支持标题搜索、来源/标签/形式/分区筛选、四种评分/人数排序和快速资料抽屉；详情页包含正片章节、主要角色与作品内声优。页面使用 browser history 恢复从详情页返回时的筛选、排序和滚动位置。

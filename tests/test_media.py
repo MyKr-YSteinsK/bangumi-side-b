@@ -28,7 +28,15 @@ class FakeImageApi:
         self.failures: set[str] = set()
         self.metrics = RequestMetrics()
 
-    def fetch_image(self, url: str, *, max_bytes: int | None = None) -> ImageResponse:
+    def fetch_image(
+        self,
+        url: str,
+        *,
+        max_bytes: int | None = None,
+        request_label: str = "image",
+        entity_type: str | None = None,
+        entity_id: int | None = None,
+    ) -> ImageResponse:
         self.calls.append(url)
         if url in self.failures:
             raise BangumiApiError("image_network", "image request failed")

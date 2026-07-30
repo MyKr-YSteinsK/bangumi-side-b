@@ -1,7 +1,9 @@
 """Tests for minimal Bangumi DTOs, retrying HTTP, and candidate discovery."""
 
 import json
+import time
 from collections.abc import Callable
+from io import StringIO
 from pathlib import Path
 
 import httpx
@@ -20,6 +22,7 @@ from bgm_side_b.api import (
     SubjectDetail,
     is_default_image_url,
 )
+from bgm_side_b.progress import ConsoleProgressReporter
 
 FIXTURES = json.loads(
     (Path(__file__).parent / "fixtures" / "subject_cases.json").read_text(
@@ -188,6 +191,64 @@ def test_timeouts_retry_and_return_safe_failure() -> None:
     assert delays == [0.5, 1.0]
 
 
+def test_retry_progress_is_immediate_safe_and_labels_retry_after() -> None:
+    calls = 0
+    stream = StringIO()
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, headers={"Retry-After": "2"})
+        return httpx.Response(200, json=FIXTURES["tv"])
+
+    with ConsoleProgressReporter("sync", mode="plain", stream=stream) as reporter:
+        client = BangumiApiClient(
+            client=httpx.Client(
+                base_url="https://api.bgm.tv/v0",
+                transport=httpx.MockTransport(handler),
+                headers={"User-Agent": DEFAULT_USER_AGENT},
+            ),
+            sleeper=lambda _: None,
+            jitter=lambda: 0,
+            reporter=reporter,
+        )
+        assert client.get_subject(101).subject_id == 101
+
+    output = stream.getvalue()
+    assert "[重试]" in output
+    assert "作品详情" in output
+    assert "Retry-After" in output
+    assert "https://" not in output
+    assert "authorization" not in output.lower()
+
+
+def test_slow_request_uses_the_current_api_activity_for_heartbeat() -> None:
+    stream = StringIO()
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        time.sleep(0.03)
+        return httpx.Response(200, json=FIXTURES["tv"])
+
+    with ConsoleProgressReporter(
+        "sync", mode="plain", stream=stream, heartbeat_interval_seconds=0.01
+    ) as reporter:
+        client = BangumiApiClient(
+            client=httpx.Client(
+                base_url="https://api.bgm.tv/v0",
+                transport=httpx.MockTransport(handler),
+                headers={"User-Agent": DEFAULT_USER_AGENT},
+            ),
+            reporter=reporter,
+        )
+        assert client.get_subject(101).subject_id == 101
+
+    output = stream.getvalue()
+    assert "仍在运行" in output
+    assert "等待 Bangumi API" in output
+    assert "subject 101" in output
+
+
 def test_quarterly_discovery_deduplicates_and_filters_before_detail() -> None:
     pages = {
         (1, TV_CATEGORY): [FIXTURES["tv"], FIXTURES["web"]],
@@ -218,6 +279,23 @@ def test_quarterly_discovery_deduplicates_and_filters_before_detail() -> None:
     assert result.statistics.unsupported == 2
     assert result.statistics.needs_detail == 2
     assert result.statistics.failed == 0
+
+
+def test_discovery_reports_all_six_month_category_groups_in_verbose_mode() -> None:
+    stream = StringIO()
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"total": 0, "data": []})
+
+    with ConsoleProgressReporter(
+        "sync", mode="plain", verbose=True, stream=stream
+    ) as reporter:
+        result = QuarterlyDiscovery(_client(handler), reporter).discover(2022, 1)
+
+    assert result.statistics.discovered == 0
+    lines = stream.getvalue().splitlines()
+    assert len(lines) == 6
+    assert all("候选发现" in line for line in lines)
 
 
 def test_discovery_records_a_failed_month_and_continues() -> None:

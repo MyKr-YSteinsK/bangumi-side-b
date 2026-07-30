@@ -52,6 +52,19 @@ def test_plain_off_and_elapsed_formatting() -> None:
     assert format_elapsed(3661.9) == "01:01:01"
 
 
+def test_plain_progress_is_throttled_but_keeps_batch_and_final_updates() -> None:
+    stream = _Stream(tty=False)
+    with ConsoleProgressReporter("sync", mode="plain", stream=stream) as reporter:
+        for completed in range(1, 7):
+            reporter.progress(message="正在处理作品", completed=completed, total=6)
+
+    lines = stream.getvalue().splitlines()
+    assert len(lines) == 3
+    assert "1/6" in lines[0]
+    assert "5/6" in lines[1]
+    assert "6/6" in lines[2]
+
+
 def test_safe_output_truncates_and_omits_urls_and_absolute_paths() -> None:
     stream = _Stream(tty=False)
     with ConsoleProgressReporter("publish", mode="plain", stream=stream) as reporter:
@@ -88,7 +101,9 @@ def test_heartbeat_starts_for_an_activity_and_stops_on_close() -> None:
 
 def test_threaded_events_stay_as_complete_lines() -> None:
     stream = _Stream(tty=False)
-    with ConsoleProgressReporter("sync", mode="plain", stream=stream) as reporter:
+    with ConsoleProgressReporter(
+        "sync", mode="plain", verbose=True, stream=stream
+    ) as reporter:
         threads = [
             threading.Thread(
                 target=reporter.progress, kwargs={"message": f"事件 {index}"}

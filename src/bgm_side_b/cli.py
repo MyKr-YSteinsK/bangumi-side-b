@@ -117,13 +117,13 @@ def main(argv: list[str] | None = None) -> int:
         settings, tag_rules, source_rules = load_rules(root / "config")
         database = Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
         repository = SubjectRepository(database)
-        client = BangumiApiClient(
-            timeout_seconds=settings.sync.request_timeout_seconds,
-            max_retries=settings.sync.max_retries,
-            concurrency=settings.sync.api_concurrency,
-        )
         with create_progress_reporter(args, "sync") as reporter:
-            reporter.start(stage="initialise", message="正在准备同步")
+            client = BangumiApiClient(
+                timeout_seconds=settings.sync.request_timeout_seconds,
+                max_retries=settings.sync.max_retries,
+                concurrency=settings.sync.api_concurrency,
+                reporter=reporter,
+            )
             try:
                 run = SubjectSynchronizer(
                     repository,
@@ -132,14 +132,18 @@ def main(argv: list[str] | None = None) -> int:
                     tag_rules,
                     source_rules,
                     reports_directory=root / "workspace" / "reports",
+                    reporter=reporter,
                 ).run(scope, force=args.force, force_images=args.force_images)
             except KeyboardInterrupt:
+                reporter.warning(
+                    stage="interrupted",
+                    message="已收到 Ctrl+C，停止安排新任务。",
+                )
                 return 130
             finally:
                 client.close()
-            reporter.complete(stage="finalise", message="同步处理完成")
-        print(f"sync report: {run.sync_report.as_posix()}")
-        print(f"tag audit: {run.tag_audit_report.as_posix()}")
+        print(f"sync report: {_relative_output_path(root, run.sync_report)}")
+        print(f"tag audit: {_relative_output_path(root, run.tag_audit_report)}")
         return run.exit_code
     if args.command == "build":
         if args.all == bool(args.scope):
@@ -188,3 +192,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"published release: {run.release_version}")
         return 0
     return 2
+
+
+def _relative_output_path(root: Path, path: Path) -> str:
+    """Return a safe project-relative path for user-facing command summaries."""
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return "report unavailable"

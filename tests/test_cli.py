@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from bgm_side_b import __version__
-from bgm_side_b.cli import build_parser, find_project_root, main
+from bgm_side_b.cli import _relative_output_path, build_parser, find_project_root, main
 
 
 def test_help_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
@@ -67,3 +67,10 @@ def test_progress_off_and_verbose_are_rejected_together() -> None:
         main(["build", "--all", "--progress", "off", "--verbose"])
 
     assert result.value.code == 2
+
+
+def test_final_report_path_is_project_relative() -> None:
+    root = Path("project")
+    report = root / "workspace" / "reports" / "sync.json"
+
+    assert _relative_output_path(root, report) == "workspace/reports/sync.json"

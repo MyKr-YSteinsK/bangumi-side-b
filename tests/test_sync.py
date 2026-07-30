@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import replace
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from bgm_side_b.api import (
 )
 from bgm_side_b.config import ProjectSettings, load_rules
 from bgm_side_b.database import Database
+from bgm_side_b.progress import ConsoleProgressReporter, ProgressReporter
 from bgm_side_b.repository import SubjectRepository
 from bgm_side_b.sync import (
     SubjectSynchronizer,
@@ -139,7 +141,15 @@ class FakeApi:
             raise BangumiApiError("network", "network request failed")
         return self.persons[person_id]
 
-    def fetch_image(self, url: str, *, max_bytes: int | None = None) -> ImageResponse:
+    def fetch_image(
+        self,
+        url: str,
+        *,
+        max_bytes: int | None = None,
+        request_label: str = "image",
+        entity_type: str | None = None,
+        entity_id: int | None = None,
+    ) -> ImageResponse:
         self.image_calls.append(url)
         if url in self.image_failures:
             raise BangumiApiError("image_network", "image request failed")
@@ -161,6 +171,7 @@ def _synchronizer(
     rules: tuple[ProjectSettings, object, object],
     api: FakeApi,
     discovery: FakeDiscovery,
+    reporter: ProgressReporter | None = None,
 ) -> SubjectSynchronizer:
     settings, tag_rules, source_rules = rules
     repository = SubjectRepository(Database(tmp_path / "data" / "facts.sqlite3"))
@@ -172,6 +183,7 @@ def _synchronizer(
         source_rules,
         discovery=discovery,
         reports_directory=tmp_path / "reports",
+        reporter=reporter,
     )
 
 
@@ -712,20 +724,44 @@ def test_interrupt_writes_partial_safe_report_and_returns_130(
     api = FakeApi(
         {101: SubjectDetail.from_payload(FIXTURES["tv"])}, interruptions={106}
     )
-    sync = _synchronizer(
-        tmp_path,
-        rules,
-        api,
-        FakeDiscovery((_candidate(101), _candidate(106))),
-    )
-
-    run = sync.run(SyncScope((2022,), 1))
+    stream = StringIO()
+    with ConsoleProgressReporter("sync", mode="plain", stream=stream) as reporter:
+        sync = _synchronizer(
+            tmp_path,
+            rules,
+            api,
+            FakeDiscovery((_candidate(101), _candidate(106))),
+            reporter,
+        )
+        run = sync.run(SyncScope((2022,), 1))
 
     assert run.exit_code == 130
     assert sync.repository.subject_exists(101)
     report = json.loads(run.sync_report.read_text(encoding="utf-8"))
     assert "interrupted" in report["quarters"][0]["warnings"]
     assert not list((tmp_path / "tmp").glob("*.part"))
+    assert "已收到 Ctrl+C" in stream.getvalue()
+
+
+def test_range_sync_reports_sixteen_quarters_without_candidate_noise(
+    tmp_path: Path, rules: tuple[ProjectSettings, object, object]
+) -> None:
+    stream = StringIO()
+    with ConsoleProgressReporter(
+        "sync", mode="plain", verbose=True, stream=stream
+    ) as reporter:
+        run = _synchronizer(
+            tmp_path,
+            rules,
+            FakeApi({}),
+            FakeDiscovery(()),
+            reporter,
+        ).run(SyncScope((2022, 2023, 2024, 2025), None))
+
+    output = stream.getvalue()
+    assert run.exit_code == 0
+    assert "季度 16" in output
+    assert output.count("季度完成") == 16
 
 
 def test_blacklisted_candidate_is_deleted_without_followup_requests(

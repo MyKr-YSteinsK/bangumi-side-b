@@ -30,6 +30,25 @@ _LEVELS = frozenset(
 )
 _COMMAND_LABELS = {"sync": "同步", "build": "构建", "publish": "发布"}
 _LEVEL_LABELS = {"retry": "重试", "warning": "警告", "error": "错误"}
+_STAGE_LABELS = {
+    "scope": "范围",
+    "database": "SQLite schema",
+    "blacklist-cleanup": "黑名单清理",
+    "discovery": "候选发现",
+    "candidate-summary": "候选汇总",
+    "subject-detail": "作品详情",
+    "continuation": "续播刷新",
+    "episodes": "章节",
+    "roles": "角色",
+    "character-detail": "角色详情",
+    "person-detail": "声优详情",
+    "cover": "封面",
+    "cover-image": "封面图片",
+    "character-images": "角色图片",
+    "character-image": "角色图片",
+    "summary": "汇总",
+    "interrupted": "中断",
+}
 _PATH_PATTERN = re.compile(r"(?i)(?:\b[a-z]:[\\/]|(?<!\w)/(?:[^/\s|]+/)+)[^\s|]*")
 _URL_PATTERN = re.compile(r"https?://[^\s|]+", re.IGNORECASE)
 _SECRET_PATTERN = re.compile(r"(?i)\b(authorization|token)\s*[:=]\s*[^\s|]+")
@@ -210,6 +229,7 @@ class ConsoleProgressReporter:
         self._activity: ProgressEvent | None = None
         self._last_event_at = self._started_at
         self._last_refresh_at = self._started_at
+        self._last_plain_progress_at: float | None = None
         self._dynamic_line = False
         self._closed = False
 
@@ -278,6 +298,8 @@ class ConsoleProgressReporter:
             if self._closed:
                 return
             self._last_event_at = event.timestamp_monotonic
+            if self._should_throttle_plain_progress(event):
+                return
             dynamic = (
                 self._uses_tty_refresh() and level == "progress" and not self.verbose
             )
@@ -289,6 +311,21 @@ class ConsoleProgressReporter:
             self._write_event(event, dynamic=dynamic)
             if dynamic:
                 self._last_refresh_at = event.timestamp_monotonic
+
+    def _should_throttle_plain_progress(self, event: ProgressEvent) -> bool:
+        if event.level != "progress" or self.verbose or self._uses_tty_refresh():
+            return False
+        if self._last_plain_progress_at is None:
+            self._last_plain_progress_at = event.timestamp_monotonic
+            return False
+        is_final = event.completed is not None and event.completed == event.total
+        is_batch = event.completed is not None and event.completed % 5 == 0
+        if is_final or is_batch or (
+            event.timestamp_monotonic - self._last_plain_progress_at >= 5
+        ):
+            self._last_plain_progress_at = event.timestamp_monotonic
+            return False
+        return True
 
     def _event(self, level: ProgressLevel, **kwargs: object) -> ProgressEvent:
         return ProgressEvent(
@@ -386,7 +423,11 @@ def _format_event(event: ProgressEvent, started_at: float) -> str:
     )
     if event.completed is not None and event.total is not None:
         label = f"{label} {event.completed}/{event.total}"
-    parts = [event.message] if event.message else []
+    parts = []
+    if event.stage:
+        parts.append(_STAGE_LABELS.get(event.stage, event.stage))
+    if event.message:
+        parts.append(event.message)
     if event.quarter:
         parts.append(event.quarter)
     if event.current:

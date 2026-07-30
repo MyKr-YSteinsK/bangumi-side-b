@@ -14,6 +14,7 @@ from typing import Protocol
 from PIL import Image, UnidentifiedImageError
 
 from bgm_side_b.api import BangumiApiError, ImageResponse
+from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.repository import MediaRecord, SubjectRepository, SyncState
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -34,7 +35,15 @@ _FORMAT_EXTENSIONS = {
 class ImageFetcher(Protocol):
     """The narrow API surface used by the on-disk media cache."""
 
-    def fetch_image(self, url: str, *, max_bytes: int | None = None) -> ImageResponse:
+    def fetch_image(
+        self,
+        url: str,
+        *,
+        max_bytes: int | None = None,
+        request_label: str = "image",
+        entity_type: str | None = None,
+        entity_id: int | None = None,
+    ) -> ImageResponse:
         """Return an already bounded binary image response."""
 
 
@@ -98,10 +107,12 @@ class MediaCache:
         repository: SubjectRepository,
         api: ImageFetcher,
         workspace_directory: Path,
+        reporter: ProgressReporter | None = None,
     ) -> None:
         self.repository = repository
         self.api = api
         self.workspace_directory = workspace_directory.resolve()
+        self.reporter = reporter or NullProgressReporter()
         self.max_concurrency = 1
 
     def sync_target(
@@ -113,6 +124,15 @@ class MediaCache:
             target.owner_type, target.owner_id, target.media_kind
         )
         source_url = target.source_url or (existing.source_url if existing else None)
+        request_label = (
+            "cover-image" if target.media_kind == "cover" else "character-image"
+        )
+        self.reporter.progress(
+            stage=request_label,
+            message="处理媒体",
+            entity_type=target.owner_type,
+            entity_id=target.owner_id,
+        )
         if source_url is None:
             return MediaResult("skipped")
         if (
@@ -126,7 +146,19 @@ class MediaCache:
 
         retries_before = _image_retries(self.api)
         try:
-            response = self.api.fetch_image(source_url, max_bytes=MAX_IMAGE_BYTES)
+            with self.reporter.activity(
+                stage=request_label,
+                message="等待图片下载",
+                entity_type=target.owner_type,
+                entity_id=target.owner_id,
+            ):
+                response = self.api.fetch_image(
+                    source_url,
+                    max_bytes=MAX_IMAGE_BYTES,
+                    request_label=request_label,
+                    entity_type=target.owner_type,
+                    entity_id=target.owner_id,
+                )
             facts = _image_facts(response)
             local_path = _local_path(target, facts.extension)
             self._write_verified_file(local_path, response.content)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -26,6 +27,7 @@ from bgm_side_b.api import (
 )
 from bgm_side_b.config import ProjectSettings, SourceRules, TagRules
 from bgm_side_b.media import MediaCache, MediaTarget
+from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.repository import (
     CharacterRecord,
     CharacterVoiceRecord,
@@ -165,16 +167,20 @@ class SubjectSynchronizer:
         discovery: QuarterlyDiscovery | None = None,
         reports_directory: Path = Path("workspace/reports"),
         media_cache: MediaCache | None = None,
+        reporter: ProgressReporter | None = None,
     ) -> None:
         self.repository = repository
         self.api = api
         self.settings = settings
         self.tag_rules = tag_rules
         self.source_rules = source_rules
-        self.discovery = discovery or QuarterlyDiscovery(api)
+        self.reporter = reporter or NullProgressReporter()
+        if isinstance(api, BangumiApiClient):
+            api.reporter = self.reporter
+        self.discovery = discovery or QuarterlyDiscovery(api, self.reporter)
         self.reports_directory = reports_directory
         self.media_cache = media_cache or MediaCache(
-            repository, api, reports_directory.parent
+            repository, api, reports_directory.parent, self.reporter
         )
 
     def run(
@@ -182,17 +188,43 @@ class SubjectSynchronizer:
     ) -> SyncRun:
         """Synchronise subject facts for a validated scope and write safe reports."""
         started_at = _utc_timestamp()
+        quarters = scope.quarters
+        self.reporter.start(
+            stage="scope",
+            message="开始同步",
+            current=scope.label,
+            counters={
+                "季度": len(quarters),
+                "并发": getattr(self.api, "concurrency", 1),
+                "超时": getattr(self.api, "timeout_seconds", "默认"),
+                "重试": getattr(self.api, "max_retries", 0),
+                "强制": "是" if force else "否",
+                "强制图片": "是" if force_images else "否",
+            },
+        )
+        self.reporter.stage(stage="database", message="正在检查 SQLite schema")
         self.repository.database.migrate()
         all_stats: list[QuarterStats] = []
         interrupted = False
         try:
-            for year, month in scope.quarters:
-                stats = self._sync_quarter(year, month, force, force_images)
+            for position, (year, month) in enumerate(quarters, start=1):
+                stats = self._sync_quarter(
+                    year,
+                    month,
+                    force,
+                    force_images,
+                    position=position,
+                    total_quarters=len(quarters),
+                )
                 all_stats.append(stats)
         except _SyncInterrupted as error:
             error.stats.warnings.append("interrupted")
             all_stats.append(error.stats)
             interrupted = True
+            self.reporter.warning(
+                stage="interrupted",
+                message="已收到 Ctrl+C，停止安排新任务；当前事务将完成或回滚。",
+            )
         sync_report = self._write_sync_report(
             scope, force, force_images, started_at, all_stats
         )
@@ -202,6 +234,17 @@ class SubjectSynchronizer:
             from bgm_side_b.release.candidate import advance_data_generation
 
             advance_data_generation(self.reports_directory.parent)
+        self.reporter.complete(
+            stage="summary",
+            message="已中断" if interrupted else "同步完成",
+            counters={
+                "季度": len(all_stats),
+                "失败": sum(item.failed for item in all_stats),
+                "重试": sum(item.retries for item in all_stats),
+                "图片下载": sum(item.media_downloaded for item in all_stats),
+                "缓存命中": sum(item.media_skipped for item in all_stats),
+            },
+        )
         return SyncRun(tuple(all_stats), sync_report, audit_report, exit_code)
 
     def _cleanup_blacklisted_subjects(
@@ -232,26 +275,76 @@ class SubjectSynchronizer:
             )
 
     def _sync_quarter(
-        self, year: int, month: int, force: bool, force_images: bool
+        self,
+        year: int,
+        month: int,
+        force: bool,
+        force_images: bool,
+        *,
+        position: int,
+        total_quarters: int,
     ) -> QuarterStats:
         stats = QuarterStats(year, month)
+        started_at = time.monotonic()
+        quarter = f"{year}-{month:02d}"
         try:
+            self.reporter.stage(
+                stage="blacklist-cleanup",
+                message="正在清理黑名单",
+                completed=position,
+                total=total_quarters,
+                quarter=quarter,
+            )
             self._cleanup_blacklisted_subjects(year, month, stats)
+            self.reporter.stage(
+                stage="discovery",
+                message="正在发现季度候选",
+                completed=position,
+                total=total_quarters,
+                quarter=quarter,
+            )
             retries_before = self._json_retries()
             result = self.discovery.discover(
                 year, month, self.settings.excluded_subject_ids
             )
             stats.retries += self._json_retries() - retries_before
             self._apply_discovery(result, stats)
+            self.reporter.stage(
+                stage="candidate-summary",
+                message="候选发现完成",
+                completed=position,
+                total=total_quarters,
+                quarter=quarter,
+                counters={
+                    "候选": len(result.candidates),
+                    "重复": stats.duplicates,
+                    "失败": stats.failed,
+                },
+            )
             discovered_ids: set[int] = set()
-            for candidate in result.candidates:
+            candidate_total = len(result.candidates)
+            for candidate_position, candidate in enumerate(result.candidates, start=1):
                 if candidate.subject_id in self.settings.excluded_subject_ids:
                     stats.blacklisted += 1
                     continue
                 discovered_ids.add(candidate.subject_id)
                 self._sync_candidate(
-                    candidate, year, month, force, force_images, stats
+                    candidate,
+                    year,
+                    month,
+                    force,
+                    force_images,
+                    stats,
+                    completed=candidate_position,
+                    total=candidate_total,
                 )
+            self.reporter.stage(
+                stage="continuation",
+                message="正在刷新已有续播 TV",
+                completed=position,
+                total=total_quarters,
+                quarter=quarter,
+            )
             for subject_id in self.repository.list_tv_subject_ids():
                 if subject_id not in discovered_ids:
                     self._sync_existing_tv(
@@ -261,6 +354,23 @@ class SubjectSynchronizer:
             if isinstance(error, _SyncInterrupted):
                 raise
             raise _SyncInterrupted(stats) from error
+        self.reporter.stage(
+            stage="quarter-summary",
+            message="季度完成",
+            completed=position,
+            total=total_quarters,
+            quarter=quarter,
+            counters={
+                "创建": stats.created,
+                "更新": stats.updated,
+                "失败": stats.failed,
+                "重试": stats.retries,
+                "章节": stats.episodes_stored,
+                "角色": stats.main_characters_stored,
+                "图片": stats.media_downloaded,
+                "耗时秒": round(time.monotonic() - started_at, 1),
+            },
+        )
         return stats
 
     def _apply_discovery(self, result: DiscoveryResult, stats: QuarterStats) -> None:
@@ -271,6 +381,12 @@ class SubjectSynchronizer:
         stats.unsupported = discovered.unsupported
         stats.failed += discovered.failed
         for failure in result.failures:
+            self.reporter.warning(
+                stage="discovery",
+                message=failure.summary,
+                quarter=f"{stats.year}-{failure.month:02d}",
+                current="TV" if failure.category == 1 else "剧场版",
+            )
             stats.failures.append(
                 {
                     "stage": "discovery",
@@ -289,9 +405,20 @@ class SubjectSynchronizer:
         force: bool,
         force_images: bool,
         stats: QuarterStats,
+        *,
+        completed: int,
+        total: int,
     ) -> None:
         stats.details_requested += 1
         stats.subject_details_requested += 1
+        self.reporter.progress(
+            stage="subject-detail",
+            message=candidate.name_cn or candidate.name or "正在读取作品详情",
+            completed=completed,
+            total=total,
+            entity_type="subject",
+            entity_id=candidate.subject_id,
+        )
         retries_before = self._json_retries()
         try:
             detail = self.api.get_subject(candidate.subject_id)
@@ -470,6 +597,13 @@ class SubjectSynchronizer:
         self, subject_id: int, year: int, month: int, stats: QuarterStats
     ) -> None:
         stats.continuing_details_requested += 1
+        self.reporter.progress(
+            stage="continuation",
+            message="正在刷新续播作品详情",
+            entity_type="subject",
+            entity_id=subject_id,
+            quarter=f"{year}-{month:02d}",
+        )
         try:
             detail = self.api.get_subject(subject_id)
         except BangumiApiError as error:
@@ -515,6 +649,12 @@ class SubjectSynchronizer:
         before_failures = getattr(metrics, "json_item_failures", 0)
         retries_before = self._json_retries()
         stats.episodes_requested += 1
+        self.reporter.progress(
+            stage="episodes",
+            message="正在读取章节",
+            entity_type="subject",
+            entity_id=subject_id,
+        )
         try:
             api_episodes = self.api.get_episodes(subject_id)
         except BangumiApiError as error:
@@ -576,6 +716,12 @@ class SubjectSynchronizer:
         retry_count: int = 0,
     ) -> None:
         stats.failed += 1
+        self.reporter.error(
+            stage="episodes",
+            message=error.summary,
+            entity_type="subject",
+            entity_id=subject_id,
+        )
         stats.failures.append(
             {
                 "stage": "episodes",
@@ -696,6 +842,12 @@ class SubjectSynchronizer:
             return {}
         retries_before = self._json_retries()
         stats.roles_requested += 1
+        self.reporter.progress(
+            stage="roles",
+            message="正在读取角色关系",
+            entity_type="subject",
+            entity_id=subject_id,
+        )
         try:
             roles = self.api.get_related_characters(subject_id)
         except BangumiApiError as error:
@@ -798,6 +950,12 @@ class SubjectSynchronizer:
         detail: CharacterDetail | None = None
         if force or detail_state is None or detail_state.status != "success":
             retries_before = self._json_retries()
+            self.reporter.progress(
+                stage="character-detail",
+                message="正在读取角色详情",
+                entity_type="character",
+                entity_id=role.character_id,
+            )
             try:
                 detail = self.api.get_character(role.character_id)
             except BangumiApiError as error:
@@ -869,6 +1027,14 @@ class SubjectSynchronizer:
         for target in targets:
             result = self.media_cache.sync_target(target, force_images=force_images)
             stats.retries += result.retries
+            self.reporter.progress(
+                stage=(
+                    "cover" if target.media_kind == "cover" else "character-images"
+                ),
+                message=f"媒体 {result.status}",
+                entity_type=target.owner_type,
+                entity_id=target.owner_id,
+            )
             if result.status == "downloaded":
                 stats.media_downloaded += 1
                 if target.media_kind == "cover":
@@ -878,6 +1044,12 @@ class SubjectSynchronizer:
             elif result.status == "skipped":
                 stats.media_skipped += 1
             else:
+                self.reporter.error(
+                    stage=target.media_kind,
+                    message=result.error_summary or "媒体处理失败",
+                    entity_type=target.owner_type,
+                    entity_id=target.owner_id,
+                )
                 stats.media_failed += 1
                 stats.failed += 1
                 stats.failures.append(
@@ -899,6 +1071,12 @@ class SubjectSynchronizer:
                     }
                 )
             if result.error_code == "media_cleanup_failed":
+                self.reporter.warning(
+                    stage=target.media_kind,
+                    message="媒体替换后清理失败",
+                    entity_type=target.owner_type,
+                    entity_id=target.owner_id,
+                )
                 stats.failed += 1
                 stats.media_failed += 1
                 stats.failures.append(
@@ -943,6 +1121,12 @@ class SubjectSynchronizer:
         detail: PersonDetail | None = None
         if force or detail_state is None or detail_state.status != "success":
             retries_before = self._json_retries()
+            self.reporter.progress(
+                stage="person-detail",
+                message="正在读取声优详情",
+                entity_type="person",
+                entity_id=actor.person_id,
+            )
             try:
                 detail = self.api.get_person(actor.person_id)
             except BangumiApiError as error:
@@ -1030,6 +1214,12 @@ class SubjectSynchronizer:
         retry_count: int = 0,
     ) -> None:
         stats.failed += 1
+        self.reporter.error(
+            stage=stage,
+            message=error.summary,
+            entity_type=entity_type,
+            entity_id=entity_id,
+        )
         stats.failures.append(
             {
                 "stage": stage,
@@ -1066,6 +1256,12 @@ class SubjectSynchronizer:
         retry_count: int = 0,
     ) -> None:
         stats.failed += 1
+        self.reporter.error(
+            stage="subject-detail",
+            message=error.summary,
+            entity_type="subject",
+            entity_id=subject_id,
+        )
         stats.failures.append(
             {
                 "stage": "detail",

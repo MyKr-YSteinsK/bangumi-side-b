@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import threading
 import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,6 +15,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.rules import is_quarter_month, normalize_format
 
 API_BASE_URL = "https://api.bgm.tv/v0"
@@ -237,6 +239,16 @@ class ImageResponse:
 
 
 @dataclass(frozen=True)
+class _RequestContext:
+    """Safe labels retained only while one API request is active."""
+
+    label: str
+    entity_type: str | None
+    entity_id: int | None
+    current: str | None = None
+
+
+@dataclass(frozen=True)
 class CandidateSubject:
     """A browse result that must still be confirmed with a detail request."""
 
@@ -349,14 +361,18 @@ class BangumiApiClient:
         client: httpx.Client | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         jitter: Callable[[], float] = lambda: random.uniform(0, 0.25),
+        reporter: ProgressReporter | None = None,
     ) -> None:
         if timeout_seconds <= 0 or max_retries < 0 or concurrency < 1:
             raise ValueError("timeout, retry count, and concurrency must be valid")
         self.max_retries = max_retries
         self.concurrency = concurrency
+        self.timeout_seconds = timeout_seconds
         self.metrics = RequestMetrics()
         self._sleeper = sleeper
         self._jitter = jitter
+        self.reporter = reporter or NullProgressReporter()
+        self._request_context = threading.local()
         self._owns_client = client is None
         self._client = client or httpx.Client(
             base_url=API_BASE_URL,
@@ -384,6 +400,7 @@ class BangumiApiClient:
         offset = 0
         subjects: list[CandidateSubject] = []
         while True:
+            label = "discovery-tv" if category == TV_CATEGORY else "discovery-movie"
             body = self._request_json(
                 "/subjects",
                 {
@@ -394,6 +411,8 @@ class BangumiApiClient:
                     "limit": limit,
                     "offset": offset,
                 },
+                request_label=label,
+                current=f"offset {offset}",
             )
             data = body.get("data")
             if not isinstance(data, list):
@@ -418,7 +437,14 @@ class BangumiApiClient:
     def get_subject(self, subject_id: int) -> SubjectDetail:
         """Fetch a subject detail DTO without database writes or inference."""
         _validate_positive_id(subject_id, "subject")
-        return SubjectDetail.from_payload(self._request_json(f"/subjects/{subject_id}"))
+        return SubjectDetail.from_payload(
+            self._request_json(
+                f"/subjects/{subject_id}",
+                request_label="subject-detail",
+                entity_type="subject",
+                entity_id=subject_id,
+            )
+        )
 
     def get_episodes(self, subject_id: int) -> tuple[ApiEpisode, ...]:
         """Fetch all main-story episode pages and preserve their API positions."""
@@ -434,6 +460,9 @@ class BangumiApiClient:
                     "limit": 200,
                     "offset": offset,
                 },
+                request_label="episodes",
+                entity_type="subject",
+                entity_id=subject_id,
             )
             data = body.get("data")
             if not isinstance(data, list):
@@ -464,7 +493,12 @@ class BangumiApiClient:
     def get_related_characters(self, subject_id: int) -> tuple[RelatedCharacter, ...]:
         """Fetch subject-local character relations in the API response order."""
         _validate_positive_id(subject_id, "subject")
-        body = self._request_json_list(f"/subjects/{subject_id}/characters")
+        body = self._request_json_list(
+            f"/subjects/{subject_id}/characters",
+            request_label="subject-characters",
+            entity_type="subject",
+            entity_id=subject_id,
+        )
         relations: list[RelatedCharacter] = []
         for item in body:
             if not isinstance(item, Mapping):
@@ -480,16 +514,34 @@ class BangumiApiClient:
         """Fetch a global character detail DTO without persistence."""
         _validate_positive_id(character_id, "character")
         return CharacterDetail.from_payload(
-            self._request_json(f"/characters/{character_id}")
+            self._request_json(
+                f"/characters/{character_id}",
+                request_label="character-detail",
+                entity_type="character",
+                entity_id=character_id,
+            )
         )
 
     def get_person(self, person_id: int) -> PersonDetail:
         """Fetch a global person detail DTO without persistence."""
         _validate_positive_id(person_id, "person")
-        return PersonDetail.from_payload(self._request_json(f"/persons/{person_id}"))
+        return PersonDetail.from_payload(
+            self._request_json(
+                f"/persons/{person_id}",
+                request_label="person-detail",
+                entity_type="person",
+                entity_id=person_id,
+            )
+        )
 
     def fetch_image(
-        self, url: str, *, max_bytes: int | None = None
+        self,
+        url: str,
+        *,
+        max_bytes: int | None = None,
+        request_label: str = "image",
+        entity_type: str | None = None,
+        entity_id: int | None = None,
     ) -> ImageResponse:
         """Download binary image content separately from API JSON requests."""
         parsed = urlsplit(url)
@@ -497,7 +549,12 @@ class BangumiApiClient:
             raise ValueError("image URL must be absolute HTTP or HTTPS")
         if max_bytes is not None and max_bytes <= 0:
             raise ValueError("image byte limit must be positive")
-        response = self._request_binary(url)
+        response = self._request_binary(
+            url,
+            request_label=request_label,
+            entity_type=entity_type,
+            entity_id=entity_id,
+        )
         content_length = response.headers.get("Content-Length")
         if max_bytes is not None and content_length is not None:
             try:
@@ -514,6 +571,21 @@ class BangumiApiClient:
         )
 
     def _request_json(
+        self,
+        path: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        request_label: str,
+        entity_type: str | None = None,
+        entity_id: int | None = None,
+        current: str | None = None,
+    ) -> dict[str, Any]:
+        context = _RequestContext(request_label, entity_type, entity_id, current)
+        return self._request_with_context(
+            context, lambda: self._request_json_response(path, params)
+        )
+
+    def _request_json_response(
         self,
         path: str,
         params: Mapping[str, Any] | None = None,
@@ -556,11 +628,25 @@ class BangumiApiClient:
             delay = retry_after if retry_after is not None else _backoff_delay(
                 attempt, self._jitter
             )
+            self._report_retry(failure, attempt, delay, retry_after is not None)
             self._sleeper(delay)
 
         raise AssertionError("unreachable")
 
-    def _request_json_list(self, path: str) -> list[Any]:
+    def _request_json_list(
+        self,
+        path: str,
+        *,
+        request_label: str,
+        entity_type: str | None = None,
+        entity_id: int | None = None,
+    ) -> list[Any]:
+        context = _RequestContext(request_label, entity_type, entity_id)
+        return self._request_with_context(
+            context, lambda: self._request_json_list_response(path)
+        )
+
+    def _request_json_list_response(self, path: str) -> list[Any]:
         retry_after: float | None = None
         for attempt in range(self.max_retries + 1):
             self.metrics.json_requests += 1
@@ -598,11 +684,25 @@ class BangumiApiClient:
             delay = retry_after if retry_after is not None else _backoff_delay(
                 attempt, self._jitter
             )
+            self._report_retry(failure, attempt, delay, retry_after is not None)
             self._sleeper(delay)
 
         raise AssertionError("unreachable")
 
-    def _request_binary(self, url: str) -> httpx.Response:
+    def _request_binary(
+        self,
+        url: str,
+        *,
+        request_label: str,
+        entity_type: str | None = None,
+        entity_id: int | None = None,
+    ) -> httpx.Response:
+        context = _RequestContext(request_label, entity_type, entity_id)
+        return self._request_with_context(
+            context, lambda: self._request_binary_response(url)
+        )
+
+    def _request_binary_response(self, url: str) -> httpx.Response:
         retry_after: float | None = None
         for attempt in range(self.max_retries + 1):
             self.metrics.image_requests += 1
@@ -631,16 +731,60 @@ class BangumiApiClient:
             delay = retry_after if retry_after is not None else _backoff_delay(
                 attempt, self._jitter
             )
+            self._report_retry(failure, attempt, delay, retry_after is not None)
             self._sleeper(delay)
 
         raise AssertionError("unreachable")
+
+    def _request_with_context(
+        self, context: _RequestContext, request: Callable[[], Any]
+    ) -> Any:
+        previous = getattr(self._request_context, "value", None)
+        self._request_context.value = context
+        try:
+            with self.reporter.activity(
+                stage=context.label,
+                message="等待 Bangumi API",
+                current=context.current,
+                entity_type=context.entity_type,
+                entity_id=context.entity_id,
+            ):
+                return request()
+        finally:
+            self._request_context.value = previous
+
+    def _report_retry(
+        self,
+        failure: BangumiApiError,
+        attempt: int,
+        delay: float,
+        used_retry_after: bool,
+    ) -> None:
+        context = getattr(self._request_context, "value", None)
+        if not isinstance(context, _RequestContext):
+            return
+        message = failure.summary
+        if used_retry_after:
+            message = f"{message}｜按 Retry-After 等待"
+        self.reporter.retry(
+            stage=context.label,
+            message=message,
+            entity_type=context.entity_type,
+            entity_id=context.entity_id,
+            attempt=attempt + 1,
+            max_attempts=self.max_retries,
+            retry_delay_seconds=delay,
+        )
 
 
 class QuarterlyDiscovery:
     """Discover and deterministically filter quarter candidates without persistence."""
 
-    def __init__(self, client: BangumiApiClient) -> None:
+    def __init__(
+        self, client: BangumiApiClient, reporter: ProgressReporter | None = None
+    ) -> None:
         self.client = client
+        self.reporter = reporter or NullProgressReporter()
 
     def discover(
         self,
@@ -668,7 +812,7 @@ class QuarterlyDiscovery:
                 ): (month, category)
                 for month, category in requests
             }
-            for future in as_completed(futures):
+            for completed, future in enumerate(as_completed(futures), start=1):
                 month, category = futures[future]
                 try:
                     candidates.extend(future.result())
@@ -676,6 +820,14 @@ class QuarterlyDiscovery:
                     failures.append(
                         DiscoveryFailure(month, category, error.code, error.summary)
                     )
+                self.reporter.progress(
+                    stage="discovery",
+                    message="已完成候选发现",
+                    current="TV" if category == TV_CATEGORY else "剧场版",
+                    completed=completed,
+                    total=len(requests),
+                    quarter=f"{year}-{month:02d}",
+                )
 
         return _filter_candidates(candidates, excluded_subject_ids, failures)
 

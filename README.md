@@ -1,106 +1,43 @@
 # Bangumi Side B by MyKr
 
-Bangumi Side B is a local-first archive of Japanese TV animation and theatrical
-movies. It will synchronise selected Bangumi facts into SQLite, then produce
-static sites from that local data. The project is independent of MyKr-ops.
+Bangumi Side B is a local-first static archive for one deliberately narrow
+release: Japan TV animation first airing in **2026-04**. It synchronises
+verified Bangumi facts to SQLite and builds static local and Pages/PWA output
+without runtime database or API access.
 
-## First-version scope
+## Current scope
 
-The first version covers only TV animation and theatrical movies. WEB,
-OVA/OAD, specials, and STAFF remain out of scope.
-
-## Architecture
-
-```text
-Bangumi API -> deterministic local normalisation -> SQLite -> static output
-```
-
-The future runtime site will use only static HTML, CSS, and native JavaScript;
-it will not read SQLite or call the Bangumi API.
-
-## Current status
-
-The installable package synchronises subject facts, main-story episodes, TV
-continuation evidence, configured main characters, all of their listed voice
-actors, and verified cover/character images into local SQLite and workspace
-media. It writes local sync and tag-audit reports, then builds an offline
-local and Pages static archive from that SQLite data. Pages builds include a
-complete-snapshot PWA shell; publication remains an explicit local command.
+- only TV subjects whose complete first-air date is in 2026-04;
+- only verified structured Infobox country values containing the exact `日本`
+  or `Japan` token (consistent co-productions are allowed);
+- no movies, continuations, roles, people, character images, or voice-actor
+  images;
+- only subject covers for admitted subjects.
 
 ```powershell
 python -m bgm_side_b --help
-bgmb --help
-bgmb --version
-bgmb sync 2022 1
-bgmb build 2022 1
+bgmb sync 2026 4
+bgmb build 2026 4
 bgmb build --all
 bgmb publish --dry-run
-bgmb publish
 ```
 
-Available sync scopes:
+`sync`, `build`, and `publish` are independent. `build --all` means every
+configured release quarter, currently only `2026-04`; it does not expand to
+old data stored in SQLite. `publish` consumes an existing verified Pages build
+and never invokes sync or build.
 
-```text
-bgmb sync YEAR QUARTER_MONTH
-bgmb sync YEAR
-bgmb sync START-END
-bgmb sync YEAR QUARTER_MONTH --force
-bgmb sync YEAR QUARTER_MONTH --force-images
-```
+## Output and PWA
 
-`--force` refreshes non-image structured facts. `--force-images` independently
-revalidates and redownloads verified cover and main-character images. Neither
-option builds or publishes output. Images are stored only below
-`workspace/media/`; the SQLite record keeps a workspace-relative path, verified
-format, hash, size, and dimensions. Voice-actor images are never downloaded.
+`build` writes `dist/local/` and `dist/pages/` from one data model, generator,
+template system, CSS, and native JavaScript source. Both profiles include
+cards, drawers, details, main-story episodes, and subject covers. Neither
+queries or emits roles, voice actors, or character media. Pages derives bounded
+WebP covers and uses complete verified PWA snapshots; ordinary startup never
+checks for updates.
 
-## Command progress
-
-`sync`, `build`, and `publish` show safe progress by default. All three accept
-`--progress auto|plain|off`, `--verbose`, and `--quiet`; `--quiet` is equivalent
-to `--progress off`, and it cannot be combined with `--verbose`. `auto` refreshes
-the current activity on an interactive stderr terminal and uses permanent plain
-lines otherwise. `--verbose` records every item and substep; normal plain output
-is throttled while retries, warnings, failures, quarter summaries, and final
-summaries remain visible.
-
-Progress, heartbeat, and retry notices go to stderr. Final summaries and safe,
-project-relative report paths go to stdout. A heartbeat describes the current
-safe activity after 10 seconds without an event; no ETA is estimated. Ctrl+C
-stops new sync work at a safe boundary and returns 130 after preserving usable
-data and any available partial report. Build interruption keeps the previous
-`dist` output, while interrupted publication never repeats a push automatically.
-
-`sync`, `build`, and `publish` are separate commands. `publish` never syncs or
-builds: it validates the existing successful Pages candidate, produces a
-versioned complete snapshot, and publishes only the `gh-pages` tree.
-
-`build` is offline and defaults to `dist/local/` plus `dist/pages/`. Both
-profiles share data projection, Jinja templates, CSS, and native JavaScript.
-Local output includes verified main-character images; Pages output produces
-WebP covers and never publishes character images. The homepage works directly
-through `file://`; runtime pages do not read SQLite, request JSON, or contact
-Bangumi. See [static build notes](docs/static-build.md) and the
-[visual system](docs/visual-system.md).
-
-See [the sync notes](docs/subject-sync.md) and
-[API field notes](docs/api-field-notes.md) for the verified fields, incremental
-strategy, media-cache rules, and SQLite schema outline.
-
-## Pages PWA and publishing
-
-The Pages application has no online-reading fallback. On first launch it asks
-the user to download and verify the complete current snapshot; downloads can be
-paused, resumed, cancelled, retried, or cleared from Settings. Once active, a
-snapshot is read entirely from Cache Storage and startup never checks for
-updates. Updates are requested only from Settings and switch atomically after
-the replacement snapshot verifies, so a failed update keeps the old version.
-
-Use `bgmb publish --dry-run` before a real release. A real publish requires a
-clean `main`, a current Pages build marker, and a writable `gh-pages` remote;
-it assigns UTC `YYYY.MM.DD.N` data versions. The first real release is a manual
-operator action after pushing `main`; source code MIT licensing does not grant
-rights to Bangumi data, covers, or character images.
+Runtime pages do not read SQLite, request Bangumi data, or require a web
+backend. A failed build keeps the prior complete static output.
 
 ## Development
 
@@ -108,21 +45,13 @@ Requires Python 3.11 or later.
 
 ```powershell
 python -m pip install -e ".[dev]"
-python -m pytest
+python -m pytest tests -q
 python -m ruff check .
 ```
 
-## Git boundaries
+Tracked files are source, configuration, templates, static assets, tests, and
+documentation. SQLite databases, downloaded covers, reports, backups,
+generated output, caches, temporary files, and secrets are not committed.
 
-Source, configuration, templates, static source assets, tests, and project
-documentation are tracked. Local databases, downloaded media, reports,
-backups, generated sites, caches, temporary files, secrets, and environment
-files are not committed. `dist/pages` belongs on the `gh-pages` branch, not
-`main`.
-
-Before a first real Pages publication, push the reviewed `main`, then run `bgmb build --all` and `bgmb publish --dry-run`. Pages publication consumes only the verified build candidate; sync requires a fresh build before publish.
-
-## Third-party content
-
-The MIT license applies to this source code only. It does not grant rights to
-Bangumi data, covers, character images, or other third-party content.
+See [sync notes](docs/subject-sync.md), [country filter](docs/country-filter.md),
+[static build notes](docs/static-build.md), and [PWA notes](docs/pwa.md).

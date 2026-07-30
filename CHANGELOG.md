@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Narrow the release, sync path, and static archive to verified Japan TV in
+  2026-04; remove continuation, role, voice, and character-media output paths.
+
 - Stabilize complete PWA snapshots, build-bound publication facts, and deterministic TV continuation refreshes.
 - Add unified, safe CLI progress reporting for sync, build, and publish, including
   plain/verbose/quiet modes, heartbeats, visible retries, and relative reports.

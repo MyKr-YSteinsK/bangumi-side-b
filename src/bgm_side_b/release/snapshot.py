@@ -31,25 +31,6 @@ def snapshot_index(
         for detail in model.details:
             drawer = detail.drawer
             card = drawer.card
-            roles = [
-                (
-                    character.character_id,
-                    character.preferred_name,
-                    character.original_name,
-                    character.position,
-                    tuple(
-                        (
-                            actor.person_id,
-                            actor.preferred_name,
-                            actor.original_name,
-                            actor.language,
-                            actor.position,
-                        )
-                        for actor in character.voice_actors
-                    ),
-                )
-                for character in detail.characters
-            ]
             subjects[str(card.subject_id)] = {
                 "facts_hash": _hash(
                     (
@@ -85,12 +66,6 @@ def snapshot_index(
                     )
                 ),
                 "episode_count": len(detail.episodes),
-                "roles_hash": _hash(roles),
-                "role_count": len(detail.characters),
-                "persons_hash": _hash(
-                    tuple(actor[0] for role in roles for actor in role[-1])
-                ),
-                "person_count": sum(len(role[-1]) for role in roles),
             }
             if card.cover.content_hash:
                 covers[str(card.subject_id)] = card.cover.content_hash
@@ -122,15 +97,6 @@ def diff_snapshots(
             ),
             "episodes_removed": 0,
             "episodes_updated": 0,
-            "roles_added": sum(
-                _int(item, "role_count") for item in current_subjects.values()
-            ),
-            "roles_removed": 0,
-            "roles_updated": 0,
-            "persons_added": sum(
-                _int(item, "person_count") for item in current_subjects.values()
-            ),
-            "persons_removed": 0,
             "covers_changed": len(_mapping(current, "covers")),
             "rules_changed": bool(current.get("rules_hash")),
             "blacklist_changed": bool(current.get("blacklist_hash")),
@@ -176,43 +142,6 @@ def diff_snapshots(
             previous_subjects[key].get("episode_hash")
             != current_subjects[key].get("episode_hash")
             for key in shared
-        ),
-        "roles_added": sum(
-            max(
-                0,
-                _int(current_subjects[key], "role_count")
-                - _int(previous_subjects.get(key, {}), "role_count"),
-            )
-            for key in current_subjects
-        ),
-        "roles_removed": sum(
-            max(
-                0,
-                _int(previous_subjects[key], "role_count")
-                - _int(current_subjects.get(key, {}), "role_count"),
-            )
-            for key in previous_subjects
-        ),
-        "roles_updated": sum(
-            previous_subjects[key].get("roles_hash")
-            != current_subjects[key].get("roles_hash")
-            for key in shared
-        ),
-        "persons_added": sum(
-            max(
-                0,
-                _int(current_subjects[key], "person_count")
-                - _int(previous_subjects.get(key, {}), "person_count"),
-            )
-            for key in current_subjects
-        ),
-        "persons_removed": sum(
-            max(
-                0,
-                _int(previous_subjects[key], "person_count")
-                - _int(current_subjects.get(key, {}), "person_count"),
-            )
-            for key in previous_subjects
         ),
         "covers_changed": sum(
             _mapping(previous, "covers").get(key)

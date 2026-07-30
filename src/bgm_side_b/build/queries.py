@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
@@ -32,11 +33,9 @@ class SubjectFacts:
     titles: tuple[tuple[str, str], ...]
     raw_tags: tuple[str, ...]
     sources: tuple[str, ...]
+    country_infobox: tuple[tuple[str, str], ...]
     cover: sqlite3.Row | None
     episodes: tuple[sqlite3.Row, ...]
-    characters: tuple[sqlite3.Row, ...]
-    voices: tuple[sqlite3.Row, ...]
-    character_media: tuple[sqlite3.Row, ...]
 
 
 @dataclass(frozen=True)
@@ -62,6 +61,7 @@ class BuildQueries:
         month: int,
         *,
         excluded_subject_ids: frozenset[int] = frozenset(),
+        navigation: tuple[tuple[int, int], ...] | None = None,
     ) -> QuarterFacts:
         """Load all card and detail facts with a fixed number of SQL queries."""
         if not self.database.path.is_file():
@@ -72,9 +72,13 @@ class BuildQueries:
             schema_version = _schema_version(connection)
             subject_rows = _subject_rows(connection, year, month, excluded_subject_ids)
             subject_ids = tuple(row["id"] for row in subject_rows)
-            navigation = _navigation_rows(connection, excluded_subject_ids)
+            navigation_rows = (
+                navigation
+                if navigation is not None
+                else _navigation_rows(connection, excluded_subject_ids)
+            )
             if not subject_ids:
-                return QuarterFacts(year, month, schema_version, navigation, ())
+                return QuarterFacts(year, month, schema_version, navigation_rows, ())
 
             titles = _group_rows(
                 _rows_for_subjects(
@@ -112,6 +116,18 @@ class BuildQueries:
                     subject_ids,
                 )
             )
+            infobox = _group_rows(
+                _rows_for_subjects(
+                    connection,
+                    """
+                    SELECT subject_id, item_key, value_json, position
+                    FROM subject_infobox_items
+                    WHERE subject_id IN ({placeholders})
+                    ORDER BY subject_id, position
+                    """,
+                    subject_ids,
+                )
+            )
             covers = _owner_rows(
                 _rows_for_subjects(
                     connection,
@@ -139,57 +155,6 @@ class BuildQueries:
                     subject_ids,
                 )
             )
-            characters = _group_rows(
-                _rows_for_subjects(
-                    connection,
-                    """
-                    SELECT relation.subject_id, relation.character_id, relation.role,
-                           relation.position, character.original_name,
-                           character.chinese_name, character.summary
-                    FROM subject_characters AS relation
-                    JOIN characters AS character ON character.id = relation.character_id
-                    WHERE relation.subject_id IN ({placeholders})
-                    ORDER BY relation.subject_id, relation.position,
-                             relation.character_id
-                    """,
-                    subject_ids,
-                )
-            )
-            voices = _group_rows(
-                _rows_for_subjects(
-                    connection,
-                    """
-                    SELECT voice.subject_id, voice.character_id, voice.person_id,
-                           voice.language, voice.position, person.original_name,
-                           person.chinese_name
-                    FROM character_voices AS voice
-                    JOIN persons AS person ON person.id = voice.person_id
-                    WHERE voice.subject_id IN ({placeholders})
-                    ORDER BY voice.subject_id, voice.character_id, voice.position,
-                             voice.person_id
-                    """,
-                    subject_ids,
-                )
-            )
-            character_ids = tuple(
-                row["character_id"]
-                for rows in characters.values()
-                for row in rows
-            )
-            character_media = _owner_rows(
-                _rows_for_owners(
-                    connection,
-                    """
-                    SELECT owner_id, media_kind, local_path, content_hash, size_bytes,
-                           mime_type, width, height, status
-                    FROM media_files
-                    WHERE owner_type = 'character' AND media_kind = 'character_image'
-                      AND owner_id IN ({placeholders})
-                    ORDER BY owner_id
-                    """,
-                    character_ids,
-                )
-            )
             subjects = tuple(
                 SubjectFacts(
                     subject_id=row["id"],
@@ -211,20 +176,17 @@ class BuildQueries:
                     sources=tuple(
                         source["source"] for source in sources.get(row["id"], ())
                     ),
+                    country_infobox=tuple(
+                        (item["item_key"], value)
+                        for item in infobox.get(row["id"], ())
+                        if isinstance((value := _json_string(item["value_json"])), str)
+                    ),
                     cover=covers.get(row["id"]),
                     episodes=tuple(episodes.get(row["id"], ())),
-                    characters=tuple(characters.get(row["id"], ())),
-                    voices=tuple(voices.get(row["id"], ())),
-                    character_media=tuple(
-                        media
-                        for character in characters.get(row["id"], ())
-                        if (media := character_media.get(character["character_id"]))
-                        is not None
-                    ),
                 )
                 for row in subject_rows
             )
-            return QuarterFacts(year, month, schema_version, navigation, subjects)
+            return QuarterFacts(year, month, schema_version, navigation_rows, subjects)
         except sqlite3.Error as error:
             raise BuildDataError("database cannot be read for build") from error
         finally:
@@ -276,13 +238,12 @@ def _subject_rows(
                    ROW_NUMBER() OVER (
                        PARTITION BY quarter.subject_id
                        ORDER BY CASE quarter.appearance_kind
-                           WHEN 'new' THEN 1 WHEN 'continuing' THEN 2
-                           WHEN 'movie' THEN 3
-                           ELSE 4 END, quarter.position, quarter.subject_id
+                           WHEN 'new' THEN 1 ELSE 2 END,
+                           quarter.position, quarter.subject_id
                    ) AS relation_rank
             FROM subject_quarters AS quarter
             WHERE quarter.year = ? AND quarter.month = ?
-              AND quarter.appearance_kind IN ('new', 'continuing', 'movie')
+              AND quarter.appearance_kind = 'new'
         )
         SELECT subject.id, quarter_subjects.appearance_kind, quarter_subjects.position,
                subject.media_format, subject.summary, subject.air_date,
@@ -293,11 +254,9 @@ def _subject_rows(
         JOIN subjects AS subject ON subject.id = quarter_subjects.subject_id
         WHERE quarter_subjects.relation_rank = 1
           AND subject.availability_status = 'available'
-          AND subject.media_format IN ('tv', 'movie')
+          AND subject.media_format = 'tv'
           {exclusions}
-        ORDER BY CASE quarter_subjects.appearance_kind
-            WHEN 'new' THEN 1 WHEN 'continuing' THEN 2 WHEN 'movie' THEN 3 ELSE 4 END,
-            quarter_subjects.position, subject.id
+        ORDER BY quarter_subjects.position, subject.id
         """,
         (year, month, *exclusion_values),
     ).fetchall()
@@ -314,7 +273,8 @@ def _navigation_rows(
         FROM subject_quarters AS quarter
         JOIN subjects AS subject ON subject.id = quarter.subject_id
         WHERE subject.availability_status = 'available'
-          AND subject.media_format IN ('tv', 'movie')
+          AND subject.media_format = 'tv'
+          AND quarter.appearance_kind = 'new'
           {exclusions}
         ORDER BY quarter.year, quarter.month
         """,
@@ -357,6 +317,17 @@ def _group_rows(rows: tuple[sqlite3.Row, ...]) -> dict[int, tuple[sqlite3.Row, .
 
 def _owner_rows(rows: tuple[sqlite3.Row, ...]) -> dict[int, sqlite3.Row]:
     return {row["owner_id"]: row for row in rows}
+
+
+def _json_string(value: object) -> str | None:
+    """Decode only stored string Infobox values; structured values are ineligible."""
+    if not isinstance(value, str):
+        return None
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return decoded if isinstance(decoded, str) else None
 
 
 def _parse_date(value: object) -> date | None:

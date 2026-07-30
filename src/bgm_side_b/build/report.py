@@ -22,7 +22,6 @@ class ProfileBuildReport:
     subjects: int
     details: int
     covers: int
-    character_images: int
     missing_covers: int
     warnings: tuple[str, ...]
     output_bytes: int
@@ -43,6 +42,8 @@ def write_build_report(
     started_at: datetime,
     finished_at: datetime,
     reports: tuple[ProfileBuildReport, ...],
+    *,
+    context: dict[str, object] | None = None,
 ) -> Path:
     """Atomically write one report without permitting local paths in its content."""
     safe_scope = _safe_scope(scope)
@@ -51,6 +52,7 @@ def write_build_report(
         "started_at": _format_utc(started_at),
         "finished_at": _format_utc(finished_at),
         "profiles": [asdict(report) for report in reports],
+        "scope_summary": context or {},
     }
     encoded = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if _LOCAL_PATH_PATTERN.search(encoded):

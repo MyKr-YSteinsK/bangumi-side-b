@@ -12,7 +12,6 @@ from unicodedata import normalize
 from bgm_side_b.build.models import (
     BuildMetadata,
     BuildQuarter,
-    CharacterView,
     EpisodeView,
     MediaView,
     QuarterNavigation,
@@ -22,19 +21,20 @@ from bgm_side_b.build.models import (
     SubjectDetailPage,
     SubjectDrawer,
     TagView,
-    VoiceActorView,
 )
 from bgm_side_b.build.queries import QuarterFacts, SubjectFacts
-from bgm_side_b.config import SourceRules, TagRules
-from bgm_side_b.rules import normalise_aliases, preferred_title, quarter_for_date
+from bgm_side_b.config import CountryFilter, SourceRules, TagRules
+from bgm_side_b.rules import (
+    InfoboxItem,
+    decide_country,
+    normalise_aliases,
+    preferred_title,
+    quarter_for_date,
+)
 
-_SECTION_ORDER = ("new", "continuing", "movie", "ova", "other")
+_SECTION_ORDER = ("new",)
 _SECTION_LABELS = {
     "new": "本季度新番",
-    "continuing": "跨季度续播",
-    "movie": "剧场版",
-    "ova": "OVA / OAD / 特别篇",
-    "other": "其他动画",
 }
 
 
@@ -47,19 +47,33 @@ class BuildProjection:
         source_rules: SourceRules,
         workspace_directory: Path,
         *,
+        country_filter: CountryFilter,
         excluded_subject_ids: frozenset[int] = frozenset(),
     ) -> None:
         self.tag_rules = tag_rules
         self.source_rules = source_rules
         self.workspace_directory = workspace_directory.resolve()
+        self.country_filter = country_filter
         self.excluded_subject_ids = excluded_subject_ids
 
     def project_quarter(self, facts: QuarterFacts) -> BuildQuarter:
         """Return a complete template-safe quarter model and build warnings."""
         warnings: list[str] = []
+        country_filtered_subjects = 0
         cards: list[tuple[SubjectFacts, SubjectCard]] = []
         for subject in facts.subjects:
             if subject.subject_id in self.excluded_subject_ids:
+                continue
+            country = decide_country(
+                (InfoboxItem(key, value) for key, value in subject.country_infobox),
+                self.country_filter,
+            )
+            if not country.included:
+                country_filtered_subjects += 1
+                warnings.append(
+                    "subject "
+                    f"{subject.subject_id} excluded by country: {country.reason}"
+                )
                 continue
             card = self._project_card(subject)
             if card is None:
@@ -96,7 +110,12 @@ class BuildProjection:
             sections,
             navigation,
             details,
-            BuildMetadata(facts.schema_version, len(ranked_cards), tuple(warnings)),
+            BuildMetadata(
+                facts.schema_version,
+                len(ranked_cards),
+                country_filtered_subjects,
+                tuple(warnings),
+            ),
         )
 
     def _project_card(self, subject: SubjectFacts) -> SubjectCard | None:
@@ -154,46 +173,7 @@ class BuildProjection:
             )
             for row in subject.episodes
         )
-        voices_by_character: dict[int, list[VoiceActorView]] = {}
-        for row in subject.voices:
-            preferred, original, _ = _display_names(
-                row["chinese_name"], row["original_name"]
-            )
-            if preferred is None:
-                continue
-            voices_by_character.setdefault(row["character_id"], []).append(
-                VoiceActorView(
-                    row["person_id"],
-                    preferred,
-                    original,
-                    _clean_text(row["language"]),
-                    row["position"],
-                )
-            )
-        character_media = {row["owner_id"]: row for row in subject.character_media}
-        characters: list[CharacterView] = []
-        for row in subject.characters:
-            preferred, original, _ = _display_names(
-                row["chinese_name"], row["original_name"]
-            )
-            if preferred is None:
-                continue
-            characters.append(
-                CharacterView(
-                    row["character_id"],
-                    preferred,
-                    original,
-                    _clean_text(row["summary"]),
-                    _media_view(
-                        character_media.get(row["character_id"]),
-                        "character_image",
-                        self.workspace_directory,
-                    ),
-                    tuple(voices_by_character.get(row["character_id"], ())),
-                    row["position"],
-                )
-            )
-        return SubjectDetailPage(drawer, episodes, tuple(characters))
+        return SubjectDetailPage(drawer, episodes)
 
 
 def _project_titles(
@@ -219,19 +199,6 @@ def _first_title(stored_titles: Iterable[tuple[str, str]], kind: str) -> str | N
         if title_kind == kind:
             return _clean_text(title)
     return None
-
-
-def _display_names(
-    chinese_name: object, original_name: object
-) -> tuple[str | None, str | None, tuple[str, ...]]:
-    preferred = preferred_title(
-        chinese_name if isinstance(chinese_name, str) else None,
-        original_name if isinstance(original_name, str) else None,
-    )
-    original = _clean_text(original_name)
-    if original == preferred:
-        original = None
-    return preferred, original, ()
 
 
 def _project_tags(raw_tags: Iterable[str], rules: TagRules) -> tuple[TagView, ...]:

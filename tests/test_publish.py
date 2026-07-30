@@ -17,6 +17,7 @@ from bgm_side_b.progress import ConsoleProgressReporter
 from bgm_side_b.release.candidate import advance_data_generation
 from bgm_side_b.release.publish import Publisher, PublishError, _allowed_origin
 from bgm_side_b.repository import (
+    SubjectInfoboxItem,
     SubjectQuarter,
     SubjectRecord,
     SubjectRepository,
@@ -60,12 +61,15 @@ def publish_root(tmp_path: Path) -> tuple[Path, Path]:
     repository = SubjectRepository(database)
     with repository.transaction() as connection:
         repository.upsert_subject(
-            connection, SubjectRecord(101, "tv", None, date(2022, 1, 1), 12, 7.0, 1)
+            connection, SubjectRecord(101, "tv", None, date(2026, 4, 1), 12, 7.0, 1)
         )
         repository.replace_titles(
             connection, 101, [SubjectTitle("preferred", "发布测试")]
         )
-        repository.replace_quarters(connection, 101, [SubjectQuarter(2022, 1, "new")])
+        repository.replace_infobox(
+            connection, 101, [SubjectInfoboxItem("\u56fd\u5bb6/\u5730\u533a", "Japan")]
+        )
+        repository.replace_quarters(connection, 101, [SubjectQuarter(2026, 4, "new")])
     settings, tags, sources = load_rules(root / "config")
     ArchiveBuilder(root, database, settings, tags, sources).build(None)
     return root, remote

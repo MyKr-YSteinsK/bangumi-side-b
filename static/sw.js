@@ -6,7 +6,6 @@ const CONTROL_KEY = "__bsb_control__/state";
 const MANIFEST_KEY_PREFIX = "__bsb_control__/manifest/";
 const SHELL_FILES = /* __BSB_SHELL_FILES__ */;
 const FORBIDDEN_PARTS = [
-  "/media/characters/",
   ".sql" + "ite",
   "/work" + "space/",
   "/reports/",

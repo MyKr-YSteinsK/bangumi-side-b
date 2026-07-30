@@ -74,21 +74,6 @@ class MediaPublisher:
             return self._derive_pages_cover(source, media)
         return self._copy_original(source, media)
 
-    def publish_character(
-        self, character_id: int, media: MediaView, profile: BuildProfile
-    ) -> PublishedMedia | None:
-        """Copy character media only for the full local profile."""
-        if (
-            not profile.include_character_images
-            or character_id <= 0
-            or not media.is_available
-        ):
-            return None
-        source = _workspace_media_path(self.workspace_directory, media)
-        if source is None:
-            return None
-        return self._copy_original(source, media)
-
     def _copy_original(self, source: Path, media: MediaView) -> PublishedMedia:
         relative = PurePosixPath(media.relative_path or "")
         target = self.output_directory / Path(relative.as_posix())
@@ -130,7 +115,7 @@ class MediaPublisher:
 
 
 def assert_pages_media_policy(output_directory: Path) -> None:
-    """Fail closed if a Pages tree contains any character-media output."""
+    """Fail closed if a Pages tree contains forbidden character-media output."""
     characters = output_directory / "media" / "characters"
     if characters.exists():
         raise AssetError("Pages output contains character media")

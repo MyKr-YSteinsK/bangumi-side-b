@@ -106,36 +106,11 @@ class EpisodeView:
 
 
 @dataclass(frozen=True)
-class VoiceActorView:
-    """One subject-scoped voice actor relation without image data."""
-
-    person_id: int
-    preferred_name: str
-    original_name: str | None
-    language: str | None
-    position: int
-
-
-@dataclass(frozen=True)
-class CharacterView:
-    """One main character and only its voice relations in this subject."""
-
-    character_id: int
-    preferred_name: str
-    original_name: str | None
-    summary: str | None
-    image: MediaView
-    voice_actors: tuple[VoiceActorView, ...]
-    position: int
-
-
-@dataclass(frozen=True)
 class SubjectDetailPage:
     """The independent full-detail projection for a single subject page."""
 
     drawer: SubjectDrawer
     episodes: tuple[EpisodeView, ...]
-    characters: tuple[CharacterView, ...]
 
 
 @dataclass(frozen=True)
@@ -163,6 +138,7 @@ class BuildMetadata:
 
     schema_version: int
     subject_count: int
+    country_filtered_subjects: int
     warnings: tuple[str, ...]
 
 

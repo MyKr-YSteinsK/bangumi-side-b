@@ -26,9 +26,7 @@ from bgm_side_b.build.report import ProfileBuildReport, write_build_report
 def test_profiles_and_relative_paths_work_for_file_and_pages_subpaths() -> None:
     local = local_profile()
     pages = pages_profile("/bangumi-side-b/")
-    assert local.include_character_images
     assert not local.derive_cover_webp
-    assert not pages.include_character_images
     assert pages.derive_cover_webp
     assert pages.deployment_path == "/bangumi-side-b/"
 
@@ -45,7 +43,7 @@ def test_profiles_and_relative_paths_work_for_file_and_pages_subpaths() -> None:
         assert paths.external_subject(101) == "https://bgm.tv/subject/101"
 
 
-def test_hashed_assets_and_profile_media_keep_pages_free_of_character_images(
+def test_hashed_assets_and_profile_media_keep_pages_cover_output_bounded(
     tmp_path: Path,
 ) -> None:
     static = tmp_path / "static"
@@ -61,7 +59,6 @@ def test_hashed_assets_and_profile_media_keep_pages_free_of_character_images(
 
     workspace = tmp_path / "workspace"
     cover = _media(workspace, "media/covers/1.png", (400, 600))
-    character = _media(workspace, "media/characters/10.png", (300, 300))
     pages = MediaPublisher(workspace, output)
     derived = pages.publish_cover(1, cover, pages_profile())
     assert derived is not None
@@ -70,19 +67,15 @@ def test_hashed_assets_and_profile_media_keep_pages_free_of_character_images(
         assert image.format == "WEBP"
         assert image.size == (400, 600)
     assert pages.publish_cover(2, cover, pages_profile()) == derived
-    assert pages.publish_character(10, character, pages_profile()) is None
     assert_pages_media_policy(output)
 
     local_output = tmp_path / "local"
     local = MediaPublisher(workspace, local_output)
     copied = local.publish_cover(1, cover, local_profile())
-    character_copy = local.publish_character(10, character, local_profile())
     assert copied is not None
     assert (local_output / copied.relative_path).read_bytes() == (
         workspace / "media/covers/1.png"
     ).read_bytes()
-    assert character_copy is not None
-    assert (local_output / character_copy.relative_path).is_file()
 
 
 def test_media_rejects_unsafe_paths_and_pages_policy_fails_closed(
@@ -146,7 +139,7 @@ def test_atomic_output_replaces_complete_tree_and_preserves_previous_on_failure(
 
 def test_build_report_is_atomic_and_rejects_local_paths(tmp_path: Path) -> None:
     report = ProfileBuildReport(
-        "local", 1, 2, 2, 2, 1, 0, ("missing cover",), 123, 4, True, ()
+        "local", 1, 2, 2, 2, 0, ("missing cover",), 123, 4, True, ()
     )
     started = datetime(2026, 7, 30, 1, 2, 3, tzinfo=UTC)
     destination = write_build_report(
@@ -156,7 +149,7 @@ def test_build_report_is_atomic_and_rejects_local_paths(tmp_path: Path) -> None:
     assert str(tmp_path) not in payload
     assert '"profile": "local"' in payload
     unsafe = ProfileBuildReport(
-        "local", 0, 0, 0, 0, 0, 0, (str(tmp_path),), 0, 0, False, ()
+        "local", 0, 0, 0, 0, 0, (str(tmp_path),), 0, 0, False, ()
     )
     with pytest.raises(ValueError, match="local path"):
         write_build_report(tmp_path / "reports", "scope", started, started, (unsafe,))

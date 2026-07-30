@@ -109,6 +109,6 @@ def _quarter() -> BuildQuarter:
         1,
         (QuarterSection("new", "本季度新番", (card,)),),
         (QuarterNavigation(2022, 1, True, True),),
-        (SubjectDetailPage(drawer, (), ()),),
-        BuildMetadata(2, 1, ()),
+        (SubjectDetailPage(drawer, ()),),
+        BuildMetadata(2, 1, 0, ()),
     )

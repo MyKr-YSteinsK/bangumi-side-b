@@ -12,6 +12,7 @@ from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database
 from bgm_side_b.progress import ConsoleProgressReporter
 from bgm_side_b.repository import (
+    SubjectInfoboxItem,
     SubjectQuarter,
     SubjectRecord,
     SubjectRepository,
@@ -32,14 +33,26 @@ def test_offline_builder_generates_both_profiles_without_mutating_sqlite(
     with repository.transaction() as connection:
         repository.upsert_subject(
             connection,
-            SubjectRecord(101, "tv", None, date(2022, 1, 1), 12, 7.2, 100),
+            SubjectRecord(101, "tv", None, date(2026, 4, 1), 12, 7.2, 100),
         )
         repository.replace_titles(
             connection, 101, [SubjectTitle("preferred", "可构建作品")]
         )
-        repository.replace_quarters(
-            connection, 101, [SubjectQuarter(2022, 1, "new")]
+        repository.replace_infobox(
+            connection, 101, [SubjectInfoboxItem("\u56fd\u5bb6/\u5730\u533a", "Japan")]
         )
+        repository.replace_quarters(
+            connection, 101, [SubjectQuarter(2026, 4, "new")]
+        )
+        repository.upsert_subject(
+            connection,
+            SubjectRecord(102, "tv", None, date(2025, 1, 1), 12, 7.2, 100),
+        )
+        repository.replace_titles(connection, 102, [SubjectTitle("preferred", "Old")])
+        repository.replace_infobox(
+            connection, 102, [SubjectInfoboxItem("\u56fd\u5bb6/\u5730\u533a", "Japan")]
+        )
+        repository.replace_quarters(connection, 102, [SubjectQuarter(2025, 1, "new")])
     before = database.path.read_bytes()
     settings, tags, sources = load_rules(ROOT / "config")
     run = ArchiveBuilder(
@@ -51,13 +64,14 @@ def test_offline_builder_generates_both_profiles_without_mutating_sqlite(
         workspace_directory=workspace,
         distribution_directory=tmp_path / "dist",
         reports_directory=tmp_path / "reports",
-    ).build(SyncScope((2022,), 1))
+    ).build(SyncScope((2026,), 4))
 
     assert database.path.read_bytes() == before
     assert (tmp_path / "dist" / "local" / "index.html").is_file()
-    quarter_page = tmp_path / "dist" / "local" / "quarters" / "2022-01" / "index.html"
+    quarter_page = tmp_path / "dist" / "local" / "quarters" / "2026-04" / "index.html"
     assert quarter_page.is_file()
     assert (tmp_path / "dist" / "local" / "subjects" / "101" / "index.html").is_file()
+    assert not (tmp_path / "dist" / "local" / "quarters" / "2025-01").exists()
     assert (tmp_path / "dist" / "pages" / "index.html").is_file()
     assert not (tmp_path / "dist" / "pages" / "media" / "characters").exists()
     manifest = json.loads(
@@ -74,6 +88,9 @@ def test_offline_builder_generates_both_profiles_without_mutating_sqlite(
     assert str(tmp_path) not in report
     assert '"profile": "local"' in report
     assert '"profile": "pages"' in report
+    assert '"configured_quarters": [' in report
+    assert '"ignored_database_quarters": [' in report
+    assert '"character_sections": 0' in report
     marker = json.loads((workspace / "state" / "pages-build.json").read_text("utf-8"))
     assert marker["profile"] == "pages"
     assert marker["schema"] == 2
@@ -101,7 +118,7 @@ def test_empty_database_builds_a_safe_empty_local_index(tmp_path: Path) -> None:
         reports_directory=tmp_path / "reports",
     ).build(None, target="local")
     index = (tmp_path / "dist" / "local" / "index.html").read_text(encoding="utf-8")
-    assert "尚无可展示资料" in index
+    assert "quarters/2026-04/index.html" in index
 
 
 def test_build_reports_safe_staging_and_atomic_promotion_stages(tmp_path: Path) -> None:

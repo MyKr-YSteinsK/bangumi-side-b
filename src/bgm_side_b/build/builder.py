@@ -28,7 +28,7 @@ from bgm_side_b.config import ProjectSettings, SourceRules, TagRules
 from bgm_side_b.database import Database
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.release.candidate import write_pages_build_marker
-from bgm_side_b.sync import SyncScope
+from bgm_side_b.sync import SyncScope, validate_release_scope
 
 
 class BuildError(RuntimeError):
@@ -77,19 +77,19 @@ class ArchiveBuilder:
         *,
         target: str = "all",
     ) -> BuildRun:
-        """Build every currently available quarter to avoid partial-site link rot.
-
-        The explicit scope remains useful for validation/reporting and CLI parity,
-        but each invocation regenerates the complete current SQLite archive. This
-        makes navigation, the landing page, detail links, and blacklist cleanup
-        deterministic without preserving stale generated pages from older runs.
-        """
+        """Build only the checked-in release quarters from local SQLite facts."""
         if target not in {"all", "local", "pages"}:
             raise ValueError("build target must be local, pages, or all")
+        if scope is not None:
+            validate_release_scope(scope, self.settings)
+        configured_quarters = tuple(
+            (int(item[:4]), int(item[5:]))
+            for item in self.settings.scope.release_quarters
+        )
         self.reporter.start(
             stage="scope",
             message="开始离线构建",
-            current="全部季度" if scope is None else scope.label,
+            current=", ".join(self.settings.scope.release_quarters),
             counters={"目标": target},
         )
         self.reporter.stage(stage="database", message="正在检查 SQLite schema 和完整性")
@@ -97,7 +97,13 @@ class ArchiveBuilder:
         started = datetime.now(UTC)
         queries = BuildQueries(self.database)
         self.reporter.stage(stage="facts", message="正在读取 SQLite facts")
-        quarters = queries.list_quarters(self.settings.excluded_subject_ids)
+        database_quarters = queries.list_quarters(self.settings.excluded_subject_ids)
+        ignored_quarters = tuple(
+            quarter
+            for quarter in database_quarters
+            if quarter not in configured_quarters
+        )
+        quarters = configured_quarters
         self.reporter.stage(
             stage="view-model",
             message="正在构建 View Model",
@@ -108,12 +114,14 @@ class ArchiveBuilder:
                 self.tag_rules,
                 self.source_rules,
                 self.workspace_directory,
+                country_filter=self.settings.country_filter,
                 excluded_subject_ids=self.settings.excluded_subject_ids,
             ).project_quarter(
                 queries.load_quarter(
                     year,
                     month,
                     excluded_subject_ids=self.settings.excluded_subject_ids,
+                    navigation=configured_quarters,
                 )
             )
             for year, month in quarters
@@ -129,7 +137,7 @@ class ArchiveBuilder:
         for profile in profiles:
             reports.append(self._build_profile(profile, models))
         finished = datetime.now(UTC)
-        label = "all" if scope is None else scope.label
+        label = "+".join(self.settings.scope.release_quarters)
         pages_report = next((item for item in reports if item.profile == "pages"), None)
         if pages_report is not None:
             self.reporter.stage(
@@ -147,7 +155,22 @@ class ArchiveBuilder:
             )
         self.reporter.stage(stage="report", message="正在写入构建报告")
         report = write_build_report(
-            self.reports_directory, label, started, finished, tuple(reports)
+            self.reports_directory,
+            label,
+            started,
+            finished,
+            tuple(reports),
+            context={
+                "configured_quarters": list(self.settings.scope.release_quarters),
+                "ignored_database_quarters": [
+                    f"{year:04d}-{month:02d}" for year, month in ignored_quarters
+                ],
+                "tv_subjects": subject_count,
+                "country_filtered_subjects": sum(
+                    model.metadata.country_filtered_subjects for model in models
+                ),
+                "character_sections": 0,
+            },
         )
         self.reporter.complete(
             stage="summary",
@@ -208,7 +231,6 @@ class ArchiveBuilder:
             int(metrics["subjects"]),
             int(metrics["details"]),
             int(metrics["covers"]),
-            int(metrics["character_images"]),
             int(metrics["missing_covers"]),
             tuple(metrics["warnings"]),
             _tree_bytes(result.output_directory),
@@ -253,7 +275,6 @@ class ArchiveBuilder:
         publisher = MediaPublisher(self.workspace_directory, stage)
         warnings: list[str] = []
         covers = 0
-        character_images = 0
         missing_covers = 0
         detail_by_subject: dict[int, object] = {}
         subject_count = 0
@@ -345,29 +366,6 @@ class ArchiveBuilder:
                 if published_cover is not None
                 else None
             )
-            character_media: dict[int, RenderMedia] = {}
-            if profile.include_character_images:
-                for character in detail.characters:
-                    self.reporter.progress(
-                        stage="character-images",
-                        message="正在处理本地角色图片",
-                        entity_type="character",
-                        entity_id=character.character_id,
-                    )
-                    published = publisher.publish_character(
-                        character.character_id, character.image, profile
-                    )
-                    if published is None:
-                        if character.image.is_available:
-                            warnings.append(
-                                "character "
-                                f"{character.character_id} has no published image"
-                            )
-                        continue
-                    character_images += 1
-                    character_media[character.character_id] = _render_media(
-                        resolver, document, published
-                    )
             permanent = _detail_return_quarter(detail)
             entered = (detail.drawer.entered_year, detail.drawer.entered_month)
             navigation = {entered: resolver.href(document, resolver.quarter(*entered))}
@@ -381,8 +379,6 @@ class ArchiveBuilder:
                     navigation_hrefs=navigation,
                     return_href=resolver.href(document, resolver.quarter(*permanent)),
                     cover_media=cover,
-                    character_media=character_media,
-                    include_character_images=profile.include_character_images,
                     **_shell_links(profile, resolver, document, assets),
                 ),
             )
@@ -437,7 +433,6 @@ class ArchiveBuilder:
             "subjects": subject_count,
             "details": len(detail_by_subject),
             "covers": covers,
-            "character_images": character_images,
             "missing_covers": missing_covers,
             "warnings": warnings,
             "css_bytes": (stage / stylesheet).stat().st_size,

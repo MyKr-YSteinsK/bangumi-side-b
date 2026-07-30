@@ -25,6 +25,7 @@ from bgm_side_b.release.manifest import (
 )
 from bgm_side_b.repository import (
     EpisodeRecord,
+    SubjectInfoboxItem,
     SubjectQuarter,
     SubjectRecord,
     SubjectRepository,
@@ -42,8 +43,8 @@ def static_site(tmp_path: Path) -> Path:
     repository = SubjectRepository(database)
     with repository.transaction() as connection:
         for subject_id, month, title in (
-            (101, 1, "很长的测试标题一"),
-            (102, 4, "测试标题二"),
+            (101, 4, "很长的测试标题一"),
+            (102, 1, "测试标题二"),
         ):
             repository.upsert_subject(
                 connection,
@@ -51,7 +52,7 @@ def static_site(tmp_path: Path) -> Path:
                     subject_id,
                     "tv",
                     "用于 Chromium 回归的完整简介。" * 8,
-                    date(2022, month, 1),
+                    date(2026, month, 1),
                     51,
                     7.5 if subject_id == 101 else None,
                     100 if subject_id == 101 else None,
@@ -60,8 +61,13 @@ def static_site(tmp_path: Path) -> Path:
             repository.replace_titles(
                 connection, subject_id, [SubjectTitle("preferred", title)]
             )
+            repository.replace_infobox(
+                connection,
+                subject_id,
+                [SubjectInfoboxItem("\u56fd\u5bb6/\u5730\u533a", "Japan")],
+            )
             repository.replace_quarters(
-                connection, subject_id, [SubjectQuarter(2022, month, "new")]
+                connection, subject_id, [SubjectQuarter(2026, month, "new")]
             )
         repository.replace_main_episodes(
             connection,
@@ -111,7 +117,7 @@ def test_local_file_archive_restores_state_and_remains_offline(
     page = browser.new_page()
     requests: list[str] = []
     page.on("request", lambda request: requests.append(request.url))
-    page.goto((static_site / "local" / "quarters" / "2022-01" / "index.html").as_uri())
+    page.goto((static_site / "local" / "quarters" / "2026-04" / "index.html").as_uri())
     page.locator("[data-search-input]").fill("标题一")
     assert page.locator(".subject-card:not([hidden])").count() == 1
     page.locator("[data-open-drawer]").click()
@@ -139,7 +145,7 @@ def test_pages_subpath_loads_static_assets_without_character_media(
         page = browser.new_page()
         page.goto(
             f"http://127.0.0.1:{server.server_port}/bangumi-side-b/pages/"
-            "quarters/2022-01/index.html"
+            "quarters/2026-04/index.html"
         )
         assert page.locator(".subject-card").count() == 1
         stylesheet = page.locator('link[rel="stylesheet"]').get_attribute("href")
@@ -170,8 +176,8 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         "app_version": "0.1.0",
         "generated_at": "2026-07-30T00:00:00Z",
         "published_at": "2026-07-30T00:00:00Z",
-        "quarter_count": 2,
-        "subject_count": 2,
+        "quarter_count": 1,
+        "subject_count": 1,
         "total_bytes": sum(entry.size_bytes for entry in entries),
         "content_hash": manifest.content_hash,
         "manifest_url": "snapshot-manifest.json",
@@ -191,7 +197,7 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         page = context.new_page()
         page.set_default_timeout(5000)
         root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
-        page.goto(f"{root}/quarters/2022-01/index.html")
+        page.goto(f"{root}/quarters/2026-04/index.html")
         page.locator("[data-pwa-gate]").wait_for(state="visible")
         page.wait_for_function(
             "window.BsbPwa.state().available_release?.release_version"
@@ -200,7 +206,7 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         assert page.locator("[data-pwa-gate-release]").inner_text() == "2026.07.30.1"
         page.wait_for_function("navigator.serviceWorker.controller !== null")
         context.set_offline(True)
-        page.goto(f"{root}/subjects/101/index.html?from=2022-01")
+        page.goto(f"{root}/subjects/101/index.html?from=2026-04")
         assert page.get_by_role("heading", name="需要初始化资料快照").count() == 1
         context.set_offline(False)
         page.goto(f"{root}/settings/index.html")
@@ -211,10 +217,10 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         )
         state = page.evaluate("window.BsbPwa.state()")
         assert state["status"] == "ready", state
-        page.goto(f"{root}/quarters/2022-01/index.html")
+        page.goto(f"{root}/quarters/2026-04/index.html")
         page.locator("[data-pwa-gate]").wait_for(state="hidden", timeout=15000)
         context.set_offline(True)
-        page.goto(f"{root}/subjects/101/index.html?from=2022-01")
+        page.goto(f"{root}/subjects/101/index.html?from=2026-04")
         assert page.locator("[data-subject-detail]").count() == 1
         assert page.evaluate(
             """async () => {
@@ -296,8 +302,8 @@ def test_pages_pwa_accepts_slow_download_then_pauses_and_resumes(
                 "app_version": "0.1.0",
                 "generated_at": "2026-07-30T00:00:00Z",
                 "published_at": "2026-07-30T00:00:00Z",
-                "quarter_count": 2,
-                "subject_count": 2,
+                "quarter_count": 1,
+                "subject_count": 1,
                 "total_bytes": sum(entry.size_bytes for entry in entries),
                 "content_hash": manifest.content_hash,
                 "manifest_url": "snapshot-manifest.json",
@@ -326,7 +332,7 @@ def test_pages_pwa_accepts_slow_download_then_pauses_and_resumes(
         page = context.new_page()
         page.set_default_timeout(5000)
         root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
-        page.goto(f"{root}/quarters/2022-01/index.html")
+        page.goto(f"{root}/quarters/2026-04/index.html")
         page.locator("[data-pwa-gate]").wait_for(state="visible")
         page.wait_for_function("navigator.serviceWorker.controller !== null")
         page.wait_for_function("window.BsbPwa.state().available_release !== null")

@@ -115,8 +115,6 @@ class TemplateRenderer:
         navigation_hrefs: Mapping[tuple[int, int], str],
         return_href: str,
         cover_media: RenderMedia | None = None,
-        character_media: Mapping[int, RenderMedia] | None = None,
-        include_character_images: bool,
         favicon_href: str = "favicon.svg",
         pwa_enabled: bool = False,
         manifest_href: str = "manifest.webmanifest",
@@ -140,8 +138,6 @@ class TemplateRenderer:
             navigation_hrefs=navigation_hrefs,
             return_href=return_href,
             cover_media=cover_media,
-            character_media=character_media or {},
-            include_character_images=include_character_images,
             page_season=f"{drawer.entered_month:02d}",
             page_kind="detail",
             header_code=(

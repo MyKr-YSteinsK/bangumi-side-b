@@ -90,3 +90,18 @@ def test_sync_cli_rejects_every_scope_outside_2026_04(
 
     assert error.value.code == 2
     assert "只允许 2026-04" in capsys.readouterr().err
+
+
+def test_build_cli_rejects_every_scope_outside_2026_04(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "project"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "config", root / "config")
+    (root / "pyproject.toml").write_text("[project]\nname = 'test'\n", "utf-8")
+    monkeypatch.chdir(root)
+
+    with pytest.raises(SystemExit) as error:
+        main(["build", "2026", "1"])
+
+    assert error.value.code == 2
+    assert "只允许 2026-04" in capsys.readouterr().err

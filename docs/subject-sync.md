@@ -1,73 +1,43 @@
-# Subject sync foundation
+# Subject sync
 
-## Current command
+## Current command and scope
 
-`bgmb sync YEAR QUARTER_MONTH`, `bgmb sync YEAR`, and
-`bgmb sync START-END` synchronise TV and theatrical-movie facts only. Every
-discovered candidate is confirmed with subject detail so its rating is refreshed
-from the detail response; an absent rating never clears an existing value.
-`--force` refreshes all non-image structured units. `--force-images` is
-independent and revalidates/redownloads images without implying `--force`.
-`sync` does not build or publish anything.
+The checked-in first release accepts exactly one command scope:
 
-The API was verified anonymously against the current v0 documentation and a
-small live smoke request. Browse uses animation type `2`, TV category `1`, and
-movie category `3`, with `year`, `month`, `limit`, and `offset`. Details retain
-structured Infobox values, raw tag names/counts/order, rating, date, platform,
-and titles. See [API field notes](api-field-notes.md) for the field record.
+```powershell
+bgmb sync 2026 4
+```
 
-## Sync strategy
+`sync YEAR`, a year range, another quarter, theatrical movies, continuations,
+roles, people, and role images are outside the current release scope and are
+rejected or skipped. `sync` never builds or publishes.
 
-For every quarter month, the command fully pages TV and movie candidates for
-the three months, deduplicates IDs, applies the configured blacklist and
-explicit unsupported-format filter, then confirms each remaining item by
-detail. A subject is saved only when its complete first-air date belongs to the
-target quarter; TV is recorded as `new`, and theatrical movies as `movie`.
-Missing dates and ownership mismatches are reported, never guessed.
+## Discovery and admission
 
-Each stored subject uses one transaction for facts, titles, Infobox, raw tags,
-source evidence, permanent quarter relation, and typed sync states. Main-story
-episodes are stored in API order; TV continuation quarters require an exact
-episode-air-date or configured end-date evidence value. Only exact configured
-main-character relations are saved, with every embedded actor retained as a
-subject-local voice relation. Local failures are typed and do not discard other
-successful facts or snapshots.
+Discovery makes only the three paginated TV browse requests for April, May,
+and June 2026, then deduplicates subject IDs. Each candidate is confirmed by
+subject detail in this order:
 
-Reports under `workspace/reports/` contain command flags, timing, per-quarter
-and total counters, and safe typed failures; they omit response bodies, headers,
-tokens, absolute paths, and stack traces. Ctrl+C returns 130 after writing a
-partial usable report.
+1. usable detail and TV format;
+2. complete first-air date inside 2026-04;
+3. verified structured Infobox country evidence;
+4. persistence, main-story episodes, and subject cover.
 
-## Console progress
+Country evidence uses only the configured Infobox keys. The exact `日本` or
+`Japan` token is required; a consistent co-production value is accepted.
+Missing, unparseable, conflicting, or non-Japan values are excluded before
+episodes, covers, or any role-related request. See
+[country filter](country-filter.md) for the parsing rule and audit decisions.
 
-`sync` defaults to `--progress auto` and also accepts `--progress plain|off`,
-`--verbose`, and `--quiet`. Progress, retries, warnings, and heartbeats are
-written to stderr; the final `workspace/reports/...` paths are written to
-stdout. Non-interactive output uses permanent, throttled lines; verbose output
-includes each subject and substep. It shows the scope, SQLite check, quarter,
-three-month TV/movie discovery groups, candidate totals, subject work,
-continuation refresh, episodes, roles, media, and quarter/final summaries.
+## Storage, retries, and reports
 
-Transient timeout, network, 429, and 5xx retries are reported immediately with
-their safe request label, retry count, and delay; 429 notes when Retry-After is
-used. Full URLs, request parameters, headers, CDN paths, and response bodies
-are never printed. A current API activity emits a heartbeat after 10 seconds
-without output. Ctrl+C reports receipt, stops scheduling later quarters, retains
-completed transactions, writes a partial report when possible, and exits 130.
+Accepted subjects are stored transactionally with titles, Infobox, raw tags,
+source evidence, one `new` 2026-04 quarter relation, main-story episodes, and
+at most a verified subject cover. Existing accepted subjects can refresh their
+rating and incomplete episodes without expanding scope.
 
-## Schema outline
-
-SQLite is the fact source. `subjects` is global; titles, Infobox, raw tags,
-sources, episodes, and quarter appearances are subject-owned children.
-`characters` and `persons` are reusable global entities connected through
-`subject_characters` and `character_voices`, and are removed only when orphaned.
-`media_files` records only subject covers and main-character images with source
-URL, relative path, SHA-256, MIME type, size, dimensions, and status.
-
-Images download through the API client to `workspace/tmp/`, require an image
-Content-Type and Pillow decode check, then atomically replace a verified-format
-target below `workspace/media/`. A failed replacement retains an old valid file.
-Person images are never stored. Migrations are numbered, transactional, backed
-up before changes, and enable foreign keys.
-
-TV continuations are deterministic: a valid structured end date covers every quarter after the permanent air quarter through its end quarter; episode dates may add a later quarter only when they are not before air date or after an explicit end date. When a stored TV appears in a target continuation quarter, sync refreshes its detail rating without forcing roles or media.
+Reports under `workspace/reports/` record safe counters and a country audit;
+they never contain API bodies, headers, tokens, absolute paths, or stack
+traces. Progress supports `--progress auto|plain|off`, `--verbose`, and
+`--quiet`. Plain output uses permanent lines; TTY output clears a previous
+longer line before drawing a shorter one.

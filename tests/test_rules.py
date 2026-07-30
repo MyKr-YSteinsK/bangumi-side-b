@@ -94,50 +94,61 @@ def test_utc_format_rejects_naive_timestamps() -> None:
 @pytest.mark.parametrize(
     ("value", "decision"),
     [
-        ("日本", "included_japan"),
-        ("Japan", "included_japan"),
-        ("日本 / 中国", "included_japan"),
-        ("日本，美国", "included_japan"),
-        ("中国", "excluded_not_japan"),
-        ("日本风", "excluded_unparseable_country"),
-        ("日本語", "excluded_unparseable_country"),
-        ("日本|中国", "excluded_unparseable_country"),
-        ("Ｊａｐａｎ", "included_japan"),
+        ("日本", "included_structured_japan"),
+        ("Japan", "included_structured_japan"),
+        ("日本 / 中国", "included_structured_japan"),
+        ("日本，美国", "included_structured_japan"),
+        ("中国", "excluded_structured_non_japan"),
+        ("日本风", "included_tv_default"),
+        ("日本語", "included_tv_default"),
+        ("日本|中国", "included_tv_default"),
+        ("Ｊａｐａｎ", "included_structured_japan"),
     ],
 )
 def test_country_filter_uses_only_exact_normalized_tokens(
     value: str, decision: str
 ) -> None:
-    result = decide_country(
-        [InfoboxItem("制片国家/地区", value)], SETTINGS.country_filter
-    )
+    result = _country_decision([InfoboxItem("制片国家/地区", value)])
     assert result.decision == decision
 
 
 def test_country_filter_handles_missing_and_consistent_or_conflicting_keys() -> None:
     assert (
-        decide_country([], SETTINGS.country_filter).decision
-        == "excluded_missing_country"
+        _country_decision([]).decision
+        == "included_tv_default"
     )
     assert (
-        decide_country(
+        _country_decision(
             [
                 InfoboxItem("制片国家/地区", "日本、中国"),
                 InfoboxItem("国家/地区", "中国 / 日本"),
-            ],
-            SETTINGS.country_filter,
+            ]
         ).decision
-        == "included_japan"
+        == "included_structured_japan"
     )
     assert (
-        decide_country(
+        _country_decision(
             [
                 InfoboxItem("制片国家/地区", "日本"),
                 InfoboxItem("国家/地区", "中国"),
-            ],
-            SETTINGS.country_filter,
+            ]
         ).decision
-        == "excluded_conflicting_country"
+        == "included_tv_default"
+    )
+
+
+def test_country_filter_prioritises_decisive_structured_evidence() -> None:
+    assert (
+        _country_decision(
+            [InfoboxItem("制片国家/地区", "日本")], tags=("中国",)
+        ).decision
+        == "included_structured_japan"
+    )
+    assert (
+        _country_decision(
+            [InfoboxItem("制片国家/地区", "中国")], tags=("日本动画",)
+        ).decision
+        == "excluded_structured_non_japan"
     )
 
 
@@ -153,17 +164,84 @@ def test_minimal_public_country_fixtures_cover_verified_keys() -> None:
         ).read_text(encoding="utf-8")
     )
     expected = {
-        "japan": "included_japan",
-        "not_japan": "excluded_not_japan",
-        "co_production": "included_japan",
-        "missing_country": "excluded_missing_country",
+        "japan": "included_structured_japan",
+        "not_japan": "excluded_structured_non_japan",
+        "co_production": "included_structured_japan",
+        "missing_country": "included_tv_default",
     }
     for name, decision in expected.items():
         values = fixture["verified_public_subjects"][name]["infobox"]
         assert (
-            decide_country(
-                [InfoboxItem(item["key"], item["value"]) for item in values],
-                SETTINGS.country_filter,
+            _country_decision(
+                [InfoboxItem(item["key"], item["value"]) for item in values]
             ).decision
             == decision
         )
+
+
+@pytest.mark.parametrize(
+    ("tags", "decision"),
+    [
+        (("日本",), "included_tag_japan"),
+        (("日本动画",), "included_tag_japan"),
+        (("国产",), "excluded_negative_tag"),
+        (("欧美",), "excluded_negative_tag"),
+        (("日本", "中国"), "excluded_tag_conflict"),
+    ],
+)
+def test_country_filter_uses_only_exact_configured_region_tags(
+    tags: tuple[str, ...], decision: str
+) -> None:
+    assert _country_decision([], tags=tags).decision == decision
+
+
+def test_country_filter_falls_back_from_invalid_structured_evidence_to_tags() -> None:
+    assert (
+        _country_decision(
+            [
+                InfoboxItem("制片国家/地区", "日本"),
+                InfoboxItem("国家/地区", "中国"),
+            ],
+            tags=("日本动画",),
+        ).decision
+        == "included_tag_japan"
+    )
+    assert (
+        _country_decision(
+            [InfoboxItem("制片国家/地区", "日本风")], tags=("中国",)
+        ).decision
+        == "excluded_negative_tag"
+    )
+
+
+def test_country_filter_defaults_for_complete_seasonal_tv() -> None:
+    decisions = [_country_decision([]).decision for _ in range(85)]
+    assert decisions == ["included_tv_default"] * 85
+    assert _country_decision([], subject_type=2, platform="剧场版").decision == (
+        "excluded_no_region_evidence"
+    )
+    assert _country_decision([], air_date=date(2026, 7, 1)).decision == (
+        "excluded_no_region_evidence"
+    )
+    fuzzy = _country_decision([], tags=("日本风", "日语"))
+    assert fuzzy.decision == "included_tv_default"
+    assert fuzzy.matched_positive_tags == ()
+
+
+def _country_decision(
+    infobox: list[InfoboxItem],
+    *,
+    tags: tuple[str, ...] = (),
+    subject_type: int = 2,
+    platform: str = "TV",
+    air_date: date = date(2026, 4, 2),
+) -> object:
+    return decide_country(
+        infobox,
+        SETTINGS.country_filter,
+        raw_tags=tags,
+        subject_type=subject_type,
+        platform=platform,
+        air_date=air_date,
+        target_quarter=Quarter(2026, 4),
+    )

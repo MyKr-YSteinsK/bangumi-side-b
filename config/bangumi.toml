@@ -15,6 +15,9 @@ include_continuations = false
 required_country = "日本"
 country_keys = ["制片国家/地区", "国家/地区"]
 country_value_aliases = ["日本", "Japan"]
+positive_tags = ["日本", "日本动画"]
+negative_tags = ["国产", "中国", "中国动画", "欧美", "欧美动画", "美国", "韩国"]
+allow_tv_default_without_country = true
 
 [roles]
 main_character_relations = ["\u4e3b\u89d2"]

@@ -252,6 +252,14 @@ def test_sync_keeps_only_japan_tv_and_writes_country_audit(
         "excluded_unparseable_country",
         "included_japan",
     ]
+    first_country = audit["subjects"][0]
+    assert first_country["evidence_source"] == "structured"
+    assert first_country["structured_tokens"] == [
+        {"key": "制片国家/地区", "tokens": ["日本"]}
+    ]
+    assert first_country["matched_positive_tags"] == []
+    assert first_country["matched_negative_tags"] == []
+    assert first_country["default_reason"] is None
 
 
 def test_conflicting_country_movie_and_wrong_quarter_never_request_media(

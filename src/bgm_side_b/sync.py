@@ -1351,10 +1351,14 @@ class SubjectSynchronizer:
                 "subject_id": detail.subject_id,
                 "title": title,
                 "decision": country.decision,
-                "country": [
+                "evidence_source": country.evidence_source,
+                "structured_tokens": [
                     {"key": item.key, "tokens": list(item.tokens)}
                     for item in country.evidence
                 ],
+                "matched_positive_tags": list(country.matched_positive_tags),
+                "matched_negative_tags": list(country.matched_negative_tags),
+                "default_reason": country.default_reason,
                 "reason": country.reason,
             }
         )

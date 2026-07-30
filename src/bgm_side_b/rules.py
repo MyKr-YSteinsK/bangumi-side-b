@@ -74,10 +74,14 @@ class CountryDecision:
     decision: str
     evidence: tuple[CountryEvidence, ...]
     reason: str
+    evidence_source: str
+    matched_positive_tags: tuple[str, ...] = ()
+    matched_negative_tags: tuple[str, ...] = ()
+    default_reason: str | None = None
 
     @property
     def included(self) -> bool:
-        return self.decision == "included_japan"
+        return self.decision.startswith("included_")
 
 
 @dataclass(frozen=True)
@@ -190,9 +194,22 @@ def derive_sources(
 
 
 def decide_country(
-    infobox_items: Iterable[InfoboxItem], country_filter: CountryFilter
+    infobox_items: Iterable[InfoboxItem],
+    country_filter: CountryFilter,
+    *,
+    raw_tags: Iterable[str] | None = None,
+    subject_type: int | None = None,
+    platform: str | None = None,
+    air_date: date | None = None,
+    target_quarter: Quarter | None = None,
 ) -> CountryDecision:
-    """Accept Japan only from consistent, exact structured country tokens."""
+    """Classify one seasonal TV candidate from exact configured evidence only.
+
+    Callers that do not yet supply a target-quarter context retain the former
+    structured-only result names while storage migrations are rolled out.  The
+    complete context activates the Plan 08 deterministic tag and TV-default
+    fallback without accessing a network, database, or AI service.
+    """
     evidence: list[CountryEvidence] = []
     malformed = False
     for item in infobox_items:
@@ -206,23 +223,139 @@ def decide_country(
             continue
         evidence.append(CountryEvidence(key, tokens))
 
+    structured = tuple(evidence)
+    if target_quarter is None:
+        return _legacy_country_decision(structured, malformed, country_filter)
+
+    if structured and not malformed:
+        token_sets = {frozenset(item.tokens) for item in structured}
+        if len(token_sets) == 1:
+            tokens = next(iter(token_sets))
+            aliases = {
+                item.casefold() for item in country_filter.country_value_aliases
+            }
+            if any(token.casefold() in aliases for token in tokens):
+                return CountryDecision(
+                    "included_structured_japan",
+                    structured,
+                    "exact_japan_token",
+                    "structured",
+                )
+            return CountryDecision(
+                "excluded_structured_non_japan",
+                structured,
+                "japan_token_absent",
+                "structured",
+            )
+
+    positive, negative = _region_tags(raw_tags or (), country_filter)
+    if positive and negative:
+        return CountryDecision(
+            "excluded_tag_conflict",
+            structured,
+            "conflicting_region_tags",
+            "tag",
+            positive,
+            negative,
+        )
+    if positive:
+        return CountryDecision(
+            "included_tag_japan",
+            structured,
+            "exact_positive_region_tag",
+            "tag",
+            positive,
+            negative,
+        )
+    if negative:
+        return CountryDecision(
+            "excluded_negative_tag",
+            structured,
+            "exact_negative_region_tag",
+            "tag",
+            positive,
+            negative,
+        )
+    if country_filter.allow_tv_default_without_country and _is_tv_default_candidate(
+        subject_type, platform, air_date, target_quarter
+    ):
+        return CountryDecision(
+            "included_tv_default",
+            structured,
+            "seasonal_tv_without_negative_region",
+            "tv_default",
+            default_reason="seasonal_tv_without_negative_region",
+        )
+    return CountryDecision(
+        "excluded_no_region_evidence",
+        structured,
+        "no_region_evidence",
+        "none",
+    )
+
+
+def _legacy_country_decision(
+    evidence: tuple[CountryEvidence, ...],
+    malformed: bool,
+    country_filter: CountryFilter,
+) -> CountryDecision:
+    """Preserve structured-only callers until their complete context is stored."""
     if not evidence and not malformed:
-        return CountryDecision("excluded_missing_country", (), "missing_country")
+        return CountryDecision(
+            "excluded_missing_country", (), "missing_country", "none"
+        )
     if malformed:
         return CountryDecision(
-            "excluded_unparseable_country", tuple(evidence), "unparseable_country"
+            "excluded_unparseable_country",
+            evidence,
+            "unparseable_country",
+            "structured",
         )
     token_sets = {frozenset(item.tokens) for item in evidence}
     if len(token_sets) != 1:
         return CountryDecision(
-            "excluded_conflicting_country", tuple(evidence), "conflicting_country"
+            "excluded_conflicting_country",
+            evidence,
+            "conflicting_country",
+            "structured",
         )
     tokens = next(iter(token_sets))
     aliases = {item.casefold() for item in country_filter.country_value_aliases}
     if any(token.casefold() in aliases for token in tokens):
-        return CountryDecision("included_japan", tuple(evidence), "exact_japan_token")
+        return CountryDecision(
+            "included_japan", evidence, "exact_japan_token", "structured"
+        )
     return CountryDecision(
-        "excluded_not_japan", tuple(evidence), "japan_token_absent"
+        "excluded_not_japan", evidence, "japan_token_absent", "structured"
+    )
+
+
+def _region_tags(
+    raw_tags: Iterable[str], country_filter: CountryFilter
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return only exact configured region tags in the detail response order."""
+    positive: list[str] = []
+    negative: list[str] = []
+    for raw_tag in raw_tags:
+        tag = normalize_text(raw_tag)
+        if tag in country_filter.positive_tags and tag not in positive:
+            positive.append(tag)
+        if tag in country_filter.negative_tags and tag not in negative:
+            negative.append(tag)
+    return tuple(positive), tuple(negative)
+
+
+def _is_tv_default_candidate(
+    subject_type: int | None,
+    platform: str | None,
+    air_date: date | None,
+    target_quarter: Quarter,
+) -> bool:
+    return (
+        subject_type == 2
+        and normalize_format(platform) == "tv"
+        and air_date is not None
+        and quarter_for_date(air_date) == target_quarter
     )
 
 

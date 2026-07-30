@@ -6,10 +6,11 @@ import pytest
 
 from bgm_side_b.config import load_project_settings, load_rules
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_checked_in_configuration_loads() -> None:
-    root = Path(__file__).resolve().parents[1]
-    settings, tag_rules, source_rules = load_rules(root / "config")
+    settings, tag_rules, source_rules = load_rules(ROOT / "config")
 
     assert settings.excluded_subject_ids == frozenset()
     assert settings.sync.api_concurrency == 3
@@ -20,6 +21,11 @@ def test_checked_in_configuration_loads() -> None:
         {"制片国家/地区", "国家/地区"}
     )
     assert settings.country_filter.country_value_aliases == frozenset({"日本", "Japan"})
+    assert settings.country_filter.positive_tags == frozenset({"日本", "日本动画"})
+    assert settings.country_filter.negative_tags == frozenset(
+        {"国产", "中国", "中国动画", "欧美", "欧美动画", "美国", "韩国"}
+    )
+    assert settings.country_filter.allow_tv_default_without_country is True
     assert settings.main_character_relations == frozenset({"主角"})
     assert settings.end_date_infobox_keys == frozenset({"播放结束"})
     assert settings.chinese_name_infobox_keys == frozenset({"简体中文名"})
@@ -93,5 +99,28 @@ chinese_name_keys = ["简体中文名"]
 """,
         encoding="utf-8",
     )
+    with pytest.raises(ValueError):
+        load_project_settings(path)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('positive_tags = ["日本", "日本动画"]', 'positive_tags = []'),
+        ('positive_tags = ["日本", "日本动画"]', 'positive_tags = ["日本", "日本"]'),
+        ('positive_tags = ["日本", "日本动画"]', 'positive_tags = ["日本", "中国"]'),
+        (
+            "allow_tv_default_without_country = true",
+            "allow_tv_default_without_country = false",
+        ),
+    ],
+)
+def test_country_filter_rejects_invalid_region_tag_configuration(
+    tmp_path: Path, old: str, new: str
+) -> None:
+    content = (ROOT / "config" / "bangumi.toml").read_text(encoding="utf-8")
+    path = tmp_path / "bangumi.toml"
+    path.write_text(content.replace(old, new), encoding="utf-8")
+
     with pytest.raises(ValueError):
         load_project_settings(path)

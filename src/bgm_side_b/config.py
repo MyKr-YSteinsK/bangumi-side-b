@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from unicodedata import normalize
 
 
 @dataclass(frozen=True)
@@ -30,11 +31,14 @@ class ReleaseScope:
 
 @dataclass(frozen=True)
 class CountryFilter:
-    """Exact structured Infobox keys and tokens accepted for Japan."""
+    """Exact structured and tag evidence for the current Japan-TV release."""
 
     required_country: str
     country_keys: frozenset[str]
     country_value_aliases: frozenset[str]
+    positive_tags: frozenset[str]
+    negative_tags: frozenset[str]
+    allow_tv_default_without_country: bool
 
 
 @dataclass(frozen=True)
@@ -125,6 +129,9 @@ def load_project_settings(path: Path) -> ProjectSettings:
     required_country = country_filter.get("required_country")
     country_keys = country_filter.get("country_keys")
     country_aliases = country_filter.get("country_value_aliases")
+    positive_tags = country_filter.get("positive_tags")
+    negative_tags = country_filter.get("negative_tags")
+    allow_tv_default = country_filter.get("allow_tv_default_without_country")
     if required_country != "日本":
         raise ValueError("the current release scope requires required_country = 日本")
     if not _valid_string_array(country_keys):
@@ -135,6 +142,16 @@ def load_project_settings(path: Path) -> ProjectSettings:
     }:
         raise ValueError(
             "country_value_aliases must be the exact tokens 日本 and Japan"
+        )
+    if not _valid_exact_tag_array(positive_tags):
+        raise ValueError("positive_tags must be a non-empty unique tag array")
+    if not _valid_exact_tag_array(negative_tags):
+        raise ValueError("negative_tags must be a non-empty unique tag array")
+    if set(_normalised_tags(positive_tags)) & set(_normalised_tags(negative_tags)):
+        raise ValueError("positive_tags and negative_tags must not overlap")
+    if allow_tv_default is not True:
+        raise ValueError(
+            "the current release requires allow_tv_default_without_country = true"
         )
 
     main_relations = roles.get("main_character_relations")
@@ -177,6 +194,9 @@ def load_project_settings(path: Path) -> ProjectSettings:
             required_country=required_country,
             country_keys=frozenset(country_keys),
             country_value_aliases=frozenset(country_aliases),
+            positive_tags=frozenset(_normalised_tags(positive_tags)),
+            negative_tags=frozenset(_normalised_tags(negative_tags)),
+            allow_tv_default_without_country=allow_tv_default,
         ),
         main_character_relations=frozenset(main_relations),
         end_date_infobox_keys=frozenset(end_date_keys),
@@ -279,6 +299,20 @@ def _valid_string_array(value: object) -> bool:
         and bool(value)
         and all(isinstance(item, str) and item for item in value)
         and len(set(value)) == len(value)
+    )
+
+
+def _valid_exact_tag_array(value: object) -> bool:
+    return _valid_string_array(value) and len(set(_normalised_tags(value))) == len(
+        value
+    )
+
+
+def _normalised_tags(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(
+        normalize("NFKC", item).strip() for item in value if isinstance(item, str)
     )
 
 

@@ -11,6 +11,7 @@ from bgm_side_b.build.builder import ArchiveBuilder, BuildError
 from bgm_side_b.build.queries import BuildDataError
 from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database
+from bgm_side_b.progress import create_progress_reporter
 from bgm_side_b.release.publish import Publisher, PublishError
 from bgm_side_b.repository import SubjectRepository
 from bgm_side_b.sync import SubjectSynchronizer, parse_sync_scope
@@ -38,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
     sync_parser = subparsers.add_parser("sync", help="Synchronise subject facts only.")
+    _add_progress_arguments(sync_parser)
     sync_parser.add_argument("scope", nargs="+", metavar="YEAR_OR_RANGE")
     sync_parser.add_argument(
         "--force",
@@ -52,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     build_command = subparsers.add_parser(
         "build", help="Build offline static archive pages from local SQLite facts."
     )
+    _add_progress_arguments(build_command)
     build_command.add_argument("scope", nargs="*", metavar="YEAR_OR_RANGE")
     build_command.add_argument(
         "--all", action="store_true", help="Build every currently stored quarter."
@@ -59,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     publish_command = subparsers.add_parser(
         "publish", help="Validate and manually publish an existing Pages candidate."
     )
+    _add_progress_arguments(publish_command)
     publish_command.add_argument(
         "--dry-run",
         action="store_true",
@@ -75,19 +79,39 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_progress_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the shared terminal-output controls to a long-running command."""
+    parser.add_argument(
+        "--progress",
+        choices=("auto", "plain", "off"),
+        default="auto",
+        help="Select automatic, plain, or disabled progress output.",
+    )
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "--verbose", action="store_true", help="Record every progress event."
+    )
+    output_group.add_argument(
+        "--quiet", action="store_true", help="Disable progress output."
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the command-line interface and return a process exit code."""
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     if args.command is None:
         return 0
+    if args.verbose and args.progress == "off":
+        parser.error("--progress off cannot be combined with --verbose")
     if args.command == "sync":
         try:
             scope = parse_sync_scope(args.scope)
         except ValueError as error:
-            build_parser().error(str(error))
+            parser.error(str(error))
         root = find_project_root()
         if root is None:
-            build_parser().error(
+            parser.error(
                 "could not find a project root containing pyproject.toml and config"
             )
         settings, tag_rules, source_rules = load_rules(root / "config")
@@ -98,56 +122,65 @@ def main(argv: list[str] | None = None) -> int:
             max_retries=settings.sync.max_retries,
             concurrency=settings.sync.api_concurrency,
         )
-        try:
-            run = SubjectSynchronizer(
-                repository,
-                client,
-                settings,
-                tag_rules,
-                source_rules,
-                reports_directory=root / "workspace" / "reports",
-            ).run(scope, force=args.force, force_images=args.force_images)
-        except KeyboardInterrupt:
-            return 130
-        finally:
-            client.close()
+        with create_progress_reporter(args, "sync") as reporter:
+            reporter.start(stage="initialise", message="正在准备同步")
+            try:
+                run = SubjectSynchronizer(
+                    repository,
+                    client,
+                    settings,
+                    tag_rules,
+                    source_rules,
+                    reports_directory=root / "workspace" / "reports",
+                ).run(scope, force=args.force, force_images=args.force_images)
+            except KeyboardInterrupt:
+                return 130
+            finally:
+                client.close()
+            reporter.complete(stage="finalise", message="同步处理完成")
         print(f"sync report: {run.sync_report.as_posix()}")
         print(f"tag audit: {run.tag_audit_report.as_posix()}")
         return run.exit_code
     if args.command == "build":
         if args.all == bool(args.scope):
-            build_parser().error("build accepts one scope or --all")
+            parser.error("build accepts one scope or --all")
         try:
             scope = None if args.all else parse_sync_scope(args.scope)
         except ValueError as error:
-            build_parser().error(str(error))
+            parser.error(str(error))
         root = find_project_root()
         if root is None:
-            build_parser().error(
+            parser.error(
                 "could not find a project root containing pyproject.toml and config"
             )
         settings, tag_rules, source_rules = load_rules(root / "config")
         database = Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
-        try:
-            run = ArchiveBuilder(
-                root, database, settings, tag_rules, source_rules
-            ).build(scope, target=args.target)
-        except (BuildDataError, BuildError) as error:
-            build_parser().error(str(error))
+        with create_progress_reporter(args, "build") as reporter:
+            reporter.start(stage="initialise", message="正在准备构建")
+            try:
+                run = ArchiveBuilder(
+                    root, database, settings, tag_rules, source_rules
+                ).build(scope, target=args.target)
+            except (BuildDataError, BuildError) as error:
+                parser.error(str(error))
+            reporter.complete(stage="finalise", message="构建处理完成")
         print(f"build report: {run.report_path.as_posix()}")
         return 0
     if args.command == "publish":
         root = find_project_root()
         if root is None:
-            build_parser().error(
+            parser.error(
                 "could not find a project root containing pyproject.toml and config"
             )
-        try:
-            run = Publisher(root).publish(
-                dry_run=args.dry_run, remote=args.remote, branch=args.branch
-            )
-        except PublishError as error:
-            build_parser().error(str(error))
+        with create_progress_reporter(args, "publish") as reporter:
+            reporter.start(stage="initialise", message="正在准备发布校验")
+            try:
+                run = Publisher(root).publish(
+                    dry_run=args.dry_run, remote=args.remote, branch=args.branch
+                )
+            except PublishError as error:
+                parser.error(str(error))
+            reporter.complete(stage="finalise", message="发布处理完成")
         print(f"publish report: {run.report_path.as_posix()}")
         if run.dry_run:
             print(f"dry run only: {run.release_version} was not published")

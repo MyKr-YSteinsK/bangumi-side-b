@@ -77,6 +77,8 @@ Use numbered transactional SQLite migrations with backup and rollback.
 
 Keep tests compact and risk-focused. Never claim a command or test passed unless it was executed.
 
+Long-running CLI operations must use the unified ProgressReporter for stages, counters, retries, and heartbeat; business layers must not scatter print calls.
+
 ## Completion report
 
 At the end of a Plan report:

@@ -41,3 +41,29 @@ def test_build_parser_accepts_scope_or_all_and_profile_target() -> None:
     assert scoped.target == "pages"
     assert not scoped.all
     assert all_quarters.all
+
+
+def test_shared_progress_arguments_are_available_on_every_long_command() -> None:
+    parser = build_parser()
+
+    sync = parser.parse_args(["sync", "2022", "1", "--progress", "plain"])
+    build = parser.parse_args(["build", "--all", "--quiet"])
+    publish = parser.parse_args(["publish", "--verbose"])
+
+    assert sync.progress == "plain"
+    assert build.quiet
+    assert publish.verbose
+
+
+def test_quiet_and_verbose_are_rejected_together() -> None:
+    with pytest.raises(SystemExit) as result:
+        main(["build", "--all", "--quiet", "--verbose"])
+
+    assert result.value.code == 2
+
+
+def test_progress_off_and_verbose_are_rejected_together() -> None:
+    with pytest.raises(SystemExit) as result:
+        main(["build", "--all", "--progress", "off", "--verbose"])
+
+    assert result.value.code == 2

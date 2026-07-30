@@ -35,6 +35,9 @@ class AtomicOutput:
         profile: BuildProfile,
         writer: Callable[[Path], None],
         validator: Callable[[Path], None],
+        *,
+        before_promotion: Callable[[Path], None] | None = None,
+        on_failure: Callable[[Path], None] | None = None,
     ) -> OutputResult:
         """Generate, validate, and promote a profile without half-replacing output."""
         self.staging_directory.mkdir(parents=True, exist_ok=True)
@@ -43,8 +46,12 @@ class AtomicOutput:
         try:
             writer(stage)
             validator(stage)
+            if before_promotion is not None:
+                before_promotion(stage)
             return self._promote(profile, stage)
         except BaseException:
+            if on_failure is not None:
+                on_failure(stage)
             _remove_tree(stage)
             raise
 

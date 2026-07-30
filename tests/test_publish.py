@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from datetime import date
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ import pytest
 from bgm_side_b.build.builder import ArchiveBuilder
 from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database
+from bgm_side_b.progress import ConsoleProgressReporter
 from bgm_side_b.release.candidate import advance_data_generation
 from bgm_side_b.release.publish import Publisher, PublishError, _allowed_origin
 from bgm_side_b.repository import (
@@ -73,13 +75,26 @@ def test_publish_dry_run_and_local_bare_remote_transaction(
     publish_root: tuple[Path, Path],
 ) -> None:
     root, remote = publish_root
-    publisher = Publisher(root)
     (root / "workspace" / "data" / "bangumi-side-b.sqlite3").unlink()
-    dry_run = publisher.publish(dry_run=True, remote="test")
+    stream = StringIO()
+    with ConsoleProgressReporter("publish", mode="plain", stream=stream) as reporter:
+        dry_run = Publisher(root, reporter).publish(dry_run=True, remote="test")
     assert dry_run.dry_run and not dry_run.published
     assert dry_run.report_path.is_file()
-    first = publisher.publish(remote="test")
+    output = stream.getvalue()
+    assert output.count("[发布") >= 14
+    assert "正在读取远端 gh-pages" in output
+    assert "snapshot manifest 已生成" in output
+    assert str(root) not in output
+    publish_stream = StringIO()
+    with ConsoleProgressReporter(
+        "publish", mode="plain", stream=publish_stream
+    ) as reporter:
+        first = Publisher(root, reporter).publish(remote="test")
     assert first.published and first.remote_commit
+    assert "正在创建临时 worktree" in publish_stream.getvalue()
+    assert "即将推送 release" in publish_stream.getvalue()
+    publisher = Publisher(root)
     assert _git(root, "branch", "--show-current") == "main"
     assert _git(root, "--git-dir", str(remote), "show", "gh-pages:release.json")
     assert (root / "workspace" / "releases" / "history.json").is_file()

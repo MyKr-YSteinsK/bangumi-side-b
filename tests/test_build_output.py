@@ -131,14 +131,17 @@ def test_atomic_output_replaces_complete_tree_and_preserves_previous_on_failure(
     def fail_validation(_: Path) -> None:
         raise RuntimeError("validation failed")
 
+    failures: list[Path] = []
     with pytest.raises(RuntimeError, match="validation failed"):
         output.generate(
             local_profile(),
             lambda stage: (stage / "version.txt").write_text("bad", encoding="utf-8"),
             fail_validation,
+            on_failure=failures.append,
         )
     assert (target / "version.txt").read_text(encoding="utf-8") == "new"
     assert not list((distribution / ".staging").glob("local-*"))
+    assert len(failures) == 1
 
 
 def test_build_report_is_atomic_and_rejects_local_paths(tmp_path: Path) -> None:

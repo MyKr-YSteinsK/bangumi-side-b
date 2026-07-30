@@ -18,6 +18,7 @@ from bgm_side_b import __version__
 from bgm_side_b.build.paths import PathResolver
 from bgm_side_b.build.profiles import pages_profile
 from bgm_side_b.build.templates import TemplateRenderer
+from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.release.candidate import (
     read_data_generation,
     read_pages_build_marker,
@@ -66,11 +67,14 @@ class PublishRun:
 class Publisher:
     """Validate, stage, and publish a Pages candidate without rebuilding it."""
 
-    def __init__(self, project_root: Path) -> None:
+    def __init__(
+        self, project_root: Path, reporter: ProgressReporter | None = None
+    ) -> None:
         self.root = project_root.resolve()
         self.workspace = self.root / "workspace"
         self.candidate = self.root / "dist" / "pages"
         self.profile = pages_profile()
+        self.reporter = reporter or NullProgressReporter()
 
     def publish(
         self,
@@ -80,9 +84,19 @@ class Publisher:
         branch: str = "gh-pages",
     ) -> PublishRun:
         """Publish one fully verified snapshot, or simulate it without Git writes."""
+        self._stage(1, "正在检查 main 与干净工作树")
+        self._stage(2, "正在检查远端与发布分支")
         self._preconditions(dry_run=dry_run, remote=remote, branch=branch)
+        self._stage(3, "正在读取 Pages build marker")
         marker = read_pages_build_marker(self.workspace)
-        build_snapshot = self._validate_candidate(marker)
+        self._validate_marker(marker)
+        self._stage(4, "正在验证 build-bound 事实快照")
+        build_snapshot = self._validate_build_snapshot(marker)
+        self._stage(5, "正在验证 data generation")
+        self._validate_data_generation(marker)
+        self._stage(6, "正在验证 Pages candidate index")
+        self._validate_candidate_tree(marker)
+        self._stage(7, "正在读取远端 gh-pages")
         remote_release, remote_history = self._remote_state(
             remote, branch, required=True
         )
@@ -101,6 +115,9 @@ class Publisher:
         if remote_release and self._has_no_changes(
             remote_release, candidate_hash, rules_hash, system_changes
         ):
+            self.reporter.complete(
+                stage="summary", message="无需发布｜候选与远端一致"
+            )
             raise PublishError("Pages candidate has no publishable changes")
         release_system_changes = (
             system_changes
@@ -110,8 +127,11 @@ class Publisher:
             else ()
         )
         version = next_release_version(previous_version)
+        self._stage(8, "正在计算 tentative 资料版本", counters={"版本": version})
+        self._stage(9, "正在比较系统与资料变化")
         staging = self._staging_directory()
         try:
+            self._stage(10, "正在创建 release staging")
             shutil.copytree(self.candidate, staging, dirs_exist_ok=True)
             release, manifest, history = self._assemble_release(
                 staging,
@@ -124,8 +144,19 @@ class Publisher:
                 rules_hash,
                 _system_hash(system_changes),
             )
+            self._stage(
+                11,
+                "snapshot manifest 已生成",
+                counters={
+                    "文件": manifest.payload()["entry_count"],
+                    "字节": manifest.payload()["total_bytes"],
+                },
+            )
+            self._stage(12, "updates 页面已生成")
+            self._stage(13, "正在执行 release staging 安全扫描")
             self._validate_staging(staging, manifest, release)
             if dry_run:
+                self._stage(14, "正在写入 dry-run 报告")
                 report = self._write_report(
                     dry_run=True,
                     release=release,
@@ -133,11 +164,26 @@ class Publisher:
                     bytes=manifest.payload()["total_bytes"],
                     push_result="not-published",
                 )
+                self.reporter.complete(
+                    stage="summary",
+                    message=f"dry run only：{version} 未发布",
+                    counters={
+                        "文件": manifest.payload()["entry_count"],
+                        "字节": manifest.payload()["total_bytes"],
+                    },
+                )
                 return PublishRun(True, version, report, False, None)
+            self.reporter.stage(
+                stage="publish-worktree", message="正在创建临时 worktree"
+            )
             remote_commit = self._publish_tree(staging, remote, branch, version)
+            self.reporter.stage(
+                stage="publish-state", message="正在登记本地 release 状态"
+            )
             local_mirror_updated, local_state_updated, warnings = self._record_success(
                 snapshot, history, staging
             )
+            self._stage(14, "正在写入发布报告")
             report = self._write_report(
                 dry_run=False,
                 release=release,
@@ -148,6 +194,18 @@ class Publisher:
                 local_mirror_updated=local_mirror_updated,
                 local_state_updated=local_state_updated,
                 warnings=warnings,
+            )
+            self.reporter.complete(
+                stage="summary",
+                message=(
+                    "发布成功｜远端已更新｜本地镜像更新失败（可恢复）"
+                    if "local-mirror-update-failed" in warnings
+                    else "发布成功｜远端已更新"
+                ),
+                counters={
+                    "文件": manifest.payload()["entry_count"],
+                    "字节": manifest.payload()["total_bytes"],
+                },
             )
             return PublishRun(
                 False,
@@ -161,6 +219,21 @@ class Publisher:
             )
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+
+    def _stage(
+        self,
+        completed: int,
+        message: str,
+        *,
+        counters: dict[str, str | int] | None = None,
+    ) -> None:
+        self.reporter.stage(
+            stage="publish",
+            message=message,
+            completed=completed,
+            total=14,
+            counters=counters,
+        )
 
     def _preconditions(self, *, dry_run: bool, remote: str, branch: str) -> None:
         if self._git("rev-parse", "--abbrev-ref", "HEAD") != "main":
@@ -180,20 +253,29 @@ class Publisher:
             url = self._git("remote", "get-url", "origin")
             if not _allowed_origin(url):
                 raise PublishError("origin does not match the allowed repository")
-            self._run_git("fetch", "origin", "main")
+            self.reporter.stage(
+                stage="origin-main", message="正在读取远端 origin/main"
+            )
+            with self.reporter.activity(
+                stage="origin-main", message="等待 Git 远端 main"
+            ):
+                self._run_git("fetch", "origin", "main")
             if self._git("rev-parse", "HEAD") != self._git("rev-parse", "origin/main"):
                 raise PublishError("main must be pushed before publishing Pages")
 
-    def _validate_candidate(self, marker: dict[str, object]):
+    def _validate_marker(self, marker: dict[str, object]) -> None:
         if marker.get("profile") != "pages":
             raise PublishError("Pages build marker has the wrong profile")
         if marker.get("source_commit") in (None, "unavailable"):
             raise PublishError("Pages build marker has no usable source commit")
         if marker.get("source_commit") != self._git("rev-parse", "HEAD"):
             raise PublishError("Pages build marker is stale")
+
+    def _validate_build_snapshot(
+        self, marker: dict[str, object]
+    ) -> dict[str, object]:
         try:
             build_snapshot = read_pages_build_snapshot(self.workspace)
-            generation = read_data_generation(self.workspace)
         except ValueError as error:
             raise PublishError(str(error)) from error
         if (
@@ -203,8 +285,17 @@ class Publisher:
             or build_snapshot.get("source_commit") != marker.get("source_commit")
         ):
             raise PublishError("Pages build marker and facts snapshot disagree")
+        return build_snapshot
+
+    def _validate_data_generation(self, marker: dict[str, object]) -> None:
+        try:
+            generation = read_data_generation(self.workspace)
+        except ValueError as error:
+            raise PublishError(str(error)) from error
         if generation > int(marker.get("data_generation", -1)):
             raise PublishError("facts changed since the Pages build; rebuild Pages")
+
+    def _validate_candidate_tree(self, marker: dict[str, object]) -> None:
         try:
             entries = index_candidate(self.candidate, self.profile.deployment_path)
         except ManifestError as error:
@@ -237,16 +328,21 @@ class Publisher:
         if not all((self.candidate / item).is_file() for item in required):
             raise PublishError("Pages candidate lacks its PWA shell")
         _scan_public_tree(self.candidate)
-        return build_snapshot
 
     def _remote_state(
         self, remote: str, branch: str, *, required: bool
     ) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
         if not required:
             return None, []
-        result = self._run_git(
-            "fetch", remote, f"{branch}:refs/remotes/{remote}/{branch}", check=False
-        )
+        with self.reporter.activity(
+            stage="remote-release", message="等待 Git 远端 gh-pages"
+        ):
+            result = self._run_git(
+                "fetch",
+                remote,
+                f"{branch}:refs/remotes/{remote}/{branch}",
+                check=False,
+            )
         if result.returncode:
             message = (result.stderr + result.stdout).lower()
             if "couldn't find remote ref" in message or "not our ref" in message:
@@ -396,6 +492,9 @@ class Publisher:
     ) -> str:
         temporary = Path(tempfile.mkdtemp(prefix="bgm-side-b-pages-"))
         try:
+            self.reporter.stage(
+                stage="publish-worktree", message="正在创建临时 worktree"
+            )
             fetched = self._run_git(
                 "fetch",
                 remote,
@@ -417,14 +516,61 @@ class Publisher:
                 )
             _replace_worktree_contents(temporary, staging)
             self._run_git("-C", str(temporary), "add", "--all")
+            self.reporter.stage(
+                stage="publish-commit", message="正在创建 release commit"
+            )
             self._run_git("-C", str(temporary), "commit", "-m", f"release: {version}")
-            self._run_git("-C", str(temporary), "push", remote, f"HEAD:{branch}")
+            self.reporter.stage(
+                stage="publish-push",
+                message=f"即将推送 release {version} 到 {remote}/{branch}",
+            )
+            with self.reporter.activity(
+                stage="publish-push", message="等待 GitHub 接收 gh-pages push"
+            ):
+                self._run_git("-C", str(temporary), "push", remote, f"HEAD:{branch}")
             return self._git("-C", str(temporary), "rev-parse", "HEAD")
+        except KeyboardInterrupt as error:
+            self._report_interrupted_push(remote, branch, version)
+            raise PublishError(
+                "publish was interrupted; remote result needs manual verification"
+            ) from error
         except subprocess.CalledProcessError as error:
+            self.reporter.error(
+                stage="publish-push",
+                message="发布失败｜远端旧版本保持不变｜未登记本次 release",
+            )
             raise PublishError("publish Git transaction failed") from error
         finally:
+            self.reporter.stage(
+                stage="publish-cleanup", message="正在清理临时 worktree"
+            )
             self._run_git("worktree", "remove", "--force", str(temporary), check=False)
             shutil.rmtree(temporary, ignore_errors=True)
+
+    def _report_interrupted_push(self, remote: str, branch: str, version: str) -> None:
+        """Re-read the branch once without making a second publication attempt."""
+        result = self._run_git(
+            "fetch", remote, f"{branch}:refs/remotes/{remote}/{branch}", check=False
+        )
+        if result.returncode:
+            self.reporter.warning(
+                stage="publish-push", message="远端结果不确定，需要人工检查"
+            )
+            return
+        release = _git_json(
+            self._run_git(
+                "show", f"{remote}/{branch}:release.json", check=False
+            )
+        )
+        if release and release.get("release_version") == version:
+            self.reporter.warning(
+                stage="publish-push",
+                message="远端 release 已存在；本地状态尚未登记",
+            )
+            return
+        self.reporter.warning(
+            stage="publish-push", message="远端未确认本次 release，需要人工检查"
+        )
 
     def _record_success(
         self,

@@ -26,6 +26,7 @@ from bgm_side_b.build.report import ProfileBuildReport, write_build_report
 from bgm_side_b.build.templates import RenderMedia, TemplateRenderer
 from bgm_side_b.config import ProjectSettings, SourceRules, TagRules
 from bgm_side_b.database import Database
+from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.release.candidate import write_pages_build_marker
 from bgm_side_b.sync import SyncScope
 
@@ -56,6 +57,7 @@ class ArchiveBuilder:
         workspace_directory: Path | None = None,
         distribution_directory: Path | None = None,
         reports_directory: Path | None = None,
+        reporter: ProgressReporter | None = None,
     ) -> None:
         self.project_root = project_root
         self.database = database
@@ -67,6 +69,7 @@ class ArchiveBuilder:
         self.reports_directory = (
             reports_directory or self.workspace_directory / "reports"
         )
+        self.reporter = reporter or NullProgressReporter()
 
     def build(
         self,
@@ -83,10 +86,23 @@ class ArchiveBuilder:
         """
         if target not in {"all", "local", "pages"}:
             raise ValueError("build target must be local, pages, or all")
+        self.reporter.start(
+            stage="scope",
+            message="开始离线构建",
+            current="全部季度" if scope is None else scope.label,
+            counters={"目标": target},
+        )
+        self.reporter.stage(stage="database", message="正在检查 SQLite schema 和完整性")
         self._verify_database()
         started = datetime.now(UTC)
         queries = BuildQueries(self.database)
+        self.reporter.stage(stage="facts", message="正在读取 SQLite facts")
         quarters = queries.list_quarters(self.settings.excluded_subject_ids)
+        self.reporter.stage(
+            stage="view-model",
+            message="正在构建 View Model",
+            counters={"季度": len(quarters)},
+        )
         models = tuple(
             BuildProjection(
                 self.tag_rules,
@@ -102,17 +118,24 @@ class ArchiveBuilder:
             )
             for year, month in quarters
         )
+        subject_count = sum(model.metadata.subject_count for model in models)
+        self.reporter.stage(
+            stage="view-model",
+            message="已加载构建事实",
+            counters={"季度": len(models), "作品": subject_count},
+        )
         profiles = _profiles(target)
         reports: list[ProfileBuildReport] = []
         for profile in profiles:
             reports.append(self._build_profile(profile, models))
         finished = datetime.now(UTC)
         label = "all" if scope is None else scope.label
-        report = write_build_report(
-            self.reports_directory, label, started, finished, tuple(reports)
-        )
         pages_report = next((item for item in reports if item.profile == "pages"), None)
         if pages_report is not None:
+            self.reporter.stage(
+                stage="build-marker",
+                message="正在写入 Pages build-bound marker/snapshot",
+            )
             write_pages_build_marker(
                 self.workspace_directory,
                 self.distribution_directory / "pages",
@@ -122,6 +145,20 @@ class ArchiveBuilder:
                 subject_count=pages_report.subjects,
                 models=models,
             )
+        self.reporter.stage(stage="report", message="正在写入构建报告")
+        report = write_build_report(
+            self.reports_directory, label, started, finished, tuple(reports)
+        )
+        self.reporter.complete(
+            stage="summary",
+            message="构建完成",
+            counters={
+                "季度": len(models),
+                "作品": subject_count,
+                "文件": sum(item.generated_files for item in reports),
+                "缺失封面": sum(item.missing_covers for item in reports),
+            },
+        )
         return BuildRun(report, tuple(reports))
 
     def _build_profile(
@@ -134,9 +171,37 @@ class ArchiveBuilder:
             metrics.update(self._write_profile(stage, profile, models))
 
         def validator(stage: Path) -> None:
+            self.reporter.stage(
+                stage="validation",
+                message="正在验证 staging；上一版输出保持不变",
+                current=profile.name,
+            )
             _validate_output(stage, profile)
 
-        result = output.generate(profile, writer, validator)
+        def before_promotion(stage: Path) -> None:
+            self.reporter.stage(
+                stage="promotion",
+                message=f"验证通过，正在替换 dist/{profile.output_directory}",
+            )
+
+        def failed(stage: Path) -> None:
+            self.reporter.error(
+                stage="promotion",
+                message="构建失败，上一版输出已保留",
+                current=profile.name,
+            )
+
+        self.reporter.stage(
+            stage=f"{profile.name}-staging",
+            message="正在生成 staging 输出",
+        )
+        result = output.generate(
+            profile,
+            writer,
+            validator,
+            before_promotion=before_promotion,
+            on_failure=failed,
+        )
         return ProfileBuildReport(
             profile.name,
             int(metrics["quarters"]),
@@ -162,6 +227,9 @@ class ArchiveBuilder:
         self, stage: Path, profile: BuildProfile, models: tuple[object, ...]
     ) -> dict[str, object]:
         renderer = TemplateRenderer(self.project_root / "templates")
+        self.reporter.stage(
+            stage="static-assets", message="正在生成静态资源", current=profile.name
+        )
         assets = publish_static_assets(self.project_root / "static", stage)
         stylesheet = assets.get("css/site.css")
         script = assets.get("js/site.js")
@@ -169,6 +237,7 @@ class ArchiveBuilder:
         if stylesheet is None or script is None or favicon is None:
             raise BuildError("required static source assets are missing")
         if profile.pwa_enabled:
+            self.reporter.stage(stage="pwa-shell", message="正在生成 PWA shell")
             pwa_controller = assets.get("js/pwa-controller.js")
             pwa_ui = assets.get("js/pwa-ui.js")
             if pwa_controller is None or pwa_ui is None:
@@ -193,12 +262,32 @@ class ArchiveBuilder:
             for detail in model.details:
                 detail_by_subject.setdefault(detail.drawer.card.subject_id, detail)
 
-        for model in models:
+        cover_total = sum(
+            len(section.subjects) for model in models for section in model.sections
+        )
+        cover_completed = 0
+        for quarter_completed, model in enumerate(models, start=1):
+            self.reporter.progress(
+                stage="quarter-pages",
+                message="正在渲染季度页",
+                completed=quarter_completed,
+                total=len(models),
+                quarter=f"{model.year}-{model.month:02d}",
+            )
             document = resolver.quarter(model.year, model.month)
             cover_media: dict[int, RenderMedia] = {}
             detail_hrefs: dict[int, str] = {}
             for section in model.sections:
                 for card in section.subjects:
+                    cover_completed += 1
+                    self.reporter.progress(
+                        stage="covers",
+                        message="正在处理封面",
+                        completed=cover_completed,
+                        total=cover_total,
+                        entity_type="subject",
+                        entity_id=card.subject_id,
+                    )
                     published = publisher.publish_cover(
                         card.subject_id, card.cover, profile
                     )
@@ -237,7 +326,17 @@ class ArchiveBuilder:
             )
             warnings.extend(model.metadata.warnings)
 
-        for subject_id, detail in detail_by_subject.items():
+        for detail_completed, (subject_id, detail) in enumerate(
+            detail_by_subject.items(), start=1
+        ):
+            self.reporter.progress(
+                stage="detail-pages",
+                message="正在渲染详情页",
+                completed=detail_completed,
+                total=len(detail_by_subject),
+                entity_type="subject",
+                entity_id=subject_id,
+            )
             document = resolver.subject(subject_id)
             card = detail.drawer.card
             published_cover = publisher.publish_cover(subject_id, card.cover, profile)
@@ -249,6 +348,12 @@ class ArchiveBuilder:
             character_media: dict[int, RenderMedia] = {}
             if profile.include_character_images:
                 for character in detail.characters:
+                    self.reporter.progress(
+                        stage="character-images",
+                        message="正在处理本地角色图片",
+                        entity_type="character",
+                        entity_id=character.character_id,
+                    )
                     published = publisher.publish_character(
                         character.character_id, character.image, profile
                     )

@@ -160,15 +160,19 @@ def main(argv: list[str] | None = None) -> int:
         settings, tag_rules, source_rules = load_rules(root / "config")
         database = Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
         with create_progress_reporter(args, "build") as reporter:
-            reporter.start(stage="initialise", message="正在准备构建")
             try:
                 run = ArchiveBuilder(
-                    root, database, settings, tag_rules, source_rules
+                    root, database, settings, tag_rules, source_rules, reporter=reporter
                 ).build(scope, target=args.target)
+            except KeyboardInterrupt:
+                reporter.warning(
+                    stage="interrupted",
+                    message="已中断｜上一版 dist 输出保持不变",
+                )
+                return 130
             except (BuildDataError, BuildError) as error:
                 parser.error(str(error))
-            reporter.complete(stage="finalise", message="构建处理完成")
-        print(f"build report: {run.report_path.as_posix()}")
+        print(f"build report: {_relative_output_path(root, run.report_path)}")
         return 0
     if args.command == "publish":
         root = find_project_root()
@@ -177,15 +181,19 @@ def main(argv: list[str] | None = None) -> int:
                 "could not find a project root containing pyproject.toml and config"
             )
         with create_progress_reporter(args, "publish") as reporter:
-            reporter.start(stage="initialise", message="正在准备发布校验")
             try:
-                run = Publisher(root).publish(
+                run = Publisher(root, reporter).publish(
                     dry_run=args.dry_run, remote=args.remote, branch=args.branch
                 )
+            except KeyboardInterrupt:
+                reporter.warning(
+                    stage="interrupted",
+                    message="已中断｜未创建远端提交",
+                )
+                return 130
             except PublishError as error:
                 parser.error(str(error))
-            reporter.complete(stage="finalise", message="发布处理完成")
-        print(f"publish report: {run.report_path.as_posix()}")
+        print(f"publish report: {_relative_output_path(root, run.report_path)}")
         if run.dry_run:
             print(f"dry run only: {run.release_version} was not published")
         else:

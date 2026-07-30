@@ -11,6 +11,8 @@ All notable changes to this project will be documented in this file.
   low admission rate; retain existing data generation on that failure.
 - Reject empty release data in audit, build, and publish/dry-run, including
   empty markers, facts snapshots, detail pages, and quarter cards.
+- Mark partial or interrupted sync data as unverified so Pages publish and
+  dry-run refuse it until a complete sync advances the data generation.
 - Add migration 3 to retain Bangumi subject type for offline build and audit
   classification.
 

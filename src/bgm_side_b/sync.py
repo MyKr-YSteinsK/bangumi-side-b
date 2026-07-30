@@ -241,6 +241,9 @@ class SubjectSynchronizer:
         )
         self.reporter.stage(stage="database", message="正在检查 SQLite schema")
         self.repository.database.migrate()
+        from bgm_side_b.release.candidate import mark_data_generation_dirty
+
+        mark_data_generation_dirty(self.reports_directory.parent)
         all_stats: list[QuarterStats] = []
         interrupted = False
         try:
@@ -271,9 +274,13 @@ class SubjectSynchronizer:
         failed = any(stats.failed or stats.empty_included_result for stats in all_stats)
         exit_code = 130 if interrupted else int(failed)
         if exit_code == 0:
-            from bgm_side_b.release.candidate import advance_data_generation
+            from bgm_side_b.release.candidate import (
+                advance_data_generation,
+                clear_data_generation_dirty,
+            )
 
             advance_data_generation(self.reports_directory.parent)
+            clear_data_generation_dirty(self.reports_directory.parent)
         self.reporter.complete(
             stage="summary",
             message="已中断" if interrupted else ("同步失败" if failed else "同步完成"),

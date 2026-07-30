@@ -143,6 +143,33 @@ def advance_data_generation(workspace: Path) -> int:
     return generation
 
 
+def mark_data_generation_dirty(workspace: Path) -> None:
+    """Block publication until a complete sync verifies its mutated facts."""
+    _atomic_json(
+        workspace / "state" / "data-generation-dirty.json",
+        {"schema": 1},
+    )
+
+
+def clear_data_generation_dirty(workspace: Path) -> None:
+    """Clear the conservative sync-failure marker after a complete sync."""
+    (workspace / "state" / "data-generation-dirty.json").unlink(missing_ok=True)
+
+
+def data_generation_is_dirty(workspace: Path) -> bool:
+    """Return whether facts might contain a partial or interrupted sync."""
+    path = workspace / "state" / "data-generation-dirty.json"
+    try:
+        payload = json.loads(path.read_text("utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("data generation verification state is invalid") from error
+    if not isinstance(payload, dict) or payload.get("schema") != 1:
+        raise ValueError("data generation verification state is invalid")
+    return True
+
+
 def _replace_build_pair(
     marker_path: Path,
     marker: dict[str, object],

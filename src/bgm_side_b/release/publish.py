@@ -20,6 +20,7 @@ from bgm_side_b.build.profiles import pages_profile
 from bgm_side_b.build.templates import TemplateRenderer
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.release.candidate import (
+    data_generation_is_dirty,
     read_data_generation,
     read_pages_build_marker,
     read_pages_build_snapshot,
@@ -308,6 +309,10 @@ class Publisher:
 
     def _validate_data_generation(self, marker: dict[str, object]) -> None:
         try:
+            if data_generation_is_dirty(self.workspace):
+                raise PublishError(
+                    "sync failed or was interrupted; complete sync before publishing"
+                )
             generation = read_data_generation(self.workspace)
         except ValueError as error:
             raise PublishError(str(error)) from error

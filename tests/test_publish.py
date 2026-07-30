@@ -16,7 +16,10 @@ from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database
 from bgm_side_b.progress import ConsoleProgressReporter
 from bgm_side_b.release import publish as publish_module
-from bgm_side_b.release.candidate import advance_data_generation
+from bgm_side_b.release.candidate import (
+    advance_data_generation,
+    mark_data_generation_dirty,
+)
 from bgm_side_b.release.publish import Publisher, PublishError, _allowed_origin
 from bgm_side_b.repository import (
     SubjectInfoboxItem,
@@ -122,6 +125,19 @@ def test_publish_refuses_changed_facts_and_unsafe_origin_branch(
     advance_data_generation(root / "workspace")
     with pytest.raises(PublishError, match="facts changed"):
         publisher.publish(dry_run=True, remote="test")
+
+
+def test_publish_refuses_a_partial_or_interrupted_sync(
+    publish_root: tuple[Path, Path],
+) -> None:
+    root, _ = publish_root
+    marker = json.loads(
+        (root / "workspace" / "state" / "pages-build.json").read_text("utf-8")
+    )
+    mark_data_generation_dirty(root / "workspace")
+
+    with pytest.raises(PublishError, match="sync failed or was interrupted"):
+        Publisher(root)._validate_data_generation(marker)
 
 
 def test_publish_dry_run_refuses_an_empty_marker_before_version_allocation(

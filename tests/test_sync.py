@@ -18,7 +18,7 @@ from bgm_side_b.api import (
 from bgm_side_b.config import ProjectSettings, load_rules
 from bgm_side_b.database import Database
 from bgm_side_b.progress import ConsoleProgressReporter, ProgressReporter
-from bgm_side_b.release.candidate import read_data_generation
+from bgm_side_b.release.candidate import data_generation_is_dirty, read_data_generation
 from bgm_side_b.repository import SubjectRepository
 from bgm_side_b.sync import (
     SubjectSynchronizer,
@@ -353,6 +353,7 @@ def test_zero_included_candidates_fail_without_advancing_generation_or_deleting_
     sync = _synchronizer(tmp_path, rules, api, FakeDiscovery((_candidate(101),)))
 
     assert sync.run(SyncScope((2026,), 4)).exit_code == 0
+    assert not data_generation_is_dirty(tmp_path)
     api.details[101] = _detail(101, "中国")
     failed = sync.run(SyncScope((2026,), 4))
 
@@ -360,6 +361,7 @@ def test_zero_included_candidates_fail_without_advancing_generation_or_deleting_
     assert failed.quarter_stats[0].empty_included_result == 1
     assert sync.repository.subject_exists(101)
     assert read_data_generation(tmp_path) == 1
+    assert data_generation_is_dirty(tmp_path)
     report = json.loads(failed.sync_report.read_text(encoding="utf-8"))
     assert report["quarters"][0]["final_included_count"] == 0
     assert report["quarters"][0]["failures"][0]["error_code"] == "empty_included_result"
@@ -417,6 +419,7 @@ def test_cover_failure_keeps_structured_subject_and_no_character_requests(
 
     assert run.exit_code == 1
     assert sync.repository.subject_exists(101)
+    assert data_generation_is_dirty(tmp_path)
     assert (api.role_calls, api.character_calls, api.person_calls) == (0, 0, 0)
 
 

@@ -1,5 +1,21 @@
 # Manual publishing
 
+The first release may be considered only after the reviewed `main` has been
+manually pushed, an old workspace/output has been recoverably moved outside the
+repository, and this scoped sequence has passed:
+
+```powershell
+bgmb sync --progress plain 2026 4
+bgmb audit
+bgmb build --progress plain --all
+bgmb publish --progress plain --dry-run
+```
+
+The candidate must contain only `2026-04` Japan TV, its subject covers, and
+the Pages shell/PWA files. A dry run does not push or create a `gh-pages`
+commit. Real publication remains a separate operator decision after reviewing
+the output and report.
+
 ```powershell
 bgmb build --all
 bgmb publish --dry-run

@@ -44,6 +44,15 @@ def test_build_parser_accepts_scope_or_all_and_profile_target() -> None:
     assert all_quarters.all
 
 
+def test_sync_parser_requires_one_year_and_one_quarter() -> None:
+    parser = build_parser()
+
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(["sync", "2026"])
+
+    assert error.value.code == 2
+
+
 def test_shared_progress_arguments_are_available_on_every_long_command() -> None:
     parser = build_parser()
 

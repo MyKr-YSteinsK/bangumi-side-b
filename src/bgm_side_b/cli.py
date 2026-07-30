@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_parser = subparsers.add_parser("sync", help="Synchronise subject facts only.")
     _add_progress_arguments(sync_parser)
-    sync_parser.add_argument("scope", nargs="+", metavar="YEAR_OR_RANGE")
+    sync_parser.add_argument("scope", nargs=2, metavar=("YEAR", "QUARTER_MONTH"))
     sync_parser.add_argument(
         "--force",
         action="store_true",
@@ -63,9 +63,9 @@ def build_parser() -> argparse.ArgumentParser:
         "build", help="Build offline static archive pages from local SQLite facts."
     )
     _add_progress_arguments(build_command)
-    build_command.add_argument("scope", nargs="*", metavar="YEAR_OR_RANGE")
+    build_command.add_argument("scope", nargs="*", metavar="YEAR_OR_QUARTER")
     build_command.add_argument(
-        "--all", action="store_true", help="Build every currently stored quarter."
+        "--all", action="store_true", help="Build every configured release quarter."
     )
     publish_command = subparsers.add_parser(
         "publish", help="Validate and manually publish an existing Pages candidate."

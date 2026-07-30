@@ -40,6 +40,22 @@ checks for updates.
 Runtime pages do not read SQLite, request Bangumi data, or require a web
 backend. A failed build keeps the prior complete static output.
 
+## First-release readiness
+
+After a reviewed `main` is manually pushed by the operator, move any old
+`workspace/` and `dist/` out of the repository using the
+[safe data-reset procedure](docs/data-reset.md). Then run:
+
+```powershell
+bgmb sync --progress plain 2026 4
+bgmb audit
+bgmb build --progress plain --all
+bgmb publish --progress plain --dry-run
+```
+
+The dry run is not a publication. Review its report and the generated output
+before separately authorising a real Pages release.
+
 ## Development
 
 Requires Python 3.11 or later.

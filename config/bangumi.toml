@@ -6,6 +6,16 @@ api_concurrency = 3
 request_timeout_seconds = 20
 max_retries = 3
 
+[scope]
+release_quarters = ["2026-04"]
+formats = ["tv"]
+include_continuations = false
+
+[country_filter]
+required_country = "日本"
+country_keys = ["制片国家/地区", "国家/地区"]
+country_value_aliases = ["日本", "Japan"]
+
 [roles]
 main_character_relations = ["\u4e3b\u89d2"]
 

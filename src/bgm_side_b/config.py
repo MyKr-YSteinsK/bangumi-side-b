@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -19,11 +20,31 @@ class SyncSettings:
 
 
 @dataclass(frozen=True)
+class ReleaseScope:
+    """The deliberately narrow first-release scope."""
+
+    release_quarters: tuple[str, ...]
+    formats: tuple[str, ...]
+    include_continuations: bool
+
+
+@dataclass(frozen=True)
+class CountryFilter:
+    """Exact structured Infobox keys and tokens accepted for Japan."""
+
+    required_country: str
+    country_keys: frozenset[str]
+    country_value_aliases: frozenset[str]
+
+
+@dataclass(frozen=True)
 class ProjectSettings:
     """Configuration that is shared by command orchestration."""
 
     excluded_subject_ids: frozenset[int]
     sync: SyncSettings
+    scope: ReleaseScope
+    country_filter: CountryFilter
     main_character_relations: frozenset[str]
     end_date_infobox_keys: frozenset[str]
     chinese_name_infobox_keys: frozenset[str]
@@ -60,9 +81,15 @@ def load_project_settings(path: Path) -> ProjectSettings:
     sync = data["sync"]
     roles = data.get("roles")
     infobox = data.get("infobox")
-    if not all(isinstance(value, dict) for value in (filters, sync, roles, infobox)):
+    scope = data.get("scope")
+    country_filter = data.get("country_filter")
+    if not all(
+        isinstance(value, dict)
+        for value in (filters, sync, roles, infobox, scope, country_filter)
+    ):
         raise ValueError(
-            "bangumi.toml must define filters, sync, roles, and infobox tables"
+            "bangumi.toml must define filters, sync, scope, country_filter, "
+            "roles, and infobox tables"
         )
 
     excluded = filters["excluded_subject_ids"]
@@ -82,6 +109,33 @@ def load_project_settings(path: Path) -> ProjectSettings:
         raise ValueError("request_timeout_seconds must be greater than 0")
     if sync["max_retries"] < 0:
         raise ValueError("max_retries must not be negative")
+
+    release_quarters = scope.get("release_quarters")
+    if not _valid_release_quarters(release_quarters):
+        raise ValueError("release_quarters must contain valid unique YYYY-MM quarters")
+    formats = scope.get("formats")
+    if formats != ["tv"]:
+        raise ValueError("the current release scope only supports formats = [\"tv\"]")
+    include_continuations = scope.get("include_continuations")
+    if include_continuations is not False:
+        raise ValueError(
+            "the current release scope requires include_continuations = false"
+        )
+
+    required_country = country_filter.get("required_country")
+    country_keys = country_filter.get("country_keys")
+    country_aliases = country_filter.get("country_value_aliases")
+    if required_country != "日本":
+        raise ValueError("the current release scope requires required_country = 日本")
+    if not _valid_string_array(country_keys):
+        raise ValueError("country_keys must be a non-empty unique string array")
+    if not _valid_string_array(country_aliases) or set(country_aliases) != {
+        "日本",
+        "Japan",
+    }:
+        raise ValueError(
+            "country_value_aliases must be the exact tokens 日本 and Japan"
+        )
 
     main_relations = roles.get("main_character_relations")
     if not isinstance(main_relations, list) or not main_relations or not all(
@@ -113,6 +167,16 @@ def load_project_settings(path: Path) -> ProjectSettings:
             api_concurrency=sync["api_concurrency"],
             request_timeout_seconds=sync["request_timeout_seconds"],
             max_retries=sync["max_retries"],
+        ),
+        scope=ReleaseScope(
+            release_quarters=tuple(release_quarters),
+            formats=tuple(formats),
+            include_continuations=include_continuations,
+        ),
+        country_filter=CountryFilter(
+            required_country=required_country,
+            country_keys=frozenset(country_keys),
+            country_value_aliases=frozenset(country_aliases),
         ),
         main_character_relations=frozenset(main_relations),
         end_date_infobox_keys=frozenset(end_date_keys),
@@ -207,3 +271,27 @@ def load_rules(config_directory: Path) -> tuple[ProjectSettings, TagRules, Sourc
 
 def _is_integer(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _valid_string_array(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, str) and item for item in value)
+        and len(set(value)) == len(value)
+    )
+
+
+def _valid_release_quarters(value: object) -> bool:
+    if not _valid_string_array(value):
+        return False
+    for item in value:
+        match = re.fullmatch(r"(\d{4})-(\d{2})", item)
+        if match is None or int(match.group(1)) < 1 or int(match.group(2)) not in {
+            1,
+            4,
+            7,
+            10,
+        }:
+            return False
+    return True

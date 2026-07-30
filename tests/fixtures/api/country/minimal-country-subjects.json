@@ -1,0 +1,26 @@
+{
+  "verified_public_subjects": {
+    "japan": {
+      "subject_id": 157900,
+      "infobox": [{"key": "制片国家/地区", "value": "日本"}]
+    },
+    "not_japan": {
+      "subject_id": 113162,
+      "infobox": [{"key": "制片国家/地区", "value": "中国"}]
+    },
+    "co_production": {
+      "subject_id": 145120,
+      "infobox": [{"key": "国家/地区", "value": "日本、法国"}]
+    },
+    "missing_country": {
+      "subject_id": 659440,
+      "infobox": []
+    }
+  },
+  "synthetic_conflict": {
+    "infobox": [
+      {"key": "制片国家/地区", "value": "日本"},
+      {"key": "国家/地区", "value": "中国"}
+    ]
+  }
+}

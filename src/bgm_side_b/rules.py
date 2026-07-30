@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from unicodedata import normalize
 
-from bgm_side_b.config import SourceRules, TagRules
+from bgm_side_b.config import CountryFilter, SourceRules, TagRules
 
 QUARTER_MONTHS = (1, 4, 7, 10)
 SUPPORTED_FORMATS = frozenset({"tv", "movie"})
@@ -56,6 +57,27 @@ class InfoboxItem:
 
     key: str
     value: str
+
+
+@dataclass(frozen=True)
+class CountryEvidence:
+    """One parsed, verified structured country Infobox value."""
+
+    key: str
+    tokens: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CountryDecision:
+    """A deterministic country-filter result suitable for safe audit output."""
+
+    decision: str
+    evidence: tuple[CountryEvidence, ...]
+    reason: str
+
+    @property
+    def included(self) -> bool:
+        return self.decision == "included_japan"
 
 
 @dataclass(frozen=True)
@@ -167,6 +189,43 @@ def derive_sources(
     return _resolve_evidence(evidence, rules)
 
 
+def decide_country(
+    infobox_items: Iterable[InfoboxItem], country_filter: CountryFilter
+) -> CountryDecision:
+    """Accept Japan only from consistent, exact structured country tokens."""
+    evidence: list[CountryEvidence] = []
+    malformed = False
+    for item in infobox_items:
+        key = normalize_text(item.key)
+        value = normalize_text(item.value)
+        if key not in country_filter.country_keys or not value:
+            continue
+        tokens = _country_tokens(value, country_filter.country_value_aliases)
+        if tokens is None:
+            malformed = True
+            continue
+        evidence.append(CountryEvidence(key, tokens))
+
+    if not evidence and not malformed:
+        return CountryDecision("excluded_missing_country", (), "missing_country")
+    if malformed:
+        return CountryDecision(
+            "excluded_unparseable_country", tuple(evidence), "unparseable_country"
+        )
+    token_sets = {frozenset(item.tokens) for item in evidence}
+    if len(token_sets) != 1:
+        return CountryDecision(
+            "excluded_conflicting_country", tuple(evidence), "conflicting_country"
+        )
+    tokens = next(iter(token_sets))
+    aliases = {item.casefold() for item in country_filter.country_value_aliases}
+    if any(token.casefold() in aliases for token in tokens):
+        return CountryDecision("included_japan", tuple(evidence), "exact_japan_token")
+    return CountryDecision(
+        "excluded_not_japan", tuple(evidence), "japan_token_absent"
+    )
+
+
 def format_utc(value: datetime) -> str:
     """Render an aware timestamp in stable UTC ``Z`` notation."""
     if value.tzinfo is None or value.utcoffset() is None:
@@ -229,3 +288,25 @@ def _resolve_evidence(
 
     ordered = tuple(source for source in rules.order if source in resolved)
     return SourceResult(ordered or ("unknown",), evidence, ())
+
+
+_COUNTRY_SEPARATORS = re.compile(r"[／/、,，;；・]")
+_COUNTRY_TOKEN = re.compile(
+    r"(?:[\u3400-\u9fff]{2,4}|[A-Za-z]+(?:[ .'-][A-Za-z]+)*)\Z"
+)
+
+
+def _country_tokens(value: str, aliases: frozenset[str]) -> tuple[str, ...] | None:
+    parts = tuple(normalize_text(part) for part in _COUNTRY_SEPARATORS.split(value))
+    if not parts or any(
+        not part or not _COUNTRY_TOKEN.fullmatch(part) for part in parts
+    ):
+        return None
+    known_aliases = tuple(normalize_text(alias) for alias in aliases)
+    if any(
+        alias.casefold() in part.casefold() and part.casefold() != alias.casefold()
+        for alias in known_aliases
+        for part in parts
+    ):
+        return None
+    return tuple(dict.fromkeys(parts))

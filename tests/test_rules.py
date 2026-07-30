@@ -1,5 +1,6 @@
 """Risk-focused tests for deterministic domain rules."""
 
+import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from bgm_side_b.config import load_rules
 from bgm_side_b.rules import (
     InfoboxItem,
     Quarter,
+    decide_country,
     derive_sources,
     display_tags,
     expand_years,
@@ -21,7 +23,7 @@ from bgm_side_b.rules import (
 )
 
 CONFIG_DIRECTORY = Path(__file__).resolve().parents[1] / "config"
-_, TAG_RULES, SOURCE_RULES = load_rules(CONFIG_DIRECTORY)
+SETTINGS, TAG_RULES, SOURCE_RULES = load_rules(CONFIG_DIRECTORY)
 
 
 @pytest.mark.parametrize("month", [1, 4, 7, 10])
@@ -87,3 +89,81 @@ def test_utc_format_rejects_naive_timestamps() -> None:
     assert format_utc(datetime(2022, 1, 1, tzinfo=UTC)) == "2022-01-01T00:00:00Z"
     with pytest.raises(ValueError):
         format_utc(datetime(2022, 1, 1))
+
+
+@pytest.mark.parametrize(
+    ("value", "decision"),
+    [
+        ("日本", "included_japan"),
+        ("Japan", "included_japan"),
+        ("日本 / 中国", "included_japan"),
+        ("日本，美国", "included_japan"),
+        ("中国", "excluded_not_japan"),
+        ("日本风", "excluded_unparseable_country"),
+        ("日本語", "excluded_unparseable_country"),
+        ("日本|中国", "excluded_unparseable_country"),
+        ("Ｊａｐａｎ", "included_japan"),
+    ],
+)
+def test_country_filter_uses_only_exact_normalized_tokens(
+    value: str, decision: str
+) -> None:
+    result = decide_country(
+        [InfoboxItem("制片国家/地区", value)], SETTINGS.country_filter
+    )
+    assert result.decision == decision
+
+
+def test_country_filter_handles_missing_and_consistent_or_conflicting_keys() -> None:
+    assert (
+        decide_country([], SETTINGS.country_filter).decision
+        == "excluded_missing_country"
+    )
+    assert (
+        decide_country(
+            [
+                InfoboxItem("制片国家/地区", "日本、中国"),
+                InfoboxItem("国家/地区", "中国 / 日本"),
+            ],
+            SETTINGS.country_filter,
+        ).decision
+        == "included_japan"
+    )
+    assert (
+        decide_country(
+            [
+                InfoboxItem("制片国家/地区", "日本"),
+                InfoboxItem("国家/地区", "中国"),
+            ],
+            SETTINGS.country_filter,
+        ).decision
+        == "excluded_conflicting_country"
+    )
+
+
+def test_minimal_public_country_fixtures_cover_verified_keys() -> None:
+    fixture = json.loads(
+        (
+            CONFIG_DIRECTORY.parent
+            / "tests"
+            / "fixtures"
+            / "api"
+            / "country"
+            / "minimal-country-subjects.json"
+        ).read_text(encoding="utf-8")
+    )
+    expected = {
+        "japan": "included_japan",
+        "not_japan": "excluded_not_japan",
+        "co_production": "included_japan",
+        "missing_country": "excluded_missing_country",
+    }
+    for name, decision in expected.items():
+        values = fixture["verified_public_subjects"][name]["infobox"]
+        assert (
+            decide_country(
+                [InfoboxItem(item["key"], item["value"]) for item in values],
+                SETTINGS.country_filter,
+            ).decision
+            == decision
+        )

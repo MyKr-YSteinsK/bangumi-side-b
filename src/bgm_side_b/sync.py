@@ -46,6 +46,7 @@ from bgm_side_b.repository import (
 from bgm_side_b.rules import (
     CountryDecision,
     InfoboxItem,
+    Quarter,
     decide_country,
     derive_sources,
     expand_years,
@@ -121,11 +122,14 @@ class QuarterStats:
     skipped: int = 0
     missing_date: int = 0
     ownership_mismatch: int = 0
-    country_included_japan: int = 0
-    country_excluded_not_japan: int = 0
-    country_excluded_missing: int = 0
-    country_excluded_unparseable: int = 0
-    country_excluded_conflict: int = 0
+    country_included_structured_japan: int = 0
+    country_included_tag_japan: int = 0
+    country_included_tv_default: int = 0
+    country_excluded_structured_non_japan: int = 0
+    country_excluded_negative_tag: int = 0
+    country_excluded_tag_conflict: int = 0
+    country_missing_structured_evidence: int = 0
+    empty_included_result: int = 0
     failed: int = 0
     retries: int = 0
     episodes_requested: int = 0
@@ -151,6 +155,14 @@ class QuarterStats:
     cleanup_failed: int = 0
     warnings: list[str] = field(default_factory=list)
     failures: list[dict[str, object]] = field(default_factory=list)
+
+    @property
+    def country_included_count(self) -> int:
+        return (
+            self.country_included_structured_japan
+            + self.country_included_tag_japan
+            + self.country_included_tv_default
+        )
 
 
 @dataclass(frozen=True)
@@ -241,6 +253,7 @@ class SubjectSynchronizer:
                     position=position,
                     total_quarters=len(quarters),
                 )
+                self._check_country_result(stats)
                 all_stats.append(stats)
         except _SyncInterrupted as error:
             error.stats.warnings.append("interrupted")
@@ -255,31 +268,45 @@ class SubjectSynchronizer:
         )
         audit_report = self._write_tag_audit_report()
         country_audit_report = self._write_country_audit_report()
-        exit_code = 130 if interrupted else int(any(stats.failed for stats in all_stats))
+        failed = any(stats.failed or stats.empty_included_result for stats in all_stats)
+        exit_code = 130 if interrupted else int(failed)
         if exit_code == 0:
             from bgm_side_b.release.candidate import advance_data_generation
 
             advance_data_generation(self.reports_directory.parent)
         self.reporter.complete(
             stage="summary",
-            message="已中断" if interrupted else "同步完成",
+            message="已中断" if interrupted else ("同步失败" if failed else "同步完成"),
             counters={
                 "季度": len(all_stats),
                 "失败": sum(item.failed for item in all_stats),
                 "重试": sum(item.retries for item in all_stats),
+                "章节": sum(item.episodes_stored for item in all_stats),
+                "封面": sum(item.covers_downloaded for item in all_stats),
                 "图片下载": sum(item.media_downloaded for item in all_stats),
                 "缓存命中": sum(item.media_skipped for item in all_stats),
-                "日本TV收录": sum(
-                    item.country_included_japan for item in all_stats
+                "候选": sum(item.discovered for item in all_stats),
+                "结构化日本": sum(
+                    item.country_included_structured_japan for item in all_stats
                 ),
-                "非日本排除": sum(
-                    item.country_excluded_not_japan for item in all_stats
+                "标签日本": sum(
+                    item.country_included_tag_japan for item in all_stats
                 ),
-                "国家缺失": sum(
-                    item.country_excluded_missing for item in all_stats
+                "TV默认收录": sum(
+                    item.country_included_tv_default for item in all_stats
                 ),
-                "国家冲突": sum(
-                    item.country_excluded_conflict for item in all_stats
+                "最终收录": sum(item.country_included_count for item in all_stats),
+                "明确非日本排除": sum(
+                    item.country_excluded_structured_non_japan for item in all_stats
+                ),
+                "标签负向排除": sum(
+                    item.country_excluded_negative_tag for item in all_stats
+                ),
+                "标签冲突": sum(
+                    item.country_excluded_tag_conflict for item in all_stats
+                ),
+                "异常零收录": sum(
+                    item.empty_included_result for item in all_stats
                 ),
             },
         )
@@ -392,15 +419,50 @@ class SubjectSynchronizer:
                 "失败": stats.failed,
                 "重试": stats.retries,
                 "章节": stats.episodes_stored,
-                "日本TV收录": stats.country_included_japan,
-                "非日本排除": stats.country_excluded_not_japan,
-                "国家缺失": stats.country_excluded_missing,
-                "国家冲突": stats.country_excluded_conflict,
+                "结构化日本": stats.country_included_structured_japan,
+                "标签日本": stats.country_included_tag_japan,
+                "TV默认收录": stats.country_included_tv_default,
+                "最终收录": stats.country_included_count,
+                "明确非日本排除": stats.country_excluded_structured_non_japan,
+                "标签负向排除": stats.country_excluded_negative_tag,
+                "标签冲突": stats.country_excluded_tag_conflict,
                 "封面": stats.covers_downloaded,
                 "耗时秒": round(time.monotonic() - started_at, 1),
             },
         )
         return stats
+
+    def _check_country_result(self, stats: QuarterStats) -> None:
+        """Fail anomalous empty classifications without modifying existing facts."""
+        if stats.discovered > 0 and stats.country_included_count == 0:
+            stats.empty_included_result = 1
+            stats.failures.append(
+                {
+                    "stage": "country-classification",
+                    "code": "empty_included_result",
+                    "summary": "candidates exist but no Japan TV subject was included",
+                }
+            )
+            self.reporter.error(
+                stage="country-classification",
+                message="候选存在但日本 TV 收录为 0；请检查国家分类规则。",
+                quarter=f"{stats.year}-{stats.month:02d}",
+            )
+            return
+        if (
+            stats.discovered >= 20
+            and stats.country_included_count / stats.discovered < 0.20
+        ):
+            stats.warnings.append("low_japan_tv_inclusion_rate")
+            self.reporter.warning(
+                stage="country-classification",
+                message="日本 TV 收录率异常偏低",
+                quarter=f"{stats.year}-{stats.month:02d}",
+                counters={
+                    "候选": stats.discovered,
+                    "最终收录": stats.country_included_count,
+                },
+            )
 
     def _apply_discovery(self, result: DiscoveryResult, stats: QuarterStats) -> None:
         discovered = result.statistics
@@ -502,20 +564,18 @@ class SubjectSynchronizer:
             )
             return False
         country = decide_country(
-            _source_infobox(detail.infobox), self.settings.country_filter
+            _source_infobox(detail.infobox),
+            self.settings.country_filter,
+            raw_tags=(tag.name for tag in detail.tags),
+            subject_type=detail.subject_type,
+            platform=detail.platform,
+            air_date=detail.air_date,
+            target_quarter=Quarter(target_year, target_month),
         )
         self._record_country_audit(detail, title, country)
-        if country.decision != "included_japan":
-            if country.decision == "excluded_not_japan":
-                stats.country_excluded_not_japan += 1
-            elif country.decision == "excluded_missing_country":
-                stats.country_excluded_missing += 1
-            elif country.decision == "excluded_unparseable_country":
-                stats.country_excluded_unparseable += 1
-            else:
-                stats.country_excluded_conflict += 1
+        self._record_country_decision(stats, country)
+        if not country.included:
             return False
-        stats.country_included_japan += 1
         was_present = self.repository.subject_exists(detail.subject_id)
         source_result = derive_sources(_source_infobox(detail.infobox), (tag.name for tag in detail.tags), self.source_rules)
         titles = _titles(detail, title)
@@ -600,6 +660,23 @@ class SubjectSynchronizer:
             stats.ratings_updated += 1
         stats.warnings.extend(source_result.warnings)
         return True
+
+    @staticmethod
+    def _record_country_decision(
+        stats: QuarterStats, country: CountryDecision
+    ) -> None:
+        if not country.evidence:
+            stats.country_missing_structured_evidence += 1
+        counter = {
+            "included_structured_japan": "country_included_structured_japan",
+            "included_tag_japan": "country_included_tag_japan",
+            "included_tv_default": "country_included_tv_default",
+            "excluded_structured_non_japan": "country_excluded_structured_non_japan",
+            "excluded_negative_tag": "country_excluded_negative_tag",
+            "excluded_tag_conflict": "country_excluded_tag_conflict",
+        }.get(country.decision)
+        if counter is not None:
+            setattr(stats, counter, getattr(stats, counter) + 1)
 
     def _sync_existing_tv(
         self,
@@ -1316,7 +1393,7 @@ class SubjectSynchronizer:
             "scope": {
                 "release_quarters": list(self.settings.scope.release_quarters),
                 "formats": list(self.settings.scope.formats),
-                "country_filter": "structured_contains_japan",
+                "country_filter": "automatic_japan_tv",
                 "continuations": False,
                 "roles": False,
                 "years": list(scope.years),
@@ -1338,7 +1415,7 @@ class SubjectSynchronizer:
         payload = {
             "generated_at": _utc_timestamp(),
             "scope": "2026-04",
-            "filter": "structured_contains_japan",
+            "filter": "automatic_japan_tv",
             "subjects": self._country_audit_rows,
         }
         return _write_json(self.reports_directory, "country-audit", payload)
@@ -1432,6 +1509,8 @@ def _report_quarter(stats: QuarterStats) -> dict[str, object]:
     }
     payload.update(
         {
+            "candidate_count": stats.discovered,
+            "final_included_count": stats.country_included_count,
             "subjects_created": stats.created,
             "subjects_updated": stats.updated,
             "failures": [_report_failure(stats, failure) for failure in stats.failures],

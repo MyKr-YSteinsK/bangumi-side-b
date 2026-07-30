@@ -13,11 +13,11 @@ Both commands build the configured release scope only: `2026-04` Japan TV.
 An explicit scope must equal that configuration. `--all` means all configured
 release quarters, not every quarter found in SQLite.
 
-The build performs a second structured-country check from stored Infobox facts.
-Only `new` TV subjects with consistent Japan evidence are projected. Database
-quarters outside configuration are not rendered, linked, or placed in
-navigation; their keys are listed as `ignored_database_quarters` in the build
-report.
+The build reruns the same automatic country classification from stored Infobox,
+raw-tag, type, format, and date facts. Only `new` TV subjects admitted by that
+rule are projected. Database quarters outside configuration are not rendered,
+linked, or placed in navigation; their keys are listed as
+`ignored_database_quarters` in the build report.
 
 `dist/local/` and `dist/pages/` share the same models, Jinja templates, CSS,
 and native JavaScript. They contain quarter cards, drawers, subject detail
@@ -26,7 +26,9 @@ person tables, emits a role/voice section, or copies character media. Pages
 uses WebP cover derivatives and rejects any character-media output.
 
 Outputs are assembled in `dist/.staging/`, validated, then atomically promoted
-so a failed build preserves the previous complete profile. The external build
+so a failed build preserves the previous complete profile. A configured release
+with zero projected subjects is a build error: neither profile nor its marker is
+replaced. The external build
 report records configured quarters, ignored database quarters, TV subject
 count, country-filtered subject count, and `character_sections: 0`.
 

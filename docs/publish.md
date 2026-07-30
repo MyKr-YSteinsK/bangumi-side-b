@@ -22,7 +22,11 @@ bgmb publish --dry-run
 bgmb publish
 ```
 
-`publish` 不会调用 sync 或 build。它要求 `main` 干净、Pages build marker 与当前 HEAD 匹配、`dist/pages` 没有角色图片/数据库/本机路径/敏感信息，并验证 manifest、Service Worker、链接和 PWA Shell。
+`publish` 不会调用 sync 或 build。它要求 `main` 干净、Pages build marker 与当前 HEAD 匹配且
+`subject_count > 0`、build-bound snapshot 含作品与季度卡片、候选目录含详情页和季度卡片；
+此外 `dist/pages` 不得含角色图片/数据库/本机路径/敏感信息，并验证 manifest、Service Worker、
+链接和 PWA Shell。上述任何空产物在 dry-run 前即拒绝，因此不会计算版本、创建 `gh-pages` commit
+或 push。
 
 dry-run 会完整组装 release staging、计算 tentative 版本并写安全报告，但不创建 `gh-pages` commit、不会 push、不会登记本地成功状态。真实发布从远程 `gh-pages` 读取 release 版本，以临时 worktree 创建 `release: YYYY.MM.DD.N`，只 push `HEAD:gh-pages`，绝不 force push 或修改 main。无变化会拒绝空版本；push 失败会保留远程旧站点、旧 PWA snapshot 和本地成功状态。
 

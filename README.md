@@ -8,8 +8,9 @@ without runtime database or API access.
 ## Current scope
 
 - only TV subjects whose complete first-air date is in 2026-04;
-- only verified structured Infobox country values containing the exact `日本`
-  or `Japan` token (consistent co-productions are allowed);
+- deterministic automatic Japan-TV classification: structured Infobox evidence
+  first, then exact configured tags, then the narrow quarterly-TV default when
+  no region evidence exists (consistent co-productions are allowed);
 - no movies, continuations, roles, people, character images, or voice-actor
   images;
 - only subject covers for admitted subjects.
@@ -27,6 +28,10 @@ bgmb publish --dry-run
 configured release quarter, currently only `2026-04`; it does not expand to
 old data stored in SQLite. `publish` consumes an existing verified Pages build
 and never invokes sync or build.
+
+If discovery finds candidates but automatic classification admits none, `sync`
+fails without creating a new data generation. A build or publish dry run also
+refuses an empty release, preserving the last valid output.
 
 ## Output and PWA
 

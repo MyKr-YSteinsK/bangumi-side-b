@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Classify 2026-04 Japan TV automatically and deterministically: structured
+  country facts first, exact configured region tags as fallback, then a narrow
+  official-TV quarterly default with auditable evidence.
+- Fail sync when candidates yield no admitted Japan TV, and warn on an unusually
+  low admission rate; retain existing data generation on that failure.
+- Reject empty release data in audit, build, and publish/dry-run, including
+  empty markers, facts snapshots, detail pages, and quarter cards.
+- Add migration 3 to retain Bangumi subject type for offline build and audit
+  classification.
+
 - Narrow the release, sync path, and static archive to verified Japan TV in
   2026-04; remove continuation, role, voice, and character-media output paths.
 - Add a read-only reduced-release data audit and documented recoverable backup

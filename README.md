@@ -17,6 +17,7 @@ without runtime database or API access.
 ```powershell
 python -m bgm_side_b --help
 bgmb sync 2026 4
+bgmb audit
 bgmb build 2026 4
 bgmb build --all
 bgmb publish --dry-run
@@ -54,4 +55,5 @@ documentation. SQLite databases, downloaded covers, reports, backups,
 generated output, caches, temporary files, and secrets are not committed.
 
 See [sync notes](docs/subject-sync.md), [country filter](docs/country-filter.md),
-[static build notes](docs/static-build.md), and [PWA notes](docs/pwa.md).
+[static build notes](docs/static-build.md), [safe data reset](docs/data-reset.md),
+and [PWA notes](docs/pwa.md).

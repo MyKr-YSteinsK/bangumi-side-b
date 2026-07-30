@@ -7,6 +7,7 @@ from pathlib import Path
 
 from bgm_side_b import __version__
 from bgm_side_b.api import BangumiApiClient
+from bgm_side_b.audit import ReleaseDataAuditor
 from bgm_side_b.build.builder import ArchiveBuilder, BuildError
 from bgm_side_b.build.queries import BuildDataError
 from bgm_side_b.config import load_rules
@@ -42,6 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"%(prog)s {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser(
+        "audit", help="Read-only audit of first-release workspace data."
+    )
     sync_parser = subparsers.add_parser("sync", help="Synchronise subject facts only.")
     _add_progress_arguments(sync_parser)
     sync_parser.add_argument("scope", nargs="+", metavar="YEAR_OR_RANGE")
@@ -106,6 +110,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command is None:
         return 0
+    if args.command == "audit":
+        root = find_project_root()
+        if root is None:
+            parser.error(
+                "could not find a project root containing pyproject.toml and config"
+            )
+        settings, _, _ = load_rules(root / "config")
+        result = ReleaseDataAuditor(root, settings).audit()
+        print(result.render())
+        return 0 if result.passed else 1
     if args.verbose and args.progress == "off":
         parser.error("--progress off cannot be combined with --verbose")
     if args.command == "sync":

@@ -273,15 +273,15 @@ def test_quarterly_discovery_deduplicates_and_filters_before_detail() -> None:
     result = QuarterlyDiscovery(_client(handler)).discover(2022, 1, {102})
 
     assert [candidate.subject_id for candidate in result.candidates] == [101, 105]
-    assert result.statistics.discovered == 5
+    assert result.statistics.discovered == 4
     assert result.statistics.duplicates == 1
-    assert result.statistics.blacklisted == 1
+    assert result.statistics.blacklisted == 0
     assert result.statistics.unsupported == 2
     assert result.statistics.needs_detail == 2
     assert result.statistics.failed == 0
 
 
-def test_discovery_reports_all_six_month_category_groups_in_verbose_mode() -> None:
+def test_discovery_reports_three_tv_month_groups_in_verbose_mode() -> None:
     stream = StringIO()
 
     def handler(_: httpx.Request) -> httpx.Response:
@@ -294,7 +294,7 @@ def test_discovery_reports_all_six_month_category_groups_in_verbose_mode() -> No
 
     assert result.statistics.discovered == 0
     lines = stream.getvalue().splitlines()
-    assert len(lines) == 6
+    assert len(lines) == 3
     assert all("候选发现" in line for line in lines)
 
 
@@ -302,7 +302,7 @@ def test_discovery_records_a_failed_month_and_continues() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         month = int(request.url.params["month"])
         category = int(request.url.params["cat"])
-        if (month, category) == (2, MOVIE_CATEGORY):
+        if (month, category) == (2, TV_CATEGORY):
             return httpx.Response(500)
         return httpx.Response(200, json={"total": 0, "data": []})
 

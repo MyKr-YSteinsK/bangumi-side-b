@@ -37,6 +37,17 @@ def test_auto_mode_uses_tty_refresh_and_plain_mode_does_not() -> None:
     assert "[同步 1/2]" in plain_stream.getvalue()
 
 
+def test_tty_refresh_clears_a_previous_longer_line() -> None:
+    stream = _Stream(tty=True)
+    with ConsoleProgressReporter(
+        "sync", stream=stream, refresh_interval_seconds=0
+    ) as reporter:
+        reporter.progress(message="一个足够长的作品标题", completed=1, total=2)
+        reporter.progress(message="短", completed=2, total=2)
+
+    assert stream.getvalue().count("\x1b[2K") == 2
+
+
 def test_plain_off_and_elapsed_formatting() -> None:
     plain_stream = _Stream(tty=False)
     off_stream = _Stream(tty=False)

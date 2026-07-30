@@ -14,7 +14,11 @@ from bgm_side_b.database import Database
 from bgm_side_b.progress import create_progress_reporter
 from bgm_side_b.release.publish import Publisher, PublishError
 from bgm_side_b.repository import SubjectRepository
-from bgm_side_b.sync import SubjectSynchronizer, parse_sync_scope
+from bgm_side_b.sync import (
+    SubjectSynchronizer,
+    parse_sync_scope,
+    validate_release_scope,
+)
 
 
 def find_project_root(start: Path | None = None) -> Path | None:
@@ -49,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument(
         "--force-images",
         action="store_true",
-        help="Revalidate and redownload cached cover and character images.",
+        help="Revalidate and redownload cached cover images.",
     )
     build_command = subparsers.add_parser(
         "build", help="Build offline static archive pages from local SQLite facts."
@@ -115,6 +119,10 @@ def main(argv: list[str] | None = None) -> int:
                 "could not find a project root containing pyproject.toml and config"
             )
         settings, tag_rules, source_rules = load_rules(root / "config")
+        try:
+            validate_release_scope(scope, settings)
+        except ValueError as error:
+            parser.error(str(error))
         database = Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
         repository = SubjectRepository(database)
         with create_progress_reporter(args, "sync") as reporter:
@@ -144,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
                 client.close()
         print(f"sync report: {_relative_output_path(root, run.sync_report)}")
         print(f"tag audit: {_relative_output_path(root, run.tag_audit_report)}")
+        print(f"country audit: {_relative_output_path(root, run.country_audit_report)}")
         return run.exit_code
     if args.command == "build":
         if args.all == bool(args.scope):

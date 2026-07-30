@@ -406,7 +406,7 @@ class ConsoleProgressReporter:
     def _write_event(self, event: ProgressEvent, *, dynamic: bool) -> None:
         line = _format_event(event, self._started_at)
         if dynamic:
-            self.stream.write(f"\r{line}")
+            self.stream.write(f"\r\x1b[2K{line}")
             self.stream.flush()
             self._dynamic_line = True
             return

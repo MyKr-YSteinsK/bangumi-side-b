@@ -22,7 +22,7 @@ API_BASE_URL = "https://api.bgm.tv/v0"
 ANIME_SUBJECT_TYPE = 2
 TV_CATEGORY = 1
 MOVIE_CATEGORY = 3
-DISCOVERY_CATEGORIES = (TV_CATEGORY, MOVIE_CATEGORY)
+DISCOVERY_CATEGORIES = (TV_CATEGORY,)
 DEFAULT_USER_AGENT = (
     "Bangumi-Side-B/0.1.0 (+https://github.com/MyKr-YSteinsK/bangumi-side-b)"
 )
@@ -792,7 +792,7 @@ class QuarterlyDiscovery:
         quarter_month: int,
         excluded_subject_ids: set[int] | frozenset[int] = frozenset(),
     ) -> DiscoveryResult:
-        """Fetch all TV and movie pages for three months and filter candidates."""
+        """Fetch only the configured TV discovery pages for three months."""
         if not is_quarter_month(quarter_month):
             raise ValueError("quarter month must be one of 1, 4, 7, or 10")
         requests = [
@@ -850,7 +850,7 @@ def _filter_candidates(
             blacklisted += 1
             continue
         normalised = normalize_format(candidate.platform)
-        if normalised is not None and normalised not in {"tv", "movie"}:
+        if normalised is not None and normalised != "tv":
             unsupported += 1
             continue
         selected.append(candidate)

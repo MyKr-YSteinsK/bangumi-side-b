@@ -44,11 +44,12 @@ from bgm_side_b.repository import (
     SyncState,
 )
 from bgm_side_b.rules import (
+    CountryDecision,
     InfoboxItem,
+    decide_country,
     derive_sources,
     expand_years,
     is_quarter_month,
-    is_supported_format,
     normalise_aliases,
     normalize_format,
     preferred_title,
@@ -91,6 +92,17 @@ def parse_sync_scope(values: list[str]) -> SyncScope:
     return SyncScope(years, None)
 
 
+def validate_release_scope(scope: SyncScope, settings: ProjectSettings) -> None:
+    """Reject every sync request outside the checked-in release scope."""
+    configured = tuple(
+        (int(item[:4]), int(item[5:])) for item in settings.scope.release_quarters
+    )
+    if scope.quarters != configured:
+        raise ValueError(
+            "当前发布范围只允许 2026-04；修改 config/bangumi.toml 后才能同步其他季度。"
+        )
+
+
 @dataclass
 class QuarterStats:
     """Per-quarter safe report counters."""
@@ -109,6 +121,11 @@ class QuarterStats:
     skipped: int = 0
     missing_date: int = 0
     ownership_mismatch: int = 0
+    country_included_japan: int = 0
+    country_excluded_not_japan: int = 0
+    country_excluded_missing: int = 0
+    country_excluded_unparseable: int = 0
+    country_excluded_conflict: int = 0
     failed: int = 0
     retries: int = 0
     episodes_requested: int = 0
@@ -143,6 +160,7 @@ class SyncRun:
     quarter_stats: tuple[QuarterStats, ...]
     sync_report: Path
     tag_audit_report: Path
+    country_audit_report: Path
     exit_code: int
 
 
@@ -182,12 +200,15 @@ class SubjectSynchronizer:
         self.media_cache = media_cache or MediaCache(
             repository, api, reports_directory.parent, self.reporter
         )
+        self._country_audit_rows: list[dict[str, object]] = []
 
     def run(
         self, scope: SyncScope, *, force: bool = False, force_images: bool = False
     ) -> SyncRun:
         """Synchronise subject facts for a validated scope and write safe reports."""
+        validate_release_scope(scope, self.settings)
         started_at = _utc_timestamp()
+        self._country_audit_rows = []
         quarters = scope.quarters
         self.reporter.start(
             stage="scope",
@@ -200,6 +221,10 @@ class SubjectSynchronizer:
                 "重试": getattr(self.api, "max_retries", 0),
                 "强制": "是" if force else "否",
                 "强制图片": "是" if force_images else "否",
+                "类别": "TV",
+                "国家过滤": self.settings.country_filter.required_country,
+                "角色": "否",
+                "续播": "否",
             },
         )
         self.reporter.stage(stage="database", message="正在检查 SQLite schema")
@@ -229,6 +254,7 @@ class SubjectSynchronizer:
             scope, force, force_images, started_at, all_stats
         )
         audit_report = self._write_tag_audit_report()
+        country_audit_report = self._write_country_audit_report()
         exit_code = 130 if interrupted else int(any(stats.failed for stats in all_stats))
         if exit_code == 0:
             from bgm_side_b.release.candidate import advance_data_generation
@@ -243,9 +269,23 @@ class SubjectSynchronizer:
                 "重试": sum(item.retries for item in all_stats),
                 "图片下载": sum(item.media_downloaded for item in all_stats),
                 "缓存命中": sum(item.media_skipped for item in all_stats),
+                "日本TV收录": sum(
+                    item.country_included_japan for item in all_stats
+                ),
+                "非日本排除": sum(
+                    item.country_excluded_not_japan for item in all_stats
+                ),
+                "国家缺失": sum(
+                    item.country_excluded_missing for item in all_stats
+                ),
+                "国家冲突": sum(
+                    item.country_excluded_conflict for item in all_stats
+                ),
             },
         )
-        return SyncRun(tuple(all_stats), sync_report, audit_report, exit_code)
+        return SyncRun(
+            tuple(all_stats), sync_report, audit_report, country_audit_report, exit_code
+        )
 
     def _cleanup_blacklisted_subjects(
         self, year: int, month: int, stats: QuarterStats
@@ -321,13 +361,11 @@ class SubjectSynchronizer:
                     "失败": stats.failed,
                 },
             )
-            discovered_ids: set[int] = set()
             candidate_total = len(result.candidates)
             for candidate_position, candidate in enumerate(result.candidates, start=1):
                 if candidate.subject_id in self.settings.excluded_subject_ids:
                     stats.blacklisted += 1
                     continue
-                discovered_ids.add(candidate.subject_id)
                 self._sync_candidate(
                     candidate,
                     year,
@@ -338,18 +376,6 @@ class SubjectSynchronizer:
                     completed=candidate_position,
                     total=candidate_total,
                 )
-            self.reporter.stage(
-                stage="continuation",
-                message="正在刷新已有续播 TV",
-                completed=position,
-                total=total_quarters,
-                quarter=quarter,
-            )
-            for subject_id in self.repository.list_tv_subject_ids():
-                if subject_id not in discovered_ids:
-                    self._sync_existing_tv(
-                        subject_id, year, month, force, stats
-                    )
         except KeyboardInterrupt as error:
             if isinstance(error, _SyncInterrupted):
                 raise
@@ -366,8 +392,11 @@ class SubjectSynchronizer:
                 "失败": stats.failed,
                 "重试": stats.retries,
                 "章节": stats.episodes_stored,
-                "角色": stats.main_characters_stored,
-                "图片": stats.media_downloaded,
+                "日本TV收录": stats.country_included_japan,
+                "非日本排除": stats.country_excluded_not_japan,
+                "国家缺失": stats.country_excluded_missing,
+                "国家冲突": stats.country_excluded_conflict,
+                "封面": stats.covers_downloaded,
                 "耗时秒": round(time.monotonic() - started_at, 1),
             },
         )
@@ -385,7 +414,7 @@ class SubjectSynchronizer:
                 stage="discovery",
                 message=failure.summary,
                 quarter=f"{stats.year}-{failure.month:02d}",
-                current="TV" if failure.category == 1 else "剧场版",
+                current="TV",
             )
             stats.failures.append(
                 {
@@ -433,16 +462,13 @@ class SubjectSynchronizer:
         finally:
             stats.retries += self._json_retries() - retries_before
         if self._store_detail(detail, target_year, target_month, stats):
-            self._sync_existing_tv(
-                detail.subject_id, target_year, target_month, force, stats
-            )
-            character_image_urls = self._sync_subject_roles(
-                detail.subject_id, force, stats
-            )
+            if self._should_refresh_episodes(
+                detail.subject_id, target_year, target_month, force
+            ):
+                self._sync_subject_episodes(detail.subject_id, stats)
             self._sync_media_for_subject(
                 detail.subject_id,
                 detail.images.largest_available,
-                character_image_urls,
                 force_images,
                 stats,
             )
@@ -453,17 +479,15 @@ class SubjectSynchronizer:
         target_year: int,
         target_month: int,
         stats: QuarterStats,
-        *,
-        continuing_refresh: bool = False,
     ) -> bool:
         media_format = normalize_format(detail.platform)
-        if media_format not in {"tv", "movie"} or not is_supported_format(detail.platform):
+        if media_format != "tv":
             stats.unsupported += 1
             return False
         if detail.air_date is None:
             stats.missing_date += 1
             return False
-        if not continuing_refresh and (
+        if (
             quarter_for_date(detail.air_date).year != target_year
             or quarter_for_date(detail.air_date).month != target_month
         ):
@@ -477,11 +501,26 @@ class SubjectSynchronizer:
                 stats,
             )
             return False
+        country = decide_country(
+            _source_infobox(detail.infobox), self.settings.country_filter
+        )
+        self._record_country_audit(detail, title, country)
+        if country.decision != "included_japan":
+            if country.decision == "excluded_not_japan":
+                stats.country_excluded_not_japan += 1
+            elif country.decision == "excluded_missing_country":
+                stats.country_excluded_missing += 1
+            elif country.decision == "excluded_unparseable_country":
+                stats.country_excluded_unparseable += 1
+            else:
+                stats.country_excluded_conflict += 1
+            return False
+        stats.country_included_japan += 1
         was_present = self.repository.subject_exists(detail.subject_id)
         source_result = derive_sources(_source_infobox(detail.infobox), (tag.name for tag in detail.tags), self.source_rules)
         titles = _titles(detail, title)
         sources = _sources_for_result(source_result.sources, source_result.evidence, self.source_rules)
-        appearance_kind = "new" if media_format == "tv" else "movie"
+        appearance_kind = "new"
         try:
             with self.repository.transaction() as connection:
                 self.repository.upsert_subject(
@@ -512,18 +551,17 @@ class SubjectSynchronizer:
                     [RawTag(tag.name, tag.count) for tag in detail.tags],
                 )
                 self.repository.replace_sources(connection, detail.subject_id, sources)
-                if not continuing_refresh:
-                    self.repository.replace_permanent_quarter(
-                        connection,
-                        detail.subject_id,
-                        SubjectQuarter(
-                            target_year,
-                            target_month,
-                            appearance_kind,
-                            "air_date",
-                            detail.air_date.isoformat(),
-                        ),
-                    )
+                self.repository.replace_permanent_quarter(
+                    connection,
+                    detail.subject_id,
+                    SubjectQuarter(
+                        target_year,
+                        target_month,
+                        appearance_kind,
+                        "air_date",
+                        detail.air_date.isoformat(),
+                    ),
+                )
                 self.repository.write_sync_state(
                     connection,
                     SyncState(
@@ -609,7 +647,7 @@ class SubjectSynchronizer:
         except BangumiApiError as error:
             self._record_failure(subject_id, error, stats)
             return
-        if self._store_detail(detail, year, month, stats, continuing_refresh=True):
+        if self._store_detail(detail, year, month, stats):
             if detail.rating_score is not None or detail.rating_total is not None:
                 stats.continuing_ratings_updated += 1
 
@@ -633,8 +671,7 @@ class SubjectSynchronizer:
         if any(current_count < count for count in declared_counts):
             return True
         if subject.end_date is not None:
-            end_quarter = quarter_for_date(subject.end_date)
-            return (end_quarter.year, end_quarter.month) >= (target_year, target_month)
+            return False
         if len(declared_counts) != 1 or current_count < next(iter(declared_counts)):
             return True
         air_dates = self.repository.main_episode_air_dates(subject_id)
@@ -699,12 +736,6 @@ class SubjectSynchronizer:
             return
         self._warn_episode_count_conflict(subject_id, stats)
         stats.episodes_stored += len(episodes)
-        before_continuations = self.repository.continuing_quarter_count(subject_id)
-        self._rebuild_continuing_quarters(subject_id, stats)
-        stats.continuations_created += max(
-            0,
-            self.repository.continuing_quarter_count(subject_id) - before_continuations,
-        )
 
     def _record_episode_failure(
         self,
@@ -997,7 +1028,6 @@ class SubjectSynchronizer:
         self,
         subject_id: int,
         cover_url: str | None,
-        character_image_urls: dict[int, str],
         force_images: bool,
         stats: QuarterStats,
     ) -> None:
@@ -1008,39 +1038,18 @@ class SubjectSynchronizer:
             is not None
         ):
             targets.append(MediaTarget("subject", subject_id, "cover", cover_url))
-        character_ids = set(self.repository.list_subject_character_ids(subject_id))
-        character_ids.update(character_image_urls)
-        for character_id in sorted(character_ids):
-            source_url = character_image_urls.get(character_id)
-            if (
-                source_url is not None
-                or self.repository.get_media_record(
-                    "character", character_id, "character_image"
-                )
-                is not None
-            ):
-                targets.append(
-                    MediaTarget(
-                        "character", character_id, "character_image", source_url
-                    )
-                )
         for target in targets:
             result = self.media_cache.sync_target(target, force_images=force_images)
             stats.retries += result.retries
             self.reporter.progress(
-                stage=(
-                    "cover" if target.media_kind == "cover" else "character-images"
-                ),
+                stage="cover",
                 message=f"媒体 {result.status}",
                 entity_type=target.owner_type,
                 entity_id=target.owner_id,
             )
             if result.status == "downloaded":
                 stats.media_downloaded += 1
-                if target.media_kind == "cover":
-                    stats.covers_downloaded += 1
-                else:
-                    stats.character_images_downloaded += 1
+                stats.covers_downloaded += 1
             elif result.status == "skipped":
                 stats.media_skipped += 1
             else:
@@ -1060,11 +1069,7 @@ class SubjectSynchronizer:
                         "subject_id": (
                             target.owner_id if target.owner_type == "subject" else None
                         ),
-                        "data_type": (
-                            "cover_image"
-                            if target.media_kind == "cover"
-                            else "character_image"
-                        ),
+                        "data_type": "cover_image",
                         "code": result.error_code,
                         "summary": result.error_summary,
                         "retry_count": result.retries,
@@ -1087,11 +1092,7 @@ class SubjectSynchronizer:
                         "subject_id": (
                             target.owner_id if target.owner_type == "subject" else None
                         ),
-                        "data_type": (
-                            "cover_image"
-                            if target.media_kind == "cover"
-                            else "character_image"
-                        ),
+                        "data_type": "cover_image",
                         "code": result.error_code,
                         "summary": result.error_summary,
                         "retry_count": result.retries,
@@ -1313,6 +1314,11 @@ class SubjectSynchronizer:
             "started_at": started_at,
             "finished_at": _utc_timestamp(),
             "scope": {
+                "release_quarters": list(self.settings.scope.release_quarters),
+                "formats": list(self.settings.scope.formats),
+                "country_filter": "structured_contains_japan",
+                "continuations": False,
+                "roles": False,
                 "years": list(scope.years),
                 "quarter_month": scope.quarter_month,
                 "force": force,
@@ -1327,6 +1333,31 @@ class SubjectSynchronizer:
         rows = self._tag_audit_rows()
         payload = {"generated_at": _utc_timestamp(), "tags": rows}
         return _write_json(self.reports_directory, "tag-audit", payload)
+
+    def _write_country_audit_report(self) -> Path:
+        payload = {
+            "generated_at": _utc_timestamp(),
+            "scope": "2026-04",
+            "filter": "structured_contains_japan",
+            "subjects": self._country_audit_rows,
+        }
+        return _write_json(self.reports_directory, "country-audit", payload)
+
+    def _record_country_audit(
+        self, detail: SubjectDetail, title: str, country: CountryDecision
+    ) -> None:
+        self._country_audit_rows.append(
+            {
+                "subject_id": detail.subject_id,
+                "title": title,
+                "decision": country.decision,
+                "country": [
+                    {"key": item.key, "tokens": list(item.tokens)}
+                    for item in country.evidence
+                ],
+                "reason": country.reason,
+            }
+        )
 
     def _tag_audit_rows(self) -> list[dict[str, object]]:
         connection = self.repository.database.connect()

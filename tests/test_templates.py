@@ -62,6 +62,9 @@ def test_templates_are_componentized_and_static_sources_keep_accessibility_rules
     assert "tag.html" in card_template
     assert "partials/header.html" in base_template
     assert "partials/footer.html" in base_template
+    assert 'meta name="description"' in base_template
+    assert "基于 Bangumi 数据生成的本地优先季度动画资料库" in base_template
+    assert "GitHub Pages 与离线 PWA。" in base_template
 
     css = (ROOT / "static" / "css" / "site.css").read_text(encoding="utf-8")
     for token in (
@@ -118,6 +121,20 @@ def test_updates_page_uses_chinese_public_release_labels() -> None:
     for label in ("当前资料版本", "程序版本", "发布时间", "系统变更", "资料变更"):
         assert label in rendered
     assert "Release 0.1.1" not in rendered
+
+
+def test_repository_metadata_prepares_manual_chinese_about_update() -> None:
+    metadata = (ROOT / "docs" / "repository-metadata.md").read_text("utf-8")
+    description = (
+        "基于 Bangumi 数据生成的本地优先季度动画资料库，支持静态网页、"
+        "GitHub Pages 与离线 PWA。"
+    )
+    assert description in metadata
+    assert "https://mykr-ysteinsk.github.io/bangumi-side-b/" in metadata
+    assert "gh repo edit MyKr-YSteinsK/bangumi-side-b" in metadata
+    assert "--add-topic github-pages" in metadata
+    assert "Codex 不执行" in metadata
+    assert "token" in metadata
 
 
 def _quarter() -> BuildQuarter:

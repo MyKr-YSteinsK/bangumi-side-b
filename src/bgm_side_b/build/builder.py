@@ -521,6 +521,7 @@ def _pwa_manifest() -> dict[str, object]:
     return {
         "name": "Bangumi Side B by MyKr",
         "short_name": "BGM B",
+        "description": "基于 Bangumi 数据生成的本地优先季度动画资料库。",
         "start_url": "./",
         "scope": "./",
         "display": "standalone",

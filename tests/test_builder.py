@@ -81,7 +81,13 @@ def test_offline_builder_generates_both_profiles_without_mutating_sqlite(
     )
     assert manifest["display"] == "standalone"
     assert manifest["scope"] == "./"
-    assert (tmp_path / "dist" / "pages" / "settings" / "index.html").is_file()
+    assert manifest["description"] == "基于 Bangumi 数据生成的本地优先季度动画资料库。"
+    settings = tmp_path / "dist" / "pages" / "settings" / "index.html"
+    assert settings.is_file()
+    settings_html = settings.read_text("utf-8")
+    assert 'meta name="description"' in settings_html
+    assert "基于 Bangumi 数据生成的本地优先季度动画资料库" in settings_html
+    assert "GitHub Pages 与离线 PWA。" in settings_html
     assert (tmp_path / "dist" / "pages" / "updates" / "index.html").is_file()
     assert (tmp_path / "dist" / "pages" / "sw.js").is_file()
     worker = (tmp_path / "dist" / "pages" / "sw.js").read_text(encoding="utf-8")

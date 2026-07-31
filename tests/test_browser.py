@@ -386,9 +386,7 @@ def test_pages_pwa_reports_faults_and_recovers_without_an_active_snapshot(
             """() => {
               globalThis.__browserTestCachePut = Cache.prototype.put;
               Cache.prototype.put = function(request, response) {
-                if (new URL(request.url).pathname.endsWith(
-                  '/subjects/101/index.html'
-                )) {
+                if (!new URL(request.url).pathname.includes('/__bsb_control__/')) {
                   throw new Error('fixture-cache-write-failed');
                 }
                 return globalThis.__browserTestCachePut.call(this, request, response);

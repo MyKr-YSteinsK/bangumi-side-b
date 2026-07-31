@@ -319,7 +319,7 @@ def test_pages_pwa_accepts_slow_download_then_pauses_and_resumes(
         delay_seconds = 9.0
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib handler hook
-            if "/assets/.gitkeep" in self.path and type(self).delay_seconds:
+            if "/subjects/101/index.html" in self.path and type(self).delay_seconds:
                 time.sleep(type(self).delay_seconds)
             super().do_GET()
 

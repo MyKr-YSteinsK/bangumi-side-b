@@ -7,13 +7,14 @@ import hashlib
 import http.server
 import json
 import shutil
+import socket
 import threading
 import time
 from datetime import date
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Browser, sync_playwright
+from playwright.sync_api import Browser, Page, sync_playwright
 
 from bgm_side_b.build.builder import ArchiveBuilder
 from bgm_side_b.config import load_rules
@@ -111,6 +112,123 @@ def browser() -> Browser:
             chromium.close()
 
 
+def _published_snapshot(static_site: Path, name: str) -> Path:
+    """Create an isolated, Pages-shaped candidate with one cached cover."""
+    published_root = static_site.parent / name / "bangumi-side-b"
+    shutil.copytree(static_site / "pages", published_root)
+    cover = published_root / "media" / "covers" / "browser-fixture.png"
+    cover.parent.mkdir(parents=True)
+    shutil.copyfile(published_root / "icons" / "icon-192.png", cover)
+    subject = published_root / "subjects" / "101" / "index.html"
+    subject.write_text(
+        subject.read_text("utf-8").replace(
+            "</main>",
+            "<img data-browser-cover "
+            'src="../../media/covers/browser-fixture.png" alt="">\n</main>',
+        ),
+        encoding="utf-8",
+    )
+    entries = index_candidate(published_root, "/bangumi-side-b/")
+    manifest = build_snapshot_manifest(
+        entries,
+        release_version="2026.07.30.1",
+        app_version="0.1.0",
+        deployment_path="/bangumi-side-b/",
+    )
+    manifest_text = manifest_json(manifest)
+    (published_root / "snapshot-manifest.json").write_bytes(manifest_text.encode())
+    (published_root / "release.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "release_version": "2026.07.30.1",
+                "app_version": "0.1.0",
+                "generated_at": "2026-07-31T00:00:00Z",
+                "published_at": "2026-07-31T00:00:00Z",
+                "quarter_count": 1,
+                "subject_count": 1,
+                "total_bytes": sum(entry.size_bytes for entry in entries),
+                "content_hash": manifest.content_hash,
+                "manifest_url": "snapshot-manifest.json",
+                "manifest_sha256": hashlib.sha256(manifest_text.encode()).hexdigest(),
+                "change_kind": "data",
+                "summary": {"system": [], "data": []},
+            }
+        ),
+        "utf-8",
+    )
+    return published_root
+
+
+def _pwa_server(
+    published_root: Path,
+) -> tuple[http.server.ThreadingHTTPServer, type[http.server.SimpleHTTPRequestHandler]]:
+    target = "/bangumi-side-b/subjects/101/index.html"
+    target_file = published_root / "subjects" / "101" / "index.html"
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        mode = "normal"
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, directory=str(published_root.parent), **kwargs)
+
+        def log_message(self, *_: object) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - stdlib handler hook
+            if self.path.split("?", 1)[0] != target or type(self).mode == "normal":
+                try:
+                    super().do_GET()
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    pass
+                return
+            if type(self).mode == "not-found":
+                self.send_error(404)
+                return
+            original = target_file.read_bytes()
+            if type(self).mode == "html":
+                body = b"<!doctype html><title>not the requested file</title>"
+            elif type(self).mode == "hash":
+                body = bytes([original[0] ^ 1]) + original[1:]
+            elif type(self).mode == "interrupt":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(original)))
+                self.end_headers()
+                self.wfile.write(original[:32])
+                self.wfile.flush()
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                return
+            else:
+                raise AssertionError(f"unknown fixture mode: {type(self).mode}")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, Handler
+
+
+def _wait_for_release(page: Page) -> None:
+    page.wait_for_function(
+        "window.BsbPwa.state().available_release?.release_version === '2026.07.30.1'"
+    )
+
+
+def _start_download(page: Page) -> None:
+    state = page.evaluate("window.BsbPwa.state()")
+    if not state["available_release"]:
+        page.evaluate("window.BsbPwa.initialize()")
+        _wait_for_release(page)
+    page.evaluate("window.BsbPwa.initialize()")
+
+
 def test_local_file_archive_restores_state_and_remains_offline(
     static_site: Path, browser: Browser
 ) -> None:
@@ -154,6 +272,208 @@ def test_pages_subpath_loads_static_assets_without_character_media(
     finally:
         server.shutdown()
         thread.join()
+
+
+def test_pages_pwa_installs_a_complete_snapshot_and_navigates_offline(
+    static_site: Path, browser: Browser
+) -> None:
+    published_root = _published_snapshot(static_site, "complete-published")
+    server, _ = _pwa_server(published_root)
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.set_default_timeout(15000)
+        root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+        page.goto(f"{root}/settings/index.html")
+        page.wait_for_function("navigator.serviceWorker.controller !== null")
+        _wait_for_release(page)
+        _start_download(page)
+        page.wait_for_function("window.BsbPwa.state().status === 'ready'")
+        assert (
+            page.evaluate("window.BsbPwa.state().active.release_version")
+            == "2026.07.30.1"
+        )
+
+        context.set_offline(True)
+        page.goto(f"{root}/index.html")
+        page.goto(f"{root}/quarters/2026-04/index.html")
+        assert page.locator(".subject-card").count() == 1
+        page.goto(f"{root}/subjects/101/index.html")
+        page.locator("[data-browser-cover]").wait_for()
+        page.wait_for_function(
+            "document.querySelector('[data-browser-cover]').complete && "
+            "document.querySelector('[data-browser-cover]').naturalWidth > 0"
+        )
+        page.reload()
+        assert page.locator("[data-subject-detail]").count() == 1
+    finally:
+        context.close()
+        server.shutdown()
+        server.server_close()
+
+
+def test_pages_pwa_reports_faults_and_recovers_without_an_active_snapshot(
+    static_site: Path, browser: Browser
+) -> None:
+    published_root = _published_snapshot(static_site, "fault-published")
+    server, handler = _pwa_server(published_root)
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.set_default_timeout(15000)
+        root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+        page.goto(f"{root}/settings/index.html")
+        page.wait_for_function("navigator.serviceWorker.controller !== null")
+        _wait_for_release(page)
+
+        handler.mode = "not-found"
+        _start_download(page)
+        page.wait_for_function("window.BsbPwa.state().status === 'failed'")
+        failed = page.evaluate("window.BsbPwa.state()")
+        failure = failed["staging"]["failure"]
+        assert failure["error_code"] == "file-unavailable"
+        assert failure["http_status"] == 404
+        assert failure["failed_url"] == "/bangumi-side-b/subjects/101/index.html"
+        assert "HTTP 404" in page.locator("[data-pwa-status]").inner_text()
+        assert not page.locator("[data-pwa-resume-settings]").is_hidden()
+        assert not page.locator("[data-pwa-cancel-settings]").is_hidden()
+
+        handler.mode = "normal"
+        commands = page.evaluate(
+            "Promise.all([window.BsbPwa.resume(), window.BsbPwa.resume()])"
+        )
+        assert commands[1]["command_error"] == "operation-busy"
+        page.wait_for_function("window.BsbPwa.state().status === 'ready'")
+        page.evaluate("window.BsbPwa.clear()")
+        page.wait_for_function(
+            "window.BsbPwa.state().active === null && "
+            "window.BsbPwa.state().staging === null"
+        )
+
+        handler.mode = "html"
+        _start_download(page)
+        page.wait_for_function("window.BsbPwa.state().status === 'failed'")
+        assert (
+            page.evaluate("window.BsbPwa.state().staging.failure.error_code")
+            == "file-size-invalid"
+        )
+        page.locator("[data-pwa-cancel-settings]").click()
+        page.wait_for_function("window.BsbPwa.state().staging === null")
+
+        handler.mode = "hash"
+        _start_download(page)
+        page.wait_for_function("window.BsbPwa.state().status === 'failed'")
+        assert (
+            page.evaluate("window.BsbPwa.state().staging.failure.error_code")
+            == "file-hash-invalid"
+        )
+        page.evaluate("window.BsbPwa.cancel()")
+        page.wait_for_function("window.BsbPwa.state().staging === null")
+
+        handler.mode = "interrupt"
+        _start_download(page)
+        page.wait_for_function("window.BsbPwa.state().status === 'failed'")
+        assert (
+            page.evaluate("window.BsbPwa.state().staging.failure.error_code")
+            == "file-unavailable"
+        )
+        page.evaluate("window.BsbPwa.cancel()")
+        page.wait_for_function("window.BsbPwa.state().staging === null")
+
+        handler.mode = "normal"
+        worker = context.service_workers[0]
+        worker.evaluate(
+            """() => {
+              globalThis.__browserTestCachePut = Cache.prototype.put;
+              Cache.prototype.put = function(request, response) {
+                if (new URL(request.url).pathname.endsWith(
+                  '/subjects/101/index.html'
+                )) {
+                  throw new Error('fixture-cache-write-failed');
+                }
+                return globalThis.__browserTestCachePut.call(this, request, response);
+              };
+            }"""
+        )
+        _start_download(page)
+        page.wait_for_function("window.BsbPwa.state().status === 'failed'")
+        assert (
+            page.evaluate("window.BsbPwa.state().staging.failure.error_code")
+            == "file-cache-write-failed"
+        )
+        page.evaluate("window.BsbPwa.cancel()")
+        page.wait_for_function("window.BsbPwa.state().staging === null")
+        worker.evaluate(
+            """() => { Cache.prototype.put = globalThis.__browserTestCachePut; }"""
+        )
+
+        handler.mode = "normal"
+        _start_download(page)
+        page.wait_for_function("window.BsbPwa.state().status === 'ready'")
+    finally:
+        context.close()
+        server.shutdown()
+        server.server_close()
+
+
+def test_pages_pwa_recovers_when_the_command_owner_has_disappeared(
+    static_site: Path, browser: Browser
+) -> None:
+    published_root = _published_snapshot(static_site, "orphaned-published")
+    server, _ = _pwa_server(published_root)
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.set_default_timeout(15000)
+        root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+        page.goto(f"{root}/settings/index.html")
+        page.wait_for_function("navigator.serviceWorker.controller !== null")
+        _wait_for_release(page)
+        page.evaluate(
+            """async () => {
+              const registration = await navigator.serviceWorker.ready;
+              const key = new URL('__bsb_control__/state', registration.scope);
+              const state = {
+                schema: 2,
+                active: null,
+                staging: {
+                  operation_id: 'orphaned-operation',
+                  owner_client_id: 'closed-client',
+                  lease_until: new Date(Date.now() + 120000).toISOString(),
+                  release_version: null,
+                  manifest_hash: null,
+                  attempt_cache_name: 'bsb-snapshot-orphaned-operation',
+                  status: 'downloading',
+                  reason: 'resume',
+                  completed_urls: [],
+                  downloaded_bytes: 0,
+                  total_bytes: 0,
+                  updated_at: new Date().toISOString(),
+                  last_error: null,
+                  failure: null,
+                },
+                status: 'downloading',
+                available_release: null,
+                available_update: null,
+                cleanup_warning: null,
+              };
+              await (await caches.open('bsb-control-v1')).put(
+                key, new Response(JSON.stringify(state), {
+                  headers: { 'Content-Type': 'application/json' },
+                })
+              );
+            }"""
+        )
+        page.reload()
+        page.wait_for_function(
+            "window.BsbPwa.state().staging?.operation_id === 'orphaned-operation'"
+        )
+        page.evaluate("window.BsbPwa.resume()")
+        page.wait_for_function("window.BsbPwa.state().status === 'ready'")
+    finally:
+        context.close()
+        server.shutdown()
+        server.server_close()
 
 
 def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(

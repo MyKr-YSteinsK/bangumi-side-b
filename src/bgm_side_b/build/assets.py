@@ -15,6 +15,7 @@ from bgm_side_b.build.profiles import BuildProfile
 _PAGES_MAX_LONG_SIDE = 1200
 _PAGES_WEBP_QUALITY = 89
 _PAGES_WEBP_METHOD = 4
+_EXCLUDED_STATIC_PARTS = frozenset({".gitkeep", ".nojekyll", ".DS_Store", "Thumbs.db"})
 
 
 class AssetError(RuntimeError):
@@ -42,6 +43,8 @@ def publish_static_assets(
     sources = sorted(path for path in source_directory.rglob("*") if path.is_file())
     for source in sources:
         relative = source.relative_to(source_directory).as_posix()
+        if _is_excluded_static_source(relative):
+            continue
         content = source.read_bytes()
         digest = hashlib.sha256(content).hexdigest()[:12]
         suffix = source.suffix
@@ -52,6 +55,11 @@ def publish_static_assets(
         target.write_bytes(content)
         published[relative] = f"assets/{target_name}"
     return published
+
+
+def _is_excluded_static_source(relative: str) -> bool:
+    """Keep repository and operating-system placeholders out of site assets."""
+    return bool(set(PurePosixPath(relative).parts) & _EXCLUDED_STATIC_PARTS)
 
 
 class MediaPublisher:

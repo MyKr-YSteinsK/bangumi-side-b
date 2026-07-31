@@ -26,6 +26,10 @@ def test_candidate_index_is_stable_and_excludes_control_files(tmp_path: Path) ->
     (candidate / "assets").mkdir(parents=True)
     (candidate / "quarters" / "2022-01").mkdir(parents=True)
     (candidate / "assets" / "site.abc.js").write_text("console.log(1)", "utf-8")
+    (candidate / "assets" / ".gitkeep").write_text("", "utf-8")
+    (candidate / ".nojekyll").write_text("", "utf-8")
+    (candidate / ".DS_Store").write_text("metadata", "utf-8")
+    (candidate / "Thumbs.db").write_text("metadata", "utf-8")
     (candidate / "quarters" / "2022-01" / "index.html").write_text("ok", "utf-8")
     (candidate / "release.json").write_text("{}", "utf-8")
     entries = index_candidate(candidate, "/bangumi-side-b/")
@@ -34,6 +38,10 @@ def test_candidate_index_is_stable_and_excludes_control_files(tmp_path: Path) ->
         "/bangumi-side-b/quarters/2022-01/index.html",
     ]
     assert all(entry.url != "/bangumi-side-b/release.json" for entry in entries)
+    assert all(
+        ".gitkeep" not in entry.url and ".nojekyll" not in entry.url
+        for entry in entries
+    )
     assert candidate_content_hash(entries) == candidate_content_hash(
         tuple(reversed(entries))
     )

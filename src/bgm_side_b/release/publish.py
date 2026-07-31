@@ -11,7 +11,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
 from bgm_side_b import __version__
@@ -511,6 +511,8 @@ class Publisher:
         self, staging: Path, manifest: object, release: dict[str, object]
     ) -> None:
         _scan_public_tree(staging)
+        if not (staging / ".nojekyll").is_file():
+            raise PublishError("release staging lacks .nojekyll")
         payload = json.loads((staging / "snapshot-manifest.json").read_text("utf-8"))
         try:
             validate_manifest_payload(payload)
@@ -519,6 +521,19 @@ class Publisher:
             raise PublishError("release staging validation failed") from error
         if payload["content_hash"] != release["content_hash"]:
             raise PublishError("release and manifest hashes disagree")
+        prefix = self.profile.deployment_path.rstrip("/") + "/"
+        for entry in payload["files"]:
+            url = str(entry["url"])
+            if not url.startswith(prefix):
+                raise PublishError("snapshot manifest URL escapes deployment path")
+            relative = PurePosixPath(url.removeprefix(prefix))
+            if (
+                not relative.parts
+                or relative.is_absolute()
+                or ".." in relative.parts
+                or not (staging / Path(*relative.parts)).is_file()
+            ):
+                raise PublishError("snapshot manifest references a missing file")
 
     def _publish_tree(
         self, staging: Path, remote: str, branch: str, version: str

@@ -49,6 +49,8 @@ def test_hashed_assets_and_profile_media_keep_pages_cover_output_bounded(
     static = tmp_path / "static"
     (static / "css").mkdir(parents=True)
     (static / "js").mkdir()
+    (static / ".gitkeep").write_text("", encoding="utf-8")
+    (static / "js" / ".DS_Store").write_text("metadata", encoding="utf-8")
     (static / "css" / "site.css").write_text("body { color: #111; }", encoding="utf-8")
     (static / "js" / "site.js").write_text("window.ready = true;", encoding="utf-8")
     output = tmp_path / "output"
@@ -56,6 +58,9 @@ def test_hashed_assets_and_profile_media_keep_pages_cover_output_bounded(
     assert set(published) == {"css/site.css", "js/site.js"}
     assert all("/" not in Path(path).name for path in published.values())
     assert all((output / path).is_file() for path in published.values())
+    assert not any(
+        path.name.startswith(".gitkeep") for path in (output / "assets").iterdir()
+    )
 
     workspace = tmp_path / "workspace"
     cover = _media(workspace, "media/covers/1.png", (400, 600))

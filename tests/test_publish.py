@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ from bgm_side_b.release.candidate import (
     advance_data_generation,
     mark_data_generation_dirty,
 )
+from bgm_side_b.release.manifest import build_snapshot_manifest, manifest_json
 from bgm_side_b.release.publish import Publisher, PublishError, _allowed_origin
 from bgm_side_b.repository import (
     SubjectInfoboxItem,
@@ -125,6 +127,44 @@ def test_publish_refuses_changed_facts_and_unsafe_origin_branch(
     advance_data_generation(root / "workspace")
     with pytest.raises(PublishError, match="facts changed"):
         publisher.publish(dry_run=True, remote="test")
+
+
+def test_release_staging_keeps_nojekyll_out_of_the_snapshot(
+    publish_root: tuple[Path, Path],
+) -> None:
+    root, _ = publish_root
+    staging = root / "staging"
+    shutil.copytree(root / "dist" / "pages", staging)
+    (staging / ".nojekyll").write_text("", encoding="utf-8")
+    entries = publish_module.index_candidate(staging, "/bangumi-side-b/")
+    manifest = build_snapshot_manifest(
+        entries,
+        release_version="2026.07.30.2",
+        app_version="0.1.0",
+        deployment_path="/bangumi-side-b/",
+    )
+    manifest_text = manifest_json(manifest)
+    (staging / "snapshot-manifest.json").write_text(manifest_text, encoding="utf-8")
+    release = {
+        "schema": 1,
+        "release_version": "2026.07.30.2",
+        "app_version": "0.1.0",
+        "generated_at": "2026-07-31T00:00:00Z",
+        "published_at": "2026-07-31T00:00:00Z",
+        "quarter_count": 1,
+        "subject_count": 1,
+        "total_bytes": manifest.payload()["total_bytes"],
+        "content_hash": manifest.content_hash,
+        "manifest_url": "snapshot-manifest.json",
+        "manifest_sha256": hashlib.sha256(manifest_text.encode()).hexdigest(),
+        "change_kind": "system",
+        "summary": {"system": ["PWA hotfix"], "data": []},
+    }
+    Publisher(root)._validate_staging(staging, manifest, release)
+    assert all(".nojekyll" not in item.url for item in entries)
+    (staging / ".nojekyll").unlink()
+    with pytest.raises(PublishError, match="lacks .nojekyll"):
+        Publisher(root)._validate_staging(staging, manifest, release)
 
 
 def test_publish_refuses_a_partial_or_interrupted_sync(

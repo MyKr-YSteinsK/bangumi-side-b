@@ -12,7 +12,15 @@ from pathlib import Path, PurePosixPath
 from bgm_side_b.release.models import FileEntry, SnapshotManifest
 
 _EXCLUDED_FROM_SNAPSHOT = frozenset(
-    {"release.json", "snapshot-manifest.json", "release-history.json"}
+    {
+        "release.json",
+        "snapshot-manifest.json",
+        "release-history.json",
+        ".nojekyll",
+        ".gitkeep",
+        ".DS_Store",
+        "Thumbs.db",
+    }
 )
 _FORBIDDEN_PARTS = frozenset({"workspace", ".git", "reports", "backups", "tmp"})
 
@@ -35,9 +43,9 @@ def index_candidate(
     entries: list[FileEntry] = []
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         relative = path.relative_to(root).as_posix()
-        _validate_relative(relative)
-        if exclude_control_files and relative in _EXCLUDED_FROM_SNAPSHOT:
+        if exclude_control_files and _is_excluded_control_file(relative):
             continue
+        _validate_relative(relative)
         if relative.startswith("media/characters/"):
             raise ManifestError("Pages candidate contains character media")
         content = path.read_bytes()
@@ -123,6 +131,8 @@ def validate_manifest_payload(payload: object) -> dict[str, object]:
             raise ManifestError("snapshot manifest entry is invalid") from error
         if entry.size_bytes < 0 or not _SHA256.fullmatch(entry.sha256):
             raise ManifestError("snapshot manifest entry hash is invalid")
+        if _is_excluded_control_file(entry.url):
+            raise ManifestError("snapshot manifest contains excluded control file")
         entries.append(entry)
     if len({entry.url for entry in entries}) != len(entries):
         raise ManifestError("snapshot manifest has duplicate URLs")
@@ -148,6 +158,11 @@ def _validate_relative(relative: str) -> None:
         raise ManifestError("candidate path escapes publish scope")
     if path.suffix in {".sqlite", ".sqlite3", ".db"}:
         raise ManifestError("candidate contains a database")
+
+
+def _is_excluded_control_file(relative: str) -> bool:
+    """Identify the small, known set of deployment and OS control files."""
+    return bool(set(PurePosixPath(relative).parts) & _EXCLUDED_FROM_SNAPSHOT)
 
 
 def _content_type(path: Path) -> str:

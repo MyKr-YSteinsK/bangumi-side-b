@@ -222,10 +222,6 @@ def _wait_for_release(page: Page) -> None:
 
 
 def _start_download(page: Page) -> None:
-    state = page.evaluate("window.BsbPwa.state()")
-    if not state["available_release"]:
-        page.evaluate("window.BsbPwa.initialize()")
-        _wait_for_release(page)
     page.evaluate("window.BsbPwa.initialize()")
 
 
@@ -525,16 +521,23 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         page.wait_for_function("navigator.serviceWorker.controller !== null")
         context.set_offline(True)
         page.goto(f"{root}/subjects/101/index.html?from=2026-04")
-        assert page.get_by_role("heading", name="需要初始化资料快照").count() == 1
+        assert page.get_by_role("heading", name="需要初始化本地资料库").count() == 1
         context.set_offline(False)
         page.goto(f"{root}/settings/index.html")
-        page.wait_for_function("window.BsbPwa !== undefined")
-        page.evaluate("window.BsbPwa.initialize()")
+        page.evaluate(
+            "window.__pwa_states = []; window.addEventListener('bsb-pwa-state', "
+            "(event) => window.__pwa_states.push(event.detail));"
+        )
+        page.locator("[data-pwa-initialize]").dblclick()
         page.wait_for_function(
             "window.BsbPwa.state().status === 'ready'", timeout=15000
         )
         state = page.evaluate("window.BsbPwa.state()")
         assert state["status"] == "ready", state
+        assert page.evaluate(
+            "window.__pwa_states.some((state) => "
+            "state.command_error === 'initialization-in-progress')"
+        )
         page.goto(f"{root}/quarters/2026-04/index.html")
         page.locator("[data-pwa-gate]").wait_for(state="hidden", timeout=15000)
         context.set_offline(True)
@@ -591,7 +594,7 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         page.wait_for_function("window.BsbPwa.state().active === null", timeout=5000)
         context.set_offline(True)
         page.goto(f"{root}/subjects/101/index.html")
-        assert page.get_by_role("heading", name="需要初始化资料快照").count() == 1
+        assert page.get_by_role("heading", name="需要初始化本地资料库").count() == 1
         context.close()
     finally:
         server.shutdown()

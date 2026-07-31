@@ -10,6 +10,8 @@ const cancel = document.querySelector("[data-pwa-cancel]");
 const check = document.querySelector("[data-pwa-check]");
 const redownload = document.querySelector("[data-pwa-redownload]");
 const clear = document.querySelector("[data-pwa-clear]");
+const initializeSettings = document.querySelector("[data-pwa-initialize]");
+const enableRetry = document.querySelectorAll("[data-pwa-enable-retry]");
 const resumeSettings = document.querySelector("[data-pwa-resume-settings]");
 const cancelSettings = document.querySelector("[data-pwa-cancel-settings]");
 const updateDialog = document.querySelector("[data-pwa-update-dialog]");
@@ -27,6 +29,11 @@ const errorMessages = {
   "cache-cleanup-incomplete": "资料已切换，但部分旧缓存尚未清理。",
   "snapshot-corrupted": "本地快照不完整，请重新下载。",
   "worker-command-timeout": "浏览器未及时确认命令，请稍后查看当前状态。",
+  "worker-registration-failed": "未能启用离线控制器，请重试。",
+  "controller-unavailable": "离线控制器尚未接管当前页面，请重试启用。",
+  "service-worker-unavailable": "此浏览器不支持离线控制器，无法初始化本地资料库。",
+  "initialization-in-progress": "初始化已在进行。",
+  "operation-busy": "操作已在进行。",
 };
 
 function formatBytes(value) {
@@ -51,8 +58,10 @@ function failureText(failure, fallback) {
   return details.join("\n");
 }
 function describe(state) {
-  if (state.status === "checking-local-state") return "正在读取本地快照状态";
-  if (state.status === "probing-release") return "正在读取可用发布信息";
+  if (state.command_error) return errorText(state.command_error);
+  if (state.status === "waiting-for-controller") return "正在启用离线控制器";
+  if (state.status === "checking-local-state") return "正在读取本地资料状态";
+  if (state.status === "probing-release") return "正在读取可用资料版本";
   if (state.status === "ready") return state.cleanup_warning ? errorText("cache-cleanup-incomplete") : "本地快照已就绪";
   if (state.status === "ready-to-download" || state.status === "probing") return "已接受命令，正在准备完整资料快照";
   if (state.status === "downloading") return "正在校验并下载完整资料快照";
@@ -60,7 +69,7 @@ function describe(state) {
   if (state.status === "paused") return "下载已暂停，可在此继续";
   if (state.status === "staging-release-changed") return errorText("staging-release-changed");
   if (state.status === "failed") return failureText(state.staging?.failure, state.staging?.last_error || state.last_error);
-  return "需要联网完成首次初始化";
+  return "需要初始化本地资料库";
 }
 function setText(selector, value) {
   const node = document.querySelector(selector); if (node) node.textContent = value;
@@ -84,6 +93,13 @@ function renderSettings(state) {
   setText("[data-pwa-status]", describe(state));
   setText("[data-pwa-cleanup-warning]", state.cleanup_warning ? errorText("cache-cleanup-incomplete") : "");
   [check, clear].filter(Boolean).forEach((button) => { button.disabled = !active; });
+  const firstInstallState = ["checking-local-state", "waiting-for-controller", "probing-release", "first-install-required"].includes(state.status);
+  const canInitialize = !active && !staging && firstInstallState;
+  if (initializeSettings) {
+    initializeSettings.hidden = !canInitialize;
+    initializeSettings.disabled = !state.controller_ready || state.status !== "first-install-required";
+    initializeSettings.title = state.controller_ready ? "" : "正在启用离线控制器";
+  }
   if (redownload) redownload.disabled = !active || Boolean(staging);
   const resumable = staging && ["paused", "failed"].includes(staging.status);
   if (resumeSettings) resumeSettings.hidden = !resumable;
@@ -112,7 +128,15 @@ function setGate(state) {
   const staging = state.staging || {}; const total = Number(staging.total_bytes || 0); const bytes = Number(staging.downloaded_bytes || 0);
   if (progress) { progress.hidden = !total; progress.max = total || 1; progress.value = bytes; }
   if (progressLabel) { progressLabel.hidden = !total; progressLabel.textContent = total ? `${formatBytes(bytes)} / ${formatBytes(total)}` : ""; }
-  if (start) start.hidden = Boolean(state.active || staging.operation_id) || !["first-install-required", "failed"].includes(state.status);
+  const firstInstallState = ["checking-local-state", "waiting-for-controller", "probing-release", "first-install-required"].includes(state.status);
+  const canInitialize = !state.active && !staging.operation_id && firstInstallState;
+  if (start) {
+    start.hidden = !canInitialize;
+    start.disabled = !state.controller_ready || state.status !== "first-install-required";
+    start.textContent = ["checking-local-state", "probing-release"].includes(state.status) ? "正在读取资料版本" : "初始化本地资料库";
+    start.title = state.controller_ready ? "" : "正在启用离线控制器";
+  }
+  enableRetry.forEach((button) => { button.hidden = state.status !== "failed" || !["worker-registration-failed", "controller-unavailable", "service-worker-unavailable"].includes(state.last_error); });
   if (pause) pause.hidden = staging.status !== "downloading";
   if (resume) resume.hidden = !["paused", "failed"].includes(staging.status);
   if (cancel) cancel.hidden = !["probing", "ready-to-download", "downloading", "verifying", "activating", "paused", "failed", "staging-release-changed"].includes(staging.status);
@@ -126,7 +150,15 @@ function command(action) {
     window.dispatchEvent(new CustomEvent("bsb-pwa-state", { detail: { ...window.BsbPwa?.state?.(), last_error: error?.message || "worker-command-timeout" } }));
   });
 }
-start?.addEventListener("click", () => command(() => window.BsbPwa?.initialize()));
+function initializeAction(button) {
+  if (button) {
+    button.textContent = "正在读取资料版本";
+  }
+  command(() => window.BsbPwa?.initialize());
+}
+start?.addEventListener("click", () => initializeAction(start));
+initializeSettings?.addEventListener("click", () => initializeAction(initializeSettings));
+enableRetry.forEach((button) => button.addEventListener("click", () => command(() => window.BsbPwa?.enableController())));
 pause?.addEventListener("click", () => command(() => window.BsbPwa?.pause()));
 resume?.addEventListener("click", () => command(() => window.BsbPwa?.resume()));
 cancel?.addEventListener("click", () => command(() => window.BsbPwa?.cancel()));

@@ -368,6 +368,7 @@ async function activateSnapshot(operationId, bundle) {
     generated_at: bundle.release.generated_at,
     quarter_count: bundle.release.quarter_count,
     subject_count: bundle.release.subject_count,
+    latest_quarter: typeof bundle.release.latest_quarter === "string" ? bundle.release.latest_quarter : null,
   };
   state.staging = null;
   progressCheckpoints.delete(operationId);
@@ -523,6 +524,7 @@ async function probeRelease() {
       quarter_count: bundle.release.quarter_count,
       subject_count: bundle.release.subject_count,
       total_bytes: bundle.manifest.total_bytes,
+      latest_quarter: typeof bundle.release.latest_quarter === "string" ? bundle.release.latest_quarter : null,
       summary: { system: summary.system || [], data: summary.data || [] },
     };
     state.last_error = null;

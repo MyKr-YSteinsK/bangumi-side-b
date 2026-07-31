@@ -147,6 +147,7 @@ def _published_snapshot(static_site: Path, name: str) -> Path:
                 "published_at": "2026-07-31T00:00:00Z",
                 "quarter_count": 1,
                 "subject_count": 1,
+                "latest_quarter": "2026-04",
                 "total_bytes": sum(entry.size_bytes for entry in entries),
                 "content_hash": manifest.content_hash,
                 "manifest_url": "snapshot-manifest.json",
@@ -302,6 +303,37 @@ def test_pages_pwa_installs_a_complete_snapshot_and_navigates_offline(
         )
         page.reload()
         assert page.locator("[data-subject-detail]").count() == 1
+    finally:
+        context.close()
+        server.shutdown()
+        server.server_close()
+
+
+def test_pages_pwa_gate_reloads_once_after_activation(
+    static_site: Path, browser: Browser
+) -> None:
+    published_root = _published_snapshot(static_site, "gate-reload-published")
+    server, _ = _pwa_server(published_root)
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.set_default_timeout(15000)
+        navigations: list[str] = []
+        page.on(
+            "framenavigated",
+            lambda frame: navigations.append(frame.url)
+            if frame == page.main_frame
+            else None,
+        )
+        root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+        page.goto(f"{root}/quarters/2026-04/index.html")
+        page.wait_for_function("navigator.serviceWorker.controller !== null")
+        _wait_for_release(page)
+        page.locator("[data-pwa-start]").click()
+        page.wait_for_function("window.BsbPwa.state().active !== null")
+        page.locator("[data-pwa-gate]").wait_for(state="hidden")
+        assert page.locator(".subject-card").count() == 1
+        assert navigations.count(f"{root}/quarters/2026-04/index.html") == 2
     finally:
         context.close()
         server.shutdown()
@@ -492,6 +524,7 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         "published_at": "2026-07-30T00:00:00Z",
         "quarter_count": 1,
         "subject_count": 1,
+        "latest_quarter": "2026-04",
         "total_bytes": sum(entry.size_bytes for entry in entries),
         "content_hash": manifest.content_hash,
         "manifest_url": "snapshot-manifest.json",
@@ -534,6 +567,17 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         )
         state = page.evaluate("window.BsbPwa.state()")
         assert state["status"] == "ready", state
+        assert page.locator("[data-pwa-enter]").inner_text() == "进入 2026-04 资料库"
+        assert (
+            page.locator("[data-pwa-complete]").inner_text()
+            == "1 部作品已完成校验，可离线浏览。"
+        )
+        generated_at = page.locator("[data-pwa-generated-at]")
+        assert generated_at.get_attribute("data-iso") == "2026-07-30T00:00:00Z"
+        assert "年" in generated_at.inner_text()
+        page.wait_for_function(
+            "document.activeElement === document.querySelector('[data-pwa-enter]')"
+        )
         assert page.evaluate(
             "window.__pwa_states.some((state) => "
             "state.command_error === 'initialization-in-progress')"
@@ -589,9 +633,18 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
             "window.BsbPwa.state().active?.release_version === '2026.07.30.2'",
             timeout=5000,
         )
-        page.once("dialog", lambda dialog: dialog.accept())
+        clear_messages: list[str] = []
+        page.once(
+            "dialog",
+            lambda dialog: (clear_messages.append(dialog.message), dialog.accept()),
+        )
         page.locator("[data-pwa-clear]").click()
         page.wait_for_function("window.BsbPwa.state().active === null", timeout=5000)
+        assert clear_messages == [
+            "将删除已下载的季度页面、作品详情与封面。\n"
+            "程序外壳仍会保留，之后需要重新初始化。\n确定清除吗？"
+        ]
+        assert not page.locator("[data-pwa-initialize]").is_hidden()
         context.set_offline(True)
         page.goto(f"{root}/subjects/101/index.html")
         assert page.get_by_role("heading", name="需要初始化本地资料库").count() == 1

@@ -1,5 +1,5 @@
 /* Stable service-worker URL. Builder replaces the marker with shell file paths. */
-const SHELL_SCHEMA = 2;
+const SHELL_SCHEMA = 3;
 const SHELL_CACHE = `bsb-shell-${SHELL_SCHEMA}`;
 const CONTROL_CACHE = "bsb-control-v1";
 const CONTROL_KEY = "__bsb_control__/state";
@@ -14,6 +14,15 @@ const LEASE_MS = 120000;
 const SNAPSHOT_PREFIX = "bsb-snapshot-";
 const aborters = new Map();
 const progressCheckpoints = new Map();
+
+class DownloadFailure extends Error {
+  constructor(error_code, file = null, details = {}) {
+    super(error_code);
+    this.error_code = error_code;
+    this.file = file;
+    this.details = details;
+  }
+}
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL_FILES)));
@@ -74,7 +83,33 @@ async function broadcast(message) {
   clients.forEach((client) => client.postMessage(message));
 }
 function safeError(error) {
-  return error instanceof Error && /^[a-z0-9-]+$/i.test(error.message) ? error.message : "download-failed";
+  const code = error instanceof DownloadFailure ? error.error_code : error?.message;
+  return typeof code === "string" && /^[a-z0-9-]+$/i.test(code) ? code : "download-failed";
+}
+function failureDetails(error) {
+  const code = safeError(error);
+  const file = error instanceof DownloadFailure ? error.file : null;
+  const details = error instanceof DownloadFailure ? error.details : {};
+  const failed_url = file?.url && safeDeploymentPath(file.url) ? safeDeploymentPath(file.url) : null;
+  return {
+    error_code: code,
+    failed_url,
+    category: typeof details.category === "string" ? details.category : "operation",
+    http_status: Number.isInteger(details.http_status) ? details.http_status : null,
+    expected_bytes: Number.isInteger(file?.size_bytes) ? file.size_bytes : null,
+    actual_bytes: Number.isInteger(details.actual_bytes) ? details.actual_bytes : null,
+    expected_sha256_prefix: /^[0-9a-f]{64}$/.test(file?.sha256 || "") ? file.sha256.slice(0, 12) : null,
+    actual_sha256_prefix: /^[0-9a-f]{64}$/.test(details.actual_sha256 || "") ? details.actual_sha256.slice(0, 12) : null,
+    failed_at: new Date().toISOString(),
+  };
+}
+function safeDeploymentPath(value) {
+  try {
+    const url = new URL(value, self.location.origin);
+    return sameScope(url) && !unsafePath(url) && !url.search && !url.hash ? url.pathname : null;
+  } catch {
+    return null;
+  }
 }
 function hash(buffer) {
   return crypto.subtle.digest("SHA-256", buffer).then((value) => [...new Uint8Array(value)].map((part) => part.toString(16).padStart(2, "0")).join(""));
@@ -107,6 +142,15 @@ function entryRequest(file) { return new Request(new URL(file.url, self.location
 function isHtml(file) { return file.content_type === "text/html" || file.url.endsWith(".html"); }
 function refreshStatus(state) { state.status = state.staging?.status || (state.active ? "ready" : "first-install-required"); }
 function ownsOperation(state, operationId) { return state.staging?.operation_id === operationId; }
+function operationIsRunning(staging) {
+  return Boolean(staging && ["probing", "ready-to-download", "downloading", "verifying", "activating"].includes(staging.status));
+}
+function downloadPriority(file) {
+  if (["html", "metadata", "shell"].includes(file.category)) return 0;
+  if (file.category === "icon") return 1;
+  if (file.category === "cover") return 2;
+  return 1;
+}
 
 async function cleanupShellCaches() {
   const names = await caches.keys();
@@ -211,18 +255,18 @@ async function ownerStillExists(clientId) {
   return Boolean(clientId && await self.clients.get(clientId));
 }
 async function operationMayRun(staging, clientId) {
-  if (!staging || !["probing", "downloading", "verifying", "activating"].includes(staging.status)) return true;
-  if (staging.owner_client_id === clientId) return true;
+  if (!operationIsRunning(staging)) return true;
+  if (!await ownerStillExists(staging.owner_client_id)) return true;
+  if (staging.owner_client_id === clientId) return false;
   const currentLease = Date.parse(staging.lease_until || "");
-  if (currentLease > Date.now() || await ownerStillExists(staging.owner_client_id)) return false;
-  return true;
+  return currentLease <= Date.now();
 }
 async function acceptOperation(reason, clientId, requestedOperationId) {
   const state = await readState();
   const existing = state.staging;
-  if (requestedOperationId && existing?.operation_id !== requestedOperationId) return { state, run: false };
-  if (existing?.status === "staging-release-changed") return { state, run: false };
-  if (!await operationMayRun(existing, clientId)) return { state, run: false };
+  if (requestedOperationId && existing?.operation_id !== requestedOperationId) return { state, run: false, reason: "operation-superseded" };
+  if (existing?.status === "staging-release-changed") return { state, run: false, reason: "staging-release-changed" };
+  if (!await operationMayRun(existing, clientId)) return { state, run: false, reason: "operation-busy" };
   if (!existing) {
     state.staging = {
       operation_id: attemptId(),
@@ -238,6 +282,7 @@ async function acceptOperation(reason, clientId, requestedOperationId) {
       total_bytes: 0,
       updated_at: new Date().toISOString(),
       last_error: null,
+      failure: null,
     };
   } else {
     existing.owner_client_id = clientId;
@@ -245,19 +290,21 @@ async function acceptOperation(reason, clientId, requestedOperationId) {
     existing.reason = reason;
     existing.status = "probing";
     existing.last_error = null;
+    existing.failure = null;
     existing.updated_at = new Date().toISOString();
   }
   state.available_update = null;
   refreshStatus(state);
   const written = await writeState(state);
-  return { state: written, run: true };
+  return { state: written, run: true, reason: null };
 }
 async function failOperation(operationId, error) {
   const state = await readState();
   if (!ownsOperation(state, operationId)) return state;
   if (state.staging.status === "paused" && (error?.name === "AbortError" || safeError(error) === "download-failed")) return state;
   state.staging.status = "failed";
-  state.staging.last_error = safeError(error);
+  state.staging.failure = failureDetails(error);
+  state.staging.last_error = state.staging.failure.error_code;
   refreshStatus(state);
   return writeState(state);
 }
@@ -302,7 +349,11 @@ async function activateSnapshot(operationId, bundle) {
   let state = await renewLease(operationId, (staging) => { staging.status = "activating"; });
   const staging = state.staging;
   const cache = await caches.open(staging.attempt_cache_name);
-  for (const file of bundle.manifest.files) if (await validCached(cache, file) === null) throw new Error("snapshot-verify-failed");
+  for (const file of bundle.manifest.files) {
+    if (await validCached(cache, file) === null) {
+      throw new DownloadFailure("snapshot-verify-failed", file, { category: "snapshot-verify" });
+    }
+  }
   const previousCache = state.active?.cache_name;
   await writeManifestIndex(bundle.manifestHash, bundle.index);
   state = await readState();
@@ -347,19 +398,43 @@ async function download(operationId, bundle) {
   refreshStatus(state);
   await writeState(state);
   const pending = bundle.manifest.files.filter((file) => !completed.has(file.url));
+  pending.sort((left, right) => downloadPriority(left) - downloadPriority(right) || left.url.localeCompare(right.url));
   const controller = new AbortController();
   aborters.set(operationId, controller);
   let cursor = 0;
   const worker = async () => {
     while (cursor < pending.length && !controller.signal.aborted) {
       const file = pending[cursor++];
-      const response = await fetch(entryRequest(file), { cache: "no-store", signal: controller.signal });
-      if (!response.ok) throw new Error("file-unavailable");
-      const bytes = await response.arrayBuffer();
-      if (bytes.byteLength !== file.size_bytes || await hash(bytes) !== file.sha256) throw new Error("file-integrity-invalid");
+      let response;
+      try {
+        response = await fetch(entryRequest(file), { cache: "no-store", signal: controller.signal });
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        throw new DownloadFailure("file-unavailable", file, { category: "network" });
+      }
+      if (!response.ok) {
+        throw new DownloadFailure("file-unavailable", file, { category: "http", http_status: response.status });
+      }
+      let bytes;
+      try {
+        bytes = await response.arrayBuffer();
+      } catch {
+        throw new DownloadFailure("file-unavailable", file, { category: "body" });
+      }
+      if (bytes.byteLength !== file.size_bytes) {
+        throw new DownloadFailure("file-size-invalid", file, { category: "integrity", actual_bytes: bytes.byteLength });
+      }
+      const actual_sha256 = await hash(bytes);
+      if (actual_sha256 !== file.sha256) {
+        throw new DownloadFailure("file-hash-invalid", file, { category: "integrity", actual_bytes: bytes.byteLength, actual_sha256 });
+      }
       const current = await readState();
       if (!ownsOperation(current, operationId) || current.staging.status !== "downloading") throw new Error("operation-superseded");
-      await cache.put(entryRequest(file), new Response(bytes, { headers: { "Content-Type": response.headers.get("Content-Type") || file.content_type } }));
+      try {
+        await cache.put(entryRequest(file), new Response(bytes, { headers: { "Content-Type": response.headers.get("Content-Type") || file.content_type } }));
+      } catch {
+        throw new DownloadFailure("file-cache-write-failed", file, { category: "cache", actual_bytes: bytes.byteLength });
+      }
       completed.add(file.url); downloaded += bytes.byteLength;
       await checkpoint(operationId, completed, downloaded);
     }
@@ -398,6 +473,7 @@ async function runOperation(operationId) {
     staging.total_bytes = bundle.manifest.total_bytes;
     staging.status = "ready-to-download";
     staging.last_error = null;
+    staging.failure = null;
     staging.lease_until = leaseUntil();
     refreshStatus(state);
     await writeState(state);
@@ -474,7 +550,6 @@ async function cancel(clientId, operationId) {
   const state = await readState();
   if (!state.staging) return state;
   if (operationId && !ownsOperation(state, operationId)) return state;
-  if (state.staging.owner_client_id !== clientId && await ownerStillExists(state.staging.owner_client_id)) throw new Error("operation-owner-mismatch");
   aborters.get(state.staging.operation_id)?.abort();
   const cacheName = state.staging.attempt_cache_name;
   progressCheckpoints.delete(state.staging.operation_id);
@@ -490,7 +565,6 @@ async function cancel(clientId, operationId) {
 }
 async function clearSnapshots(clientId) {
   const state = await readState();
-  if (state.staging && state.staging.owner_client_id !== clientId && await ownerStillExists(state.staging.owner_client_id)) throw new Error("operation-owner-mismatch");
   aborters.get(state.staging?.operation_id)?.abort();
   const names = await caches.keys();
   const targets = names.filter((name) => name.startsWith(SNAPSHOT_PREFIX));
@@ -508,8 +582,8 @@ self.addEventListener("message", (event) => {
   const clientId = event.source?.id || "unknown";
   const operationId = event.data?.operation_id;
   if (["start", "resume", "redownload"].includes(type)) {
-    const task = acceptOperation(event.data.reason || (type === "redownload" ? "redownload" : type), clientId, operationId).then(({ state, run }) => {
-      event.ports[0]?.postMessage({ accepted: true, operation_id: state.staging?.operation_id || null, state });
+    const task = acceptOperation(event.data.reason || (type === "redownload" ? "redownload" : type), clientId, operationId).then(({ state, run, reason }) => {
+      event.ports[0]?.postMessage({ accepted: run, operation_id: state.staging?.operation_id || null, reason, state });
       return run ? runOperation(state.staging.operation_id) : state;
     });
     event.waitUntil(task);

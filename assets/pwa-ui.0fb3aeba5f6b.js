@@ -18,7 +18,11 @@ const errorMessages = {
   "release-unavailable": "暂时无法读取发布信息，请检查网络后重试。",
   "manifest-hash-invalid": "发布清单校验失败，未开始下载资料。",
   "storage-insufficient": "浏览器剩余空间不足，旧资料已保留。",
-  "file-integrity-invalid": "下载文件校验失败，可重试或继续未完成下载。",
+  "file-unavailable": "下载文件不可用，可重试或取消未完成下载。",
+  "file-size-invalid": "下载文件大小不正确，可重试或取消未完成下载。",
+  "file-hash-invalid": "下载文件校验失败，可重试或取消未完成下载。",
+  "file-cache-write-failed": "浏览器无法写入下载文件，可重试或取消未完成下载。",
+  "snapshot-verify-failed": "完整快照复核失败，可重试或取消未完成下载。",
   "staging-release-changed": "下载期间发布版本已变化，请决定是否取消旧下载。",
   "cache-cleanup-incomplete": "资料已切换，但部分旧缓存尚未清理。",
   "snapshot-corrupted": "本地快照不完整，请重新下载。",
@@ -36,6 +40,16 @@ function errorText(code) {
   if (!code) return "";
   return errorMessages[code] || "操作未完成，请重试或查看设置页。";
 }
+function failureText(failure, fallback) {
+  if (!failure) return errorText(fallback);
+  const details = [errorText(failure.error_code)];
+  if (failure.failed_url) details.push(`文件：${failure.failed_url.replace(/^\/(?:[^/]+)\//, "")}`);
+  if (Number.isFinite(failure.http_status)) details.push(`HTTP ${failure.http_status}`);
+  if (Number.isFinite(failure.expected_bytes) || Number.isFinite(failure.actual_bytes)) {
+    details.push(`预期 ${formatBytes(failure.expected_bytes || 0)}，实际 ${formatBytes(failure.actual_bytes || 0)}`);
+  }
+  return details.join("\n");
+}
 function describe(state) {
   if (state.status === "checking-local-state") return "正在读取本地快照状态";
   if (state.status === "probing-release") return "正在读取可用发布信息";
@@ -45,7 +59,7 @@ function describe(state) {
   if (state.status === "verifying" || state.status === "activating") return "正在验证并切换完整资料快照";
   if (state.status === "paused") return "下载已暂停，可在此继续";
   if (state.status === "staging-release-changed") return errorText("staging-release-changed");
-  if (state.status === "failed") return errorText(state.staging?.last_error || state.last_error);
+  if (state.status === "failed") return failureText(state.staging?.failure, state.staging?.last_error || state.last_error);
   return "需要联网完成首次初始化";
 }
 function setText(selector, value) {
@@ -71,9 +85,9 @@ function renderSettings(state) {
   setText("[data-pwa-cleanup-warning]", state.cleanup_warning ? errorText("cache-cleanup-incomplete") : "");
   [check, clear].filter(Boolean).forEach((button) => { button.disabled = !active; });
   if (redownload) redownload.disabled = !active || Boolean(staging);
-  const pending = staging && ["paused", "failed", "staging-release-changed"].includes(staging.status);
-  if (resumeSettings) resumeSettings.hidden = !pending || staging.status === "staging-release-changed";
-  if (cancelSettings) cancelSettings.hidden = !pending;
+  const resumable = staging && ["paused", "failed"].includes(staging.status);
+  if (resumeSettings) resumeSettings.hidden = !resumable;
+  if (cancelSettings) cancelSettings.hidden = !staging;
   const estimate = staging?.storage_check;
   if (estimate?.available) setText("[data-pwa-storage]", `${formatBytes(estimate.usage_bytes)} / ${formatBytes(estimate.quota_bytes)}；本次至少需 ${formatBytes(estimate.required_bytes)}`);
   else navigator.storage?.estimate?.().then((value) => setText("[data-pwa-storage]", `${formatBytes(value.usage || 0)} / ${formatBytes(value.quota || 0)}`)).catch(() => setText("[data-pwa-storage]", "浏览器未提供估算，可继续下载"));
@@ -98,10 +112,10 @@ function setGate(state) {
   const staging = state.staging || {}; const total = Number(staging.total_bytes || 0); const bytes = Number(staging.downloaded_bytes || 0);
   if (progress) { progress.hidden = !total; progress.max = total || 1; progress.value = bytes; }
   if (progressLabel) { progressLabel.hidden = !total; progressLabel.textContent = total ? `${formatBytes(bytes)} / ${formatBytes(total)}` : ""; }
-  if (start) start.hidden = Boolean(state.active) || !["first-install-required", "failed"].includes(state.status);
+  if (start) start.hidden = Boolean(state.active || staging.operation_id) || !["first-install-required", "failed"].includes(state.status);
   if (pause) pause.hidden = staging.status !== "downloading";
   if (resume) resume.hidden = !["paused", "failed"].includes(staging.status);
-  if (cancel) cancel.hidden = !["downloading", "paused", "failed", "staging-release-changed"].includes(staging.status);
+  if (cancel) cancel.hidden = !["probing", "ready-to-download", "downloading", "verifying", "activating", "paused", "failed", "staging-release-changed"].includes(staging.status);
   renderAvailableFacts(state); renderSettings(state); renderUpdate(state.available_update, staging);
 }
 

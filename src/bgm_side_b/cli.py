@@ -218,9 +218,9 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error(str(error))
         print(f"publish report: {_relative_output_path(root, run.report_path)}")
         if run.dry_run:
-            print(f"dry run only: {run.release_version} was not published")
+            print(f"仅 dry-run：资料版本 {run.release_version} 未发布")
         else:
-            print(f"published release: {run.release_version}")
+            print(f"已发布资料版本：{run.release_version}")
         return 0
     return 2
 

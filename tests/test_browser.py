@@ -14,7 +14,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Browser, Page, sync_playwright
+from playwright.sync_api import Browser, Error, Page, sync_playwright
 
 from bgm_side_b.build.builder import ArchiveBuilder
 from bgm_side_b.config import load_rules
@@ -110,6 +110,19 @@ def browser() -> Browser:
             yield chromium
         finally:
             chromium.close()
+
+
+@pytest.fixture
+def firefox_browser() -> Browser:
+    with sync_playwright() as runner:
+        try:
+            firefox = runner.firefox.launch()
+        except Error:
+            pytest.skip("Playwright Firefox is not installed")
+        try:
+            yield firefox
+        finally:
+            firefox.close()
 
 
 def _published_snapshot(static_site: Path, name: str) -> Path:
@@ -334,6 +347,116 @@ def test_pages_pwa_gate_reloads_once_after_activation(
         page.locator("[data-pwa-gate]").wait_for(state="hidden")
         assert page.locator(".subject-card").count() == 1
         assert navigations.count(f"{root}/quarters/2026-04/index.html") == 2
+    finally:
+        context.close()
+        server.shutdown()
+        server.server_close()
+
+
+def test_pages_pwa_root_user_click_initializes_and_browses_offline(
+    static_site: Path, browser: Browser
+) -> None:
+    published_root = _published_snapshot(static_site, "root-user-journey")
+    server, _ = _pwa_server(published_root)
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.set_default_timeout(15000)
+        root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+        page.goto(f"{root}/")
+        page.locator("[data-pwa-gate]").wait_for(state="visible")
+        page.locator("[data-pwa-start]").click()
+        page.locator(".subject-card").wait_for()
+        page.wait_for_function("document.documentElement.classList.contains('js-ready')")
+        page.locator("[data-open-drawer]").click()
+        assert page.locator("#subject-drawer").evaluate("node => node.open")
+        page.locator("#subject-drawer [data-detail-link]").click()
+        page.locator("[data-subject-detail]").wait_for()
+        context.set_offline(True)
+        page.reload()
+        assert page.locator("[data-subject-detail]").count() == 1
+    finally:
+        context.close()
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    ("entry", "target"),
+    (
+        ("/settings/index.html", ".subject-card"),
+        ("/quarters/2026-04/index.html", ".subject-card"),
+        ("/subjects/101/index.html", "[data-subject-detail]"),
+    ),
+)
+def test_pages_pwa_direct_entries_complete_initialization_with_user_click(
+    static_site: Path, browser: Browser, entry: str, target: str
+) -> None:
+    published_root = _published_snapshot(static_site, f"direct-{entry.count('/')}")
+    server, _ = _pwa_server(published_root)
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.set_default_timeout(15000)
+        root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+        page.goto(f"{root}{entry}")
+        if entry == "/settings/index.html":
+            page.locator("[data-pwa-initialize]").click()
+            page.wait_for_function("window.BsbPwa.state().status === 'ready'")
+            page.locator("[data-pwa-enter]").click()
+        else:
+            page.locator("[data-pwa-gate]").wait_for(state="visible")
+            page.locator("[data-pwa-start]").click()
+        page.locator(target).wait_for()
+    finally:
+        context.close()
+        server.shutdown()
+        server.server_close()
+
+
+def test_pages_pwa_clear_and_reinitialize_with_user_click(
+    static_site: Path, browser: Browser
+) -> None:
+    published_root = _published_snapshot(static_site, "clear-reinitialize")
+    server, _ = _pwa_server(published_root)
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.set_default_timeout(15000)
+        root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+        page.goto(f"{root}/settings/index.html")
+        page.locator("[data-pwa-initialize]").click()
+        page.wait_for_function("window.BsbPwa.state().status === 'ready'")
+        page.once("dialog", lambda dialog: dialog.accept())
+        page.locator("[data-pwa-clear]").click()
+        page.locator("[data-pwa-initialize]").wait_for(state="visible")
+        page.locator("[data-pwa-initialize]").click()
+        page.wait_for_function("window.BsbPwa.state().status === 'ready'")
+        assert page.evaluate("window.BsbPwa.state().staging") is None
+    finally:
+        context.close()
+        server.shutdown()
+        server.server_close()
+
+
+def test_pages_pwa_firefox_user_click_initializes_when_available(
+    static_site: Path, firefox_browser: Browser
+) -> None:
+    published_root = _published_snapshot(static_site, "firefox-user-journey")
+    server, _ = _pwa_server(published_root)
+    context = firefox_browser.new_context()
+    try:
+        page = context.new_page()
+        page.set_default_timeout(20000)
+        root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+        page.goto(f"{root}/settings/index.html")
+        page.locator("[data-pwa-initialize]").click()
+        page.wait_for_function("window.BsbPwa.state().status === 'ready'")
+        page.locator("[data-pwa-enter]").click()
+        page.locator(".subject-card").wait_for()
+        context.set_offline(True)
+        page.reload()
+        assert page.locator(".subject-card").count() == 1
     finally:
         context.close()
         server.shutdown()

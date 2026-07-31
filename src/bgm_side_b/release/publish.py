@@ -168,7 +168,7 @@ class Publisher:
                 )
                 self.reporter.complete(
                     stage="summary",
-                    message=f"dry run only：{version} 未发布",
+                    message=f"仅 dry-run：{version} 未发布",
                     counters={
                         "文件": manifest.payload()["entry_count"],
                         "字节": manifest.payload()["total_bytes"],

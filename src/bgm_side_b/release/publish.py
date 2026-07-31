@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -445,10 +446,13 @@ class Publisher:
         system_changelog_hash: str,
     ) -> tuple[dict[str, object], object, list[dict[str, object]]]:
         change_kind = _change_kind(changes, system_changes)
+        _validate_public_system_summary(system_changes)
         history = list(remote_history)
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         release_for_page = {
             "release_version": version,
             "app_version": __version__,
+            "published_at": now,
             "change_kind": change_kind,
             "system": system_changes,
             "data": _change_lines(changes),
@@ -465,7 +469,6 @@ class Publisher:
         )
         manifest_text = manifest_json(manifest)
         (staging / "snapshot-manifest.json").write_bytes(manifest_text.encode())
-        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         release = {
             "schema": 1,
             "release_version": version,
@@ -764,21 +767,49 @@ def _change_kind(changes: dict[str, object], system: tuple[str, ...]) -> str:
         for key, value in changes.items()
         if key not in {"kind", "failure_summary"}
     )
-    return "both" if data and system else "system" if system else "data"
+    if data and system:
+        return "系统与资料均有变化"
+    return "系统有变化" if system else "资料有变化"
 
 
 def _change_lines(changes: dict[str, object]) -> list[str]:
     if changes.get("kind") == "initial_snapshot":
-        return ["首次完整资料快照"]
+        return ["首次发布完整资料快照"]
     labels = {
         "subjects_added": "新增作品",
         "subjects_removed": "移除作品",
         "subjects_updated": "更新作品",
-        "covers_changed": "更新封面",
     }
-    return [
-        f"{label} {changes[key]}" for key, label in labels.items() if changes.get(key)
-    ] or ["资料无结构化变化"]
+    lines = [
+        f"{label} {changes[key]} 部"
+        for key, label in labels.items()
+        if changes.get(key)
+    ]
+    episode_changes = sum(
+        int(changes.get(key, 0))
+        for key in ("episodes_added", "episodes_removed", "episodes_updated")
+        if isinstance(changes.get(key, 0), int)
+    )
+    if episode_changes:
+        lines.append(f"章节变化 {episode_changes} 条")
+    if changes.get("covers_changed"):
+        lines.append(f"封面变化 {changes['covers_changed']} 张")
+    return lines or ["资料无结构化变化"]
+
+
+def _validate_public_system_summary(lines: tuple[str, ...]) -> None:
+    """Reject complete English sentences without rejecting technical names."""
+    allowed = re.compile(
+        r"(?:PWA|SQLite|CLI|Service Worker|SHA-256|WebP|GitHub Pages)",
+        re.IGNORECASE,
+    )
+    for line in lines:
+        remainder = allowed.sub("", line)
+        if re.search(r"[\u4e00-\u9fff]", remainder):
+            continue
+        if not re.search(r"[A-Za-z]{3,}", remainder):
+            continue
+        raise PublishError("system changelog must use Chinese public wording")
 
 
 def _latest_quarter(staging: Path) -> str | None:

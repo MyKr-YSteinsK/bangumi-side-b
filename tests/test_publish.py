@@ -40,7 +40,9 @@ def publish_root(tmp_path: Path) -> tuple[Path, Path]:
     root.mkdir()
     for name in ("config", "static", "templates"):
         shutil.copytree(ROOT / name, root / name)
-    (root / "CHANGELOG.md").write_text("## Unreleased\n\n- PWA release flow\n", "utf-8")
+    (root / "CHANGELOG.md").write_text(
+        "## 尚未发布\n\n### 调整\n\n- PWA 发布流程\n", "utf-8"
+    )
     (root / "pyproject.toml").write_text(
         "[project]\nname='fixture'\nversion='0'\n", "utf-8"
     )

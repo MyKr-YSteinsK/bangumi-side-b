@@ -13,11 +13,15 @@ _VERSION = re.compile(r"(\d{4})\.(\d{2})\.(\d{2})\.(\d+)$")
 
 
 def unreleased_changes(changelog: Path) -> tuple[str, ...]:
-    """Read the bullet text below the current ``Unreleased`` heading only."""
+    """Read the bullet text below the current Chinese or English draft heading."""
     text = changelog.read_text(encoding="utf-8")
-    match = re.search(r"^## Unreleased\s*$([\s\S]*?)(?=^## |\Z)", text, re.MULTILINE)
+    match = re.search(
+        r"^## (?:Unreleased|尚未发布)\s*$([\s\S]*?)(?=^## |\Z)",
+        text,
+        re.MULTILINE,
+    )
     if match is None:
-        raise ValueError("CHANGELOG.md has no Unreleased section")
+        raise ValueError("CHANGELOG.md has no draft release section")
     return tuple(
         item.strip()
         for item in re.findall(r"^\s*-\s+(.+?)\s*$", match.group(1), re.MULTILINE)

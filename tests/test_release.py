@@ -17,8 +17,16 @@ from bgm_side_b.release.manifest import (
     manifest_json,
     validate_manifest_payload,
 )
+from bgm_side_b.release.publish import (
+    PublishError,
+    _change_kind,
+    _change_lines,
+    _validate_public_system_summary,
+)
 from bgm_side_b.release.snapshot import diff_snapshots
 from bgm_side_b.release.validation import validate_release_payload
+
+ROOT = Path(__file__).parents[1]
 
 
 def test_candidate_index_is_stable_and_excludes_control_files(tmp_path: Path) -> None:
@@ -77,8 +85,10 @@ def test_release_versions_changelog_and_snapshot_changes_are_explicit(
         == "2026.07.30.1"
     )
     changelog = tmp_path / "CHANGELOG.md"
-    changelog.write_text("## Unreleased\n\n- PWA shell\n\n## 0.1.0\n", "utf-8")
-    assert unreleased_changes(changelog) == ("PWA shell",)
+    changelog.write_text(
+        "## 尚未发布\n\n### 修复\n\n- PWA 快照校验\n\n## 0.1.0\n", "utf-8"
+    )
+    assert unreleased_changes(changelog) == ("PWA 快照校验",)
     current = {
         "schema": 1,
         "quarters": [{"key": "2022-01"}],
@@ -91,6 +101,50 @@ def test_release_versions_changelog_and_snapshot_changes_are_explicit(
     assert initial["kind"] == "initial_snapshot"
     updated = diff_snapshots(current, {**current, "rules_hash": "new-rules"})
     assert updated["rules_changed"]
+
+
+def test_public_release_summaries_use_chinese_text() -> None:
+    _validate_public_system_summary(("PWA 快照校验", "Service Worker 控制器交接"))
+    with pytest.raises(PublishError, match="Chinese public wording"):
+        _validate_public_system_summary(("Release flow repairs first installation",))
+
+    changes = {
+        "kind": "data",
+        "subjects_added": 3,
+        "subjects_removed": 1,
+        "subjects_updated": 12,
+        "episodes_added": 20,
+        "episodes_removed": 3,
+        "episodes_updated": 15,
+        "covers_changed": 2,
+    }
+    assert _change_kind(changes, ("PWA 快照校验",)) == "系统与资料均有变化"
+    assert _change_lines(changes) == [
+        "新增作品 3 部",
+        "移除作品 1 部",
+        "更新作品 12 部",
+        "章节变化 38 条",
+        "封面变化 2 张",
+    ]
+    assert _change_lines({"kind": "initial_snapshot"}) == ["首次发布完整资料快照"]
+
+
+def test_public_readme_and_changelog_use_chinese_project_information() -> None:
+    readme = (ROOT / "README.md").read_text("utf-8")
+    changelog = (ROOT / "CHANGELOG.md").read_text("utf-8")
+    for heading in (
+        "项目简介",
+        "当前收录范围",
+        "PWA 安装与首次初始化",
+        "数据与版权说明",
+    ):
+        assert heading in readme
+    assert "77 部作品" in readme
+    assert "角色、声优、角色图片或声优图片" in readme
+    assert "# 更新日志" in changelog
+    assert "## 尚未发布" in changelog
+    assert "Release 0.1.1 repairs" not in changelog
+    _validate_public_system_summary(unreleased_changes(ROOT / "CHANGELOG.md"))
 
 
 def test_release_payload_requires_small_control_file_schema() -> None:

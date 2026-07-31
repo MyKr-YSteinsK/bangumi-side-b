@@ -84,6 +84,42 @@ def test_templates_are_componentized_and_static_sources_keep_accessibility_rules
     assert "XMLHttpRequest" not in script
 
 
+def test_updates_page_uses_chinese_public_release_labels() -> None:
+    rendered = TemplateRenderer(ROOT / "templates").render_reference_page(
+        "updates.html",
+        stylesheet_href="../assets/site.css",
+        script_href="../assets/site.js",
+        favicon_href="../assets/favicon.svg",
+        manifest_href="../manifest.webmanifest",
+        apple_touch_icon_href="../icons/icon-192.png",
+        pwa_controller_href="../assets/pwa-controller.js",
+        pwa_ui_href="../assets/pwa-ui.js",
+        home_href="../index.html",
+        settings_href="../settings/index.html",
+        updates_href="./",
+        app_version="0.1.1",
+        release={
+            "release_version": "2026.07.31.1",
+            "app_version": "0.1.1",
+            "published_at": "2026-07-31T19:42:11Z",
+            "change_kind": "系统与资料均有变化",
+            "system": ("PWA 快照校验",),
+            "data": ("首次发布完整资料快照",),
+        },
+        history=(
+            {
+                "release_version": "2026.07.30.1",
+                "app_version": "0.1.0",
+                "published_at": "2026-07-30T00:00:00Z",
+                "change_kind": "资料有变化",
+            },
+        ),
+    )
+    for label in ("当前资料版本", "程序版本", "发布时间", "系统变更", "资料变更"):
+        assert label in rendered
+    assert "Release 0.1.1" not in rendered
+
+
 def _quarter() -> BuildQuarter:
     card = SubjectCard(
         subject_id=101,

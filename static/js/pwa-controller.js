@@ -49,7 +49,9 @@ async function registerWorker() {
     return;
   }
   try {
-    await navigator.serviceWorker.register(new URL("../sw.js", import.meta.url));
+    await navigator.serviceWorker.register(new URL("../sw.js", import.meta.url), {
+      updateViaCache: "none",
+    });
     navigator.serviceWorker.addEventListener("message", (event) => {
       if (event.data?.type === "bsb-state") emit(event.data.state);
       if (event.data?.type === "bsb-reload") emit({ reload_available: true });

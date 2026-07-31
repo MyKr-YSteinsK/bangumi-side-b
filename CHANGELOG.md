@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Release 0.1.1 repairs first-install PWA snapshot validation by excluding
+  deployment placeholders, adds safe per-file failure diagnostics and recovery
+  controls, and covers complete browser installation and offline navigation.
+
 - Classify 2026-04 Japan TV automatically and deterministically: structured
   country facts first, exact configured region tags as fallback, then a narrow
   official-TV quarterly default with auditable evidence.

@@ -24,7 +24,7 @@ TV_CATEGORY = 1
 MOVIE_CATEGORY = 3
 DISCOVERY_CATEGORIES = (TV_CATEGORY,)
 DEFAULT_USER_AGENT = (
-    "Bangumi-Side-B/0.1.0 (+https://github.com/MyKr-YSteinsK/bangumi-side-b)"
+    "Bangumi-Side-B/0.1.1 (+https://github.com/MyKr-YSteinsK/bangumi-side-b)"
 )
 MAIN_EPISODE_TYPE = 0
 IMAGE_SIZE_ORDER = ("large", "medium", "common", "grid", "small")

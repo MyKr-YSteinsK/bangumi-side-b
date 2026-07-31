@@ -1,5 +1,5 @@
 /* Stable service-worker URL. Builder replaces the marker with shell file paths. */
-const SHELL_SCHEMA = 2;
+const SHELL_SCHEMA = 3;
 const SHELL_CACHE = `bsb-shell-${SHELL_SCHEMA}`;
 const CONTROL_CACHE = "bsb-control-v1";
 const CONTROL_KEY = "__bsb_control__/state";

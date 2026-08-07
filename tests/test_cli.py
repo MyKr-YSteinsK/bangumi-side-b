@@ -39,6 +39,9 @@ def test_build_parser_accepts_scope_or_all_and_profile_target() -> None:
     all_quarters = parser.parse_args(["build", "--all"])
     discarded = parser.parse_args(["build", "--all", "--discard-pending"])
     promote = parser.parse_args(["promote", "pages"])
+    doctor = parser.parse_args(["doctor", "--local"])
+    prepare = parser.parse_args(["release", "prepare", "--quiet"])
+    release_publish = parser.parse_args(["release", "publish", "--progress", "plain"])
 
     assert scoped.scope == ["2022", "1"]
     assert scoped.target == "pages"
@@ -46,6 +49,11 @@ def test_build_parser_accepts_scope_or_all_and_profile_target() -> None:
     assert all_quarters.all
     assert discarded.discard_pending
     assert promote.profile == "pages"
+    assert doctor.local
+    assert prepare.release_command == "prepare"
+    assert prepare.quiet
+    assert release_publish.release_command == "publish"
+    assert release_publish.progress == "plain"
 
 
 def test_sync_parser_requires_one_year_and_one_quarter() -> None:

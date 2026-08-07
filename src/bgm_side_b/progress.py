@@ -28,7 +28,12 @@ _LEVELS = frozenset(
         "heartbeat",
     }
 )
-_COMMAND_LABELS = {"sync": "同步", "build": "构建", "publish": "发布"}
+_COMMAND_LABELS = {
+    "sync": "同步",
+    "build": "构建",
+    "publish": "发布",
+    "release": "发布流程",
+}
 _LEVEL_LABELS = {"retry": "重试", "warning": "警告", "error": "错误"}
 _STAGE_LABELS = {
     "scope": "范围",
@@ -70,6 +75,11 @@ _STAGE_LABELS = {
     "publish-cleanup": "清理 worktree",
     "summary": "汇总",
     "interrupted": "中断",
+    "release-preflight": "发布预检",
+    "release-audit": "资料审计",
+    "release-build": "Pages 构建",
+    "release-dry-run": "发布 dry-run",
+    "prepared-release": "发布准备",
 }
 _PATH_PATTERN = re.compile(r"(?i)(?:\b[a-z]:[\\/]|(?<!\w)/(?:[^/\s|]+/)+)[^\s|]*")
 _URL_PATTERN = re.compile(r"https?://[^\s|]+", re.IGNORECASE)

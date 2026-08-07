@@ -14,6 +14,13 @@ from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database
 from bgm_side_b.progress import create_progress_reporter
 from bgm_side_b.release.publish import Publisher, PublishError
+from bgm_side_b.release.workflow import (
+    WorkflowError,
+    doctor,
+    local_status,
+    prepare_release,
+    publish_prepared_release,
+)
 from bgm_side_b.repository import SubjectRepository
 from bgm_side_b.sync import (
     SubjectSynchronizer,
@@ -46,6 +53,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "audit", help="Read-only audit of first-release workspace data."
     )
+    doctor_command = subparsers.add_parser("doctor", help="检查本地与远端发布环境。")
+    doctor_command.add_argument("--local", action="store_true", help="只检查本地状态。")
+    subparsers.add_parser("status", help="快速查看本地发布状态。")
     sync_parser = subparsers.add_parser("sync", help="Synchronise subject facts only.")
     _add_progress_arguments(sync_parser)
     sync_parser.add_argument("scope", nargs=2, metavar=("YEAR", "QUARTER_MONTH"))
@@ -94,6 +104,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_progress_arguments(promote_command)
     promote_command.add_argument("profile", choices=("local", "pages"))
+    release_command = subparsers.add_parser(
+        "release", help="执行明确的发布准备或真实发布编排。"
+    )
+    release_subparsers = release_command.add_subparsers(dest="release_command")
+    prepare_command = release_subparsers.add_parser(
+        "prepare", help="审计、构建 Pages 并执行发布 dry-run。"
+    )
+    _add_progress_arguments(prepare_command)
+    release_publish_command = release_subparsers.add_parser(
+        "publish", help="发布仍然有效的 prepared release。"
+    )
+    _add_progress_arguments(release_publish_command)
     return parser
 
 
@@ -130,8 +152,49 @@ def main(argv: list[str] | None = None) -> int:
         result = ReleaseDataAuditor(root, settings).audit()
         print(result.render())
         return 0 if result.passed else 1
-    if args.verbose and args.progress == "off":
+    if getattr(args, "verbose", False) and getattr(args, "progress", "auto") == "off":
         parser.error("--progress off cannot be combined with --verbose")
+    if args.command in {"doctor", "status", "release"}:
+        root = find_project_root()
+        if root is None:
+            parser.error("找不到包含 pyproject.toml 和 config 的项目根目录")
+        if args.command == "status":
+            try:
+                print(local_status(root).render_status())
+            except (ValueError, WorkflowError) as error:
+                parser.error(f"状态检查失败：{error}")
+            return 0
+        if args.command == "doctor":
+            try:
+                print(doctor(root, local_only=args.local).render())
+            except (ValueError, WorkflowError) as error:
+                parser.error(f"环境检查失败：{error}")
+            return 0
+        if args.release_command is None:
+            parser.error("release 需要 prepare 或 publish 子命令")
+        with create_progress_reporter(args, "release") as reporter:
+            try:
+                if args.release_command == "prepare":
+                    run = prepare_release(root, reporter)
+                else:
+                    run = publish_prepared_release(root, reporter)
+            except KeyboardInterrupt:
+                reporter.warning(stage="interrupted", message="已中断；未创建新的发布")
+                return 130
+            except (
+                BuildDataError,
+                BuildError,
+                PublishError,
+                WorkflowError,
+                ValueError,
+            ) as error:
+                parser.error(str(error))
+        if args.release_command == "prepare":
+            print(f"prepared release: {_relative_output_path(root, run.state_path)}")
+            print(f"dry-run report: {_relative_output_path(root, run.report_path)}")
+        else:
+            print(f"publish report: {_relative_output_path(root, run.report_path)}")
+        return 0
     if args.command == "sync":
         try:
             scope = parse_sync_scope(args.scope)

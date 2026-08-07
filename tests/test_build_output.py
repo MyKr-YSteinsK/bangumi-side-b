@@ -301,6 +301,50 @@ def test_preflight_preserves_recovery_tree_when_restore_cannot_be_confirmed(
     assert not target.exists()
 
 
+def test_preflight_retains_probe_when_rename_succeeds_but_reports_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = tmp_path / "dist"
+    target = distribution / "pages"
+    target.mkdir(parents=True)
+    (target / "version.txt").write_text("old", encoding="utf-8")
+    output = AtomicOutput(distribution)
+    original_replace = output._replace
+
+    def ambiguous_replace(source: Path, destination: Path) -> None:
+        if source == target and destination.name.startswith("pages-probe-"):
+            original_replace(source, destination)
+            raise PermissionError(5, "rename completed but reported failure")
+        if (
+            source.name.startswith("pages-probe-")
+            and destination.name.startswith("pages-recovery-")
+        ):
+            raise PermissionError(5, "recovery rename locked")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(output, "_replace", ambiguous_replace)
+
+    with pytest.raises(OutputError, match="完整副本已保留"):
+        output.preflight(pages_profile())
+
+    probe = next((distribution / ".staging").glob("pages-probe-*"))
+    assert not target.exists()
+    assert (probe / "version.txt").read_text(encoding="utf-8") == "old"
+
+    wrote = False
+
+    def writer(_: Path) -> None:
+        nonlocal wrote
+        wrote = True
+
+    with pytest.raises(OutputError, match="上一版输出尚未恢复"):
+        output.preflight(pages_profile())
+    with pytest.raises(OutputError, match="上一版输出尚未恢复"):
+        output.generate(pages_profile(), writer, lambda stage: None)
+    assert not wrote
+    assert (probe / "version.txt").read_text(encoding="utf-8") == "old"
+
+
 def test_recovery_tree_refuses_a_later_build_without_running_its_writer(
     tmp_path: Path,
 ) -> None:

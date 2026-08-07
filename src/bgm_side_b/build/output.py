@@ -174,6 +174,7 @@ class AtomicOutput:
         probe = self.staging_directory / f"{profile.name}-probe-{uuid.uuid4().hex}"
         target_moved = False
         target_restored = False
+        recovery_retained = False
         try:
             self._replace(target, probe)
             target_moved = True
@@ -191,6 +192,7 @@ class AtomicOutput:
                         raise OutputError(
                             "上一版输出未确认恢复；请手动检查后再试"
                         ) from restore_error
+                    recovery_retained = True
                     raise OutputError(
                         "上一版输出未恢复到原位置，但完整副本已保留；请处理后再试"
                     ) from restore_error
@@ -200,6 +202,7 @@ class AtomicOutput:
                     raise OutputError(
                         "上一版输出位置无法确认；请手动检查后再试"
                     ) from error
+                recovery_retained = True
                 raise OutputError(
                     "上一版输出位置无法确认，但完整副本已保留；请处理后再试"
                 ) from error
@@ -207,7 +210,7 @@ class AtomicOutput:
                 f"dist/{profile.output_directory} 当前被占用，请关闭使用它的程序后重试"
             ) from error
         finally:
-            if not target_moved or target_restored:
+            if (not target_moved or target_restored) and not recovery_retained:
                 _remove_tree(probe)
 
     def _retain_recovery(self, profile: BuildProfile, probe: Path) -> Path | None:

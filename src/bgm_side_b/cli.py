@@ -67,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
     build_command.add_argument(
         "--all", action="store_true", help="Build every configured release quarter."
     )
+    build_command.add_argument(
+        "--discard-pending",
+        action="store_true",
+        help="Explicitly discard a retained verified staging output before rebuilding.",
+    )
     publish_command = subparsers.add_parser(
         "publish", help="Validate and manually publish an existing Pages candidate."
     )
@@ -84,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
         help="Select local, Pages, or both static output profiles.",
     )
+    promote_command = subparsers.add_parser(
+        "promote", help="Promote a retained verified static output without rebuilding."
+    )
+    _add_progress_arguments(promote_command)
+    promote_command.add_argument("profile", choices=("local", "pages"))
     return parser
 
 
@@ -186,7 +196,9 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 run = ArchiveBuilder(
                     root, database, settings, tag_rules, source_rules, reporter=reporter
-                ).build(scope, target=args.target)
+                ).build(
+                    scope, target=args.target, discard_pending=args.discard_pending
+                )
             except KeyboardInterrupt:
                 reporter.warning(
                     stage="interrupted",
@@ -196,6 +208,29 @@ def main(argv: list[str] | None = None) -> int:
             except (BuildDataError, BuildError, ValueError) as error:
                 parser.error(str(error))
         print(f"build report: {_relative_output_path(root, run.report_path)}")
+        return 0
+    if args.command == "promote":
+        root = find_project_root()
+        if root is None:
+            parser.error(
+                "could not find a project root containing pyproject.toml and config"
+            )
+        settings, tag_rules, source_rules = load_rules(root / "config")
+        database = Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
+        with create_progress_reporter(args, "promote") as reporter:
+            reporter.start(stage="pending", message="正在检查已验证的 pending 构建")
+            try:
+                result = ArchiveBuilder(
+                    root, database, settings, tag_rules, source_rules, reporter=reporter
+                ).promote(args.profile)
+            except (BuildDataError, BuildError, ValueError) as error:
+                parser.error(str(error))
+            reporter.complete(
+                stage="summary",
+                message="已完成已验证构建的原子替换",
+                counters={"重试": result.promotion_retries},
+            )
+        print(f"已完成 dist/{args.profile} 的恢复替换")
         return 0
     if args.command == "publish":
         root = find_project_root()

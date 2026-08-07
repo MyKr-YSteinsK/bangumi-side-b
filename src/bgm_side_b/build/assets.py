@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -15,6 +17,7 @@ from bgm_side_b.build.profiles import BuildProfile
 _PAGES_MAX_LONG_SIDE = 1200
 _PAGES_WEBP_QUALITY = 89
 _PAGES_WEBP_METHOD = 4
+_PAGES_COVER_RECIPE = "pages-cover-v1.1200.q89"
 _EXCLUDED_STATIC_PARTS = frozenset({".gitkeep", ".nojekyll", ".DS_Store", "Thumbs.db"})
 
 
@@ -68,6 +71,12 @@ class MediaPublisher:
     def __init__(self, workspace_directory: Path, output_directory: Path) -> None:
         self.workspace_directory = workspace_directory.resolve()
         self.output_directory = output_directory
+        self.derived_cache_directory = (
+            self.workspace_directory / "cache" / "derived-covers"
+        )
+        self.derived_covers_generated = 0
+        self.derived_covers_reused = 0
+        self._derived_targets: set[str] = set()
 
     def publish_cover(
         self, subject_id: int, media: MediaView, profile: BuildProfile
@@ -99,27 +108,45 @@ class MediaPublisher:
         target = self.output_directory / Path(relative.as_posix())
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.is_file():
-            try:
-                with Image.open(source) as image:
-                    image.load()
-                    copy = image.copy()
-            except (OSError, UnidentifiedImageError) as error:
-                raise AssetError("verified cover cannot be derived") from error
-            copy.thumbnail(
-                (_PAGES_MAX_LONG_SIDE, _PAGES_MAX_LONG_SIDE), Image.Resampling.LANCZOS
-            )
-            copy.save(
-                target,
-                format="WEBP",
-                quality=_PAGES_WEBP_QUALITY,
-                method=_PAGES_WEBP_METHOD,
-            )
+            cached = self._cached_pages_cover(source, digest)
+            shutil.copyfile(cached, target)
         try:
             with Image.open(target) as derived:
                 width, height = derived.size
         except (OSError, UnidentifiedImageError) as error:
             raise AssetError("Pages cover derivation failed") from error
         return PublishedMedia(relative.as_posix(), width, height, "image/webp")
+
+    def _cached_pages_cover(self, source: Path, digest: str) -> Path:
+        cache = self.derived_cache_directory / f"{digest}.{_PAGES_COVER_RECIPE}.webp"
+        first_use = cache.name not in self._derived_targets
+        self._derived_targets.add(cache.name)
+        if cache.is_file():
+            try:
+                _validate_derived_cover(cache)
+            except AssetError:
+                cache.unlink(missing_ok=True)
+            else:
+                if first_use:
+                    self.derived_covers_reused += 1
+                return cache
+        self.derived_cache_directory.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            suffix=".webp", dir=self.derived_cache_directory
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            _write_derived_cover(source, temporary)
+            _validate_derived_cover(temporary)
+            os.replace(temporary, cache)
+        except OSError as error:
+            raise AssetError("Pages cover derivation failed") from error
+        finally:
+            temporary.unlink(missing_ok=True)
+        if first_use:
+            self.derived_covers_generated += 1
+        return cache
 
 
 def assert_pages_media_policy(output_directory: Path) -> None:
@@ -180,3 +207,33 @@ def _file_hash(path: Path) -> str:
         for chunk in iter(lambda: stream.read(64 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _write_derived_cover(source: Path, destination: Path) -> None:
+    try:
+        with Image.open(source) as image:
+            image.load()
+            copy = image.copy()
+        copy.thumbnail(
+            (_PAGES_MAX_LONG_SIDE, _PAGES_MAX_LONG_SIDE), Image.Resampling.LANCZOS
+        )
+        copy.save(
+            destination,
+            format="WEBP",
+            quality=_PAGES_WEBP_QUALITY,
+            method=_PAGES_WEBP_METHOD,
+        )
+    except (OSError, UnidentifiedImageError) as error:
+        raise AssetError("verified cover cannot be derived") from error
+
+
+def _validate_derived_cover(path: Path) -> None:
+    try:
+        with Image.open(path) as image:
+            image.load()
+            if image.format != "WEBP" or not all(value > 0 for value in image.size):
+                raise AssetError("Pages cover cache is invalid")
+            if max(image.size) > _PAGES_MAX_LONG_SIDE:
+                raise AssetError("Pages cover cache is invalid")
+    except (OSError, UnidentifiedImageError) as error:
+        raise AssetError("Pages cover cache is invalid") from error

@@ -34,6 +34,11 @@ class ProfileBuildReport:
     drawer_json_bytes: int = 0
     covers_bytes: int = 0
     detail_bytes: int = 0
+    elapsed_seconds: float = 0.0
+    derived_covers_generated: int = 0
+    derived_covers_reused: int = 0
+    promotion_retries: int = 0
+    pending_promotion: bool = False
 
 
 def write_build_report(

@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 
 from bgm_side_b import __version__
 from bgm_side_b.build.assets import (
@@ -17,7 +19,7 @@ from bgm_side_b.build.assets import (
     generate_pwa_icons,
     publish_static_assets,
 )
-from bgm_side_b.build.output import AtomicOutput
+from bgm_side_b.build.output import AtomicOutput, OutputError, OutputResult
 from bgm_side_b.build.paths import PathResolver
 from bgm_side_b.build.profiles import BuildProfile, local_profile, pages_profile
 from bgm_side_b.build.projection import BuildProjection
@@ -27,7 +29,7 @@ from bgm_side_b.build.templates import RenderMedia, TemplateRenderer
 from bgm_side_b.config import ProjectSettings, SourceRules, TagRules
 from bgm_side_b.database import Database
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
-from bgm_side_b.release.candidate import write_pages_build_marker
+from bgm_side_b.release.candidate import read_data_generation, write_pages_build_marker
 from bgm_side_b.sync import SyncScope, validate_release_scope
 
 
@@ -76,16 +78,24 @@ class ArchiveBuilder:
         scope: SyncScope | None,
         *,
         target: str = "all",
+        discard_pending: bool = False,
     ) -> BuildRun:
         """Build only the checked-in release quarters from local SQLite facts."""
         if target not in {"all", "local", "pages"}:
             raise ValueError("build target must be local, pages, or all")
         if scope is not None:
             validate_release_scope(scope, self.settings)
-        configured_quarters = tuple(
-            (int(item[:4]), int(item[5:]))
-            for item in self.settings.scope.release_quarters
+        profiles = _profiles(target)
+        output = AtomicOutput(
+            self.distribution_directory, workspace_directory=self.workspace_directory
         )
+        for profile in profiles:
+            if discard_pending:
+                output.discard_pending(profile)
+            else:
+                output.require_no_pending(profile)
+            output.preflight(profile)
+        configured_quarters = self._configured_quarters()
         self.reporter.start(
             stage="scope",
             message="开始离线构建",
@@ -104,28 +114,7 @@ class ArchiveBuilder:
             if quarter not in configured_quarters
         )
         quarters = configured_quarters
-        self.reporter.stage(
-            stage="view-model",
-            message="正在构建 View Model",
-            counters={"季度": len(quarters)},
-        )
-        models = tuple(
-            BuildProjection(
-                self.tag_rules,
-                self.source_rules,
-                self.workspace_directory,
-                country_filter=self.settings.country_filter,
-                excluded_subject_ids=self.settings.excluded_subject_ids,
-            ).project_quarter(
-                queries.load_quarter(
-                    year,
-                    month,
-                    excluded_subject_ids=self.settings.excluded_subject_ids,
-                    navigation=configured_quarters,
-                )
-            )
-            for year, month in quarters
-        )
+        models = self._project_models(queries, quarters, configured_quarters)
         subject_count = sum(model.metadata.subject_count for model in models)
         self.reporter.stage(
             stage="view-model",
@@ -138,7 +127,6 @@ class ArchiveBuilder:
                 message="configured release contains no subjects",
             )
             raise BuildError("configured release contains no subjects")
-        profiles = _profiles(target)
         reports: list[ProfileBuildReport] = []
         for profile in profiles:
             reports.append(self._build_profile(profile, models))
@@ -193,8 +181,11 @@ class ArchiveBuilder:
     def _build_profile(
         self, profile: BuildProfile, models: tuple[object, ...]
     ) -> ProfileBuildReport:
-        output = AtomicOutput(self.distribution_directory)
+        output = AtomicOutput(
+            self.distribution_directory, workspace_directory=self.workspace_directory
+        )
         metrics: dict[str, object] = {}
+        started = perf_counter()
 
         def writer(stage: Path) -> None:
             metrics.update(self._write_profile(stage, profile, models))
@@ -224,13 +215,17 @@ class ArchiveBuilder:
             stage=f"{profile.name}-staging",
             message="正在生成 staging 输出",
         )
-        result = output.generate(
-            profile,
-            writer,
-            validator,
-            before_promotion=before_promotion,
-            on_failure=failed,
-        )
+        try:
+            result = output.generate(
+                profile,
+                writer,
+                validator,
+                before_promotion=before_promotion,
+                on_failure=failed,
+                pending_metadata=self._promotion_metadata(),
+            )
+        except OutputError as error:
+            raise BuildError(str(error)) from error
         return ProfileBuildReport(
             profile.name,
             int(metrics["quarters"]),
@@ -249,7 +244,97 @@ class ArchiveBuilder:
             drawer_json_bytes=int(metrics["drawer_json_bytes"]),
             covers_bytes=int(metrics["covers_bytes"]),
             detail_bytes=int(metrics["detail_bytes"]),
+            elapsed_seconds=round(perf_counter() - started, 3),
+            derived_covers_generated=int(metrics["derived_covers_generated"]),
+            derived_covers_reused=int(metrics["derived_covers_reused"]),
+            promotion_retries=result.promotion_retries,
+            pending_promotion=result.pending_promotion,
         )
+
+    def promote(self, profile_name: str) -> OutputResult:
+        """Promote a retained verified output without rerendering static pages."""
+        profiles = {profile.name: profile for profile in _profiles("all")}
+        try:
+            profile = profiles[profile_name]
+        except KeyError as error:
+            raise BuildError("promote 只支持 local 或 pages") from error
+        output = AtomicOutput(
+            self.distribution_directory, workspace_directory=self.workspace_directory
+        )
+        try:
+            result = output.promote(
+                profile,
+                lambda stage: _validate_output(stage, profile),
+                metadata=self._promotion_metadata(),
+            )
+        except OutputError as error:
+            raise BuildError(str(error)) from error
+        if profile.name == "pages":
+            self._verify_database()
+            configured = self._configured_quarters()
+            queries = BuildQueries(self.database)
+            models = self._project_models(queries, configured, configured)
+            write_pages_build_marker(
+                self.workspace_directory,
+                result.output_directory,
+                project_root=self.project_root,
+                deployment_path=pages_profile().deployment_path,
+                quarter_count=len(models),
+                subject_count=sum(model.metadata.subject_count for model in models),
+                models=models,
+            )
+        return result
+
+    def _configured_quarters(self) -> tuple[tuple[int, int], ...]:
+        return tuple(
+            (int(item[:4]), int(item[5:]))
+            for item in self.settings.scope.release_quarters
+        )
+
+    def _project_models(
+        self,
+        queries: BuildQueries,
+        quarters: tuple[tuple[int, int], ...],
+        configured_quarters: tuple[tuple[int, int], ...],
+    ) -> tuple[object, ...]:
+        self.reporter.stage(
+            stage="view-model",
+            message="正在构建 View Model",
+            counters={"季度": len(quarters)},
+        )
+        return tuple(
+            BuildProjection(
+                self.tag_rules,
+                self.source_rules,
+                self.workspace_directory,
+                country_filter=self.settings.country_filter,
+                excluded_subject_ids=self.settings.excluded_subject_ids,
+            ).project_quarter(
+                queries.load_quarter(
+                    year,
+                    month,
+                    excluded_subject_ids=self.settings.excluded_subject_ids,
+                    navigation=configured_quarters,
+                )
+            )
+            for year, month in quarters
+        )
+
+    def _promotion_metadata(self) -> dict[str, object]:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.project_root,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=True,
+        )
+        return {
+            "source_commit": result.stdout.strip(),
+            "app_version": __version__,
+            "data_generation": read_data_generation(self.workspace_directory),
+            "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        }
 
     def _write_profile(
         self, stage: Path, profile: BuildProfile, models: tuple[object, ...]
@@ -449,6 +534,8 @@ class ArchiveBuilder:
                 _tree_bytes(covers_directory) if covers_directory.exists() else 0
             ),
             "detail_bytes": sum(page.stat().st_size for page in detail_html),
+            "derived_covers_generated": publisher.derived_covers_generated,
+            "derived_covers_reused": publisher.derived_covers_reused,
         }
 
     def _verify_database(self) -> None:

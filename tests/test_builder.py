@@ -103,6 +103,9 @@ def test_offline_builder_generates_both_profiles_without_mutating_sqlite(
     assert '"configured_quarters": [' in report
     assert '"ignored_database_quarters": [' in report
     assert '"character_sections": 0' in report
+    assert '"derived_covers_generated": 0' in report
+    assert '"derived_covers_reused": 0' in report
+    assert '"promotion_retries": 0' in report
     marker = json.loads((workspace / "state" / "pages-build.json").read_text("utf-8"))
     assert marker["profile"] == "pages"
     assert marker["schema"] == 2

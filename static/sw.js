@@ -1,5 +1,5 @@
 /* Stable service-worker URL. Builder replaces the marker with shell file paths. */
-const SHELL_SCHEMA = 5;
+const SHELL_SCHEMA = 6;
 const SHELL_CACHE = `bsb-shell-${SHELL_SCHEMA}`;
 const CONTROL_CACHE = "bsb-control-v1";
 const CONTROL_KEY = "__bsb_control__/state";
@@ -60,6 +60,12 @@ function normalizeState(value) {
     state.staging.attempt_cache_name ||= state.staging.cache_name || null;
     delete state.staging.owner;
     delete state.staging.cache_name;
+    state.staging.completed_urls = Array.isArray(state.staging.completed_urls) ? state.staging.completed_urls : [];
+    state.staging.reused_urls = Array.isArray(state.staging.reused_urls) ? state.staging.reused_urls : [];
+    state.staging.downloaded_urls = Array.isArray(state.staging.downloaded_urls) ? state.staging.downloaded_urls : [];
+    for (const key of ["verified_bytes", "reused_files", "reused_bytes", "downloaded_files", "downloaded_bytes", "total_files", "total_bytes"]) {
+      state.staging[key] = Number.isFinite(state.staging[key]) ? state.staging[key] : 0;
+    }
   }
   state.status ||= state.staging?.status || (state.active ? "ready" : "first-install-required");
   state.available_release ||= null;
@@ -236,11 +242,16 @@ async function storageCheck(total) {
   if (estimate.quota - estimate.usage < required) throw new Error("storage-insufficient");
   return { available: true, quota_bytes: estimate.quota, usage_bytes: estimate.usage, required_bytes: required, safety_bytes };
 }
-async function validCached(cache, file) {
+async function verifiedCached(cache, file) {
   const response = await cache.match(entryRequest(file));
   if (!response) return null;
   const bytes = await response.arrayBuffer();
-  return bytes.byteLength === file.size_bytes && await hash(bytes) === file.sha256 ? bytes.byteLength : null;
+  if (bytes.byteLength !== file.size_bytes || await hash(bytes) !== file.sha256) return null;
+  return { bytes, contentType: response.headers.get("Content-Type") || file.content_type };
+}
+async function validCached(cache, file) {
+  const cached = await verifiedCached(cache, file);
+  return cached ? cached.bytes.byteLength : null;
 }
 async function renewLease(operationId, mutate) {
   const state = await readState();
@@ -278,7 +289,14 @@ async function acceptOperation(reason, clientId, requestedOperationId) {
       status: "probing",
       reason,
       completed_urls: [],
+      reused_urls: [],
+      downloaded_urls: [],
+      verified_bytes: 0,
+      reused_files: 0,
+      reused_bytes: 0,
       downloaded_bytes: 0,
+      downloaded_files: 0,
+      total_files: 0,
       total_bytes: 0,
       updated_at: new Date().toISOString(),
       last_error: null,
@@ -308,15 +326,41 @@ async function failOperation(operationId, error) {
   refreshStatus(state);
   return writeState(state);
 }
-async function checkpoint(operationId, completed, downloaded, force = false) {
+function progressMetrics(files, completed, reused, downloaded) {
+  const sizes = new Map(files.map((file) => [file.url, file.size_bytes]));
+  const bytesFor = (urls) => [...urls].reduce((total, url) => total + (sizes.get(url) || 0), 0);
+  return {
+    verifiedBytes: bytesFor(completed),
+    reusedFiles: reused.size,
+    reusedBytes: bytesFor(reused),
+    downloadedFiles: downloaded.size,
+    downloadedBytes: bytesFor(downloaded),
+    totalFiles: files.length,
+    totalBytes: bytesFor(new Set(sizes.keys())),
+  };
+}
+function applyProgress(staging, completed, reused, downloaded, metrics) {
+  staging.completed_urls = [...completed].sort();
+  staging.reused_urls = [...reused].sort();
+  staging.downloaded_urls = [...downloaded].sort();
+  staging.verified_bytes = metrics.verifiedBytes;
+  staging.reused_files = metrics.reusedFiles;
+  staging.reused_bytes = metrics.reusedBytes;
+  staging.downloaded_files = metrics.downloadedFiles;
+  staging.downloaded_bytes = metrics.downloadedBytes;
+  staging.total_files = metrics.totalFiles;
+  staging.total_bytes = metrics.totalBytes;
+}
+async function checkpoint(operationId, files, completed, reused, downloaded, force = false) {
   const now = Date.now();
   const previous = progressCheckpoints.get(operationId) || { count: 0, at: 0, broadcast_at: 0 };
+  const metrics = progressMetrics(files, completed, reused, downloaded);
   const shouldPersist = force || completed.size - previous.count >= 12 || now - previous.at >= 400;
   if (!shouldPersist) {
     if (now - previous.broadcast_at >= 350) {
       const state = await readState();
       if (ownsOperation(state, operationId)) {
-        state.staging.downloaded_bytes = downloaded;
+        applyProgress(state.staging, completed, reused, downloaded, metrics);
         await broadcast({ type: "bsb-state", state });
       }
       progressCheckpoints.set(operationId, { ...previous, broadcast_at: now });
@@ -325,8 +369,7 @@ async function checkpoint(operationId, completed, downloaded, force = false) {
   }
   progressCheckpoints.set(operationId, { count: completed.size, at: now, broadcast_at: now });
   return renewLease(operationId, (staging) => {
-    staging.completed_urls = [...completed].sort();
-    staging.downloaded_bytes = downloaded;
+    applyProgress(staging, completed, reused, downloaded, metrics);
   });
 }
 async function cleanupAfterActivation(previousCache, activeCache, operationId) {
@@ -385,19 +428,49 @@ async function download(operationId, bundle) {
   const staging = state.staging;
   const cache = await caches.open(staging.attempt_cache_name);
   const completed = new Set();
-  let downloaded = 0;
+  const reused = new Set(staging.reused_urls);
+  const downloaded = new Set(staging.downloaded_urls);
   for (const file of bundle.manifest.files) {
     const size = await validCached(cache, file);
-    if (size !== null) { completed.add(file.url); downloaded += size; }
+    if (size === null) continue;
+    completed.add(file.url);
+    if (!reused.has(file.url) && !downloaded.has(file.url)) downloaded.add(file.url);
   }
-  await checkpoint(operationId, completed, downloaded, true);
-  state = await readState();
-  if (!ownsOperation(state, operationId) || state.staging.status === "paused") return state;
+  for (const urls of [reused, downloaded]) {
+    for (const url of [...urls]) {
+      if (!completed.has(url)) urls.delete(url);
+    }
+  }
   state.staging.status = "downloading";
+  state.staging.total_files = bundle.manifest.files.length;
   state.staging.total_bytes = bundle.manifest.total_bytes;
   state.staging.last_error = null;
   refreshStatus(state);
   await writeState(state);
+  await checkpoint(operationId, bundle.manifest.files, completed, reused, downloaded, true);
+
+  if (state.active?.cache_name) {
+    const activeCache = await caches.open(state.active.cache_name);
+    for (const file of bundle.manifest.files) {
+      if (completed.has(file.url)) continue;
+      const current = await readState();
+      if (!ownsOperation(current, operationId) || current.staging.status !== "downloading") return current;
+      const cached = await verifiedCached(activeCache, file);
+      if (!cached) continue;
+      try {
+        await cache.put(
+          entryRequest(file),
+          new Response(cached.bytes, { headers: { "Content-Type": cached.contentType } }),
+        );
+      } catch {
+        throw new DownloadFailure("file-cache-write-failed", file, { category: "cache", actual_bytes: cached.bytes.byteLength });
+      }
+      completed.add(file.url);
+      reused.add(file.url);
+      downloaded.delete(file.url);
+      await checkpoint(operationId, bundle.manifest.files, completed, reused, downloaded);
+    }
+  }
   const pending = bundle.manifest.files.filter((file) => !completed.has(file.url));
   pending.sort((left, right) => downloadPriority(left) - downloadPriority(right) || left.url.localeCompare(right.url));
   const controller = new AbortController();
@@ -436,8 +509,8 @@ async function download(operationId, bundle) {
       } catch {
         throw new DownloadFailure("file-cache-write-failed", file, { category: "cache", actual_bytes: bytes.byteLength });
       }
-      completed.add(file.url); downloaded += bytes.byteLength;
-      await checkpoint(operationId, completed, downloaded);
+      completed.add(file.url); downloaded.add(file.url); reused.delete(file.url);
+      await checkpoint(operationId, bundle.manifest.files, completed, reused, downloaded);
     }
   };
   try {
@@ -450,7 +523,7 @@ async function download(operationId, bundle) {
   } finally {
     aborters.delete(operationId);
   }
-  await checkpoint(operationId, completed, downloaded, true);
+  await checkpoint(operationId, bundle.manifest.files, completed, reused, downloaded, true);
   state = await renewLease(operationId, (current) => { current.status = "verifying"; });
   if (state.staging.status === "paused") return state;
   return activateSnapshot(operationId, bundle);
@@ -471,6 +544,7 @@ async function runOperation(operationId) {
     staging.release_version = bundle.release.release_version;
     staging.manifest_hash = bundle.manifestHash;
     staging.attempt_cache_name ||= `${SNAPSHOT_PREFIX}${bundle.release.release_version}-${attemptId()}`;
+    staging.total_files = bundle.manifest.files.length;
     staging.total_bytes = bundle.manifest.total_bytes;
     staging.status = "ready-to-download";
     staging.last_error = null;

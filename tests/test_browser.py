@@ -182,6 +182,7 @@ def _pwa_server(
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         mode = "normal"
+        requests: list[str] = []
 
         def __init__(self, *args: object, **kwargs: object) -> None:
             super().__init__(*args, directory=str(published_root.parent), **kwargs)
@@ -190,6 +191,7 @@ def _pwa_server(
             pass
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib handler hook
+            type(self).requests.append(self.path.split("?", 1)[0])
             if self.path.split("?", 1)[0] != target or type(self).mode == "normal":
                 try:
                     super().do_GET()
@@ -630,6 +632,18 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
 ) -> None:
     published_root = static_site.parent / "published" / "bangumi-side-b"
     shutil.copytree(static_site / "pages", published_root)
+    cover = published_root / "media" / "covers" / "browser-fixture.png"
+    cover.parent.mkdir(parents=True)
+    shutil.copyfile(published_root / "icons" / "icon-192.png", cover)
+    subject = published_root / "subjects" / "101" / "index.html"
+    subject.write_text(
+        subject.read_text("utf-8").replace(
+            "</main>",
+            '<img data-browser-cover '
+            'src="../../media/covers/browser-fixture.png" alt="">\n</main>',
+        ),
+        encoding="utf-8",
+    )
     entries = index_candidate(published_root, "/bangumi-side-b/")
     manifest = build_snapshot_manifest(
         entries,
@@ -656,9 +670,20 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         "summary": {"system": [], "data": []},
     }
     (published_root / "release.json").write_text(json.dumps(release), "utf-8")
-    handler = functools.partial(
-        http.server.SimpleHTTPRequestHandler, directory=str(published_root.parent)
-    )
+    update_requests: list[str] = []
+
+    class TrackingHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, directory=str(published_root.parent), **kwargs)
+
+        def log_message(self, *_: object) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802 - stdlib handler hook
+            update_requests.append(self.path.split("?", 1)[0])
+            super().do_GET()
+
+    handler = TrackingHandler
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -720,7 +745,6 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
             }"""
         ) == 503
         context.set_offline(False)
-        subject = published_root / "subjects" / "101" / "index.html"
         subject.write_bytes(subject.read_bytes() + b"\n<!-- release two -->\n")
         next_entries = index_candidate(published_root, "/bangumi-side-b/")
         next_manifest = build_snapshot_manifest(
@@ -751,11 +775,80 @@ def test_pages_pwa_downloads_a_verified_snapshot_only_after_user_action(
         assert settings_state["active"], settings_state
         page.locator("[data-pwa-check]").click()
         page.locator("[data-pwa-update-dialog]").wait_for(state="visible")
+        update_requests.clear()
+        page.evaluate(
+            "window.__pwa_update_states = []; window.addEventListener('bsb-pwa-state', "
+            "(event) => window.__pwa_update_states.push(event.detail));"
+        )
         page.locator("[data-pwa-update-start]").click()
         page.wait_for_function(
             "window.BsbPwa.state().active?.release_version === '2026.07.30.2'",
             timeout=5000,
         )
+        update_states = page.evaluate("window.__pwa_update_states")
+        update = next(
+            state["staging"]
+            for state in reversed(update_states)
+            if state.get("staging")
+            and state["staging"].get("release_version") == "2026.07.30.2"
+        )
+        assert update["reused_files"] > 0
+        assert update["downloaded_files"] == 1
+        assert update["reused_bytes"] > update["downloaded_bytes"]
+        assert "/bangumi-side-b/subjects/101/index.html" in update_requests
+        assert "/bangumi-side-b/media/covers/browser-fixture.png" not in update_requests
+        page.evaluate(
+            """async () => {
+              const cache = await caches.open(window.BsbPwa.state().active.cache_name);
+              const manifest = document.querySelector('link[rel="manifest"]').href;
+              const url = new URL('media/covers/browser-fixture.png', manifest);
+              const request = new Request(url.href);
+              await cache.put(request, new Response(new Uint8Array([0])));
+            }"""
+        )
+        repaired_entries = index_candidate(published_root, "/bangumi-side-b/")
+        repaired_manifest = build_snapshot_manifest(
+            repaired_entries,
+            release_version="2026.07.30.3",
+            app_version="0.1.0",
+            deployment_path="/bangumi-side-b/",
+        )
+        repaired_manifest_text = manifest_json(repaired_manifest)
+        (published_root / "snapshot-manifest.json").write_bytes(
+            repaired_manifest_text.encode()
+        )
+        release.update(
+            {
+                "release_version": "2026.07.30.3",
+                "content_hash": repaired_manifest.content_hash,
+                "total_bytes": sum(entry.size_bytes for entry in repaired_entries),
+                "manifest_sha256": hashlib.sha256(
+                    repaired_manifest_text.encode()
+                ).hexdigest(),
+            }
+        )
+        (published_root / "release.json").write_text(json.dumps(release), "utf-8")
+        page.locator("[data-pwa-check]").click()
+        page.locator("[data-pwa-update-dialog]").wait_for(state="visible")
+        update_requests.clear()
+        page.evaluate(
+            "window.__pwa_repair_states = []; window.addEventListener('bsb-pwa-state', "
+            "(event) => window.__pwa_repair_states.push(event.detail));"
+        )
+        page.locator("[data-pwa-update-start]").click()
+        page.wait_for_function(
+            "window.BsbPwa.state().active?.release_version === '2026.07.30.3'",
+            timeout=5000,
+        )
+        repair_states = page.evaluate("window.__pwa_repair_states")
+        repair = next(
+            state["staging"]
+            for state in reversed(repair_states)
+            if state.get("staging")
+            and state["staging"].get("release_version") == "2026.07.30.3"
+        )
+        assert repair["downloaded_files"] == 1
+        assert "/bangumi-side-b/media/covers/browser-fixture.png" in update_requests
         clear_messages: list[str] = []
         page.once(
             "dialog",

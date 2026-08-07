@@ -381,7 +381,8 @@ class Publisher:
             try:
                 validate_release_payload(release)
             except ManifestError as error:
-                raise PublishError("remote release metadata is invalid") from error
+                if not _legacy_remote_release(release):
+                    raise PublishError("remote release metadata is invalid") from error
         if not isinstance(history, list) or not all(
             isinstance(item, dict) for item in history
         ):
@@ -894,6 +895,46 @@ def _git_json(
         return json.loads(result.stdout)
     except json.JSONDecodeError:
         return fallback
+
+
+def _legacy_remote_release(value: object) -> bool:
+    """Accept only the known pre-machine-kind release control shape for comparison.
+
+    Early public releases used Chinese display labels as ``change_kind`` and could
+    contain the old data-summary contradiction.  They are never copied into a
+    new candidate: the publisher only reads their app version, release version,
+    and changelog hash before constructing a fully validated current payload.
+    """
+    if not isinstance(value, dict) or value.get("schema") != 1:
+        return False
+    required = {
+        "release_version",
+        "app_version",
+        "system_changelog_hash",
+        "change_kind",
+        "summary",
+    }
+    if not required.issubset(value):
+        return False
+    if not all(
+        isinstance(value[key], str) and value[key]
+        for key in ("release_version", "app_version", "system_changelog_hash")
+    ):
+        return False
+    if value["change_kind"] not in {
+        "首次发布",
+        "系统有变化",
+        "资料有变化",
+        "系统与资料均有变化",
+        "无结构化变化",
+    }:
+        return False
+    summary = value["summary"]
+    return isinstance(summary, dict) and all(
+        isinstance(summary.get(key), list)
+        and all(isinstance(line, str) and line.strip() for line in summary[key])
+        for key in ("system", "data")
+    )
 
 
 def _json(value: object) -> str:

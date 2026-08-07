@@ -134,6 +134,45 @@ def test_publish_refuses_changed_facts_and_unsafe_origin_branch(
         publisher.publish(dry_run=True, remote="test")
 
 
+def test_publish_reads_known_legacy_remote_release_for_version_comparison(
+    publish_root: tuple[Path, Path], tmp_path: Path
+) -> None:
+    root, remote = publish_root
+    legacy = tmp_path / "legacy-release"
+    legacy.mkdir()
+    _git(legacy, "init")
+    (legacy / "release.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "release_version": "2026.08.07.2",
+                "app_version": "0.1.2",
+                "system_changelog_hash": "0" * 64,
+                "change_kind": "资料有变化",
+                "summary": {"system": [], "data": ["资料无结构化变化"]},
+            }
+        ),
+        "utf-8",
+    )
+    _git(legacy, "add", "release.json")
+    _git(
+        legacy,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-m",
+        "legacy release",
+    )
+    _git(legacy, "remote", "add", "origin", str(remote))
+    _git(legacy, "push", "origin", "HEAD:gh-pages")
+
+    run = Publisher(root).publish(dry_run=True, remote="test")
+
+    assert run.release_version == "2026.08.07.3"
+
+
 def test_release_staging_keeps_nojekyll_out_of_the_snapshot(
     publish_root: tuple[Path, Path],
 ) -> None:

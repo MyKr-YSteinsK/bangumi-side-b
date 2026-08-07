@@ -1,10 +1,10 @@
 /* Stable service-worker URL. Builder replaces the marker with shell file paths. */
-const SHELL_SCHEMA = 3;
+const SHELL_SCHEMA = 5;
 const SHELL_CACHE = `bsb-shell-${SHELL_SCHEMA}`;
 const CONTROL_CACHE = "bsb-control-v1";
 const CONTROL_KEY = "__bsb_control__/state";
 const MANIFEST_KEY_PREFIX = "__bsb_control__/manifest/";
-const SHELL_FILES = ["./index.html","./offline.html","./settings/index.html","./updates/index.html","./manifest.webmanifest","./icons/icon-192.png","./icons/icon-512.png","./icons/icon-512-maskable.png","./assets/site.9fac2c1bc9d3.css","./assets/site.184a2c430398.js","./assets/pwa-controller.0a0e7a25472e.js","./assets/pwa-ui.0fb3aeba5f6b.js","./assets/favicon.c989439ccda9.svg"];
+const SHELL_FILES = ["./index.html","./offline.html","./settings/index.html","./updates/index.html","./manifest.webmanifest","./icons/icon-192.png","./icons/icon-512.png","./icons/icon-512-maskable.png","./assets/site.9fac2c1bc9d3.css","./assets/site.184a2c430398.js","./assets/pwa-controller.19458ced4ec3.js","./assets/pwa-ui.1b6fbe72e447.js","./assets/favicon.c989439ccda9.svg"];
 const FORBIDDEN_PARTS = [
   ".sql" + "ite",
   "/work" + "space/",
@@ -200,7 +200,7 @@ function snapshotCorruption() {
 }
 function initialisationResponse() {
   const settings = new URL("settings/index.html", self.registration.scope).pathname;
-  return new Response(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>需要初始化资料快照</title><main><h1>需要初始化资料快照</h1><p>此 PWA 不提供在线浏览。请先在设置页完成初始化。</p><p><a href="${settings}">前往设置</a></p></main></html>`, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+  return new Response(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>需要初始化本地资料库</title><main><h1>需要初始化本地资料库</h1><p>此 PWA 不提供在线浏览。请先在设置页完成初始化。</p><p><a href="${settings}">前往设置</a></p></main></html>`, { headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 
 async function fetchRelease() {
@@ -368,6 +368,7 @@ async function activateSnapshot(operationId, bundle) {
     generated_at: bundle.release.generated_at,
     quarter_count: bundle.release.quarter_count,
     subject_count: bundle.release.subject_count,
+    latest_quarter: typeof bundle.release.latest_quarter === "string" ? bundle.release.latest_quarter : null,
   };
   state.staging = null;
   progressCheckpoints.delete(operationId);
@@ -523,6 +524,7 @@ async function probeRelease() {
       quarter_count: bundle.release.quarter_count,
       subject_count: bundle.release.subject_count,
       total_bytes: bundle.manifest.total_bytes,
+      latest_quarter: typeof bundle.release.latest_quarter === "string" ? bundle.release.latest_quarter : null,
       summary: { system: summary.system || [], data: summary.data || [] },
     };
     state.last_error = null;

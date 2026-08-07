@@ -105,7 +105,7 @@ def test_updates_page_uses_chinese_public_release_labels() -> None:
             "release_version": "2026.07.31.1",
             "app_version": "0.1.1",
             "published_at": "2026-07-31T19:42:11Z",
-            "change_kind": "系统与资料均有变化",
+            "change_kind": "system_and_data",
             "system": ("PWA 快照校验",),
             "data": ("首次发布完整资料快照",),
         },
@@ -114,7 +114,7 @@ def test_updates_page_uses_chinese_public_release_labels() -> None:
                 "release_version": "2026.07.30.1",
                 "app_version": "0.1.0",
                 "published_at": "2026-07-30T00:00:00Z",
-                "change_kind": "资料有变化",
+                "change_kind": "data",
             },
         ),
     )

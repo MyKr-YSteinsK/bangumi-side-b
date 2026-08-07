@@ -105,29 +105,16 @@ class Publisher:
         previous_version = (
             str(remote_release["release_version"]) if remote_release else None
         )
-        changes, system_changes, snapshot = self._changes(build_snapshot)
-        if (
-            remote_release
-            and remote_release.get("app_version") != __version__
-            and not system_changes
-        ):
-            raise PublishError("app version changed but CHANGELOG Unreleased is empty")
+        changes, changelog_changes, snapshot = self._changes(build_snapshot)
         rules_hash = str(snapshot["rules_hash"])
         candidate_hash = str(marker["business_content_hash"])
-        if remote_release and self._has_no_changes(
-            remote_release, candidate_hash, rules_hash, system_changes
-        ):
+        system_changes = _system_changes(remote_release, changelog_changes)
+        change_kind = _change_kind(changes, system_changes)
+        if change_kind == "none":
             self.reporter.complete(
-                stage="summary", message="无需发布｜候选与远端一致"
+                stage="summary", message="无需发布｜没有结构化资料或系统变化"
             )
             raise PublishError("Pages candidate has no publishable changes")
-        release_system_changes = (
-            system_changes
-            if not remote_release
-            or remote_release.get("system_changelog_hash")
-            != _system_hash(system_changes)
-            else ()
-        )
         version = next_release_version(previous_version)
         self._stage(8, "正在计算 tentative 资料版本", counters={"版本": version})
         self._stage(9, "正在比较系统与资料变化")
@@ -140,11 +127,11 @@ class Publisher:
                 version,
                 marker,
                 changes,
-                release_system_changes,
+                system_changes,
                 remote_history,
                 candidate_hash,
                 rules_hash,
-                _system_hash(system_changes),
+                _system_hash(changelog_changes),
             )
             self._stage(
                 11,
@@ -414,20 +401,6 @@ class Publisher:
             snapshot,
         )
 
-    def _has_no_changes(
-        self,
-        previous: dict[str, object],
-        candidate_hash: str,
-        rules_hash: str,
-        system_changes: tuple[str, ...],
-    ) -> bool:
-        return (
-            previous.get("candidate_content_hash") == candidate_hash
-            and previous.get("app_version") == __version__
-            and previous.get("rules_hash") == rules_hash
-            and previous.get("system_changelog_hash") == _system_hash(system_changes)
-        )
-
     def _staging_directory(self) -> Path:
         destination = self.workspace / "tmp" / f"publish-{uuid.uuid4().hex}"
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -446,6 +419,8 @@ class Publisher:
         system_changelog_hash: str,
     ) -> tuple[dict[str, object], object, list[dict[str, object]]]:
         change_kind = _change_kind(changes, system_changes)
+        if change_kind == "none":
+            raise PublishError("Pages candidate has no publishable changes")
         _validate_public_system_summary(system_changes)
         history = list(remote_history)
         now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -761,15 +736,69 @@ def _render_updates(root: Path, staging: Path, release: dict[str, object]) -> No
     (staging / document).write_text(rendered, encoding="utf-8", newline="\n")
 
 
-def _change_kind(changes: dict[str, object], system: tuple[str, ...]) -> str:
-    data = changes.get("kind") != "data" or any(
-        value
-        for key, value in changes.items()
-        if key not in {"kind", "failure_summary"}
+_DATA_CHANGE_FIELDS = (
+    "subjects_added",
+    "subjects_removed",
+    "subjects_updated",
+    "episodes_added",
+    "episodes_removed",
+    "episodes_updated",
+    "covers_changed",
+)
+
+_CHANGE_KIND_LABELS = {
+    "initial": "首次发布",
+    "system": "系统有变化",
+    "data": "资料有变化",
+    "system_and_data": "系统与资料均有变化",
+    "none": "无结构化变化",
+}
+
+
+def _data_changed(changes: dict[str, object]) -> bool:
+    """Only structured subject, episode, and cover facts count as data changes."""
+    return changes.get("kind") == "initial_snapshot" or any(
+        bool(changes.get(field)) for field in _DATA_CHANGE_FIELDS
     )
-    if data and system:
-        return "系统与资料均有变化"
-    return "系统有变化" if system else "资料有变化"
+
+
+def _change_kind(changes: dict[str, object], system: tuple[str, ...]) -> str:
+    """Return the stable machine change kind used by metadata and history."""
+    if changes.get("kind") == "initial_snapshot":
+        return "initial"
+    data_changed = _data_changed(changes)
+    system_changed = bool(system)
+    if system_changed and data_changed:
+        return "system_and_data"
+    if system_changed:
+        return "system"
+    if data_changed:
+        return "data"
+    return "none"
+
+
+def _change_kind_label(change_kind: str) -> str:
+    """Translate an internal release classification for public Pages text."""
+    return _CHANGE_KIND_LABELS[change_kind]
+
+
+def _system_changes(
+    remote_release: dict[str, object] | None, changelog_changes: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Keep unconsumed changelog entries and version changes as system evidence."""
+    changes = (
+        changelog_changes
+        if remote_release is None
+        or remote_release.get("system_changelog_hash")
+        != _system_hash(changelog_changes)
+        else ()
+    )
+    if remote_release is None:
+        return changes or (f"首次发布程序版本 {__version__}",)
+    previous_version = remote_release.get("app_version")
+    if isinstance(previous_version, str) and previous_version != __version__:
+        return (*changes, f"程序版本 {previous_version} → {__version__}")
+    return changes
 
 
 def _change_lines(changes: dict[str, object]) -> list[str]:

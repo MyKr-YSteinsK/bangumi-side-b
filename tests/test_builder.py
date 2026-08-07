@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from bgm_side_b import __version__
 from bgm_side_b.build.builder import ArchiveBuilder, BuildError
 from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database
@@ -88,6 +89,7 @@ def test_offline_builder_generates_both_profiles_without_mutating_sqlite(
     assert 'meta name="description"' in settings_html
     assert "基于 Bangumi 数据生成的本地优先季度动画资料库" in settings_html
     assert "GitHub Pages 与离线 PWA。" in settings_html
+    assert __version__ in settings_html
     assert (tmp_path / "dist" / "pages" / "updates" / "index.html").is_file()
     assert (tmp_path / "dist" / "pages" / "sw.js").is_file()
     worker = (tmp_path / "dist" / "pages" / "sw.js").read_text(encoding="utf-8")
@@ -104,6 +106,7 @@ def test_offline_builder_generates_both_profiles_without_mutating_sqlite(
     marker = json.loads((workspace / "state" / "pages-build.json").read_text("utf-8"))
     assert marker["profile"] == "pages"
     assert marker["schema"] == 2
+    assert marker["app_version"] == __version__
     assert marker["source_commit"] != "unavailable"
     snapshot = json.loads(
         (workspace / "state" / "pages-snapshot.json").read_text("utf-8")

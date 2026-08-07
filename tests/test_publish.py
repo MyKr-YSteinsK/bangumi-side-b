@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from bgm_side_b import __version__
 from bgm_side_b.build.builder import ArchiveBuilder
 from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database
@@ -94,6 +95,8 @@ def test_publish_dry_run_and_local_bare_remote_transaction(
         dry_run = Publisher(root, reporter).publish(dry_run=True, remote="test")
     assert dry_run.dry_run and not dry_run.published
     assert dry_run.report_path.is_file()
+    report = json.loads(dry_run.report_path.read_text("utf-8"))
+    assert report["app_version"] == __version__
     output = stream.getvalue()
     assert output.count("[发布") >= 14
     assert "正在读取远端 gh-pages" in output

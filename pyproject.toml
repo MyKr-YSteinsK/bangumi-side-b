@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bgm-side-b"
-version = "0.1.2"
+dynamic = ["version"]
 description = "Local-first Bangumi archive tooling"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,6 +17,9 @@ dev = ["pytest>=8,<9", "ruff>=0.6,<1", "playwright>=1.50,<2"]
 
 [project.scripts]
 bgmb = "bgm_side_b.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "bgm_side_b._version.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

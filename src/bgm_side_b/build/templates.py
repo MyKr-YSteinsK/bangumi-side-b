@@ -10,6 +10,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoes
 
 from bgm_side_b.build.frontend import drawer_json
 from bgm_side_b.build.models import BuildQuarter, SubjectDetailPage
+from bgm_side_b.release.history import change_kind_display
 
 
 class TemplateError(RuntimeError):
@@ -48,6 +49,7 @@ class TemplateRenderer:
         )
         self.environment.filters["episode_title"] = _episode_title
         self.environment.filters["duration_minutes"] = _duration_minutes
+        self.environment.filters["change_kind_display"] = change_kind_display
 
     def render_quarter_shell(
         self,

@@ -105,7 +105,7 @@ def test_updates_page_uses_chinese_public_release_labels() -> None:
             "release_version": "2026.07.31.1",
             "app_version": "0.1.1",
             "published_at": "2026-07-31T19:42:11Z",
-            "change_kind": "system_and_data",
+            "change_kind": "both",
             "system": ("PWA 快照校验",),
             "data": ("首次发布完整资料快照",),
         },
@@ -114,13 +114,28 @@ def test_updates_page_uses_chinese_public_release_labels() -> None:
                 "release_version": "2026.07.30.1",
                 "app_version": "0.1.0",
                 "published_at": "2026-07-30T00:00:00Z",
-                "change_kind": "data",
+                "change_kind": "system_and_data",
+            },
+            {
+                "release_version": "2026.07.29.1",
+                "app_version": "0.1.0",
+                "published_at": "2026-07-29T00:00:00Z",
+                "change_kind": "系统与资料均有变化",
+            },
+            {
+                "release_version": "2026.07.28.1",
+                "app_version": "0.1.0",
+                "published_at": "2026-07-28T00:00:00Z",
+                "change_kind": "future_kind",
             },
         ),
     )
     for label in ("当前资料版本", "程序版本", "发布时间", "系统变更", "资料变更"):
         assert label in rendered
     assert "Release 0.1.1" not in rendered
+    assert rendered.count("系统与资料均有变化") == 3
+    assert "both" not in rendered
+    assert "future_kind" in rendered
 
 
 def test_repository_metadata_prepares_manual_chinese_about_update() -> None:

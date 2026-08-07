@@ -27,6 +27,7 @@ from bgm_side_b.release.candidate import (
     read_pages_build_snapshot,
 )
 from bgm_side_b.release.history import (
+    change_kind_display,
     history_entry,
     next_release_version,
     unreleased_changes,
@@ -747,15 +748,6 @@ _DATA_CHANGE_FIELDS = (
     "covers_changed",
 )
 
-_CHANGE_KIND_LABELS = {
-    "initial": "首次发布",
-    "system": "系统有变化",
-    "data": "资料有变化",
-    "system_and_data": "系统与资料均有变化",
-    "none": "无结构化变化",
-}
-
-
 def _data_changed(changes: dict[str, object]) -> bool:
     """Only structured subject, episode, and cover facts count as data changes."""
     return changes.get("kind") == "initial_snapshot" or any(
@@ -780,7 +772,7 @@ def _change_kind(changes: dict[str, object], system: tuple[str, ...]) -> str:
 
 def _change_kind_label(change_kind: str) -> str:
     """Translate an internal release classification for public Pages text."""
-    return _CHANGE_KIND_LABELS[change_kind]
+    return change_kind_display(change_kind)
 
 
 def _system_changes(

@@ -1,8 +1,32 @@
 # 更新日志
 
-本文件记录项目的重要变更。
+本文档记录项目的重要变更。
 
 ## 尚未发布
+
+### 修复
+
+- Windows 构建预检在输出恢复失败时保留完整 recovery tree，避免丢失唯一旧输出。
+- `bgmb status` 与 `bgmb doctor` 识别 prepared release 的有效、过期、无效与可发布状态。
+- `bgmb release publish` 在远端确认成功后消费 prepared state；本地清理失败会给出警告并阻止重复发布。
+- 更新日志归档已发布内容，并兼容历史 release 中的 `both` 变更类型显示。
+
+## 0.1.3
+
+### 新增
+
+- 新增 `bgmb doctor`、`bgmb status` 和 `bgmb release prepare/publish`，将本地状态、发布准备与真实发布的安全检查收口。
+- 新增只运行测试与静态检查的 GitHub Actions CI；Linux 覆盖 Chromium PWA 回归，Windows 覆盖非浏览器测试。
+
+### 修复
+
+- 程序版本改为源码单一来源，避免虚拟环境的旧包元数据写入错误的 build 或 release 版本。
+- 修复 release 变更类型与公开摘要可能互相矛盾的问题。
+- PWA 更新会复用旧 active snapshot 中已通过校验的未变化文件。
+- Pages WebP 封面加入基于源哈希与转换配方的构建缓存。
+- Windows 构建加入输出锁预检、有限短重试与 pending promotion 恢复。
+
+## 0.1.2
 
 ### 新增
 
@@ -18,21 +42,6 @@
 
 - 设置页按主要操作和资料维护分组，清除资料后可直接重新初始化。
 - README、更新日志、发布摘要和仓库公开说明改为中文。
-
-### 0.1.3 开发基础设施
-
-### 新增
-
-- 新增 `bgmb doctor`、`bgmb status` 和 `bgmb release prepare/publish`，将本地状态、发布准备与真实发布的安全检查收口。
-- 新增只运行测试与静态检查的 GitHub Actions CI；Linux 覆盖 Chromium PWA 回归，Windows 覆盖非浏览器测试。
-
-### 修复
-
-- 程序版本改为源码单一来源，避免虚拟环境的旧包元数据写入错误的 build 或 release 版本。
-- 修复 release 变更类型与公开摘要可能互相矛盾的问题。
-- PWA 更新会复用旧 active snapshot 中已通过校验的未变化文件。
-- Pages WebP 封面加入基于源哈希与转换配方的构建缓存。
-- Windows 构建加入输出锁预检、有限短重试与 pending promotion 恢复。
 
 ## 0.1.1
 

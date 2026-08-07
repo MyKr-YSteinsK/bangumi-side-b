@@ -10,7 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from bgm_side_b.release.history import next_release_version, unreleased_changes
+from bgm_side_b.release.history import (
+    change_kind_display,
+    next_release_version,
+    unreleased_changes,
+)
 from bgm_side_b.release.manifest import (
     ManifestError,
     build_snapshot_manifest,
@@ -133,6 +137,24 @@ def test_public_release_summaries_use_chinese_text() -> None:
         "封面变化 2 张",
     ]
     assert _change_lines({"kind": "initial_snapshot"}) == ["首次发布完整资料快照"]
+
+
+def test_change_kind_display_keeps_legacy_and_unknown_history_readable() -> None:
+    assert change_kind_display("both") == "系统与资料均有变化"
+    assert change_kind_display("system_and_data") == "系统与资料均有变化"
+    assert change_kind_display("系统与资料均有变化") == "系统与资料均有变化"
+    assert change_kind_display("future_kind") == "future_kind"
+
+
+def test_current_changelog_reads_only_the_unreleased_section() -> None:
+    changes = unreleased_changes(ROOT / "CHANGELOG.md")
+
+    assert (
+        "Windows 构建预检在输出恢复失败时保留完整 recovery tree，避免丢失唯一旧输出。"
+        in changes
+    )
+    assert not any("首次初始化完成后" in item for item in changes)
+    assert not any("新增 `bgmb doctor`" in item for item in changes)
 
 
 def test_release_change_kinds_only_count_structured_data_facts() -> None:

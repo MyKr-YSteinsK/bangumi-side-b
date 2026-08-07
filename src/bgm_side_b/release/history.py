@@ -11,6 +11,27 @@ from pathlib import Path
 
 _VERSION = re.compile(r"(\d{4})\.(\d{2})\.(\d{2})\.(\d+)$")
 
+_CHANGE_KIND_LABELS = {
+    "initial": "首次发布",
+    "system": "系统有变化",
+    "data": "资料有变化",
+    "system_and_data": "系统与资料均有变化",
+    "both": "系统与资料均有变化",
+    "none": "无结构化变化",
+    "首次发布": "首次发布",
+    "系统有变化": "系统有变化",
+    "资料有变化": "资料有变化",
+    "系统与资料均有变化": "系统与资料均有变化",
+    "无结构化变化": "无结构化变化",
+}
+
+
+def change_kind_display(change_kind: object) -> str:
+    """Return the public Chinese label while preserving unknown legacy values."""
+    if isinstance(change_kind, str):
+        return _CHANGE_KIND_LABELS.get(change_kind, change_kind)
+    return str(change_kind)
+
 
 def unreleased_changes(changelog: Path) -> tuple[str, ...]:
     """Read the bullet text below the current Chinese or English draft heading."""

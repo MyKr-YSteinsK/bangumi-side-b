@@ -35,3 +35,27 @@ count, country-filtered subject count, and `character_sections: 0`.
 Runtime pages use static HTML, CSS, and native JavaScript only. They do not
 read SQLite or request Bangumi data. Pages PWA release checks occur only after
 an explicit user action; normal startup uses the active verified snapshot.
+
+## Pages cover cache and promotion recovery
+
+Pages WebP covers use a local derived cache under
+`workspace/cache/derived-covers/`. Each key includes the source hash and the
+transform recipe, so a changed resize or quality recipe naturally creates a new
+entry. A cache hit is validated before it is copied to staging; a corrupt entry
+is removed and regenerated without touching the original cover or other cache
+entries.
+
+Before expensive rendering, `build` probes an existing target for safe
+replacement. Promotion retries only short Windows lock failures. If a fully
+validated staging tree still cannot replace `dist/pages` or `dist/local`, it is
+retained as a pending promotion instead of being discarded:
+
+```powershell
+bgmb promote pages
+```
+
+`promote` rechecks the retained tree, source commit, app version, data
+generation, and tree hash; it promotes without rerendering. A later build
+refuses to overwrite it unless the operator explicitly uses `--discard-pending`.
+Build reports include elapsed time, derived-cover generated/reused counts,
+promotion retries, and pending-promotion state.

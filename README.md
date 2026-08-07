@@ -78,6 +78,31 @@ python -m pytest tests -q
 python -m ruff check .
 ```
 
+## 开发状态与推荐发布流程
+
+先用本地状态命令确认下一步；`doctor` 仅在未加 `--local` 时读取远端 Git 状态：
+
+```powershell
+bgmb status
+bgmb doctor
+```
+
+日常发布使用高层编排，不需要手动串联 Pages 构建与 dry-run：
+
+```powershell
+bgmb release prepare
+git push origin main
+bgmb release publish
+```
+
+`release prepare` 只会审计、构建 Pages 和执行发布 dry-run，随后把当前
+HEAD、源码程序版本、资料代次、Pages candidate 与远端 `gh-pages` 绑定到
+prepared state。真实 `release publish` 是明确动作，且会再次确认这些事实、
+干净工作树、没有 pending promotion，以及 `HEAD == origin/main`。任一项变化
+都会要求重新 prepare。旧的 `build`、`publish --dry-run` 和 `publish` 命令继续保留。
+
+更多开发与验收说明见 [开发文档](docs/development.md)。
+
 仓库跟踪源代码、配置、模板、静态资源、测试和文档。SQLite 数据库、下载封面、报告、备份、
 生成站点、缓存、临时文件和密钥不应提交。
 

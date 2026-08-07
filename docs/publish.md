@@ -1,5 +1,26 @@
 # Manual publishing
 
+## 推荐发布编排
+
+旧的 `bgmb publish --dry-run` 和 `bgmb publish` 仍可单独使用。日常发布优先使用：
+
+```powershell
+bgmb release prepare
+git push origin main
+bgmb release publish
+```
+
+`release prepare` 固定执行本地预检、资料审计、Pages-only build 和发布 dry-run；
+它不会 sync、构建 local、push 或真实发布。成功后会写入
+`workspace/state/prepared-release.json`，其中只保存项目相对的报告路径，并绑定
+source commit、源码程序版本、data generation、Pages candidate ID/content hash、
+当前远端 `gh-pages` commit 和 tentative release version。
+
+`release publish` 是明确的真实发布动作。它会重新检查 prepared state、干净工作树、
+HEAD、程序版本、资料代次、Pages candidate、pending promotion、`origin/main` 和
+远端 `gh-pages`；其中必须满足 `HEAD == origin/main`。任一绑定事实变化都会拒绝
+发布，并要求重新运行 `bgmb release prepare`。
+
 The first release may be considered only after the reviewed `main` has been
 manually pushed, an old workspace/output has been recoverably moved outside the
 repository, and this scoped sequence has passed:

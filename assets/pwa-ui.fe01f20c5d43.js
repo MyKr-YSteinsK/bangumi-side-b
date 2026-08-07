@@ -164,9 +164,14 @@ function renderUpdate(update, staging) {
 function setGate(state) {
   if (gate) { gate.dataset.pwaGate = state.status; gate.hidden = Boolean(state.active); }
   if (gateStatus) gateStatus.textContent = describe(state);
-  const staging = state.staging || {}; const total = Number(staging.total_bytes || 0); const bytes = Number(staging.downloaded_bytes || 0);
-  if (progress) { progress.hidden = !total; progress.max = total || 1; progress.value = bytes; }
-  if (progressLabel) { progressLabel.hidden = !total; progressLabel.textContent = total ? `${formatBytes(bytes)} / ${formatBytes(total)}` : ""; }
+  const staging = state.staging || {}; const total = Number(staging.total_bytes || 0); const verified = Number(staging.verified_bytes || 0);
+  if (progress) { progress.hidden = !total; progress.max = total || 1; progress.value = verified; }
+  if (progressLabel) {
+    progressLabel.hidden = !total;
+    progressLabel.textContent = total
+      ? `${formatBytes(verified)} / ${formatBytes(total)} · 已复用 ${formatBytes(staging.reused_bytes || 0)} · 新下载 ${formatBytes(staging.downloaded_bytes || 0)}`
+      : "";
+  }
   const firstInstallState = ["checking-local-state", "waiting-for-controller", "probing-release", "first-install-required"].includes(state.status);
   const canInitialize = !state.active && !staging.operation_id && firstInstallState;
   if (start) {

@@ -14,6 +14,7 @@ from bgm_side_b import __version__
 from bgm_side_b.build.builder import ArchiveBuilder
 from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database
+from bgm_side_b.release import publish as publish_module
 from bgm_side_b.release import workflow
 from bgm_side_b.release.candidate import (
     advance_data_generation,
@@ -330,6 +331,73 @@ def test_publish_refuses_when_gh_pages_changed_after_prepare(
     assert "prepared release 已失效" in result.conclusion()
 
     with pytest.raises(WorkflowError, match="prepared release 已失效"):
+        publish_prepared_release(root)
+
+
+def test_successful_publish_consumes_its_prepared_state(
+    workflow_root: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = workflow_root
+    _git(root, "push", "-u", "origin", "main")
+    prepared = prepare_release(root)
+    monkeypatch.setattr(publish_module, "_allowed_origin", lambda _: True)
+
+    run = publish_prepared_release(root)
+
+    assert run.published
+    assert not prepared.state_path.exists()
+    assert local_status(root).prepared_release_status == "none"
+
+
+@pytest.mark.parametrize(
+    "message", ("publish Git transaction failed", "publish was interrupted")
+)
+def test_failed_or_unknown_publish_keeps_its_prepared_state(
+    workflow_root: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    message: str,
+) -> None:
+    root, _ = workflow_root
+    _git(root, "push", "-u", "origin", "main")
+    prepared = prepare_release(root)
+
+    def fail_publish(_: object) -> object:
+        raise workflow.PublishError(message)
+
+    monkeypatch.setattr(workflow.Publisher, "publish", fail_publish)
+
+    with pytest.raises(WorkflowError, match="发布失败"):
+        publish_prepared_release(root)
+
+    assert prepared.state_path.is_file()
+
+
+def test_cleanup_failure_marks_the_prepared_state_consumed(
+    workflow_root: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = workflow_root
+    _git(root, "push", "-u", "origin", "main")
+    prepared = prepare_release(root)
+    original_unlink = Path.unlink
+
+    def reject_state_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+        if path == prepared.state_path:
+            raise PermissionError("prepared state locked")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(publish_module, "_allowed_origin", lambda _: True)
+    monkeypatch.setattr(Path, "unlink", reject_state_cleanup)
+
+    run = publish_prepared_release(root)
+
+    assert run.published
+    assert "prepared-state-cleanup-failed" in run.warnings
+    assert prepared.state_path.is_file()
+    assert (root / "workspace" / "state" / "prepared-release-consumed.json").is_file()
+    assert local_status(root).prepared_release_status == "consumed"
+    assert local_status(root).next_step() == "bgmb release prepare"
+    assert "上一次发布已成功" in doctor(root).conclusion()
+    with pytest.raises(WorkflowError, match="已经发布"):
         publish_prepared_release(root)
 
 

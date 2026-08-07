@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
@@ -88,6 +89,8 @@ class LocalStatus:
             return "bgmb release prepare"
         if self.prepared_release_status == "invalid":
             return "处理无效 prepared state 后运行：bgmb release prepare"
+        if self.prepared_release_status == "consumed":
+            return "bgmb release prepare"
         if self.prepared_release_status == "valid_local":
             return "确认 main 已 push 后运行：\nbgmb release publish"
         return "bgmb release prepare"
@@ -158,6 +161,11 @@ class DoctorResult:
             return "prepared release 已失效，请重新运行：bgmb release prepare"
         if self.prepared_release_status == "invalid":
             return "prepared release 状态无效，请处理后重新运行：bgmb release prepare"
+        if self.prepared_release_status == "consumed":
+            return (
+                "上一次发布已成功，但本地 prepared state 清理失败；"
+                "请重新运行：bgmb release prepare"
+            )
         if self.local.pages_build != "fresh" or self.local.pages_candidate != "OK":
             return "请先运行 bgmb release prepare"
         if self.local_only:
@@ -325,6 +333,10 @@ def publish_prepared_release(
         stage="release-preflight", message="正在验证 prepared release"
     )
     prepared = _read_prepared(root / "workspace" / "state" / "prepared-release.json")
+    if _is_prepared_consumed(root, prepared):
+        raise WorkflowError(
+            "prepared release 已经发布；请重新运行：bgmb release prepare"
+        )
     _validate_prepared_local(root, prepared)
     active_reporter.stage(stage="origin-main", message="正在确认 origin/main")
     if _origin_main_status(root) != "synchronized":
@@ -344,9 +356,12 @@ def publish_prepared_release(
     ):
         raise _invalid_prepared()
     try:
-        return Publisher(root, active_reporter).publish()
+        run = Publisher(root, active_reporter).publish()
     except PublishError as error:
         raise WorkflowError(f"发布失败：{error}") from error
+    if not run.published:
+        return run
+    return _consume_prepared_state(root, prepared, run, active_reporter)
 
 
 def _require_prepare_preflight(status: LocalStatus) -> None:
@@ -401,6 +416,8 @@ def _prepared_local_status(
     except WorkflowError:
         return "invalid", None
     version = str(prepared["tentative_release_version"])
+    if _is_prepared_consumed(root, prepared):
+        return "consumed", version
     if (
         data_status != "clean"
         or head != prepared["source_commit"]
@@ -452,6 +469,7 @@ def _prepared_display(status: str, version: str | None) -> str:
         "publishable": "可发布",
         "stale": "已失效",
         "invalid": "状态无效",
+        "consumed": "已消费",
     }
     label = labels.get(status, status)
     return f"{version}（{label}）" if version is not None else label
@@ -606,6 +624,88 @@ def _write_prepared(destination: Path, payload: dict[str, object]) -> None:
         stream.write("\n")
         temporary = stream.name
     os.replace(temporary, destination)
+
+
+def _consume_prepared_state(
+    root: Path,
+    prepared: dict[str, object],
+    run: PublishRun,
+    reporter: ProgressReporter,
+) -> PublishRun:
+    """Remove a successfully published prepared state without hiding local failure."""
+    state_path = root / "workspace" / "state" / "prepared-release.json"
+    try:
+        state_path.unlink()
+    except OSError:
+        try:
+            _write_consumed_prepared(root, prepared, run)
+        except OSError:
+            reporter.warning(
+                stage="prepared-release",
+                message=(
+                    "远端发布已成功，但本地 prepared state 清理和标记均失败；"
+                    "请勿重复发布"
+                ),
+            )
+            warning = "prepared-state-cleanup-and-marker-failed"
+        else:
+            reporter.warning(
+                stage="prepared-release",
+                message=(
+                    "远端发布已成功，但本地 prepared state 清理失败；"
+                    "已标记为已消费"
+                ),
+            )
+            warning = "prepared-state-cleanup-failed"
+        return replace(run, warnings=(*run.warnings, warning))
+    return run
+
+
+def _write_consumed_prepared(
+    root: Path, prepared: dict[str, object], run: PublishRun
+) -> None:
+    destination = root / "workspace" / "state" / "prepared-release-consumed.json"
+    payload = {
+        "schema": 1,
+        "prepared_fingerprint": _prepared_fingerprint(prepared),
+        "release_version": run.release_version,
+        "remote_commit": run.remote_commit,
+    }
+    _write_prepared(destination, payload)
+
+
+def _is_prepared_consumed(root: Path, prepared: dict[str, object]) -> bool:
+    """Recognize a consumed marker or the matching locally published release."""
+    path = root / "workspace" / "state" / "prepared-release-consumed.json"
+    try:
+        value = json.loads(path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError):
+        value = None
+    if (
+        isinstance(value, dict)
+        and value.get("schema") == 1
+        and value.get("prepared_fingerprint") == _prepared_fingerprint(prepared)
+    ):
+        return True
+    try:
+        release = json.loads(
+            (root / "dist" / "pages" / "release.json").read_text("utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(release, dict)
+        and release.get("release_version") == prepared["tentative_release_version"]
+        and release.get("candidate_content_hash")
+        == prepared["candidate_content_hash"]
+    )
+
+
+def _prepared_fingerprint(prepared: dict[str, object]) -> str:
+    encoded = json.dumps(
+        prepared, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _project_relative(root: Path, path: Path) -> str:

@@ -66,6 +66,7 @@ class AtomicOutput:
         """Generate, validate, and promote without replacing a complete old output."""
         self.staging_directory.mkdir(parents=True, exist_ok=True)
         self.require_no_pending(profile)
+        self.require_no_recovery(profile)
         self._probe(profile)
         stage = self.staging_directory / f"{profile.name}-{uuid.uuid4().hex}"
         stage.mkdir()
@@ -106,7 +107,16 @@ class AtomicOutput:
 
     def preflight(self, profile: BuildProfile) -> None:
         """Check that an existing output is replaceable before rendering a stage."""
+        self.require_no_recovery(profile)
         self._probe(profile)
+
+    def require_no_recovery(self, profile: BuildProfile) -> None:
+        """Refuse to overwrite a complete old tree whose restore was not confirmed."""
+        if self._recovery_trees(profile):
+            raise OutputError(
+                "检测到上一版输出尚未恢复；请先手动确认 dist/.staging 中保留的 "
+                "recovery tree"
+            )
 
     def discard_pending(self, profile: BuildProfile) -> bool:
         """Explicitly discard only the retained staging tree for one profile."""
@@ -162,22 +172,70 @@ class AtomicOutput:
             return
         self.staging_directory.mkdir(parents=True, exist_ok=True)
         probe = self.staging_directory / f"{profile.name}-probe-{uuid.uuid4().hex}"
+        target_moved = False
+        target_restored = False
         try:
             self._replace(target, probe)
+            target_moved = True
             self._replace(probe, target)
+            target_restored = True
         except OSError as error:
-            if probe.exists() and not target.exists():
+            if target_moved and not target_restored:
                 try:
                     self._replace(probe, target)
+                    target_restored = True
+                    return
                 except OSError as restore_error:
+                    retained = self._retain_recovery(profile, probe)
+                    if retained is None:
+                        raise OutputError(
+                            "上一版输出未确认恢复；请手动检查后再试"
+                        ) from restore_error
                     raise OutputError(
-                        "previous output could not be restored"
+                        "上一版输出未恢复到原位置，但完整副本已保留；请处理后再试"
                     ) from restore_error
+            elif probe.exists() and not target.exists():
+                retained = self._retain_recovery(profile, probe)
+                if retained is None:
+                    raise OutputError(
+                        "上一版输出位置无法确认；请手动检查后再试"
+                    ) from error
+                raise OutputError(
+                    "上一版输出位置无法确认，但完整副本已保留；请处理后再试"
+                ) from error
             raise OutputError(
                 f"dist/{profile.output_directory} 当前被占用，请关闭使用它的程序后重试"
             ) from error
         finally:
-            _remove_tree(probe)
+            if not target_moved or target_restored:
+                _remove_tree(probe)
+
+    def _retain_recovery(self, profile: BuildProfile, probe: Path) -> Path | None:
+        """Keep an un-restored old output without assuming another rename is safe."""
+        if not probe.exists():
+            return None
+        recovery = self.staging_directory / (
+            f"{profile.name}-recovery-{uuid.uuid4().hex}"
+        )
+        try:
+            self._replace(probe, recovery)
+        except OSError:
+            return probe if probe.exists() else None
+        return recovery if recovery.exists() else None
+
+    def _recovery_trees(self, profile: BuildProfile) -> tuple[Path, ...]:
+        """Return only retained same-profile probe/recovery trees."""
+        if not self.staging_directory.is_dir():
+            return ()
+        return tuple(
+            path
+            for pattern in (
+                f"{profile.name}-recovery-*",
+                f"{profile.name}-probe-*",
+            )
+            for path in self.staging_directory.glob(pattern)
+            if path.is_dir()
+        )
 
     def _promote(self, profile: BuildProfile, stage: Path) -> OutputResult:
         target = self.distribution_directory / profile.output_directory

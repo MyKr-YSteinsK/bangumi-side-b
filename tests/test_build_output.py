@@ -228,6 +228,7 @@ def test_atomic_output_detects_a_locked_target_before_writer_runs(
     distribution = tmp_path / "dist"
     target = distribution / "pages"
     target.mkdir(parents=True)
+    (target / "version.txt").write_text("old", encoding="utf-8")
     output = AtomicOutput(distribution)
 
     def locked(_: Path, __: Path) -> None:
@@ -243,7 +244,82 @@ def test_atomic_output_detects_a_locked_target_before_writer_runs(
     with pytest.raises(OutputError, match="dist/pages 当前被占用"):
         output.generate(pages_profile(), writer, lambda stage: None)
     assert not wrote
+    assert (target / "version.txt").read_text(encoding="utf-8") == "old"
     assert not list((distribution / ".staging").glob("pages-*"))
+
+
+def test_preflight_retries_restore_without_losing_the_previous_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = tmp_path / "dist"
+    target = distribution / "pages"
+    target.mkdir(parents=True)
+    (target / "version.txt").write_text("old", encoding="utf-8")
+    output = AtomicOutput(distribution)
+    original_replace = output._replace
+    restore_attempts = 0
+
+    def fail_once(source: Path, destination: Path) -> None:
+        nonlocal restore_attempts
+        if source.name.startswith("pages-probe-") and destination == target:
+            restore_attempts += 1
+            if restore_attempts == 1:
+                raise PermissionError(5, "locked")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(output, "_replace", fail_once)
+
+    output.preflight(pages_profile())
+
+    assert restore_attempts == 2
+    assert (target / "version.txt").read_text(encoding="utf-8") == "old"
+    assert not list((distribution / ".staging").glob("pages-probe-*"))
+
+
+def test_preflight_preserves_recovery_tree_when_restore_cannot_be_confirmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = tmp_path / "dist"
+    target = distribution / "local"
+    target.mkdir(parents=True)
+    (target / "version.txt").write_text("old", encoding="utf-8")
+    output = AtomicOutput(distribution)
+    original_replace = output._replace
+
+    def fail_restore(source: Path, destination: Path) -> None:
+        if source.name.startswith("local-probe-") and destination == target:
+            raise PermissionError(5, "locked")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(output, "_replace", fail_restore)
+
+    with pytest.raises(OutputError, match="完整副本已保留"):
+        output.preflight(local_profile())
+
+    recovery = next((distribution / ".staging").glob("local-recovery-*"))
+    assert (recovery / "version.txt").read_text(encoding="utf-8") == "old"
+    assert not target.exists()
+
+
+def test_recovery_tree_refuses_a_later_build_without_running_its_writer(
+    tmp_path: Path,
+) -> None:
+    distribution = tmp_path / "dist"
+    recovery = distribution / ".staging" / "pages-recovery-retained"
+    recovery.mkdir(parents=True)
+    (recovery / "version.txt").write_text("old", encoding="utf-8")
+    output = AtomicOutput(distribution)
+    wrote = False
+
+    def writer(_: Path) -> None:
+        nonlocal wrote
+        wrote = True
+
+    with pytest.raises(OutputError, match="上一版输出尚未恢复"):
+        output.generate(pages_profile(), writer, lambda stage: None)
+
+    assert not wrote
+    assert (recovery / "version.txt").read_text(encoding="utf-8") == "old"
 
 
 def test_build_report_is_atomic_and_rejects_local_paths(tmp_path: Path) -> None:

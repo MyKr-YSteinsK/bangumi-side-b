@@ -53,6 +53,8 @@ class LocalStatus:
     pages_build: str
     pages_candidate: str
     pending_promotion: str | None
+    prepared_release_status: str
+    prepared_release_version: str | None
     marker: dict[str, object] | None
 
     def render_status(self) -> str:
@@ -61,6 +63,10 @@ class LocalStatus:
             f"程序版本      {self.source_version}",
             f"资料状态      {self.data_status}",
             f"Pages build   {self.pages_build}",
+            "Prepared release  "
+            + _prepared_display(
+                self.prepared_release_status, self.prepared_release_version
+            ),
             f"工作树        {'clean' if self.worktree_clean else 'dirty'}",
             "",
             "下一步：",
@@ -78,6 +84,12 @@ class LocalStatus:
             return f"bgmb promote {self.pending_promotion}"
         if self.data_status != "clean":
             return "bgmb sync 2026 4"
+        if self.prepared_release_status == "stale":
+            return "bgmb release prepare"
+        if self.prepared_release_status == "invalid":
+            return "处理无效 prepared state 后运行：bgmb release prepare"
+        if self.prepared_release_status == "valid_local":
+            return "确认 main 已 push 后运行：\nbgmb release publish"
         return "bgmb release prepare"
 
 
@@ -93,6 +105,7 @@ class DoctorResult:
     remote_app_version: str | None
     remote_release_version: str | None
     local_only: bool
+    prepared_release_status: str
 
     def render(self) -> str:
         """Render a stable, path-free Chinese environment report."""
@@ -116,6 +129,10 @@ class DoctorResult:
             f"Pages build      {self.local.pages_build}",
             f"Pages candidate  {self.local.pages_candidate}",
             f"Pending promotion {self.local.pending_promotion or 'none'}",
+            "Prepared release  "
+            + _prepared_display(
+                self.prepared_release_status, self.local.prepared_release_version
+            ),
             f"gh-pages         {self.gh_pages}",
             f"线上程序版本     {self.remote_app_version or '-'}",
             f"线上资料版本     {self.remote_release_version or '-'}",
@@ -137,10 +154,23 @@ class DoctorResult:
             return f"请先运行 bgmb promote {self.local.pending_promotion}"
         if self.local.data_status != "clean":
             return "资料状态不是 clean，请完成同步后重新构建"
+        if self.prepared_release_status == "stale":
+            return "prepared release 已失效，请重新运行：bgmb release prepare"
+        if self.prepared_release_status == "invalid":
+            return "prepared release 状态无效，请处理后重新运行：bgmb release prepare"
         if self.local.pages_build != "fresh" or self.local.pages_candidate != "OK":
             return "请先运行 bgmb release prepare"
         if self.local_only:
+            if self.prepared_release_status == "valid_local":
+                return "prepared release 本地有效；请运行 bgmb doctor 检查远端状态"
             return "本地检查完成；请运行 bgmb doctor 检查远端状态"
+        if self.prepared_release_status == "valid_local":
+            if self.origin_main != "synchronized":
+                return "请先：git push origin main\n然后：bgmb release publish"
+            if self.gh_pages != "reachable":
+                return "无法确认 gh-pages，请检查网络或远端后重试"
+        if self.prepared_release_status == "publishable":
+            return "prepared release 有效，可以执行：\nbgmb release publish"
         if self.origin_main != "synchronized":
             return "main 尚未与 origin/main 同步，暂不能发布"
         if self.gh_pages != "reachable":
@@ -166,6 +196,9 @@ def local_status(project_root: Path) -> LocalStatus:
     worktree_clean = not _worktree_changes(root)
     data_status, generation = _data_status(root / "workspace")
     marker, pages_build, candidate = _pages_status(root, head, generation, data_status)
+    prepared_status, prepared_version = _prepared_local_status(
+        root, head, generation, data_status, marker
+    )
     try:
         package = distribution_version("bgm-side-b")
     except PackageNotFoundError:
@@ -188,6 +221,8 @@ def local_status(project_root: Path) -> LocalStatus:
         pages_build=pages_build,
         pages_candidate=candidate,
         pending_promotion=pending,
+        prepared_release_status=prepared_status,
+        prepared_release_version=prepared_version,
         marker=marker,
     )
 
@@ -201,10 +236,19 @@ def doctor(project_root: Path, *, local_only: bool = False) -> DoctorResult:
     sqlite_status = _sqlite_status(audit)
     if local_only:
         return DoctorResult(
-            local, audit, sqlite_status, "未检查", "未检查", None, None, True
+            local,
+            audit,
+            sqlite_status,
+            "未检查",
+            "未检查",
+            None,
+            None,
+            True,
+            local.prepared_release_status,
         )
     origin_main = _origin_main_status(root)
     gh_pages, remote_app, remote_release = _gh_pages_status(root)
+    prepared_status = _prepared_remote_status(root, local, origin_main, gh_pages)
     return DoctorResult(
         local,
         audit,
@@ -214,6 +258,7 @@ def doctor(project_root: Path, *, local_only: bool = False) -> DoctorResult:
         remote_app,
         remote_release,
         False,
+        prepared_status,
     )
 
 
@@ -338,6 +383,78 @@ def _validate_prepared_local(root: Path, prepared: dict[str, object]) -> None:
         or _candidate_hash(root) != prepared["candidate_content_hash"]
     ):
         raise _invalid_prepared()
+
+
+def _prepared_local_status(
+    root: Path,
+    head: str | None,
+    generation: int | None,
+    data_status: str,
+    marker: dict[str, object] | None,
+) -> tuple[str, str | None]:
+    """Classify prepared state only from local facts without fetching a remote."""
+    path = root / "workspace" / "state" / "prepared-release.json"
+    if not path.is_file():
+        return "none", None
+    try:
+        prepared = _read_prepared(path)
+    except WorkflowError:
+        return "invalid", None
+    version = str(prepared["tentative_release_version"])
+    if (
+        data_status != "clean"
+        or head != prepared["source_commit"]
+        or __version__ != prepared["app_version"]
+        or generation != prepared["data_generation"]
+        or marker is None
+        or marker.get("candidate_id") != prepared["pages_candidate_id"]
+        or marker.get("source_commit") != prepared["source_commit"]
+        or marker.get("app_version") != prepared["app_version"]
+        or marker.get("data_generation") != prepared["data_generation"]
+    ):
+        return "stale", version
+    try:
+        current_hash = _candidate_hash(root)
+    except WorkflowError:
+        return "stale", version
+    if current_hash != prepared["candidate_content_hash"]:
+        return "stale", version
+    return "valid_local", version
+
+
+def _prepared_remote_status(
+    root: Path, local: LocalStatus, origin_main: str, gh_pages: str
+) -> str:
+    """Extend a local prepared-state result only after doctor refreshed Git refs."""
+    if local.prepared_release_status != "valid_local":
+        return local.prepared_release_status
+    try:
+        prepared = _read_prepared(
+            root / "workspace" / "state" / "prepared-release.json"
+        )
+    except WorkflowError:
+        return "invalid"
+    if gh_pages == "reachable" and (
+        _remote_commit(root, "origin", "gh-pages")
+        != prepared["remote_gh_pages_commit"]
+    ):
+        return "stale"
+    if origin_main == "synchronized" and gh_pages == "reachable":
+        return "publishable"
+    return "valid_local"
+
+
+def _prepared_display(status: str, version: str | None) -> str:
+    """Render known prepared-state values without failing on future variants."""
+    labels = {
+        "none": "none",
+        "valid_local": "本地有效",
+        "publishable": "可发布",
+        "stale": "已失效",
+        "invalid": "状态无效",
+    }
+    label = labels.get(status, status)
+    return f"{version}（{label}）" if version is not None else label
 
 
 def _pages_status(

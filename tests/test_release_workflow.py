@@ -98,6 +98,8 @@ def test_local_status_reports_the_fresh_candidate_and_one_next_step(
     assert status.data_status == "clean"
     assert status.pages_build == "fresh"
     assert status.pages_candidate == "OK"
+    assert status.prepared_release_status == "none"
+    assert status.prepared_release_version is None
     assert status.next_step() == "bgmb release prepare"
     assert "下一步：\nbgmb release prepare" in status.render_status()
 
@@ -186,6 +188,86 @@ def test_prepare_writes_a_project_relative_bound_state(
     assert prepared.report_path.is_file()
 
 
+def test_status_reports_a_locally_valid_prepared_release(
+    workflow_root: tuple[Path, Path],
+) -> None:
+    root, _ = workflow_root
+    prepared = prepare_release(root)
+
+    status = local_status(root)
+
+    assert status.prepared_release_status == "valid_local"
+    assert status.prepared_release_version == prepared.release_version
+    assert status.next_step() == "确认 main 已 push 后运行：\nbgmb release publish"
+    assert "本地有效" in status.render_status()
+
+
+@pytest.mark.parametrize("changed", ("head", "generation", "version", "candidate"))
+def test_status_marks_changed_prepared_bindings_stale(
+    workflow_root: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    changed: str,
+) -> None:
+    root, _ = workflow_root
+    prepare_release(root)
+    if changed == "head":
+        _commit(root, "advance head", allow_empty=True)
+    elif changed == "generation":
+        advance_data_generation(root / "workspace")
+    elif changed == "version":
+        monkeypatch.setattr(workflow, "__version__", "99.0.0")
+    else:
+        page = root / "dist" / "pages" / "index.html"
+        page.write_text(page.read_text("utf-8") + "\n", "utf-8")
+
+    status = local_status(root)
+
+    assert status.prepared_release_status == "stale"
+    assert status.next_step() == "bgmb release prepare"
+
+
+def test_status_marks_a_malformed_prepared_state_invalid(
+    workflow_root: tuple[Path, Path],
+) -> None:
+    root, _ = workflow_root
+    state = root / "workspace" / "state" / "prepared-release.json"
+    state.write_text("{}", "utf-8")
+
+    status = local_status(root)
+
+    assert status.prepared_release_status == "invalid"
+    assert "无效 prepared state" in status.next_step()
+
+
+def test_doctor_marks_a_synchronized_prepared_release_publishable(
+    workflow_root: tuple[Path, Path],
+) -> None:
+    root, _ = workflow_root
+    _git(root, "push", "-u", "origin", "main")
+    prepare_release(root)
+
+    result = doctor(root)
+
+    assert result.origin_main == "synchronized"
+    assert result.prepared_release_status == "publishable"
+    assert "bgmb release publish" in result.conclusion()
+
+
+def test_doctor_tells_an_ahead_prepared_release_to_push_main_first(
+    workflow_root: tuple[Path, Path],
+) -> None:
+    root, _ = workflow_root
+    _git(root, "push", "-u", "origin", "main")
+    _commit(root, "unpublished release", allow_empty=True)
+    prepare_release(root)
+
+    result = doctor(root)
+
+    assert result.origin_main == "ahead"
+    assert result.prepared_release_status == "valid_local"
+    assert "git push origin main" in result.conclusion()
+
+
 def test_prepare_refuses_a_dirty_data_generation(
     workflow_root: tuple[Path, Path],
 ) -> None:
@@ -242,6 +324,10 @@ def test_publish_refuses_when_gh_pages_changed_after_prepare(
     _commit(pages, "other release")
     _git(pages, "remote", "add", "origin", str(remote))
     _git(pages, "push", "origin", "HEAD:gh-pages")
+
+    result = doctor(root)
+    assert result.prepared_release_status == "stale"
+    assert "prepared release 已失效" in result.conclusion()
 
     with pytest.raises(WorkflowError, match="prepared release 已失效"):
         publish_prepared_release(root)

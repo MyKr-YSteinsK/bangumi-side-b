@@ -6,7 +6,7 @@ import hashlib
 import json
 import shutil
 import subprocess
-from datetime import date
+from datetime import UTC, date, datetime
 from io import StringIO
 from pathlib import Path
 
@@ -135,9 +135,18 @@ def test_publish_refuses_changed_facts_and_unsafe_origin_branch(
 
 
 def test_publish_reads_known_legacy_remote_release_for_version_comparison(
-    publish_root: tuple[Path, Path], tmp_path: Path
+    publish_root: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, remote = publish_root
+    next_release_version = publish_module.next_release_version
+    fixed_now = datetime(2026, 8, 7, tzinfo=UTC)
+    monkeypatch.setattr(
+        publish_module,
+        "next_release_version",
+        lambda previous: next_release_version(previous, now=fixed_now),
+    )
     legacy = tmp_path / "legacy-release"
     legacy.mkdir()
     _git(legacy, "init")

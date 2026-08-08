@@ -10,6 +10,7 @@ from bgm_side_b.domain import (
     MediaFormat,
     Quarter,
     QuarterAssignmentSource,
+    SourceDecision,
     SourceType,
 )
 
@@ -76,3 +77,11 @@ def test_source_and_assignment_enums_are_closed_contracts() -> None:
     )
     with pytest.raises(ValueError):
         QuarterAssignmentSource("review")
+
+
+def test_source_decision_requires_nonempty_paired_evidence_for_known_source() -> None:
+    assert SourceDecision(SourceType.UNKNOWN).evidence_type is None
+    with pytest.raises(ValueError, match="must not be empty"):
+        SourceDecision(SourceType.UNKNOWN, "", "")
+    with pytest.raises(ValueError, match="require structured evidence"):
+        SourceDecision(SourceType.MANGA)

@@ -40,6 +40,38 @@ class SourceType(StrEnum):
     UNKNOWN = "来源未知"
 
 
+@dataclass(frozen=True)
+class SourceEvidence:
+    """One structured observation mapped to a normalized source."""
+
+    source_type: SourceType
+    evidence_type: str
+    evidence_value: str
+
+    def __post_init__(self) -> None:
+        if not self.evidence_type.strip() or not self.evidence_value.strip():
+            raise ValueError("source evidence type and value must not be empty")
+
+
+@dataclass(frozen=True)
+class SourceDecision:
+    """One normalized source plus optional auditable evidence."""
+
+    source_type: SourceType
+    evidence_type: str | None = None
+    evidence_value: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.evidence_type is None) != (self.evidence_value is None):
+            raise ValueError("source evidence type and value must be paired")
+        if self.evidence_type is not None and (
+            not self.evidence_type.strip() or not self.evidence_value.strip()
+        ):
+            raise ValueError("source evidence type and value must not be empty")
+        if self.source_type is not SourceType.UNKNOWN and self.evidence_type is None:
+            raise ValueError("known sources require structured evidence")
+
+
 class QuarterAssignmentSource(StrEnum):
     """Whether archive ownership was inferred or explicitly assigned."""
 

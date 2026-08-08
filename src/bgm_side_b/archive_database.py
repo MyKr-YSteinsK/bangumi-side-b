@@ -86,8 +86,14 @@ _SCHEMA_STATEMENTS = (
             '漫画改', '轻小说改', '小说改', '游戏改', '视觉小说改',
             '原创动画', '其他改编', '来源未知'
         )),
-        evidence_type TEXT NOT NULL CHECK (length(trim(evidence_type)) > 0),
-        evidence_value TEXT NOT NULL CHECK (length(trim(evidence_value)) > 0)
+        evidence_type TEXT,
+        evidence_value TEXT,
+        CHECK ((evidence_type IS NULL) = (evidence_value IS NULL)),
+        CHECK (
+            evidence_type IS NULL
+            OR (length(trim(evidence_type)) > 0 AND length(trim(evidence_value)) > 0)
+        ),
+        CHECK (source_type = '来源未知' OR evidence_type IS NOT NULL)
     )
     """,
     """

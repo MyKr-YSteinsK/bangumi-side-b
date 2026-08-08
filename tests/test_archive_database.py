@@ -156,6 +156,28 @@ def test_counts_and_cover_dimensions_must_be_valid(tmp_path: Path) -> None:
         connection.close()
 
 
+def test_source_evidence_is_optional_only_for_unknown_source(tmp_path: Path) -> None:
+    database = Database(tmp_path / "archive.sqlite3")
+    database.initialize()
+    connection = database.connect()
+    try:
+        _insert_subject(connection)
+        connection.execute(
+            "INSERT INTO subject_sources VALUES (101, '来源未知', NULL, NULL)"
+        )
+        connection.execute("DELETE FROM subject_sources")
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO subject_sources VALUES (101, '来源未知', '', '')"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO subject_sources VALUES (101, '漫画改', NULL, NULL)"
+            )
+    finally:
+        connection.close()
+
+
 def test_foreign_key_cascade_removes_every_subject_child(tmp_path: Path) -> None:
     database = Database(tmp_path / "archive.sqlite3")
     database.initialize()

@@ -1,341 +1,194 @@
-"""Tests for subject snapshots, transactional deletion, and sync state."""
+"""Direct repository coverage for clean archive subject facts."""
 
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import replace
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from bgm_side_b.database import Database
+from bgm_side_b.domain import (
+    JapaneseClassification,
+    JapaneseDecision,
+    MediaFormat,
+    Quarter,
+    QuarterAssignmentSource,
+    SourceDecision,
+    SourceType,
+)
 from bgm_side_b.repository import (
-    CharacterRecord,
-    CharacterVoiceRecord,
-    PersonRecord,
-    RawTag,
-    SubjectCharacterRecord,
-    SubjectInfoboxItem,
-    SubjectQuarter,
+    CoverRecord,
+    InfoboxItem,
+    QuarterOwnership,
+    QuarterSyncState,
+    ReviewIssue,
     SubjectRecord,
     SubjectRepository,
-    SubjectSource,
-    SubjectTitle,
-    SyncState,
+    SubjectSnapshot,
+    cover_relative_path,
 )
 
 
 @pytest.fixture
 def repository(tmp_path: Path) -> SubjectRepository:
-    database = Database(tmp_path / "workspace" / "data" / "facts.sqlite3")
-    database.migrate()
+    database = Database(tmp_path / "archive.sqlite3")
+    database.initialize()
     return SubjectRepository(database)
 
 
-def _subject(subject_id: int = 1) -> SubjectRecord:
+def _subject(subject_id: int, name: str = "Original") -> SubjectRecord:
     return SubjectRecord(
-        subject_id=subject_id,
-        media_format="tv",
-        summary="stable summary",
-        air_date=date(2022, 1, 2),
-        episode_count=12,
-        rating_score=7.1,
-        rating_count=100,
+        subject_id,
+        name,
+        "中文名",
+        "原始简介",
+        MediaFormat.TV,
+        date(2026, 4, 1),
+        None,
+        12,
+        7.5,
+        100,
+        JapaneseDecision(
+            JapaneseClassification.ACCEPTED_JAPANESE,
+            "infobox_country",
+            '["日本"]',
+        ),
     )
 
 
-def test_subject_upsert_refresh_and_snapshot_replacement(
-    repository: SubjectRepository,
-) -> None:
-    with repository.transaction() as connection:
-        repository.upsert_subject(connection, _subject())
-        repository.upsert_subject(connection, _subject())
-        repository.replace_titles(
-            connection,
-            1,
-            [SubjectTitle("preferred", "中文名"), SubjectTitle("alias", "Alias")],
-        )
-        repository.replace_infobox(
-            connection,
-            1,
-            [SubjectInfoboxItem("原作", {"items": ["漫画"]})],
-        )
-        repository.replace_raw_tags(
-            connection,
-            1,
-            [RawTag("喜剧", 10), RawTag("搞笑", 2)],
-        )
-        repository.replace_sources(
-            connection,
-            1,
-            [SubjectSource("manga", "infobox", "漫画")],
-        )
-        repository.replace_quarters(
-            connection,
-            1,
-            [SubjectQuarter(2022, 1, "new")],
-        )
-        repository.write_sync_state(
-            connection,
-            SyncState(
-                "subject",
-                1,
-                "details",
-                "success",
-                "2022-01-01T00:00:00Z",
-                "2022-01-01T00:00:01Z",
+def _snapshot(subject_id: int = 101) -> SubjectSnapshot:
+    return SubjectSnapshot(
+        _subject(subject_id),
+        aliases=("Alias", "别名"),
+        infobox=(InfoboxItem("国家/地区", ["日本", "美国"]),),
+        tags=("奇幻", "冒险"),
+        source=SourceDecision(SourceType.MANGA, "infobox", "漫画"),
+        quarter=QuarterOwnership(
+            Quarter(2026, 4), QuarterAssignmentSource.AUTOMATIC, "air_date"
+        ),
+        cover=CoverRecord(
+            "https://example.invalid/cover", "large", "a" * 64, 1200, 1800, 10
+        ),
+        review_issues=(
+            ReviewIssue(
+                "quarter_boundary",
+                Quarter(2026, 4),
+                "2026-03-31",
+                {"reason": "boundary"},
+                "2026-08-09T00:00:00Z",
             ),
-        )
-
-    with repository.transaction() as connection:
-        repository.refresh_rating(connection, 1, 8.2, 200)
-        repository.replace_titles(
-            connection,
-            1,
-            [SubjectTitle("preferred", "新中文名")],
-        )
-
-    connection = repository.database.connect()
-    try:
-        subject = connection.execute("SELECT * FROM subjects WHERE id = 1").fetchone()
-        assert subject["summary"] == "stable summary"
-        assert subject["air_date"] == "2022-01-02"
-        assert subject["rating_score"] == 8.2
-        assert subject["rating_count"] == 200
-        assert connection.execute("SELECT COUNT(*) FROM subjects").fetchone()[0] == 1
-        title_count = connection.execute(
-            "SELECT COUNT(*) FROM subject_titles"
-        ).fetchone()[0]
-        assert title_count == 1
-        infobox_value = connection.execute(
-            "SELECT value_json FROM subject_infobox_items"
-        ).fetchone()[0]
-        assert infobox_value == '{"items":["漫画"]}'
-        tags = connection.execute(
-            "SELECT tag_name, tag_count FROM subject_raw_tags ORDER BY position"
-        ).fetchall()
-        assert [tuple(tag) for tag in tags] == [("喜剧", 10), ("搞笑", 2)]
-    finally:
-        connection.close()
-    assert repository.subject_exists(1)
-    assert repository.get_sync_state("subject", 1, "details").status == "success"
+        ),
+    )
 
 
-def test_blacklist_delete_cascades_subject_data_but_preserves_shared_entities(
+def test_subject_snapshot_round_trip_and_child_replacement(
     repository: SubjectRepository,
 ) -> None:
+    snapshot = _snapshot()
     with repository.transaction() as connection:
-        repository.upsert_subject(connection, _subject(1))
-        repository.upsert_subject(connection, _subject(2))
-        repository.replace_titles(
-            connection,
-            1,
-            [SubjectTitle("preferred", "Subject One")],
-        )
-        connection.executemany(
-            """
-            INSERT INTO characters (id, original_name, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            [(10, "Shared", "2022-01-01T00:00:00Z", "2022-01-01T00:00:00Z")],
-        )
-        connection.executemany(
-            """
-            INSERT INTO persons (id, original_name, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            [(20, "Shared Voice", "2022-01-01T00:00:00Z", "2022-01-01T00:00:00Z")],
-        )
-        for subject_id in (1, 2):
-            connection.execute(
-                """
-                INSERT INTO subject_characters (
-                    subject_id, character_id, role, position
-                )
-                VALUES (?, 10, 'main', 0)
-                """,
-                (subject_id,),
-            )
-            connection.execute(
-                """
-                INSERT INTO character_voices (
-                    subject_id, character_id, person_id, position
-                )
-                VALUES (?, 10, 20, 0)
-                """,
-                (subject_id,),
-            )
+        repository.replace_subject_snapshot(connection, snapshot)
 
+    assert repository.get_subject_facts(101) == snapshot
+    assert repository.list_quarter_facts(Quarter(2026, 4)) == (snapshot,)
+
+    updated = SubjectSnapshot(
+        replace(snapshot.subject, name_cn=None, summary_raw=None),
+        aliases=("Only Alias",),
+        infobox=(),
+        tags=("日常",),
+        source=SourceDecision(SourceType.UNKNOWN),
+        quarter=QuarterOwnership(
+            Quarter(2026, 4), QuarterAssignmentSource.MANUAL, "review:42"
+        ),
+        cover=None,
+        review_issues=(),
+    )
     with repository.transaction() as connection:
-        assert repository.delete_subject(connection, 1)
+        repository.replace_subject_snapshot(connection, updated)
 
-    connection = repository.database.connect()
-    try:
-        title_count = connection.execute(
-            "SELECT COUNT(*) FROM subject_titles"
-        ).fetchone()[0]
-        assert title_count == 0
-        assert connection.execute("SELECT COUNT(*) FROM characters").fetchone()[0] == 1
-        assert connection.execute("SELECT COUNT(*) FROM persons").fetchone()[0] == 1
-    finally:
-        connection.close()
+    assert repository.get_subject_facts(101) == updated
 
+
+def test_failed_snapshot_replacement_rolls_back_every_child(
+    repository: SubjectRepository,
+) -> None:
+    original = _snapshot()
     with repository.transaction() as connection:
-        assert repository.delete_subject(connection, 2)
+        repository.replace_subject_snapshot(connection, original)
+    duplicate = ReviewIssue("same", None, None, {}, "now")
+    invalid = replace(
+        original,
+        subject=replace(original.subject, name_original="Changed"),
+        review_issues=(duplicate, duplicate),
+    )
 
-    connection = repository.database.connect()
-    try:
-        assert connection.execute("SELECT COUNT(*) FROM characters").fetchone()[0] == 0
-        assert connection.execute("SELECT COUNT(*) FROM persons").fetchone()[0] == 0
-    finally:
-        connection.close()
-
-
-def test_failed_delete_transaction_rolls_back(repository: SubjectRepository) -> None:
-    with repository.transaction() as connection:
-        repository.upsert_subject(connection, _subject())
-
-    with pytest.raises(RuntimeError):
+    with pytest.raises(sqlite3.IntegrityError):
         with repository.transaction() as connection:
-            repository.delete_subject(connection, 1)
-            raise RuntimeError("force rollback")
+            repository.replace_subject_snapshot(connection, invalid)
 
-    assert repository.subject_exists(1)
+    assert repository.get_subject_facts(101) == original
 
 
-def test_blacklist_cleanup_is_limited_to_the_current_quarter(
+def test_affected_quarters_and_blacklist_purge_cascade_subject_facts(
     repository: SubjectRepository,
 ) -> None:
+    first = _snapshot(101)
+    second = replace(
+        _snapshot(202),
+        quarter=QuarterOwnership(
+            Quarter(2026, 7), QuarterAssignmentSource.MANUAL, "review:7"
+        ),
+    )
     with repository.transaction() as connection:
-        repository.upsert_subject(connection, _subject(1))
-        repository.upsert_subject(connection, _subject(2))
-        repository.replace_quarters(
-            connection,
-            1,
-            [SubjectQuarter(2022, 1, "new")],
-        )
-        repository.replace_quarters(
-            connection,
-            2,
-            [SubjectQuarter(2022, 4, "new")],
-        )
-        assert repository.delete_blacklisted_subjects_in_quarter(
-            connection,
-            frozenset({1, 2}),
-            2022,
-            1,
-        ) == 1
+        repository.replace_subject_snapshot(connection, first)
+        repository.replace_subject_snapshot(connection, second)
 
-    assert not repository.subject_exists(1)
-    assert repository.subject_exists(2)
-
-
-def test_permanent_and_continuing_quarter_updates_are_independent(
-    repository: SubjectRepository,
-) -> None:
+    assert repository.affected_quarters(frozenset({101, 202, 999})) == (
+        Quarter(2026, 4),
+        Quarter(2026, 7),
+    )
     with repository.transaction() as connection:
-        repository.upsert_subject(connection, _subject())
-        repository.replace_permanent_quarter(
-            connection,
-            1,
-            SubjectQuarter(2022, 1, "new", "air_date", "2022-01-02"),
-        )
-        repository.replace_continuing_quarters(
-            connection,
-            1,
-            [SubjectQuarter(2022, 4, "continuing", "episode_air_date", "2022-04-02")],
-        )
-        repository.replace_permanent_quarter(
-            connection,
-            1,
-            SubjectQuarter(2022, 1, "new", "air_date", "2022-01-02"),
-        )
-        repository.replace_continuing_quarters(
-            connection,
-            1,
-            [SubjectQuarter(2022, 7, "continuing", "episode_air_date", "2022-07-02")],
-        )
+        assert repository.delete_subjects(connection, frozenset({101, 999})) == 1
 
+    assert repository.get_subject_facts(101) is None
+    assert repository.get_subject_facts(202) == second
     connection = repository.database.connect()
     try:
-        rows = connection.execute(
-            """
-            SELECT year, month, appearance_kind FROM subject_quarters
-            WHERE subject_id = 1 ORDER BY month
-            """
-        ).fetchall()
-    finally:
-        connection.close()
-    assert [tuple(row) for row in rows] == [
-        (2022, 1, "new"),
-        (2022, 7, "continuing"),
-    ]
-
-
-def test_role_snapshots_share_entities_but_remove_stale_orphans(
-    repository: SubjectRepository,
-) -> None:
-    with repository.transaction() as connection:
-        repository.upsert_subject(connection, _subject(1))
-        repository.upsert_subject(connection, _subject(2))
-        repository.upsert_character(
-            connection, CharacterRecord(10, "Shared", None, None)
-        )
-        repository.upsert_person(connection, PersonRecord(20, "Cast One", None))
-        repository.replace_roles_snapshot(
-            connection,
-            1,
-            [SubjectCharacterRecord(10, "main", 0)],
-            [CharacterVoiceRecord(10, 20, None, 0)],
-        )
-        repository.upsert_person(connection, PersonRecord(21, "Cast Two", None))
-        repository.replace_roles_snapshot(
-            connection,
-            2,
-            [SubjectCharacterRecord(10, "main", 0)],
-            [CharacterVoiceRecord(10, 21, None, 0)],
-        )
-        repository.replace_roles_snapshot(connection, 1, (), ())
-
-    connection = repository.database.connect()
-    try:
-        assert connection.execute("SELECT COUNT(*) FROM characters").fetchone()[0] == 1
-        people = connection.execute("SELECT id FROM persons ORDER BY id").fetchall()
-        voices = connection.execute(
-            "SELECT subject_id, person_id FROM character_voices"
-        ).fetchall()
-    finally:
-        connection.close()
-    assert [row["id"] for row in people] == [21]
-    assert [tuple(row) for row in voices] == [(2, 21)]
-
-
-def test_role_details_refresh_only_when_a_current_relation_needs_it(
-    repository: SubjectRepository,
-) -> None:
-    with repository.transaction() as connection:
-        repository.upsert_subject(connection, _subject())
-        repository.upsert_character(connection, CharacterRecord(10, "Lead", None, None))
-        repository.upsert_person(connection, PersonRecord(20, "Cast", None))
-        repository.replace_roles_snapshot(
-            connection,
-            1,
-            [SubjectCharacterRecord(10, "main", 0)],
-            [CharacterVoiceRecord(10, 20, None, 0)],
-        )
-    assert repository.role_details_need_refresh(1)
-
-    with repository.transaction() as connection:
-        for entity_type, entity_id, data_type in (
-            ("character", 10, "character_detail"),
-            ("person", 20, "person_detail"),
+        for table in (
+            "subject_titles",
+            "subject_infobox",
+            "subject_tags",
+            "subject_sources",
+            "subject_quarters",
+            "subject_covers",
+            "subject_review_issues",
         ):
-            repository.write_sync_state(
-                connection,
-                SyncState(
-                    entity_type,
-                    entity_id,
-                    data_type,
-                    "success",
-                    "2022-01-01T00:00:00Z",
-                    "2022-01-01T00:00:00Z",
-                ),
-            )
-    assert not repository.role_details_need_refresh(1)
+            count = connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE subject_id = 101"
+            ).fetchone()[0]
+            assert count == 0
+    finally:
+        connection.close()
+
+
+def test_quarter_sync_state_and_derived_cover_path(
+    repository: SubjectRepository,
+) -> None:
+    quarter = Quarter(2026, 4)
+    incomplete = QuarterSyncState(
+        quarter, "incomplete", "incomplete", 10, 2, "attempt-1", None
+    )
+    complete = QuarterSyncState(
+        quarter, "complete", "complete", 10, 0, "attempt-2", "success-2"
+    )
+    with repository.transaction() as connection:
+        repository.write_sync_state(connection, incomplete)
+        repository.write_sync_state(connection, complete)
+
+    assert repository.get_sync_state(quarter) == complete
+    assert cover_relative_path(101) == PurePosixPath("covers/101.webp")
+    with pytest.raises(ValueError, match="positive"):
+        cover_relative_path(0)

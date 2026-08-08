@@ -12,15 +12,15 @@ import pytest
 from bgm_side_b import __version__
 from bgm_side_b.build.builder import ArchiveBuilder, BuildError
 from bgm_side_b.config import load_rules
-from bgm_side_b.database import Database
-from bgm_side_b.progress import ConsoleProgressReporter
-from bgm_side_b.repository import (
+from bgm_side_b.legacy_database import Database
+from bgm_side_b.legacy_repository import (
     SubjectInfoboxItem,
     SubjectQuarter,
     SubjectRecord,
     SubjectRepository,
     SubjectTitle,
 )
+from bgm_side_b.progress import ConsoleProgressReporter
 from bgm_side_b.sync import SyncScope
 
 ROOT = Path(__file__).parents[1]

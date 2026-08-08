@@ -1,445 +1,176 @@
-"""Pure, deterministic domain rules for Bangumi Side B."""
+"""Deterministic normalization rules for the clean archive domain."""
 
 from __future__ import annotations
 
+import json
 import re
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
-from unicodedata import normalize
 
-from bgm_side_b.config import CountryFilter, SourceRules, TagRules
-
-QUARTER_MONTHS = (1, 4, 7, 10)
-SUPPORTED_FORMATS = frozenset({"tv", "movie"})
-
-_FORMAT_VALUES = {
-    "tv": "tv",
-    "剧场版": "movie",
-    "movie": "movie",
-    "web": "web",
-    "ova": "ova",
-    "oad": "oad",
-}
-_ADAPTATION_SOURCES = frozenset(
-    {"manga", "light_novel", "novel", "game", "visual_novel"}
+from bgm_side_b.domain import (
+    JapaneseClassification,
+    JapaneseDecision,
+    SourceDecision,
+    SourceEvidence,
+    SourceType,
 )
 
+_COUNTRY_KEYS = frozenset({"制片国家/地区", "国家/地区"})
+_JAPANESE_TOKENS = frozenset({"日本", "Japan"})
+_COUNTRY_SEPARATOR = re.compile(r"[/／,，、;；|]")
+_SUMMARY_MARKER = re.compile(r"\[\s*简介原文\s*\]")
+_KANA = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")
+_SUMMARY_CHARACTERS = re.compile(
+    r"[\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fffA-Za-z0-9]"
+)
+_KANA_MINIMUM = 20
+_KANA_RATIO = 0.25
+
 
 @dataclass(frozen=True)
-class Quarter:
-    """A validated calendar quarter represented by its first month."""
+class TagCandidate:
+    """One API tag candidate before count information is discarded."""
 
-    year: int
-    month: int
+    name: str
+    count: int
 
     def __post_init__(self) -> None:
-        if self.year < 1 or self.year > 9999:
-            raise ValueError("year must be between 1 and 9999")
-        if not is_quarter_month(self.month):
-            raise ValueError("quarter month must be one of 1, 4, 7, or 10")
-
-    @property
-    def start_date(self) -> date:
-        return date(self.year, self.month, 1)
-
-    @property
-    def end_date(self) -> date:
-        next_month = self.month + 3
-        if next_month == 13:
-            return date(self.year, 12, 31)
-        return date(self.year, next_month, 1) - timedelta(days=1)
-
-
-@dataclass(frozen=True)
-class InfoboxItem:
-    """One structured Infobox key/value pair eligible for exact matching."""
-
-    key: str
-    value: str
-
-
-@dataclass(frozen=True)
-class CountryEvidence:
-    """One parsed, verified structured country Infobox value."""
-
-    key: str
-    tokens: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class CountryDecision:
-    """A deterministic country-filter result suitable for safe audit output."""
-
-    decision: str
-    evidence: tuple[CountryEvidence, ...]
-    reason: str
-    evidence_source: str
-    matched_positive_tags: tuple[str, ...] = ()
-    matched_negative_tags: tuple[str, ...] = ()
-    default_reason: str | None = None
-
-    @property
-    def included(self) -> bool:
-        return self.decision.startswith("included_")
-
-
-@dataclass(frozen=True)
-class SourceEvidence:
-    """An exact Infobox or community-tag value supporting one source."""
-
-    evidence_type: str
-    value: str
-
-
-@dataclass(frozen=True)
-class SourceResult:
-    """Resolved canonical sources, their evidence, and deterministic warnings."""
-
-    sources: tuple[str, ...]
-    evidence: tuple[SourceEvidence, ...]
-    warnings: tuple[str, ...]
+        if self.count < 0:
+            raise ValueError("tag candidate count must not be negative")
 
 
 def normalize_text(value: str) -> str:
-    """Apply NFKC and trim outer whitespace without semantic inference."""
-    return normalize("NFKC", value).strip()
+    """Apply only NFKC and surrounding-whitespace normalization."""
+    return unicodedata.normalize("NFKC", value).strip()
 
 
-def is_quarter_month(month: int) -> bool:
-    """Return whether ``month`` is a valid quarter-start month."""
-    return (
-        isinstance(month, int)
-        and not isinstance(month, bool)
-        and month in QUARTER_MONTHS
-    )
-
-
-def quarter_for_date(value: date) -> Quarter:
-    """Return the permanent calendar quarter containing a complete date."""
-    return Quarter(value.year, ((value.month - 1) // 3) * 3 + 1)
-
-
-def expand_years(start_year: int, end_year: int | None = None) -> tuple[int, ...]:
-    """Expand one year or an inclusive ascending year range."""
-    final_year = start_year if end_year is None else end_year
-    if not all(
-        isinstance(year, int) and not isinstance(year, bool)
-        for year in (start_year, final_year)
-    ):
-        raise ValueError("years must be integers")
-    if start_year < 1 or final_year > 9999 or start_year > final_year:
-        raise ValueError("year range must be ascending and within 1 to 9999")
-    return tuple(range(start_year, final_year + 1))
-
-
-def normalize_format(value: str | None) -> str | None:
-    """Map only documented exact format values to canonical lower-case values."""
-    if value is None:
-        return None
-    return _FORMAT_VALUES.get(normalize_text(value).casefold())
-
-
-def is_supported_format(value: str | None) -> bool:
-    """Return whether a raw format is enabled in the first version."""
-    return normalize_format(value) in SUPPORTED_FORMATS
-
-
-def preferred_title(
-    chinese_title: str | None, original_title: str | None
-) -> str | None:
-    """Choose a non-empty Chinese title, otherwise the non-empty original title."""
-    chinese = normalize_text(chinese_title) if chinese_title else ""
-    original = normalize_text(original_title) if original_title else ""
-    return chinese or original or None
-
-
-def normalise_aliases(
-    values: Iterable[str], primary_title: str | None
+def normalize_aliases(
+    values: Iterable[str], *, excluded: Iterable[str] = ()
 ) -> tuple[str, ...]:
-    """Trim, NFKC-normalise, deduplicate, and exclude the primary title."""
-    primary = normalize_text(primary_title) if primary_title else ""
+    """Keep stable, unique aliases without translation or fuzzy matching."""
+    ignored = {normalized for item in excluded if (normalized := normalize_text(item))}
+    seen = set(ignored)
     aliases: list[str] = []
-    seen: set[str] = set()
     for value in values:
-        candidate = normalize_text(value)
-        if not candidate or candidate == primary or candidate in seen:
-            continue
-        seen.add(candidate)
-        aliases.append(candidate)
+        normalized = normalize_text(value)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            aliases.append(normalized)
     return tuple(aliases)
 
 
-def display_tags(raw_tags: Iterable[str], rules: TagRules) -> tuple[str, ...]:
-    """Map exact aliases, filter to the whitelist, and apply configured order."""
-    allowed = set(rules.allowed_tags)
-    selected: set[str] = set()
-    for raw_tag in raw_tags:
-        candidate = normalize_text(raw_tag)
-        canonical = rules.aliases.get(candidate, candidate)
-        if canonical in allowed:
-            selected.add(canonical)
-    return tuple(tag for tag in rules.allowed_tags if tag in selected)
+def order_tag_candidates(candidates: Iterable[TagCandidate]) -> tuple[str, ...]:
+    """Order API candidates by count, then a deterministic normalized name."""
+    counts: dict[str, int] = {}
+    for candidate in candidates:
+        name = normalize_text(candidate.name)
+        if name:
+            counts[name] = max(counts.get(name, 0), candidate.count)
+    return tuple(
+        name
+        for name, _ in sorted(
+            counts.items(), key=lambda item: (-item[1], item[0].casefold(), item[0])
+        )
+    )
 
 
-def derive_sources(
-    infobox_items: Iterable[InfoboxItem],
-    raw_tags: Iterable[str],
-    rules: SourceRules,
-) -> SourceResult:
-    """Resolve sources from exact Infobox evidence, falling back to exact tags."""
-    infobox_evidence = _infobox_evidence(infobox_items, rules)
-    evidence = infobox_evidence or _tag_evidence(raw_tags, rules)
-    return _resolve_evidence(evidence, rules)
+def resolve_source(evidence: Iterable[SourceEvidence]) -> SourceDecision:
+    """Resolve one source, returning unknown for missing or conflicting evidence."""
+    observations = sorted(
+        set(evidence),
+        key=lambda item: (
+            item.source_type.value,
+            item.evidence_type,
+            item.evidence_value,
+        ),
+    )
+    if not observations:
+        return SourceDecision(SourceType.UNKNOWN)
+    source_types = {item.source_type for item in observations}
+    if len(source_types) == 1:
+        first = observations[0]
+        return SourceDecision(
+            first.source_type, first.evidence_type, first.evidence_value
+        )
+    conflict = json.dumps(
+        [
+            [item.source_type.value, item.evidence_type, item.evidence_value]
+            for item in observations
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return SourceDecision(SourceType.UNKNOWN, "conflict", conflict)
 
 
-def decide_country(
-    infobox_items: Iterable[InfoboxItem],
-    country_filter: CountryFilter,
-    *,
-    raw_tags: Iterable[str] | None = None,
-    subject_type: int | None = None,
-    platform: str | None = None,
-    air_date: date | None = None,
-    target_quarter: Quarter | None = None,
-) -> CountryDecision:
-    """Classify one seasonal TV candidate from exact configured evidence only.
-
-    Callers that do not yet supply a target-quarter context retain the former
-    structured-only result names while storage migrations are rolled out.  The
-    complete context activates the Plan 08 deterministic tag and TV-default
-    fallback without accessing a network, database, or AI service.
-    """
-    evidence: list[CountryEvidence] = []
-    malformed = False
-    for item in infobox_items:
-        key = normalize_text(item.key)
-        value = normalize_text(item.value)
-        if key not in country_filter.country_keys or not value:
+def classify_japanese(infobox: Iterable[tuple[str, str]]) -> JapaneseDecision:
+    """Classify only exact structured country evidence; never inspect summary."""
+    accepted = False
+    rejected = False
+    observed: set[str] = set()
+    for item_key, value in infobox:
+        if normalize_text(item_key) not in _COUNTRY_KEYS:
             continue
-        tokens = _country_tokens(value, country_filter.country_value_aliases)
-        if tokens is None:
-            malformed = True
+        normalized = normalize_text(value)
+        tokens = tuple(
+            token
+            for part in _COUNTRY_SEPARATOR.split(normalized)
+            if (token := normalize_text(part))
+        )
+        if not tokens:
             continue
-        evidence.append(CountryEvidence(key, tokens))
-
-    structured = tuple(evidence)
-    if target_quarter is None:
-        return _legacy_country_decision(structured, malformed, country_filter)
-
-    if structured and not malformed:
-        token_sets = {frozenset(item.tokens) for item in structured}
-        if len(token_sets) == 1:
-            tokens = next(iter(token_sets))
-            aliases = {
-                item.casefold() for item in country_filter.country_value_aliases
-            }
-            if any(token.casefold() in aliases for token in tokens):
-                return CountryDecision(
-                    "included_structured_japan",
-                    structured,
-                    "exact_japan_token",
-                    "structured",
-                )
-            return CountryDecision(
-                "excluded_structured_non_japan",
-                structured,
-                "japan_token_absent",
-                "structured",
-            )
-
-    positive, negative = _region_tags(raw_tags or (), country_filter)
-    if positive and negative:
-        return CountryDecision(
-            "excluded_tag_conflict",
-            structured,
-            "conflicting_region_tags",
-            "tag",
-            positive,
-            negative,
+        observed.add(normalized)
+        if _JAPANESE_TOKENS.intersection(tokens):
+            accepted = True
+        else:
+            rejected = True
+    evidence_value = _evidence_json(observed)
+    if accepted and not rejected:
+        return JapaneseDecision(
+            JapaneseClassification.ACCEPTED_JAPANESE,
+            "infobox_country",
+            evidence_value,
         )
-    if positive:
-        return CountryDecision(
-            "included_tag_japan",
-            structured,
-            "exact_positive_region_tag",
-            "tag",
-            positive,
-            negative,
+    if rejected and not accepted:
+        return JapaneseDecision(
+            JapaneseClassification.REJECTED_NON_JAPANESE,
+            "infobox_country",
+            evidence_value,
         )
-    if negative:
-        return CountryDecision(
-            "excluded_negative_tag",
-            structured,
-            "exact_negative_region_tag",
-            "tag",
-            positive,
-            negative,
+    if observed:
+        return JapaneseDecision(
+            JapaneseClassification.UNRESOLVED,
+            "conflicting_infobox_country",
+            evidence_value,
         )
-    if country_filter.allow_tv_default_without_country and _is_tv_default_candidate(
-        subject_type, platform, air_date, target_quarter
-    ):
-        return CountryDecision(
-            "included_tv_default",
-            structured,
-            "seasonal_tv_without_negative_region",
-            "tv_default",
-            default_reason="seasonal_tv_without_negative_region",
-        )
-    return CountryDecision(
-        "excluded_no_region_evidence",
-        structured,
-        "no_region_evidence",
-        "none",
-    )
+    return JapaneseDecision(JapaneseClassification.UNRESOLVED)
 
 
-def _legacy_country_decision(
-    evidence: tuple[CountryEvidence, ...],
-    malformed: bool,
-    country_filter: CountryFilter,
-) -> CountryDecision:
-    """Preserve structured-only callers until their complete context is stored."""
-    if not evidence and not malformed:
-        return CountryDecision(
-            "excluded_missing_country", (), "missing_country", "none"
-        )
-    if malformed:
-        return CountryDecision(
-            "excluded_unparseable_country",
-            evidence,
-            "unparseable_country",
-            "structured",
-        )
-    token_sets = {frozenset(item.tokens) for item in evidence}
-    if len(token_sets) != 1:
-        return CountryDecision(
-            "excluded_conflicting_country",
-            evidence,
-            "conflicting_country",
-            "structured",
-        )
-    tokens = next(iter(token_sets))
-    aliases = {item.casefold() for item in country_filter.country_value_aliases}
-    if any(token.casefold() in aliases for token in tokens):
-        return CountryDecision(
-            "included_japan", evidence, "exact_japan_token", "structured"
-        )
-    return CountryDecision(
-        "excluded_not_japan", evidence, "japan_token_absent", "structured"
-    )
-
-
-def _region_tags(
-    raw_tags: Iterable[str], country_filter: CountryFilter
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Return only exact configured region tags in the detail response order."""
-    positive: list[str] = []
-    negative: list[str] = []
-    for raw_tag in raw_tags:
-        tag = normalize_text(raw_tag)
-        if tag in country_filter.positive_tags and tag not in positive:
-            positive.append(tag)
-        if tag in country_filter.negative_tags and tag not in negative:
-            negative.append(tag)
-    return tuple(positive), tuple(negative)
-
-
-def _is_tv_default_candidate(
-    subject_type: int | None,
-    platform: str | None,
-    air_date: date | None,
-    target_quarter: Quarter,
-) -> bool:
-    return (
-        subject_type == 2
-        and normalize_format(platform) == "tv"
-        and air_date is not None
-        and quarter_for_date(air_date) == target_quarter
-    )
-
-
-def format_utc(value: datetime) -> str:
-    """Render an aware timestamp in stable UTC ``Z`` notation."""
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("timestamp must include timezone information")
-    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _infobox_evidence(
-    items: Iterable[InfoboxItem], rules: SourceRules
-) -> tuple[SourceEvidence, ...]:
-    evidence: list[SourceEvidence] = []
-    for item in items:
-        key = normalize_text(item.key)
-        value = normalize_text(item.value)
-        if key in rules.infobox_keys and value in rules.infobox_values:
-            evidence.append(SourceEvidence("infobox", value))
-    return _unique_evidence(evidence)
-
-
-def _tag_evidence(
-    raw_tags: Iterable[str], rules: SourceRules
-) -> tuple[SourceEvidence, ...]:
-    evidence = [
-        SourceEvidence("tag", normalized)
-        for raw_tag in raw_tags
-        if (normalized := normalize_text(raw_tag)) in rules.tag_values
-    ]
-    return _unique_evidence(evidence)
-
-
-def _unique_evidence(evidence: Iterable[SourceEvidence]) -> tuple[SourceEvidence, ...]:
-    return tuple(dict.fromkeys(evidence))
-
-
-def _resolve_evidence(
-    evidence: tuple[SourceEvidence, ...], rules: SourceRules
-) -> SourceResult:
-    if not evidence:
-        return SourceResult(("unknown",), (), ())
-
-    source_for_evidence = {
-        "infobox": rules.infobox_values,
-        "tag": rules.tag_values,
-    }
-    resolved = {
-        source_for_evidence[item.evidence_type][item.value] for item in evidence
-    }
-    resolved.discard("unknown")
-    if "visual_novel" in resolved:
-        resolved.discard("game")
-    if "light_novel" in resolved:
-        resolved.discard("novel")
-
-    if "original" in resolved and resolved & _ADAPTATION_SOURCES:
-        return SourceResult(
-            ("unknown",),
-            evidence,
-            ("original_adaptation_conflict",),
-        )
-
-    ordered = tuple(source for source in rules.order if source in resolved)
-    return SourceResult(ordered or ("unknown",), evidence, ())
-
-
-_COUNTRY_SEPARATORS = re.compile(r"[／/、,，;；・]")
-_COUNTRY_TOKEN = re.compile(
-    r"(?:[\u3400-\u9fff]{2,4}|[A-Za-z]+(?:[ .'-][A-Za-z]+)*)\Z"
-)
-
-
-def _country_tokens(value: str, aliases: frozenset[str]) -> tuple[str, ...] | None:
-    parts = tuple(normalize_text(part) for part in _COUNTRY_SEPARATORS.split(value))
-    if not parts or any(
-        not part or not _COUNTRY_TOKEN.fullmatch(part) for part in parts
-    ):
+def display_summary(summary_raw: str | None) -> str | None:
+    """Return a conservative display summary while preserving raw SQLite facts."""
+    if summary_raw is None:
         return None
-    known_aliases = tuple(normalize_text(alias) for alias in aliases)
-    if any(
-        alias.casefold() in part.casefold() and part.casefold() != alias.casefold()
-        for alias in known_aliases
-        for part in parts
-    ):
+    normalized = _normalize_summary(summary_raw)
+    if not normalized:
         return None
-    return tuple(dict.fromkeys(parts))
+    marker = _SUMMARY_MARKER.search(normalized)
+    if marker is not None:
+        return _normalize_summary(normalized[: marker.start()]) or None
+    characters = _SUMMARY_CHARACTERS.findall(normalized)
+    kana_count = len(_KANA.findall(normalized))
+    kana_ratio = kana_count / len(characters) if characters else 0.0
+    if kana_count >= _KANA_MINIMUM and kana_ratio >= _KANA_RATIO:
+        return None
+    return normalized
+
+
+def _normalize_summary(value: str) -> str:
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    lines = [line.rstrip() for line in normalized.split("\n")]
+    normalized = "\n".join(lines)
+    return re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", normalized).strip()
+
+
+def _evidence_json(values: set[str]) -> str:
+    return json.dumps(sorted(values), ensure_ascii=False, separators=(",", ":"))

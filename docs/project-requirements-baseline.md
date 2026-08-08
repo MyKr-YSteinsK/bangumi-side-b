@@ -156,7 +156,7 @@ BL向→BL
 excluded_subject_ids = []
 ```
 
-命中项不得进入页面、搜索、抽屉、详情、PWA 或离线清单。同步和构建均防御性处理。当前清理范围内物理删除作品专属数据和媒体；共享角色、声优、图片只有完全无其他引用时才删除。使用事务。移除黑名单后需重新 sync 对应季度恢复。
+命中项不得进入页面、搜索、抽屉、详情、PWA 或离线清单。同步和构建均防御性处理。清理时先读取受影响季度，再在一个事务中物理删除作品及其级联事实；作品封面文件按该作品的唯一派生路径清理。移除黑名单后需重新 sync 对应季度恢复。
 
 ## 10. SQLite
 
@@ -165,34 +165,33 @@ SQLite 是事实来源，HTML 是可重建产物。
 核心表：
 
 ```text
-schema_migrations
 database_metadata
 subjects
 subject_titles
-subject_infobox_items
-subject_raw_tags
+subject_infobox
+subject_tags
 subject_sources
 subject_quarters
-episodes
-characters
-persons
-subject_characters
-character_voices
-media_files
+subject_covers
+subject_review_issues
 sync_states
 ```
 
-subject 是当前版本的事实实体；原始标签和 Infobox 独立保存；图片只登记作品封面的 URL、
-相对路径、哈希、尺寸和状态；同步状态按实体与数据类型记录。历史角色、人物和配音表可因
-迁移兼容而存在，但正式同步、构建和审计均不读取或写入它们。
+正式 Schema v1 从空库直接创建，只接受 `TV` 和 `MOVIE`。Subject 保存原始标题、中文标题、
+原始简介、日期、单一集数、评分及 Japanese-only 结构化证据；别名、Infobox、候选标签、
+标准化来源、唯一归档季度、封面元数据和待复核问题分别保存。同步状态按季度记录 facts 与
+covers 是否完整，不保存实体级状态。
 
-使用 UTC、纯日期、外键、编号事务迁移、迁移前备份、失败回滚。短暂异常通常不立即删除历史事实。
+数据库以 family/version 元数据识别，未知或更高版本直接拒绝；不维护旧开发 migration chain。
+使用纯日期、外键、原子建库和事务失败回滚。短暂异常通常不立即删除历史事实。
 
-## 11. 章节与封面
+## 11. 季度、集数与封面
 
-只保存正片，不保存 SP、OP、ED、PV 或混杂项目。总集数不从章节数量推断；冲突保留并警告。
+一个 Subject 最多属于一个归档季度，季度来源明确区分 automatic/manual；未确认时允许没有
+季度行。SQLite 不保存单集记录，也不从任何列表推断总集数，只保存上游明确提供的单一集数字段。
 
-只下载并登记通过过滤作品的封面。第一版不保存、下载、展示或查询角色、声优与角色图片；
+只登记通过过滤作品的唯一最终封面元数据；相对路径固定由 Subject ID 派生为
+`covers/<subject_id>.webp`，不写入 SQLite。第一版不保存、下载、展示或查询角色、声优与角色图片；
 local 和 Pages 均无角色区。
 
 ## 12. 仓库与 CLI

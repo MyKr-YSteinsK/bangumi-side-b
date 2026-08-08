@@ -14,8 +14,8 @@ import pytest
 from bgm_side_b.audit import ReleaseDataAuditor
 from bgm_side_b.cli import main
 from bgm_side_b.config import load_rules
-from bgm_side_b.database import Database
-from bgm_side_b.repository import (
+from bgm_side_b.legacy_database import Database
+from bgm_side_b.legacy_repository import (
     CharacterRecord,
     MediaRecord,
     RawTag,

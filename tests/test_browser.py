@@ -18,19 +18,19 @@ from playwright.sync_api import Browser, Error, Page, sync_playwright
 
 from bgm_side_b.build.builder import ArchiveBuilder
 from bgm_side_b.config import load_rules
-from bgm_side_b.database import Database
-from bgm_side_b.release.manifest import (
-    build_snapshot_manifest,
-    index_candidate,
-    manifest_json,
-)
-from bgm_side_b.repository import (
+from bgm_side_b.legacy_database import Database
+from bgm_side_b.legacy_repository import (
     EpisodeRecord,
     SubjectInfoboxItem,
     SubjectQuarter,
     SubjectRecord,
     SubjectRepository,
     SubjectTitle,
+)
+from bgm_side_b.release.manifest import (
+    build_snapshot_manifest,
+    index_candidate,
+    manifest_json,
 )
 
 ROOT = Path(__file__).parents[1]

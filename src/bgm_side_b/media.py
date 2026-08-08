@@ -14,8 +14,8 @@ from typing import Protocol
 from PIL import Image, UnidentifiedImageError
 
 from bgm_side_b.api import BangumiApiError, ImageResponse
+from bgm_side_b.legacy_repository import MediaRecord, SubjectRepository, SyncState
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
-from bgm_side_b.repository import MediaRecord, SubjectRepository, SyncState
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_MEDIA_CONCURRENCY = 3

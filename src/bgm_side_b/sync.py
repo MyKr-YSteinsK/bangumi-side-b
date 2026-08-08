@@ -26,9 +26,7 @@ from bgm_side_b.api import (
     SubjectDetail,
 )
 from bgm_side_b.config import ProjectSettings, SourceRules, TagRules
-from bgm_side_b.media import MediaCache, MediaTarget
-from bgm_side_b.progress import NullProgressReporter, ProgressReporter
-from bgm_side_b.repository import (
+from bgm_side_b.legacy_repository import (
     CharacterRecord,
     CharacterVoiceRecord,
     EpisodeRecord,
@@ -43,7 +41,7 @@ from bgm_side_b.repository import (
     SubjectTitle,
     SyncState,
 )
-from bgm_side_b.rules import (
+from bgm_side_b.legacy_rules import (
     CountryDecision,
     InfoboxItem,
     Quarter,
@@ -56,6 +54,8 @@ from bgm_side_b.rules import (
     preferred_title,
     quarter_for_date,
 )
+from bgm_side_b.media import MediaCache, MediaTarget
+from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 
 
 @dataclass(frozen=True)

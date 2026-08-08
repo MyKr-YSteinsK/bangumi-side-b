@@ -11,9 +11,9 @@ from datetime import date
 from pathlib import Path, PurePosixPath
 
 from bgm_side_b.config import ProjectSettings
-from bgm_side_b.database import MIGRATIONS
+from bgm_side_b.legacy_database import MIGRATIONS
+from bgm_side_b.legacy_rules import InfoboxItem, Quarter, decide_country
 from bgm_side_b.release.candidate import read_pages_build_marker
-from bgm_side_b.rules import InfoboxItem, Quarter, decide_country
 
 
 @dataclass(frozen=True)

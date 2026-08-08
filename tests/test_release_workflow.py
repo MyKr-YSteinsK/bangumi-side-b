@@ -13,7 +13,14 @@ import pytest
 from bgm_side_b import __version__
 from bgm_side_b.build.builder import ArchiveBuilder
 from bgm_side_b.config import load_rules
-from bgm_side_b.database import Database
+from bgm_side_b.legacy_database import Database
+from bgm_side_b.legacy_repository import (
+    SubjectInfoboxItem,
+    SubjectQuarter,
+    SubjectRecord,
+    SubjectRepository,
+    SubjectTitle,
+)
 from bgm_side_b.release import publish as publish_module
 from bgm_side_b.release import workflow
 from bgm_side_b.release.candidate import (
@@ -26,13 +33,6 @@ from bgm_side_b.release.workflow import (
     local_status,
     prepare_release,
     publish_prepared_release,
-)
-from bgm_side_b.repository import (
-    SubjectInfoboxItem,
-    SubjectQuarter,
-    SubjectRecord,
-    SubjectRepository,
-    SubjectTitle,
 )
 
 ROOT = Path(__file__).parents[1]

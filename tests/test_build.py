@@ -7,8 +7,8 @@ from pathlib import Path
 
 from bgm_side_b.build import BuildProjection, BuildQueries
 from bgm_side_b.config import load_rules
-from bgm_side_b.database import Database
-from bgm_side_b.repository import (
+from bgm_side_b.legacy_database import Database
+from bgm_side_b.legacy_repository import (
     SubjectInfoboxItem,
     SubjectQuarter,
     SubjectRecord,

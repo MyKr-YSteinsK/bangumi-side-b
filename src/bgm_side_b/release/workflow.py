@@ -20,7 +20,7 @@ from bgm_side_b.build.builder import ArchiveBuilder, BuildError
 from bgm_side_b.build.output import AtomicOutput, OutputError
 from bgm_side_b.build.profiles import pages_profile
 from bgm_side_b.config import load_rules
-from bgm_side_b.database import Database
+from bgm_side_b.legacy_database import Database
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.release.candidate import (
     data_generation_is_dirty,

@@ -15,7 +15,14 @@ import pytest
 from bgm_side_b import __version__
 from bgm_side_b.build.builder import ArchiveBuilder
 from bgm_side_b.config import load_rules
-from bgm_side_b.database import Database
+from bgm_side_b.legacy_database import Database
+from bgm_side_b.legacy_repository import (
+    SubjectInfoboxItem,
+    SubjectQuarter,
+    SubjectRecord,
+    SubjectRepository,
+    SubjectTitle,
+)
 from bgm_side_b.progress import ConsoleProgressReporter
 from bgm_side_b.release import publish as publish_module
 from bgm_side_b.release.candidate import (
@@ -24,13 +31,6 @@ from bgm_side_b.release.candidate import (
 )
 from bgm_side_b.release.manifest import build_snapshot_manifest, manifest_json
 from bgm_side_b.release.publish import Publisher, PublishError, _allowed_origin
-from bgm_side_b.repository import (
-    SubjectInfoboxItem,
-    SubjectQuarter,
-    SubjectRecord,
-    SubjectRepository,
-    SubjectTitle,
-)
 
 ROOT = Path(__file__).parents[1]
 

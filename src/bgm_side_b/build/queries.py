@@ -8,7 +8,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 
-from bgm_side_b.database import MIGRATIONS, Database
+from bgm_side_b.legacy_database import MIGRATIONS, Database
 
 
 class BuildDataError(RuntimeError):

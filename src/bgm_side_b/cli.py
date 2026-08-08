@@ -11,7 +11,8 @@ from bgm_side_b.audit import ReleaseDataAuditor
 from bgm_side_b.build.builder import ArchiveBuilder, BuildError
 from bgm_side_b.build.queries import BuildDataError
 from bgm_side_b.config import load_rules
-from bgm_side_b.database import Database
+from bgm_side_b.legacy_database import Database
+from bgm_side_b.legacy_repository import SubjectRepository
 from bgm_side_b.progress import create_progress_reporter
 from bgm_side_b.release.publish import Publisher, PublishError
 from bgm_side_b.release.workflow import (
@@ -21,7 +22,6 @@ from bgm_side_b.release.workflow import (
     prepare_release,
     publish_prepared_release,
 )
-from bgm_side_b.repository import SubjectRepository
 from bgm_side_b.sync import (
     SubjectSynchronizer,
     parse_sync_scope,

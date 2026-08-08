@@ -24,7 +24,7 @@ from bgm_side_b.build.models import (
 )
 from bgm_side_b.build.queries import QuarterFacts, SubjectFacts
 from bgm_side_b.config import CountryFilter, SourceRules, TagRules
-from bgm_side_b.rules import (
+from bgm_side_b.legacy_rules import (
     InfoboxItem,
     Quarter,
     decide_country,

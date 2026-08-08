@@ -15,8 +15,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from bgm_side_b.legacy_rules import is_quarter_month, normalize_format
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
-from bgm_side_b.rules import is_quarter_month, normalize_format
 
 API_BASE_URL = "https://api.bgm.tv/v0"
 ANIME_SUBJECT_TYPE = 2

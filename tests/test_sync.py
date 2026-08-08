@@ -16,10 +16,10 @@ from bgm_side_b.api import (
     SubjectDetail,
 )
 from bgm_side_b.config import ProjectSettings, load_rules
-from bgm_side_b.database import Database
+from bgm_side_b.legacy_database import Database
+from bgm_side_b.legacy_repository import SubjectRepository
 from bgm_side_b.progress import ConsoleProgressReporter, ProgressReporter
 from bgm_side_b.release.candidate import data_generation_is_dirty, read_data_generation
-from bgm_side_b.repository import SubjectRepository
 from bgm_side_b.sync import (
     SubjectSynchronizer,
     SyncScope,

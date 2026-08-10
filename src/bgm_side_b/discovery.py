@@ -117,6 +117,29 @@ class BrowseDiscoveryAdapter:
                     _from_api_candidate(candidate, media_format, provenance)
                     for candidate in page
                 )
+        boundary_year, boundary_month = _previous_month(quarter)
+        provenance = _browse_provenance(
+            MediaFormat.TV, boundary_year, boundary_month
+        )
+        try:
+            boundary_page = self.client.browse_subjects(
+                year=boundary_year, month=boundary_month, category=TV_CATEGORY
+            )
+        except BangumiApiError as error:
+            failures.append(
+                DiscoveryFailure(
+                    DiscoverySource.BROWSE, provenance, error.code, error.summary
+                )
+            )
+        else:
+            target_start = date(quarter.year, quarter.month, 1)
+            boundary_start = target_start - timedelta(days=TV_BOUNDARY_LOOKBACK_DAYS)
+            candidates.extend(
+                _from_api_candidate(candidate, MediaFormat.TV, provenance)
+                for candidate in boundary_page
+                if candidate.air_date is not None
+                and boundary_start <= candidate.air_date < target_start
+            )
         return _batch(candidates, failures)
 
 
@@ -264,3 +287,9 @@ def _quarter_end_exclusive(quarter: Quarter) -> date:
     if quarter.month == 10:
         return date(quarter.year + 1, 1, 1)
     return date(quarter.year, quarter.month + 3, 1)
+
+
+def _previous_month(quarter: Quarter) -> tuple[int, int]:
+    if quarter.month == 1:
+        return quarter.year - 1, 12
+    return quarter.year, quarter.month - 1

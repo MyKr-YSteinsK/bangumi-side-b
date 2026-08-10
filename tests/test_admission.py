@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 from bgm_side_b.admission import (
@@ -15,7 +16,7 @@ from bgm_side_b.admission import (
     QuarterOverride,
     admit_subject,
 )
-from bgm_side_b.api import SubjectDetail
+from bgm_side_b.api import ApiTag, SubjectDetail
 from bgm_side_b.discovery import DiscoveredSubject
 from bgm_side_b.domain import JapaneseClassification, MediaFormat, Quarter
 
@@ -127,6 +128,28 @@ def test_tv_boundary_observation_is_reviewed_at_one_to_seven_days_only() -> None
     assert boundary.reviews[0].details["days_before_target"] == 6
     assert mismatch.reviews[0].issue_code == DISCOVERY_DATE_MISMATCH
     assert january.reviews[0].issue_code == TV_QUARTER_BOUNDARY
+
+
+def test_high_confidence_target_quarter_tag_resolves_early_tv_premiere() -> None:
+    detail = replace(
+        _detail(air_date="2026-03-28"),
+        tags=(
+            ApiTag("2026年4月", 448),
+            ApiTag("2026年1月", 2),
+            ApiTag("TV", 500),
+            ApiTag("2026年7月", 8),
+        ),
+    )
+    decision = admit_subject(
+        _candidate(dates=frozenset({date(2026, 3, 28)})),
+        detail,
+        Quarter(2026, 4),
+    )
+
+    assert decision.status is AdmissionStatus.ACCEPTED
+    assert decision.premiere is not None
+    assert decision.premiere.evidence_type == "community_quarter_tag"
+    assert decision.premiere.evidence_value == "2026年4月:448"
 
 
 def test_movie_uses_natural_quarter_and_missing_dates_are_reviewed() -> None:

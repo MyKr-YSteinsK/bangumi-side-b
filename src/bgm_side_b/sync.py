@@ -25,7 +25,6 @@ from bgm_side_b.discovery import (
     BrowseDiscoveryAdapter,
     DiscoveryFailure,
     SearchDiscoveryAdapter,
-    merge_discovery_batches,
 )
 from bgm_side_b.domain import Quarter, QuarterAppearanceKind, SourceEvidence
 from bgm_side_b.media import MAX_COVER_CONCURRENCY, CoverResult, CoverStore
@@ -275,9 +274,7 @@ class ArchiveSynchronizer:
             message="发现 TV/MOVIE 候选",
             current=_quarter_label(quarter),
         )
-        batch = merge_discovery_batches(
-            self.browse.discover(quarter), self.search.discover(quarter)
-        )
+        batch = self.browse.discover(quarter)
         if batch.failures:
             errors = tuple(_discovery_error(item) for item in batch.failures)
             return self._write_incomplete(quarter, prior, len(batch.candidates), errors)

@@ -65,6 +65,7 @@ def test_search_posts_documented_date_filter_and_paginates() -> None:
 
 def test_browse_queries_tv_and_movie_months_and_merges_provenance() -> None:
     pages = {
+        (3, 1): [],
         (4, 1): [FIXTURES["tv"]],
         (4, 3): [FIXTURES["movie"]],
         (5, 1): [FIXTURES["tv"]],
@@ -112,6 +113,22 @@ def test_merge_keeps_conflicting_media_explicit_instead_of_last_response_winning
     assert candidate.candidate_media_format is None
     assert candidate.has_media_conflict
     assert candidate.media_formats == frozenset({MediaFormat.TV, MediaFormat.MOVIE})
+
+
+def test_browse_adds_only_the_seven_day_previous_month_tv_boundary_window() -> None:
+    boundary = {**FIXTURES["tv"], "date": "2026-03-28"}
+    outside = {**FIXTURES["tv"], "id": 202, "date": "2026-03-24"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        month = int(request.url.params["month"])
+        category = int(request.url.params["cat"])
+        data = [boundary, outside] if (month, category) == (3, 1) else []
+        return httpx.Response(200, json={"total": len(data), "data": data})
+
+    batch = BrowseDiscoveryAdapter(_client(handler)).discover(Quarter(2026, 4))
+
+    assert [candidate.subject_id for candidate in batch.candidates] == [101]
+    assert batch.candidates[0].provenance == ("browse:TV:2026-03",)
 
 
 def test_experimental_search_failure_is_isolated_and_preserved_for_sync() -> None:

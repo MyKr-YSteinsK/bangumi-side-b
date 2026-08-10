@@ -301,7 +301,7 @@ def test_full_browse_snapshot_uses_public_region_without_subject_get(
     assert facts.subject.japanese.evidence_type == "bangumi_public_region_tag"
 
 
-def test_search_failure_leaves_existing_facts_and_marks_quarter_incomplete(
+def test_search_failure_does_not_block_stable_browse_premiere_sync(
     tmp_path: Path,
 ) -> None:
     api = FakeApi({101: _detail(101)})
@@ -321,13 +321,14 @@ def test_search_failure_leaves_existing_facts_and_marks_quarter_incomplete(
 
     run = sync.run(SyncScope(QUARTER, QUARTER))
 
-    assert run.exit_code == 1
-    assert api.subject_calls == []
-    assert repository.get_subject_facts(99) is not None
-    assert repository.get_sync_state(QUARTER).facts_status == FACTS_INCOMPLETE  # type: ignore[union-attr]
+    assert run.exit_code == 0
+    assert api.subject_calls == [101]
+    assert repository.get_subject_facts(99) is None
+    assert repository.get_subject_facts(101) is not None
+    assert repository.get_sync_state(QUARTER).facts_status == FACTS_COMPLETE  # type: ignore[union-attr]
 
 
-def test_search_only_media_review_is_reported_without_blocking_complete_facts(
+def test_search_only_media_does_not_enter_normal_premiere_sync(
     tmp_path: Path,
 ) -> None:
     api = FakeApi({101: _detail(101), 202: _detail(202, platform="")})
@@ -350,18 +351,10 @@ def test_search_only_media_review_is_reported_without_blocking_complete_facts(
     assert run.exit_code == 0
     result = run.quarters[0]
     assert result.facts_status == FACTS_COMPLETE
-    assert result.external_reviews == (
-        {
-            "subject_id": 202,
-            "issue_code": "SEARCH_ONLY_MEDIA_UNRESOLVED",
-            "candidate_quarter": None,
-            "observed_value": "",
-            "command": "bgmb assign 202 2026 4",
-        },
-    )
+    assert result.external_reviews == ()
     assert repository.get_subject_facts(202) is None
     report = json.loads(run.report_path.read_text(encoding="utf-8"))
-    assert report["review_count"] == 1
+    assert report["review_count"] == 0
     assert report["error_count"] == 0
 
 

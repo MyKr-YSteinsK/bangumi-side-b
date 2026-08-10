@@ -7,7 +7,7 @@ from datetime import date
 from enum import StrEnum
 from typing import Final
 
-from bgm_side_b.api import SubjectDetail
+from bgm_side_b.api import ApiTag, SubjectDetail
 from bgm_side_b.discovery import TV_BOUNDARY_LOOKBACK_DAYS, DiscoveredSubject
 from bgm_side_b.domain import (
     JapaneseClassification,
@@ -277,6 +277,15 @@ def _resolve_quarter(
     target_start = date(target_quarter.year, target_quarter.month, 1)
     days_before_target = (target_start - detail.air_date).days
     if 1 <= days_before_target <= TV_BOUNDARY_LOOKBACK_DAYS:
+        consensus = _early_premiere_consensus(detail.tags, target_quarter)
+        if consensus is not None:
+            return QuarterAppearance(
+                target_quarter,
+                QuarterAppearanceKind.PREMIERE,
+                QuarterAssignmentSource.AUTOMATIC,
+                "community_quarter_tag",
+                consensus,
+            )
         return ReviewFinding(
             TV_QUARTER_BOUNDARY,
             target_quarter,
@@ -350,3 +359,33 @@ def _japanese_review_code(japanese: JapaneseDecision) -> str:
     if japanese.evidence_type == "unresolved_japanese_evidence_conflict":
         return "JAPANESE_EVIDENCE_CONFLICT"
     return JAPANESE_CLASSIFICATION_UNRESOLVED
+
+
+def _early_premiere_consensus(
+    tags: tuple[ApiTag, ...], target_quarter: Quarter
+) -> str | None:
+    target_name = f"{target_quarter.year}年{target_quarter.month}月"
+    canonical = {
+        tag.name: tag.count
+        for tag in tags
+        if tag.count is not None and _canonical_quarter_tag(tag.name)
+    }
+    target_count = canonical.get(target_name)
+    if target_count is None or target_count < 10:
+        return None
+    max_count = max((tag.count or 0 for tag in tags), default=0)
+    if target_count < 0.25 * max_count:
+        return None
+    strongest_other = max(
+        (count for name, count in canonical.items() if name != target_name), default=0
+    )
+    if strongest_other and target_count < 4 * strongest_other:
+        return None
+    return f"{target_name}:{target_count}"
+
+
+def _canonical_quarter_tag(value: str) -> bool:
+    if not value.endswith("月") or "年" not in value:
+        return False
+    year, month = value[:-1].split("年", maxsplit=1)
+    return len(year) == 4 and year.isdecimal() and month in {"1", "4", "7", "10"}

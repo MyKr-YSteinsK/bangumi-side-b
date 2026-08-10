@@ -553,6 +553,7 @@ def _archive_html(archive: ArchiveIndexProjection) -> bytes:
         '<button type="button" class="control-button" data-filter-toggle aria-expanded="false" aria-controls="filter-panel">筛选 <span data-filter-count></span></button>'
         '<button type="button" class="control-button" data-sort-toggle aria-expanded="false" aria-controls="sort-popover">评分：高到低</button>'
         '<label class="page-size"><span class="sr-only">每页数量</span><select data-page-size aria-label="每页数量"></select></label></div>'
+        '<div class="sort-popover" id="sort-popover" data-sort-popover hidden></div>'
         '<div class="active-filter-strip" data-active-filters hidden></div>'
         '<p class="results-summary" data-results-summary></p>'
         '<div class="results-sections" data-list-sections></div>'

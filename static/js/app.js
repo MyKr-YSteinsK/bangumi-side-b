@@ -396,6 +396,9 @@
     quarterRoot.dataset.workspaceMode = state.workspaceMode;
     const sortButton = quarterRoot.querySelector("[data-sort-toggle]");
     if (sortButton) sortButton.textContent = archive.SORTS[state.sort];
+    quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
+      button.setAttribute("aria-selected", String(button.dataset.mediaMode === state.media));
+    });
     const filterButton = quarterRoot.querySelector("[data-filter-toggle]");
     if (filterButton) filterButton.querySelector("[data-filter-count]").textContent = filterCount() ? `(${filterCount()})` : "";
   }
@@ -654,6 +657,629 @@
     } catch {
       loadError = true;
       if (scopePanel) scopePanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>页面资料未完整生成</h2><p>建议重新 build。</p>';
+    }
+  }
+
+  load();
+})();
+
+(() => {
+  "use strict";
+
+  const archive = window.BsbArchive;
+  if (!archive) return;
+  const root = document.querySelector('[data-page="archive"][data-archive-app]');
+  if (!root) return;
+
+  const selectors = {
+    quarter: root.querySelector("[data-archive-quarter-selector]"),
+    year: root.querySelector("[data-archive-year-selector]"),
+    range: root.querySelector("[data-archive-range-selector]"),
+    browser: root.querySelector("[data-archive-browser]"),
+    list: root.querySelector("[data-list-sections]"),
+    scopeLabel: root.querySelector("[data-archive-scope-label]"),
+    search: root.querySelector("[data-search]"),
+    summary: root.querySelector("[data-results-summary]"),
+    noResults: root.querySelector("[data-no-results]"),
+    activeFilters: root.querySelector("[data-active-filters]"),
+    pager: root.querySelector("[data-pager]"),
+    scopePanel: root.querySelector("[data-scope-panel]"),
+    detailPanel: root.querySelector("[data-detail-panel]"),
+    filterPanel: root.querySelector("[data-filter-panel]"),
+    sortPopover: root.querySelector("[data-sort-popover]"),
+  };
+  const state = archive.createState({ scope: { kind: "year", value: "" } });
+  let index = null;
+  let records = [];
+  let rows = [];
+  let rowByKey = new Map();
+  let loadError = false;
+
+  const esc = (value) => String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+  function setScopeUrl(kind, value, replace = false) {
+    const url = new URL(window.location.href);
+    url.search = "";
+    if (kind === "year") url.searchParams.set("year", value);
+    if (kind === "range") {
+      url.searchParams.set("from", String(value.from));
+      url.searchParams.set("to", String(value.to));
+    }
+    url.hash = "";
+    if (replace) window.history.replaceState({}, "", url);
+    else window.history.pushState({}, "", url);
+  }
+
+  function setTab(kind) {
+    root.querySelectorAll("[data-scope-choice]").forEach((button) => {
+      const selected = button.dataset.scopeChoice === kind;
+      button.setAttribute("aria-selected", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    });
+    for (const [name, node] of Object.entries(selectors)) {
+      if (!["quarter", "year", "range", "browser"].includes(name) || !node) continue;
+      if (name === "browser") node.hidden = kind === "quarter";
+      else node.hidden = name !== kind;
+    }
+  }
+
+  function renderQuarterSelector() {
+    if (!selectors.quarter || !index) return;
+    const entries = new Map((index.quarters || []).map((item) => [item.quarter, item]));
+    const years = [...new Set((index.quarters || []).map((item) => Number(item.year)))].sort((a, b) => b - a);
+    const grid = document.createElement("div");
+    grid.className = "archive-quarter-grid";
+    years.forEach((year, yearIndex) => {
+      const row = document.createElement("div");
+      row.className = `archive-year-row${yearIndex > 4 ? " is-older" : ""}`;
+      const label = document.createElement("span");
+      label.className = "archive-year-row__label";
+      label.textContent = String(year);
+      const slots = document.createElement("div");
+      slots.className = "archive-quarter-slots";
+      [1, 4, 7, 10].forEach((month) => {
+        const quarter = `${year}-${String(month).padStart(2, "0")}`;
+        const entry = entries.get(quarter);
+        const link = document.createElement("a");
+        link.className = `archive-quarter-slot${entry ? "" : " is-disabled"}`;
+        link.textContent = String(month).padStart(2, "0");
+        if (entry) {
+          link.href = `../${quarter}/index.html`;
+          link.dataset.quarter = quarter;
+          link.title = `${quarter} · ${entry.count} 部`;
+        } else {
+          link.setAttribute("aria-disabled", "true");
+          link.tabIndex = -1;
+        }
+        slots.append(link);
+      });
+      row.append(label, slots);
+      grid.append(row);
+    });
+    selectors.quarter.replaceChildren(grid);
+    if (!years.length) selectors.quarter.innerHTML = '<p class="empty-state">Archive 为空。</p>';
+  }
+
+  function renderYearSelector() {
+    const select = root.querySelector("[data-archive-year-select]");
+    if (!select || !index) return;
+    select.replaceChildren(...(index.years || []).slice().sort((a, b) => b - a).map((year) => {
+      const option = document.createElement("option");
+      option.value = String(year);
+      option.textContent = String(year);
+      option.selected = Number(state.scope.value) === Number(year);
+      return option;
+    }));
+  }
+
+  function normalRange(from, to) {
+    const values = [Number(from), Number(to)].filter((value) => Number.isFinite(value));
+    if (!values.length) return null;
+    return { from: Math.min(...values), to: Math.max(...values) };
+  }
+
+  async function loadCatalogs(years) {
+    if (!years.length) return [];
+    const responses = await Promise.all(years.map(async (year) => {
+      const response = await fetch(`../data/catalog/${year}.json`, { credentials: "same-origin" });
+      if (!response.ok) throw new Error("catalog unavailable");
+      return response.json();
+    }));
+    return responses.flatMap((payload) => archive.recordsFromCatalog(payload));
+  }
+
+  function yearsForScope(kind, value) {
+    const available = (index?.years || []).map(Number);
+    if (kind === "year") return available.includes(Number(value)) ? [Number(value)] : [];
+    if (kind === "range") return available.filter((year) => year >= value.from && year <= value.to);
+    return [];
+  }
+
+  function createRow(record, sequence) {
+    const article = document.createElement("article");
+    article.className = "subject-row";
+    article.setAttribute("role", "listitem");
+    article.dataset.subjectId = String(record.id);
+    article.dataset.recordKey = record.key;
+    article.dataset.media = record.media.toLowerCase();
+    article.dataset.appearance = record.appearance;
+    article.dataset.search = record.search;
+    article.dataset.source = record.source || "";
+    article.dataset.tags = record.allowed_tags.join("|");
+    article.dataset.quarter = record.quarter || "";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "subject-row__open";
+    button.dataset.openSubject = "true";
+    button.setAttribute("aria-label", `打开 ${record.preferred_title}`);
+    button.setAttribute("aria-expanded", "false");
+    const number = document.createElement("span");
+    number.className = "subject-row__sequence";
+    number.setAttribute("aria-hidden", "true");
+    number.textContent = String(sequence).padStart(3, "0");
+    button.append(number);
+    const cover = document.createElement("span");
+    cover.className = "subject-row__cover";
+    const coverPath = record.cover ? String(record.cover).split("?", 1)[0] : "";
+    if (coverPath) {
+      const image = document.createElement("img");
+      image.width = 52;
+      image.height = 74;
+      image.loading = sequence <= 10 ? "eager" : "lazy";
+      image.src = `../${coverPath}`;
+      image.alt = "";
+      image.addEventListener("error", () => {
+        image.remove();
+        cover.classList.add("subject-row__cover--missing");
+        cover.innerHTML = "<span>ARCHIVE</span>";
+      }, { once: true });
+      cover.append(image);
+    } else {
+      cover.classList.add("subject-row__cover--missing");
+      cover.innerHTML = "<span>ARCHIVE</span>";
+    }
+    button.append(cover);
+    const content = document.createElement("span");
+    content.className = "subject-row__content";
+    const title = document.createElement("strong");
+    title.className = "subject-row__title";
+    title.textContent = record.preferred_title || "—";
+    content.append(title);
+    const original = document.createElement("span");
+    original.className = "subject-row__original";
+    original.textContent = record.original_title || "";
+    content.append(original);
+    const metadata = document.createElement("span");
+    metadata.className = "subject-row__meta";
+    metadata.textContent = [record.media, record.episode_count ? `${record.episode_count}话` : "", record.air_date || "", record.quarter || ""]
+      .filter(Boolean).join(" · ");
+    content.append(metadata);
+    const tagList = document.createElement("span");
+    tagList.className = "subject-row__tags";
+    record.allowed_tags.slice(0, 2).forEach((tag) => {
+      const span = document.createElement("span");
+      span.className = "tag";
+      span.textContent = tag;
+      tagList.append(span);
+    });
+    content.append(tagList);
+    button.append(content);
+    const score = document.createElement("span");
+    score.className = "subject-row__score";
+    const scoreValue = document.createElement("b");
+    scoreValue.textContent = record.score === null || record.score === undefined ? "—" : Number(record.score).toFixed(1);
+    const count = document.createElement("small");
+    count.textContent = record.rating_count === null || record.rating_count === undefined ? "—" : String(record.rating_count);
+    score.append(scoreValue, count);
+    button.append(score);
+    article.append(button);
+    button.addEventListener("click", () => selectRecord(record));
+    return article;
+  }
+
+  function buildLists() {
+    if (!selectors.list) return;
+    selectors.list.replaceChildren();
+    rowByKey = new Map();
+    const groups = [
+      ["tv", "premiere", "本季度新番"],
+      ["tv", "continuing", "跨季度续播"],
+      ["movie", "premiere", "剧场版"],
+    ];
+    groups.forEach(([media, appearance, title]) => {
+      const values = records.filter((record) =>
+        record.media === (media === "movie" ? "MOVIE" : "TV") && record.appearance === appearance);
+      const section = document.createElement("section");
+      section.className = "result-section";
+      section.dataset.listSection = media;
+      section.dataset.appearanceSection = appearance;
+      const header = document.createElement("header");
+      header.className = "result-section__header";
+      const code = document.createElement("p");
+      code.className = "result-section__code";
+      code.textContent = `${media.toUpperCase()} / ${appearance.toUpperCase()}`;
+      const heading = document.createElement("h2");
+      heading.textContent = title;
+      const counter = document.createElement("span");
+      counter.dataset.sectionCount = "true";
+      counter.textContent = String(values.length).padStart(2, "0");
+      header.append(code, heading, counter);
+      const list = document.createElement("div");
+      list.className = "result-list";
+      values.forEach((record, position) => {
+        const row = createRow(record, position + 1);
+        rowByKey.set(record.key, row);
+        list.append(row);
+      });
+      section.append(header, list);
+      selectors.list.append(section);
+    });
+    rows = [...selectors.list.querySelectorAll(".subject-row")];
+  }
+
+  function scopeCounts() {
+    return archive.scopeCounts(records);
+  }
+
+  function renderScope(result) {
+    if (!selectors.scopePanel) return;
+    const counts = scopeCounts();
+    const label = state.scope.kind === "range"
+      ? `${state.scope.value.from}—${state.scope.value.to}`
+      : state.scope.value;
+    selectors.scopePanel.innerHTML = `<p class="workspace-panel__code">ARCHIVE SCOPE</p><h2>${esc(label)}</h2>
+      <p class="workspace-panel__lead">范围内每个 quarter appearance 都保留其原始坐标。</p>
+      <dl class="scope-facts"><div><dt>TV</dt><dd>${counts.tv}</dd></div><div><dt>MOVIE</dt><dd>${counts.movie}</dd></div>
+      <div><dt>PREMIERE</dt><dd>${counts.premiere}</dd></div><div><dt>CONTINUING</dt><dd>${counts.continuing}</dd></div></dl>
+      <p class="workspace-panel__summary">当前结果 ${result.total} / ${records.length} 部 appearance。</p>`;
+  }
+
+  function clearSelection(removeHash = false) {
+    state.selectedSubjectId = null;
+    state.selectedOccurrence = null;
+    state.workspaceMode = "scope";
+    if (removeHash) {
+      const url = new URL(window.location.href);
+      url.hash = "";
+      window.history.replaceState({}, "", url);
+    }
+  }
+
+  function renderRows(result) {
+    const visible = new Set(result.page.map((record) => record.key));
+    const position = new Map(result.all.map((record, item) => [record.key, item + 1]));
+    rows.forEach((row) => {
+      const record = records.find((item) => item.key === row.dataset.recordKey);
+      row.hidden = !record || !visible.has(record.key);
+      row.classList.toggle("is-selected", Boolean(record && record.key === state.selectedOccurrence));
+      const number = row.querySelector(".subject-row__sequence");
+      if (number && record) number.textContent = String(position.get(record.key) || 0).padStart(3, "0");
+      const button = row.querySelector("[data-open-subject]");
+      if (button) button.setAttribute("aria-expanded", String(record && record.key === state.selectedOccurrence));
+    });
+    selectors.list?.querySelectorAll("[data-list-section]").forEach((section) => {
+      const media = section.dataset.listSection === "movie" ? "MOVIE" : "TV";
+      const count = result.all.filter((record) => record.media === media && record.appearance === section.dataset.appearanceSection).length;
+      section.hidden = state.media !== section.dataset.listSection || count === 0;
+      const counter = section.querySelector("[data-section-count]");
+      if (counter) counter.textContent = String(count).padStart(2, "0");
+    });
+    if (selectors.summary) selectors.summary.textContent = `${result.total} / ${records.filter((record) => record.media === (state.media === "movie" ? "MOVIE" : "TV")).length} 部 appearance · 第 ${result.page} / ${result.pageCount} 页`;
+    if (selectors.noResults) selectors.noResults.hidden = result.total !== 0;
+  }
+
+  function renderPager(result) {
+    if (!selectors.pager) return;
+    selectors.pager.replaceChildren();
+    selectors.pager.hidden = result.pageCount <= 1;
+    if (result.pageCount <= 1) return;
+    const add = (label, page, disabled = false, current = false) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.disabled = disabled;
+      if (current) button.setAttribute("aria-current", "page");
+      button.addEventListener("click", () => {
+        state.page = page;
+        clearSelection(true);
+        render();
+        root.querySelector(".master-pane")?.scrollIntoView({ block: "start" });
+      });
+      selectors.pager.append(button);
+    };
+    add("上一页", result.page - 1, result.page <= 1);
+    for (let page = 1; page <= result.pageCount; page += 1) add(String(page).padStart(2, "0"), page, false, page === result.page);
+    add("下一页", result.page + 1, result.page >= result.pageCount);
+  }
+
+  function renderActiveFilters() {
+    if (!selectors.activeFilters) return;
+    selectors.activeFilters.replaceChildren();
+    const values = [
+      ...(state.query ? [{ type: "query", value: state.query, label: `搜索：${state.query}` }] : []),
+      ...state.filters.sources.map((value) => ({ type: "sources", value, label: `来源：${value}` })),
+      ...state.filters.tags.map((value) => ({ type: "tags", value, label: `标签：${value}` })),
+      ...state.filters.sections.map((value) => ({ type: "sections", value, label: `分区：${value}` })),
+    ];
+    selectors.activeFilters.hidden = values.length === 0;
+    values.forEach((item) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "active-filter";
+      button.textContent = `${item.label} ×`;
+      button.addEventListener("click", () => {
+        if (item.type === "query") {
+          state.query = "";
+          if (selectors.search) selectors.search.value = "";
+        } else state.filters[item.type] = state.filters[item.type].filter((value) => value !== item.value);
+        state.page = 1;
+        clearSelection(true);
+        render();
+      });
+      selectors.activeFilters.append(button);
+    });
+  }
+
+  function render() {
+    if (loadError) return;
+    const result = archive.applyPipeline(records, state);
+    state.page = result.page;
+    renderRows(result);
+    renderScope(result);
+    renderActiveFilters();
+    renderPager(result);
+    if (selectors.scopePanel) selectors.scopePanel.hidden = state.workspaceMode !== "scope";
+    if (selectors.detailPanel) selectors.detailPanel.hidden = state.workspaceMode !== "detail";
+    if (selectors.filterPanel) selectors.filterPanel.hidden = state.workspaceMode !== "filter";
+    const sortButton = root.querySelector("[data-sort-toggle]");
+    if (sortButton) sortButton.textContent = archive.SORTS[state.sort];
+    root.querySelectorAll("[data-media-mode]").forEach((button) => {
+      button.setAttribute("aria-selected", String(button.dataset.mediaMode === state.media));
+    });
+    const filterButton = root.querySelector("[data-filter-toggle]");
+    if (filterButton) filterButton.querySelector("[data-filter-count]").textContent = filterCount() ? `(${filterCount()})` : "";
+  }
+
+  function filterCount() {
+    return state.filters.sources.length + state.filters.tags.length + state.filters.sections.length;
+  }
+
+  function detailHtml(record) {
+    const aliases = record.aliases || [];
+    const cover = record.cover;
+    const coverHtml = cover
+      ? `<button type="button" class="detail-cover-button" data-lightbox aria-label="查看封面"><img src="../${esc(String(cover).split("?", 1)[0])}" alt="${esc(record.preferred_title)}" width="180" height="270"></button>`
+      : `<div class="detail-cover detail-cover--missing"><span>ARCHIVE</span></div>`;
+    const tags = (record.allowed_tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
+    const summary = record.display_summary || "";
+    return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="关闭详情">×</button><p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}</p>
+      <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}<p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
+      <dl class="detail-facts"><div><dt>当前季度</dt><dd>${esc(record.quarter)}</dd></div><div><dt>首播季度</dt><dd>${esc(record.premiere_quarter || record.quarter || "—")}</dd></div><div><dt>集数</dt><dd>${esc(record.episode_count ?? "—")}</dd></div><div><dt>播出日期</dt><dd>${esc(record.air_date || "—")}</dd></div><div><dt>评分</dt><dd class="detail-score">${record.score ?? "—"}</dd></div><div><dt>评分人数</dt><dd>${esc(record.rating_count ?? "—")}</dd></div></dl>
+      ${record.appearance === "continuing" ? `<p class="detail-continuing">当前 appearance：continuing · premiere ${esc(record.premiere_quarter || "—")}</p>` : ""}
+      ${aliases.length ? `<section class="detail-section"><h3>别名</h3><div class="detail-tags">${aliases.slice(0, 3).map((alias) => `<span class="tag">${esc(alias)}</span>`).join("")}${aliases.length > 3 ? `<span class="detail-more">+ 另外 ${aliases.length - 3} 个标题</span>` : ""}</div></section>` : ""}
+      ${tags ? `<section class="detail-section"><h3>标签 / 来源</h3><div class="detail-tags"><span class="tag tag--source">${esc(record.source || "unknown")}</span>${tags}</div></section>` : ""}
+      ${summary ? `<section class="detail-section detail-summary"><h3>简介</h3><p>${esc(summary).replaceAll("\n", "<br>")}</p></section>` : ""}
+      <p class="detail-footer"><a class="text-link" href="${esc(record.bangumi_url || `https://bgm.tv/subject/${record.id}`)}" target="_blank" rel="noreferrer">在 Bangumi 查看 ↗</a></p>`;
+  }
+
+  function openLightbox(record) {
+    if (!record.cover) return;
+    const dialog = document.createElement("dialog");
+    dialog.className = "cover-lightbox";
+    dialog.innerHTML = `<button type="button" class="lightbox-close" aria-label="关闭封面">×</button><img src="../${esc(String(record.cover).split("?", 1)[0])}" alt="${esc(record.preferred_title)}">`;
+    document.body.append(dialog);
+    const close = () => { dialog.close(); dialog.remove(); };
+    dialog.querySelector("button").addEventListener("click", close);
+    dialog.addEventListener("click", (event) => { if (event.target === dialog) close(); });
+    dialog.addEventListener("close", () => dialog.remove(), { once: true });
+    dialog.showModal();
+  }
+
+  function selectRecord(record, replace = false) {
+    if (!record) return;
+    const hadSelection = state.selectedOccurrence !== null;
+    state.selectedSubjectId = record.id;
+    state.selectedOccurrence = record.key;
+    state.workspaceMode = "detail";
+    const url = new URL(window.location.href);
+    url.hash = `#bgm-${record.id}`;
+    if (hadSelection) window.history.replaceState({}, "", url);
+    else if (!replace) window.history.pushState({}, "", url);
+    else window.history.replaceState({}, "", url);
+    if (selectors.detailPanel) {
+      selectors.detailPanel.innerHTML = detailHtml(record);
+      selectors.detailPanel.scrollTop = 0;
+      selectors.detailPanel.querySelector("[data-detail-close]")?.addEventListener("click", () => { clearSelection(true); render(); });
+      selectors.detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(record));
+    }
+    render();
+  }
+
+  function openHash() {
+    const match = window.location.hash.match(/^#bgm-(\d+)$/);
+    if (!match || !records.length) return;
+    const candidate = archive.selectedRecord(records, Number(match[1]));
+    if (!candidate) {
+      const url = new URL(window.location.href);
+      url.hash = "";
+      window.history.replaceState({}, "", url);
+      return;
+    }
+    state.media = candidate.media === "MOVIE" ? "movie" : "tv";
+    const result = archive.applyPipeline(records, state);
+    const position = result.all.findIndex((record) => record.key === candidate.key);
+    if (position >= 0) state.page = Math.floor(position / state.pageSize) + 1;
+    selectRecord(candidate, true);
+  }
+
+  function renderFilterPanel() {
+    if (!selectors.filterPanel) return;
+    const options = {
+      sources: [...new Set(records.map((record) => record.source).filter(Boolean))].sort(),
+      tags: [...new Set(records.flatMap((record) => record.allowed_tags))].sort(),
+      sections: state.media === "tv" ? ["premiere", "continuing"] : ["premiere"],
+    };
+    selectors.filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2>`;
+    Object.entries(options).forEach(([group, values]) => {
+      if (values.length <= 1) return;
+      const fieldset = document.createElement("fieldset");
+      fieldset.className = "filter-group";
+      const legend = document.createElement("legend");
+      legend.textContent = group === "sources" ? "来源" : group === "tags" ? "标签" : "TV 分区";
+      fieldset.append(legend);
+      values.forEach((value) => {
+        const label = document.createElement("label");
+        label.className = "filter-option";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = state.filters[group].includes(value);
+        input.addEventListener("change", () => {
+          state.filters[group] = input.checked ? [...state.filters[group], value] : state.filters[group].filter((item) => item !== value);
+          state.page = 1;
+          const selected = archive.selectedRecord(records, state.selectedSubjectId, state.selectedOccurrence);
+          const result = archive.applyPipeline(records, state);
+          if (selected && !result.all.some((item) => item.key === selected.key)) clearSelection(true);
+          state.workspaceMode = "filter";
+          render();
+          renderFilterPanel();
+        });
+        label.append(input, document.createTextNode(value));
+        fieldset.append(label);
+      });
+      selectors.filterPanel.append(fieldset);
+    });
+    const apply = document.createElement("button");
+    apply.type = "button";
+    apply.className = "filter-apply-mobile button button--ink";
+    apply.textContent = `显示 ${archive.applyPipeline(records, state).total} 部`;
+    apply.addEventListener("click", () => { state.workspaceMode = "scope"; render(); });
+    selectors.filterPanel.append(apply);
+    selectors.filterPanel.querySelector("[data-filter-close]")?.addEventListener("click", () => { state.workspaceMode = "scope"; render(); });
+  }
+
+  function bindControls() {
+    const pageSize = root.querySelector("[data-page-size]");
+    if (pageSize) {
+      pageSize.replaceChildren(...archive.PAGE_SIZES.map((size) => {
+        const option = document.createElement("option");
+        option.value = String(size);
+        option.textContent = String(size);
+        option.selected = size === state.pageSize;
+        return option;
+      }));
+      pageSize.addEventListener("change", () => { state.pageSize = archive.writePageSize(pageSize.value); state.page = 1; clearSelection(true); render(); });
+    }
+    selectors.search?.addEventListener("input", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); });
+    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
+    root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => { state.workspaceMode = state.workspaceMode === "filter" ? "scope" : "filter"; renderFilterPanel(); render(); });
+    root.querySelector("[data-sort-toggle]")?.addEventListener("click", () => {
+      if (!selectors.sortPopover) return;
+      selectors.sortPopover.hidden = !selectors.sortPopover.hidden;
+      if (!selectors.sortPopover.hidden) {
+        selectors.sortPopover.replaceChildren(...Object.entries(archive.SORTS).map(([value, label]) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = label;
+          button.setAttribute("aria-pressed", String(value === state.sort));
+          button.addEventListener("click", () => { state.sort = value; state.page = 1; selectors.sortPopover.hidden = true; clearSelection(true); render(); });
+          return button;
+        }));
+      }
+    });
+    root.querySelector("[data-clear-all]")?.addEventListener("click", () => { state.query = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); });
+    root.querySelectorAll("[data-scope-choice]").forEach((button) => button.addEventListener("click", () => {
+      const kind = button.dataset.scopeChoice;
+      setTab(kind);
+      if (kind === "quarter") { state.scope = { kind: "quarter", value: "" }; selectors.browser.hidden = true; return; }
+      if (kind === "year") {
+        const value = root.querySelector("[data-archive-year-select]")?.value || String(index?.latest_quarter || "").slice(0, 4);
+        setScope("year", value);
+      }
+      if (kind === "range") {
+        const from = Number(root.querySelector("[data-archive-from]")?.value);
+        const to = Number(root.querySelector("[data-archive-to]")?.value);
+        const range = normalRange(from, to);
+        if (range) setScope("range", range);
+      }
+    }));
+    root.querySelector("[data-archive-year-select]")?.addEventListener("change", (event) => setScope("year", event.target.value));
+    root.querySelector("[data-range-apply]")?.addEventListener("click", () => {
+      const range = normalRange(root.querySelector("[data-archive-from]")?.value, root.querySelector("[data-archive-to]")?.value);
+      if (range) setScope("range", range);
+    });
+    root.querySelectorAll("[data-range-shortcut]").forEach((button) => button.addEventListener("click", () => {
+      if (!index?.years?.length) return;
+      const newest = Math.max(...index.years.map(Number));
+      const value = button.dataset.rangeShortcut === "all" ? { from: Math.min(...index.years), to: newest } : { from: newest - Number(button.dataset.rangeShortcut) + 1, to: newest };
+      root.querySelector("[data-archive-from]").value = String(value.from);
+      root.querySelector("[data-archive-to]").value = String(value.to);
+      setScope("range", value);
+    }));
+    window.addEventListener("popstate", openHash);
+    window.addEventListener("hashchange", openHash);
+  }
+
+  async function setScope(kind, value, push = true) {
+    if (!index) return;
+    const normalized = kind === "range" ? normalRange(value.from, value.to) : String(value);
+    if (kind === "range" && !normalized) return;
+    state.scope = { kind, value: normalized };
+    state.page = 1;
+    state.query = "";
+    state.filters = { sources: [], tags: [], sections: [] };
+    if (selectors.search) selectors.search.value = "";
+    clearSelection(false);
+    if (push) setScopeUrl(kind, normalized);
+    setTab(kind);
+    renderYearSelector();
+    if (kind === "range") {
+      const from = root.querySelector("[data-archive-from]");
+      const to = root.querySelector("[data-archive-to]");
+      if (from) from.value = String(normalized.from);
+      if (to) to.value = String(normalized.to);
+    }
+    if (kind === "quarter") return;
+    loadError = false;
+    try {
+      records = await loadCatalogs(yearsForScope(kind, normalized));
+      buildLists();
+      renderFilterPanel();
+      if (selectors.scopeLabel) selectors.scopeLabel.textContent = kind === "range" ? `RANGE / ${normalized.from}—${normalized.to}` : `YEAR / ${normalized}`;
+      render();
+      openHash();
+    } catch {
+      loadError = true;
+      if (selectors.scopePanel) selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>页面资料未完整生成</h2><p>建议重新 build。</p>';
+    }
+  }
+
+  async function load() {
+    try {
+      const response = await fetch(root.dataset.archiveIndexUrl, { credentials: "same-origin" });
+      if (!response.ok) throw new Error("archive index unavailable");
+      index = await response.json();
+      renderQuarterSelector();
+      renderYearSelector();
+      const params = new URLSearchParams(window.location.search);
+      const year = params.get("year");
+      const from = params.get("from");
+      const to = params.get("to");
+      bindControls();
+      if (year && (index.years || []).map(String).includes(year)) await setScope("year", year, false);
+      else if (from && to && normalRange(from, to)) await setScope("range", normalRange(from, to), false);
+      else {
+        const latestYear = String(index.latest_quarter || "").slice(0, 4) || String(Math.max(...(index.years || [0])));
+        await setScope("year", latestYear, false);
+      }
+    } catch {
+      loadError = true;
+      setTab("quarter");
+      if (selectors.quarter) selectors.quarter.innerHTML = '<p class="empty-state">DATA UNAVAILABLE · 页面资料未完整生成</p>';
     }
   }
 

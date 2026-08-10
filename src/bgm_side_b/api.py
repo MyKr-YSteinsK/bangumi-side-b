@@ -283,6 +283,29 @@ class BangumiApiClient:
             )
         )
 
+    def get_main_episode_airdates(self, subject_id: int) -> tuple[date, ...]:
+        """Read only valid main-story episode airdates for one subject.
+
+        Episode payloads are evidence probes, not archive facts: titles, IDs, and
+        other episode fields intentionally do not leave this API adapter.
+        """
+        if subject_id <= 0:
+            raise ValueError("subject id must be positive")
+        dates: list[date] = []
+        for item in self._paged_json(
+            "/episodes",
+            {"subject_id": subject_id, "type": 0},
+            limit=200,
+            max_limit=200,
+            request_label="continuing-evidence",
+        ):
+            if _optional_integer(item.get("type")) != 0:
+                continue
+            airdate = _optional_date(item.get("airdate"))
+            if airdate is not None:
+                dates.append(airdate)
+        return tuple(sorted(dates))
+
     def fetch_image(self, url: str, *, max_bytes: int) -> ImageResponse:
         """Fetch a bounded HTTP(S) image while preserving no response diagnostics."""
         parsed = urlsplit(url)
@@ -302,12 +325,13 @@ class BangumiApiClient:
         params: Mapping[str, object],
         *,
         limit: int,
+        max_limit: int = 100,
         request_label: str,
         method: str = "GET",
         json_body: Mapping[str, object] | None = None,
     ) -> tuple[Mapping[str, Any], ...]:
-        if not 1 <= limit <= 100:
-            raise ValueError("page limit must be between 1 and 100")
+        if not 1 <= limit <= max_limit:
+            raise ValueError(f"page limit must be between 1 and {max_limit}")
         offset = 0
         items: list[Mapping[str, Any]] = []
         while True:

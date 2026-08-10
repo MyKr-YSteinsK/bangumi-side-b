@@ -70,13 +70,18 @@ class FakeApi:
         *,
         failures: frozenset[int] = frozenset(),
         interrupts: frozenset[int] = frozenset(),
+        episode_airdates: dict[int, tuple[date, ...]] | None = None,
+        episode_failures: frozenset[int] = frozenset(),
         image_failure: bool = False,
     ) -> None:
         self.details = details
         self.failures = failures
         self.interrupts = interrupts
+        self.episode_airdates = episode_airdates or {}
+        self.episode_failures = episode_failures
         self.image_failure = image_failure
         self.subject_calls: list[int] = []
+        self.episode_calls: list[int] = []
         self.image_calls: list[str] = []
 
     def get_subject(self, subject_id: int) -> SubjectDetail:
@@ -86,6 +91,12 @@ class FakeApi:
         if subject_id in self.failures:
             raise BangumiApiError("timeout", "request timed out")
         return self.details[subject_id]
+
+    def get_main_episode_airdates(self, subject_id: int) -> tuple[date, ...]:
+        self.episode_calls.append(subject_id)
+        if subject_id in self.episode_failures:
+            raise BangumiApiError("timeout", "request timed out")
+        return self.episode_airdates.get(subject_id, ())
 
     def fetch_image(self, url: str, *, max_bytes: int) -> ImageResponse:
         self.image_calls.append(url)
@@ -174,7 +185,18 @@ def _sync(
     return synchronizer, repository
 
 
-def _store_existing(repository: SubjectRepository, subject_id: int) -> None:
+def _store_existing(
+    repository: SubjectRepository,
+    subject_id: int,
+    *,
+    media: MediaFormat = MediaFormat.TV,
+    air_date: date = date(2026, 4, 2),
+    end_date: date | None = None,
+    episode_count: int | None = None,
+    premiere_quarter: Quarter = QUARTER,
+    continuing: tuple[QuarterAppearance, ...] = (),
+    tags: tuple[str, ...] = (),
+) -> None:
     repository.database.initialize()
     snapshot = SubjectSnapshot(
         SubjectRecord(
@@ -182,10 +204,10 @@ def _store_existing(repository: SubjectRepository, subject_id: int) -> None:
             "Existing",
             None,
             None,
-            MediaFormat.TV,
-            date(2026, 4, 2),
-            None,
-            None,
+            media,
+            air_date,
+            end_date,
+            episode_count,
             None,
             None,
             JapaneseDecision(
@@ -194,16 +216,28 @@ def _store_existing(repository: SubjectRepository, subject_id: int) -> None:
                 '["日本"]',
             ),
         ),
+        tags=tags,
         premiere=QuarterAppearance(
-            QUARTER,
+            premiere_quarter,
             QuarterAppearanceKind.PREMIERE,
             QuarterAssignmentSource.AUTOMATIC,
             "air_date",
-            "2026-04-02",
+            air_date.isoformat(),
         ),
+        continuing=continuing,
     )
     with repository.transaction() as connection:
         repository.replace_subject_snapshot(connection, snapshot)
+
+
+def _continuing(quarter: Quarter, evidence_value: str) -> QuarterAppearance:
+    return QuarterAppearance(
+        quarter,
+        QuarterAppearanceKind.CONTINUING,
+        QuarterAssignmentSource.AUTOMATIC,
+        "main_episode_airdate",
+        evidence_value,
+    )
 
 
 def test_detail_failure_marks_incomplete_without_committing_partial_quarter(
@@ -459,3 +493,190 @@ def test_interrupt_marks_current_quarter_incomplete_without_partial_facts(
     assert repository.get_subject_facts(99) is not None
     assert repository.get_subject_facts(101) is None
     assert repository.get_sync_state(QUARTER).facts_status == FACTS_INCOMPLETE  # type: ignore[union-attr]
+
+
+def test_end_date_crossing_target_creates_continuing_without_episode_probe(
+    tmp_path: Path,
+) -> None:
+    target = Quarter(2026, 7)
+    api = FakeApi({})
+    sync, repository = _sync(tmp_path, api, DiscoveryBatch(()))
+    _store_existing(repository, 101, end_date=date(2026, 7, 1))
+
+    result = sync.run(SyncScope(target, target)).quarters[0]
+
+    facts = repository.get_subject_facts(101)
+    assert facts is not None
+    assert facts.continuing == (
+        QuarterAppearance(
+            target,
+            QuarterAppearanceKind.CONTINUING,
+            QuarterAssignmentSource.AUTOMATIC,
+            "structured_end_date",
+            "2026-07-01",
+        ),
+    )
+    assert api.episode_calls == []
+    assert result.continuing_end_date == 1
+    assert result.continuing_episode == 0
+
+
+def test_main_episode_in_target_creates_continuing(tmp_path: Path) -> None:
+    target = Quarter(2026, 7)
+    api = FakeApi({}, episode_airdates={101: (date(2026, 7, 4),)})
+    sync, repository = _sync(tmp_path, api, DiscoveryBatch(()))
+    _store_existing(repository, 101)
+
+    result = sync.run(SyncScope(target, target)).quarters[0]
+
+    facts = repository.get_subject_facts(101)
+    assert facts is not None
+    assert facts.continuing == (_continuing(target, "2026-07-04"),)
+    assert result.continuing_episode == 1
+
+
+def test_early_end_date_and_target_episode_create_a_conflict_review(
+    tmp_path: Path,
+) -> None:
+    target = Quarter(2026, 7)
+    api = FakeApi({}, episode_airdates={101: (date(2026, 7, 4),)})
+    sync, repository = _sync(tmp_path, api, DiscoveryBatch(()))
+    _store_existing(repository, 101, end_date=date(2026, 6, 30))
+
+    result = sync.run(SyncScope(target, target)).quarters[0]
+
+    facts = repository.get_subject_facts(101)
+    assert facts is not None
+    assert facts.continuing == ()
+    assert result.continuing_unresolved == 1
+    assert facts.review_issues[0].issue_code == "CONTINUING_EVIDENCE_CONFLICT"
+
+
+@pytest.mark.parametrize(
+    ("end_date", "episode_airdates"),
+    (
+        (date(2026, 6, 30), (date(2026, 6, 30),)),
+        (None, (date(2026, 6, 30), date(2026, 10, 1))),
+        (None, ()),
+    ),
+)
+def test_no_target_main_episode_never_uses_episode_count_heuristics(
+    tmp_path: Path,
+    end_date: date | None,
+    episode_airdates: tuple[date, ...],
+) -> None:
+    target = Quarter(2026, 7)
+    api = FakeApi({}, episode_airdates={101: episode_airdates})
+    sync, repository = _sync(tmp_path, api, DiscoveryBatch(()))
+    _store_existing(repository, 101, end_date=end_date, episode_count=24)
+
+    sync.run(SyncScope(target, target))
+
+    facts = repository.get_subject_facts(101)
+    assert facts is not None
+    assert facts.continuing == ()
+    assert api.episode_calls == [101]
+
+
+def test_target_season_tag_without_main_episode_does_not_auto_continue(
+    tmp_path: Path,
+) -> None:
+    target = Quarter(2026, 7)
+    api = FakeApi({}, episode_airdates={101: ()})
+    sync, repository = _sync(tmp_path, api, DiscoveryBatch(()))
+    _store_existing(repository, 101, tags=("2026年7月",))
+
+    result = sync.run(SyncScope(target, target)).quarters[0]
+
+    facts = repository.get_subject_facts(101)
+    assert facts is not None
+    assert facts.continuing == ()
+    assert result.continuing_unresolved == 1
+    assert facts.review_issues[0].issue_code == "CONTINUING_EVIDENCE_UNRESOLVED"
+
+
+def test_previous_continuing_is_carried_forward_for_arbitrarily_long_runs(
+    tmp_path: Path,
+) -> None:
+    target = Quarter(2026, 10)
+    api = FakeApi({}, episode_airdates={101: (date(2026, 10, 4),)})
+    sync, repository = _sync(tmp_path, api, DiscoveryBatch(()))
+    _store_existing(
+        repository,
+        101,
+        continuing=(_continuing(Quarter(2026, 7), "2026-07-04"),),
+    )
+
+    sync.run(SyncScope(target, target))
+
+    facts = repository.get_subject_facts(101)
+    assert facts is not None
+    assert facts.continuing == (
+        _continuing(Quarter(2026, 7), "2026-07-04"),
+        _continuing(target, "2026-10-04"),
+    )
+    assert api.episode_calls == [101]
+
+
+def test_movie_is_never_a_continuing_probe_candidate(tmp_path: Path) -> None:
+    target = Quarter(2026, 7)
+    api = FakeApi({}, episode_airdates={101: (date(2026, 7, 4),)})
+    sync, repository = _sync(tmp_path, api, DiscoveryBatch(()))
+    _store_existing(repository, 101, media=MediaFormat.MOVIE)
+
+    sync.run(SyncScope(target, target))
+
+    assert repository.list_subjects_appearing_in_quarter(target) == ()
+    assert api.episode_calls == []
+
+
+def test_episode_failure_preserves_existing_continuing_appearance(
+    tmp_path: Path,
+) -> None:
+    target = Quarter(2026, 7)
+    existing = _continuing(target, "2026-07-04")
+    api = FakeApi({}, episode_failures=frozenset({101}))
+    sync, repository = _sync(tmp_path, api, DiscoveryBatch(()))
+    _store_existing(repository, 101, continuing=(existing,))
+
+    run = sync.run(SyncScope(target, target))
+
+    assert run.exit_code == 1
+    assert run.quarters[0].facts_status == FACTS_INCOMPLETE
+    facts = repository.get_subject_facts(101)
+    assert facts is not None
+    assert facts.continuing == (existing,)
+    assert run.quarters[0].errors[0]["code"] == "continuing_timeout"
+
+
+def test_syncing_prior_quarter_backfills_an_already_managed_next_quarter(
+    tmp_path: Path,
+) -> None:
+    target = Quarter(2026, 7)
+    detail = _detail(101)
+    api = FakeApi({101: detail}, episode_airdates={101: (date(2026, 7, 5),)})
+    sync, repository = _sync(
+        tmp_path, api, DiscoveryBatch((_candidate(101, MediaFormat.TV),))
+    )
+    repository.database.initialize()
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection,
+            QuarterSyncState(
+                target,
+                FACTS_COMPLETE,
+                FACTS_COMPLETE,
+                0,
+                0,
+                "2026-08-10T00:00:00Z",
+                "2026-08-10T00:00:00Z",
+            ),
+        )
+
+    sync.run(SyncScope(QUARTER, QUARTER))
+
+    facts = repository.get_subject_facts(101)
+    assert facts is not None
+    assert facts.continuing == (_continuing(target, "2026-07-05"),)
+    state = repository.get_sync_state(target)
+    assert state is not None and state.subject_count == 1

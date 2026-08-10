@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,11 +27,17 @@ from bgm_side_b.discovery import (
     DiscoveryFailure,
     SearchDiscoveryAdapter,
 )
-from bgm_side_b.domain import Quarter, QuarterAppearanceKind, SourceEvidence
+from bgm_side_b.domain import (
+    Quarter,
+    QuarterAppearanceKind,
+    QuarterAssignmentSource,
+    SourceEvidence,
+)
 from bgm_side_b.media import MAX_COVER_CONCURRENCY, CoverResult, CoverStore
 from bgm_side_b.overrides import load_quarter_overrides
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.repository import (
+    QuarterAppearance,
     QuarterSyncState,
     ReviewIssue,
     SubjectRecord,
@@ -43,6 +50,8 @@ FACTS_COMPLETE = "complete"
 FACTS_INCOMPLETE = "incomplete"
 COVERS_COMPLETE = "complete"
 COVERS_INCOMPLETE = "incomplete"
+CONTINUING_EVIDENCE_UNRESOLVED = "CONTINUING_EVIDENCE_UNRESOLVED"
+CONTINUING_EVIDENCE_CONFLICT = "CONTINUING_EVIDENCE_CONFLICT"
 
 
 class SyncError(RuntimeError):
@@ -118,6 +127,9 @@ class QuarterSyncResult:
     cover_downloaded: int = 0
     cover_reused: int = 0
     cover_missing: int = 0
+    continuing_end_date: int = 0
+    continuing_episode: int = 0
+    continuing_unresolved: int = 0
     skipped: bool = False
 
 
@@ -145,6 +157,24 @@ class _PreparedSubject:
     snapshot: SubjectSnapshot
     cover_url: str | None
     cover_variant: str | None
+
+
+@dataclass(frozen=True)
+class _ContinuingReconciliation:
+    """Complete externally gathered evidence for one target-quarter replacement."""
+
+    quarter: Quarter
+    examined: tuple[SubjectSnapshot, ...]
+    appearances: tuple[tuple[int, QuarterAppearance], ...]
+    reviews: tuple[tuple[SubjectSnapshot, ReviewIssue], ...]
+    warnings: tuple[dict[str, str], ...]
+    errors: tuple[dict[str, str], ...]
+    confirmed_by_end_date: int
+    confirmed_by_episode: int
+
+    @property
+    def unresolved(self) -> int:
+        return len(self.reviews)
 
 
 class ArchiveSynchronizer:
@@ -201,7 +231,16 @@ class ArchiveSynchronizer:
                 ):
                     results.append(_skipped_result(quarter, current))
                     continue
-                results.append(self._sync_quarter(quarter, overrides, current))
+                result = self._sync_quarter(quarter, overrides, current)
+                if result.facts_status == FACTS_COMPLETE:
+                    result = replace(
+                        result,
+                        warnings=(
+                            *result.warnings,
+                            *self._backfill_next_quarter(quarter),
+                        ),
+                    )
+                results.append(result)
         except KeyboardInterrupt:
             report_path = self._write_report(scope, started, results, interrupted=True)
             return SyncRun(scope, tuple(results), report_path, 130)
@@ -356,6 +395,16 @@ class ArchiveSynchronizer:
                 blacklisted=blacklisted,
             )
 
+        reconciliation = self._reconcile_continuing(quarter)
+        if reconciliation.errors:
+            return self._write_incomplete(
+                quarter,
+                prior,
+                len(batch.candidates),
+                reconciliation.errors,
+                blacklisted=blacklisted,
+            )
+
         stale_ids = {
             item.subject.subject_id
             for item in self.repository.list_subjects_appearing_in_quarter(
@@ -363,15 +412,36 @@ class ArchiveSynchronizer:
             )
         } - {item.snapshot.subject.subject_id for item in prepared}
         completed_at = _timestamp()
-        subject_count = sum(
-            item.snapshot.premiere is not None
-            and item.snapshot.premiere.quarter == quarter
+        premiere_subject_ids = {
+            item.snapshot.subject.subject_id
             for item in prepared
+            if item.snapshot.premiere is not None
+            and item.snapshot.premiere.quarter == quarter
+        }
+        continuing_appearances = tuple(
+            (subject_id, appearance)
+            for subject_id, appearance in reconciliation.appearances
+            if subject_id not in premiere_subject_ids
+        )
+        subject_count = len(
+            premiere_subject_ids
+            | {subject_id for subject_id, _ in continuing_appearances}
         )
         with self.repository.transaction() as connection:
             for item in prepared:
                 self.repository.replace_subject_snapshot(connection, item.snapshot)
             self.repository.delete_subjects(connection, frozenset(stale_ids))
+            self.repository.replace_automatic_continuing_for_quarter(
+                connection, quarter, continuing_appearances
+            )
+            self._replace_continuing_reviews(
+                connection,
+                reconciliation,
+                {
+                    item.snapshot.subject.subject_id: item.snapshot
+                    for item in prepared
+                },
+            )
             self.repository.write_sync_state(
                 connection,
                 QuarterSyncState(
@@ -393,7 +463,9 @@ class ArchiveSynchronizer:
                 and item.snapshot.premiere.quarter == quarter
             )
         )
-        warnings = tuple(cleanup_warnings + cover_warnings)
+        warnings = tuple(
+            [*cleanup_warnings, *cover_warnings, *reconciliation.warnings]
+        )
         covers_status = (
             COVERS_COMPLETE
             if cover_missing == 0 and not cleanup_warnings
@@ -421,13 +493,16 @@ class ArchiveSynchronizer:
             accepted_movie,
             rejected_non_japanese,
             blacklisted,
-            tuple(reviews),
+            tuple(reviews) + tuple(issue for _, issue in reconciliation.reviews),
             tuple(external_reviews),
             warnings,
             (),
             cover_downloaded,
             cover_reused,
             cover_missing,
+            reconciliation.confirmed_by_end_date,
+            reconciliation.confirmed_by_episode,
+            reconciliation.unresolved,
         )
 
     def _prepare_subject(
@@ -482,6 +557,198 @@ class ArchiveSynchronizer:
         return _PreparedSubject(
             snapshot, detail.images.largest_available, detail.images.largest_variant
         )
+
+    def _reconcile_continuing(
+        self, quarter: Quarter
+    ) -> _ContinuingReconciliation:
+        """Gather all continuing evidence before mutating target-quarter rows."""
+        target_start = date(quarter.year, quarter.month, 1)
+        appearances: list[tuple[int, QuarterAppearance]] = []
+        examined: list[SubjectSnapshot] = []
+        reviews: list[tuple[SubjectSnapshot, ReviewIssue]] = []
+        warnings: list[dict[str, str]] = []
+        errors: list[dict[str, str]] = []
+        confirmed_by_end_date = 0
+        confirmed_by_episode = 0
+
+        for snapshot in self.repository.list_tv_subjects_appearing_in_previous_quarter(
+            quarter
+        ):
+            premiere = snapshot.premiere
+            subject = snapshot.subject
+            if (
+                premiere is None
+                or premiere.quarter >= quarter
+                or subject.air_date is None
+                or subject.air_date >= target_start
+            ):
+                continue
+            examined.append(snapshot)
+            if subject.end_date is not None and subject.end_date >= target_start:
+                appearances.append(
+                    (
+                        subject.subject_id,
+                        _automatic_continuing(
+                            quarter,
+                            "structured_end_date",
+                            subject.end_date.isoformat(),
+                        ),
+                    )
+                )
+                confirmed_by_end_date += 1
+                continue
+
+            try:
+                airdates = self.api.get_main_episode_airdates(subject.subject_id)
+            except BangumiApiError as error:
+                errors.append(
+                    {
+                        "code": f"continuing_{error.code}",
+                        "summary": (
+                            f"main episode evidence unavailable for "
+                            f"subject {subject.subject_id}: {error.summary}"
+                        ),
+                    }
+                )
+                continue
+
+            matching = tuple(
+                item for item in airdates if quarter_for_date(item) == quarter
+            )
+            if matching:
+                if subject.end_date is not None and subject.end_date < target_start:
+                    reviews.append(
+                        (
+                            snapshot,
+                            _continuing_review(
+                                CONTINUING_EVIDENCE_CONFLICT,
+                                quarter,
+                                subject.end_date.isoformat(),
+                                {
+                                    "end_date": subject.end_date.isoformat(),
+                                    "main_episode_airdate": matching[0].isoformat(),
+                                },
+                            ),
+                        )
+                    )
+                    continue
+                appearances.append(
+                    (
+                        subject.subject_id,
+                        _automatic_continuing(
+                            quarter,
+                            "main_episode_airdate",
+                            matching[0].isoformat(),
+                        ),
+                    )
+                )
+                confirmed_by_episode += 1
+                continue
+
+            if not airdates and _has_target_season_tag(snapshot, quarter):
+                reviews.append(
+                    (
+                        snapshot,
+                        _continuing_review(
+                            CONTINUING_EVIDENCE_UNRESOLVED,
+                            quarter,
+                            _target_season_tag(quarter),
+                            {"season_tag": _target_season_tag(quarter)},
+                        ),
+                    )
+                )
+            else:
+                warnings.append(
+                    {
+                        "code": "continuing_not_confirmed",
+                        "summary": (
+                            f"no main episode airdate confirms subject "
+                            f"{subject.subject_id} in {_quarter_label(quarter)}"
+                        ),
+                    }
+                )
+
+        return _ContinuingReconciliation(
+            quarter,
+            tuple(examined),
+            tuple(appearances),
+            tuple(reviews),
+            tuple(warnings),
+            tuple(errors),
+            confirmed_by_end_date,
+            confirmed_by_episode,
+        )
+
+    def _backfill_next_quarter(self, quarter: Quarter) -> tuple[dict[str, str], ...]:
+        """Converge the already-managed next quarter after a prior sync succeeds."""
+        target = _next_quarter(quarter)
+        state = self.repository.get_sync_state(target)
+        if state is None:
+            return ()
+        reconciliation = self._reconcile_continuing(target)
+        if reconciliation.errors:
+            return tuple(
+                {
+                    "code": "continuing_backfill_failed",
+                    "summary": item["summary"],
+                }
+                for item in reconciliation.errors
+            )
+        premiere_subject_ids = {
+            snapshot.subject.subject_id
+            for snapshot in self.repository.list_subjects_appearing_in_quarter(
+                target, appearance_kind=QuarterAppearanceKind.PREMIERE
+            )
+        }
+        appearances = tuple(
+            (subject_id, appearance)
+            for subject_id, appearance in reconciliation.appearances
+            if subject_id not in premiere_subject_ids
+        )
+        with self.repository.transaction() as connection:
+            self.repository.replace_automatic_continuing_for_quarter(
+                connection, target, appearances
+            )
+            self._replace_continuing_reviews(connection, reconciliation, {})
+            self.repository.write_sync_state(
+                connection,
+                replace(
+                    state,
+                    subject_count=_appearance_count(connection, target),
+                    last_attempt_at=_timestamp(),
+                ),
+            )
+        return reconciliation.warnings
+
+    def _replace_continuing_reviews(
+        self,
+        connection: sqlite3.Connection,
+        reconciliation: _ContinuingReconciliation,
+        replacements: Mapping[int, SubjectSnapshot],
+    ) -> None:
+        """Replace only this target's continuing review findings."""
+        issues_by_subject: dict[int, list[ReviewIssue]] = {
+            subject_id: [
+                issue
+                for issue in replacements.get(subject_id, snapshot).review_issues
+                if not (
+                    issue.issue_code
+                    in {
+                        CONTINUING_EVIDENCE_UNRESOLVED,
+                        CONTINUING_EVIDENCE_CONFLICT,
+                    }
+                    and issue.candidate_quarter == reconciliation.quarter
+                )
+            ]
+            for subject_id, snapshot in (
+                (item.subject.subject_id, item) for item in reconciliation.examined
+            )
+        }
+        for snapshot, issue in reconciliation.reviews:
+            subject_id = snapshot.subject.subject_id
+            issues_by_subject[subject_id].append(issue)
+        for subject_id, issues in issues_by_subject.items():
+            self.repository.replace_review_issues(connection, subject_id, tuple(issues))
 
     def _purge_blacklist(self) -> None:
         excluded = self.settings.excluded_subject_ids
@@ -669,6 +936,53 @@ def _previous_quarter(quarter: Quarter) -> Quarter:
     return Quarter(quarter.year, quarter.month - 3)
 
 
+def _next_quarter(quarter: Quarter) -> Quarter:
+    if quarter.month == 10:
+        return Quarter(quarter.year + 1, 1)
+    return Quarter(quarter.year, quarter.month + 3)
+
+
+def _automatic_continuing(
+    quarter: Quarter, evidence_type: str, evidence_value: str
+) -> QuarterAppearance:
+    return QuarterAppearance(
+        quarter,
+        QuarterAppearanceKind.CONTINUING,
+        QuarterAssignmentSource.AUTOMATIC,
+        evidence_type,
+        evidence_value,
+    )
+
+
+def _continuing_review(
+    issue_code: str,
+    quarter: Quarter,
+    observed_value: str,
+    details: dict[str, str],
+) -> ReviewIssue:
+    return ReviewIssue(issue_code, quarter, observed_value, details, _timestamp())
+
+
+def _target_season_tag(quarter: Quarter) -> str:
+    return f"{quarter.year}年{quarter.month}月"
+
+
+def _has_target_season_tag(snapshot: SubjectSnapshot, quarter: Quarter) -> bool:
+    return _target_season_tag(quarter) in snapshot.tags
+
+
+def _appearance_count(connection: sqlite3.Connection, quarter: Quarter) -> int:
+    row = connection.execute(
+        """
+        SELECT COUNT(DISTINCT subject_id) AS count
+        FROM subject_quarters WHERE year = ? AND quarter_month = ?
+        """,
+        (quarter.year, quarter.month),
+    ).fetchone()
+    assert row is not None
+    return int(row["count"])
+
+
 def _quarter_label(quarter: Quarter) -> str:
     return f"{quarter.year:04d}-{quarter.month:02d}"
 
@@ -811,6 +1125,9 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
         "cover_downloaded": result.cover_downloaded,
         "cover_reused": result.cover_reused,
         "cover_missing": result.cover_missing,
+        "continuing_end_date": result.continuing_end_date,
+        "continuing_episode": result.continuing_episode,
+        "continuing_unresolved": result.continuing_unresolved,
         "skipped": result.skipped,
     }
 

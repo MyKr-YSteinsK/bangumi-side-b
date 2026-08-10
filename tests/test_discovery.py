@@ -63,6 +63,57 @@ def test_search_posts_documented_date_filter_and_paginates() -> None:
     }
 
 
+def test_main_episode_airdates_paginate_at_two_hundred_and_discard_other_fields(
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        offset = int(request.url.params["offset"])
+        if offset == 0:
+            data = [{"id": 1, "type": 0, "airdate": "2026-07-12", "name": "1"}]
+            data.extend(
+                {
+                    "id": index,
+                    "type": 1,
+                    "airdate": "2026-07-13",
+                    "name": "SP",
+                }
+                for index in range(2, 201)
+            )
+        else:
+            data = [
+                {"id": 3, "type": 0, "airdate": "not-a-date", "name": "2"},
+                {"id": 4, "type": 0, "airdate": "2026-07-05", "name": "3"},
+            ]
+        return httpx.Response(200, json={"total": 202, "data": data})
+
+    airdates = _client(handler).get_main_episode_airdates(101)
+
+    assert airdates == (date(2026, 7, 5), date(2026, 7, 12))
+    assert [request.url.params["offset"] for request in requests] == ["0", "200"]
+    assert all(request.url.path == "/v0/episodes" for request in requests)
+    assert all(request.url.params["subject_id"] == "101" for request in requests)
+    assert all(request.url.params["type"] == "0" for request in requests)
+    assert all(request.url.params["limit"] == "200" for request in requests)
+
+
+def test_main_episode_airdates_ignore_supplemental_entries() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "total": 2,
+                "data": [
+                    {"type": 1, "airdate": "2026-07-02"},
+                    {"type": 2, "airdate": "2026-07-03"},
+                ],
+            },
+        )
+
+    assert _client(handler).get_main_episode_airdates(101) == ()
+
+
 def test_browse_queries_tv_and_movie_months_and_merges_provenance() -> None:
     pages = {
         (3, 1): [],

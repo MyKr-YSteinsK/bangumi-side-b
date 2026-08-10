@@ -92,6 +92,7 @@ class ArchiveFacts:
 
     subjects: tuple[SubjectFact, ...]
     sync_states: tuple[tuple[Quarter, SyncFactState], ...]
+    review_quarters: tuple[Quarter, ...] = ()
 
     @property
     def state_by_quarter(self) -> MappingProxyType[Quarter, SyncFactState]:
@@ -142,7 +143,19 @@ class ArchiveFactsReader:
                     """
                 )
             )
-            return ArchiveFacts(subjects, states)
+            review_quarters = tuple(
+                Quarter(row["candidate_year"], row["candidate_quarter"])
+                for row in connection.execute(
+                    """
+                    SELECT DISTINCT candidate_year, candidate_quarter
+                    FROM subject_review_issues
+                    WHERE candidate_year IS NOT NULL
+                      AND candidate_quarter IS NOT NULL
+                    ORDER BY candidate_year, candidate_quarter
+                    """
+                )
+            )
+            return ArchiveFacts(subjects, states, review_quarters)
         except sqlite3.Error as error:
             raise ProjectionError(
                 "database cannot be read for site projection"

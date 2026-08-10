@@ -10,6 +10,7 @@ import posixpath
 import re
 from collections import defaultdict
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
@@ -19,10 +20,12 @@ from bgm_side_b.build.fingerprint import (
     DirtySet,
     assign_fingerprints,
     derive_dirty_set,
+    fingerprint,
     read_build_state,
     shared_fingerprint,
 )
 from bgm_side_b.build.site_projection import (
+    PROJECTION_VERSION,
     ArchiveFacts,
     ArchiveFactsReader,
     ArchiveIndexProjection,
@@ -146,31 +149,23 @@ class UnifiedSiteBuilder:
         try:
             facts = self._read_facts()
             previous = read_build_state(self.state_path)
-            available = tuple(_quarter_label(item) for item in facts.by_quarter)
+            managed_quarters = tuple(
+                sorted(_quarter_label(item) for item in facts.state_by_quarter)
+            )
+            appearance_quarters = {
+                _quarter_label(item) for item in facts.by_quarter
+            }
+            available = managed_quarters
             if quarter is not None and _quarter_label(quarter) not in available:
                 if previous is None or _quarter_label(quarter) not in previous.quarters:
                     raise BuildError(
                         f"quarter is not managed: {_quarter_label(quarter)}"
                     )
-            incomplete = tuple(
-                _quarter_label(item)
-                for item, state in facts.sync_states
-                if state.facts_status != "complete" and item in facts.by_quarter
-            )
-            # A partial facts commit must never replace a previously good site.
-            # If one exists, leave the complete site untouched; a later successful
-            # sync will rerun the normal incremental path.
-            if incomplete and previous is not None:
-                return self._write_report(
-                    scope_label,
-                    DirtySet((), tuple(sorted(incomplete)), (), False, False),
-                    PatchResult((), (), tuple(sorted(previous.artifacts)), ()),
-                    (),
-                    ("facts incomplete; retained last-known-good site",),
-                    started,
-                    previous,
-                )
-            quarter_projections = self._project_quarters(facts, incomplete)
+            blocked = _blocked_quarters(facts)
+            eligible = tuple(label for label in managed_quarters if label not in blocked)
+            retained, omitted = self._retained_quarters(previous, blocked)
+            unmanaged = tuple(sorted(appearance_quarters - set(managed_quarters)))
+            quarter_projections = self._project_quarters(facts, eligible)
             years = self._project_years(quarter_projections)
             archive = project_archive_index(quarter_projections)
             css, js = self._shared_assets()
@@ -186,12 +181,20 @@ class UnifiedSiteBuilder:
                 archive,
                 shared=shared,
             )
+            years, archive = self._merge_retained_indexes(years, archive, retained)
+            current = _merge_retained_state(current, previous, retained, years, archive)
             dirty = derive_dirty_set(
                 previous,
                 current,
                 available_quarters=tuple(item.quarter for item in quarter_projections),
                 requested_quarters=(
                     None if quarter is None else (_quarter_label(quarter),)
+                ),
+            )
+            dirty = replace(
+                dirty,
+                skipped_quarters=tuple(
+                    sorted(set(dirty.skipped_quarters) | set(retained) | set(blocked))
                 ),
             )
             desired = self._render_site(
@@ -201,6 +204,7 @@ class UnifiedSiteBuilder:
                 archive,
                 css,
                 js,
+                retained=retained,
             )
             writer = IncrementalSiteWriter(
                 self.site_directory,
@@ -216,6 +220,18 @@ class UnifiedSiteBuilder:
                 warning
                 for item in quarter_projections
                 for warning in item.warnings
+            )
+            warnings += tuple(
+                f"quarter {label} is blocked; retained last-known-good artifacts"
+                for label in retained
+            )
+            warnings += tuple(
+                f"quarter {label} is blocked; no last-known-good artifacts available"
+                for label in omitted
+            )
+            warnings += tuple(
+                f"quarter {label} is not managed by sync_state; omitted from public site"
+                for label in unmanaged
             )
             return self._write_report(
                 scope_label,
@@ -241,13 +257,13 @@ class UnifiedSiteBuilder:
             raise
 
     def _project_quarters(
-        self, facts: ArchiveFacts, incomplete: tuple[str, ...]
+        self, facts: ArchiveFacts, eligible: tuple[str, ...]
     ) -> tuple[QuarterProjection, ...]:
-        blocked = set(incomplete)
+        allowed = set(eligible)
         projections: list[QuarterProjection] = []
-        for quarter in sorted(facts.by_quarter):
+        for quarter in sorted(facts.state_by_quarter):
             label = _quarter_label(quarter)
-            if label in blocked:
+            if label not in allowed:
                 continue
             self.reporter.progress(
                 stage="projection", current=label, completed=len(projections) + 1
@@ -274,6 +290,131 @@ class UnifiedSiteBuilder:
             for year, values in sorted(grouped.items())
         )
 
+    def _retained_quarters(
+        self, previous: BuildState | None, blocked: tuple[str, ...]
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Separate blocked quarters with a usable last-good tree from omissions."""
+        if previous is None:
+            return (), tuple(sorted(blocked))
+        retained: list[str] = []
+        omitted: list[str] = []
+        for label in sorted(blocked):
+            required = (
+                self.site_directory / label / "index.html",
+                self.site_directory / "data" / "quarters" / f"{label}.json",
+                self.site_directory / "data" / "offline" / f"{label}.json",
+            )
+            if label in previous.quarters and all(path.is_file() for path in required):
+                retained.append(label)
+            else:
+                omitted.append(label)
+        return tuple(retained), tuple(omitted)
+
+    def _merge_retained_indexes(
+        self,
+        years: tuple[YearCatalogProjection, ...],
+        archive: ArchiveIndexProjection,
+        retained: tuple[str, ...],
+    ) -> tuple[tuple[YearCatalogProjection, ...], ArchiveIndexProjection]:
+        """Merge retained last-good index records without reading uncertain facts."""
+        if not retained:
+            return years, archive
+        old_archive = _read_site_json(self.site_directory / "data" / "archive-index.json")
+        old_entries = {
+            str(item.get("quarter")): item
+            for item in old_archive.get("quarters", [])
+            if isinstance(item, dict) and isinstance(item.get("quarter"), str)
+        }
+        merged_entries = {
+            str(item.get("quarter")): item
+            for item in archive.quarters
+            if isinstance(item, dict) and isinstance(item.get("quarter"), str)
+        }
+        for label in retained:
+            entry = old_entries.get(label)
+            if entry is not None:
+                merged_entries[label] = entry
+        ordered_entries = tuple(merged_entries[label] for label in sorted(merged_entries))
+        old_year_records: dict[int, tuple[dict[str, object], ...]] = {}
+        old_year_revisions: dict[int, str] = {}
+        for year in sorted({int(label[:4]) for label in retained}):
+            payload = _read_site_json(
+                self.site_directory / "data" / "catalog" / f"{year:04d}.json"
+            )
+            records = tuple(
+                item
+                for item in payload.get("records", [])
+                if isinstance(item, dict) and str(item.get("quarter")) in retained
+            )
+            old_year_records[year] = records
+            revision = payload.get("revision")
+            if isinstance(revision, str):
+                old_year_revisions[year] = revision
+        current_by_year = {item.year: item for item in years}
+        merged_years: list[YearCatalogProjection] = []
+        for year in sorted(set(current_by_year) | set(old_year_records)):
+            current = current_by_year.get(year)
+            retained_records = old_year_records.get(year, ())
+            if current is None:
+                merged_years.append(
+                    YearCatalogProjection(
+                        year,
+                        retained_records,
+                        old_year_revisions.get(year, ""),
+                    )
+                )
+                continue
+            if not retained_records:
+                merged_years.append(current)
+                continue
+            records = tuple(sorted(
+                (*retained_records, *current.records),
+                key=lambda item: (str(item.get("quarter", "")), int(item.get("id", 0)), str(item.get("appearance", ""))),
+            ))
+            merged_years.append(
+                YearCatalogProjection(
+                    year,
+                    records,
+                    fingerprint(
+                        {
+                            "projection": PROJECTION_VERSION,
+                            "year": year,
+                            "records": records,
+                            "quarters": sorted({str(item.get("quarter")) for item in records}),
+                        }
+                    ),
+                )
+            )
+        merged_year_labels = tuple(item.year for item in merged_years)
+        latest = sorted(merged_entries)[-1] if merged_entries else None
+        old_shape = {
+            "years": old_archive.get("years"),
+            "quarters": old_archive.get("quarters"),
+            "latest_quarter": old_archive.get("latest_quarter"),
+        }
+        new_shape = {
+            "years": list(merged_year_labels),
+            "quarters": list(ordered_entries),
+            "latest_quarter": latest,
+        }
+        revision = old_archive.get("revision") if old_shape == new_shape else None
+        archive_revision = (
+            revision
+            if isinstance(revision, str)
+            else fingerprint(
+                {
+                    "projection": PROJECTION_VERSION,
+                    **new_shape,
+                }
+            )
+        )
+        return tuple(merged_years), ArchiveIndexProjection(
+            merged_year_labels,
+            ordered_entries,
+            latest,
+            archive_revision,
+        )
+
     def _shared_assets(self) -> tuple[bytes, bytes]:
         css_path = self.root / "static" / "css" / "site.css"
         css = css_path.read_bytes() if css_path.is_file() else APP_CSS_FALLBACK.encode()
@@ -289,6 +430,8 @@ class UnifiedSiteBuilder:
         archive: ArchiveIndexProjection,
         css: bytes,
         js: bytes,
+        *,
+        retained: tuple[str, ...] = (),
     ) -> dict[str, bytes]:
         desired: dict[str, bytes] = {
             "assets/app.css": css,
@@ -324,6 +467,26 @@ class UnifiedSiteBuilder:
             label = quarter.quarter
             manifest = project_offline_manifest(quarter, desired)
             desired[f"data/offline/{label}.json"] = json_bytes(manifest.to_dict())
+        for label in retained:
+            for relative in (
+                f"{label}/index.html",
+                f"data/quarters/{label}.json",
+                f"data/offline/{label}.json",
+            ):
+                source = self.site_directory / Path(relative)
+                if source.is_file():
+                    desired[relative] = source.read_bytes()
+            payload = _read_site_json(
+                self.site_directory / "data" / "quarters" / f"{label}.json"
+            )
+            for item in _quarter_items(payload):
+                cover = item.get("cover_url")
+                if not isinstance(cover, str):
+                    continue
+                relative = cover.split("?", 1)[0]
+                source = self.site_directory / Path(relative)
+                if relative not in desired and source.is_file():
+                    desired[relative] = source.read_bytes()
         return desired
 
     def _validate_desired(self, desired: Mapping[str, bytes]) -> None:
@@ -780,6 +943,48 @@ def _page(
 
 def _quarter_label(quarter: Quarter) -> str:
     return f"{quarter.year:04d}-{quarter.month:02d}"
+
+
+def _blocked_quarters(facts: ArchiveFacts) -> tuple[str, ...]:
+    reviews = {_quarter_label(item) for item in facts.review_quarters}
+    return tuple(
+        sorted(
+            _quarter_label(quarter)
+            for quarter, state in facts.sync_states
+            if state.facts_status != "complete" or _quarter_label(quarter) in reviews
+        )
+    )
+
+
+def _merge_retained_state(
+    current: BuildState,
+    previous: BuildState | None,
+    retained: tuple[str, ...],
+    years: tuple[YearCatalogProjection, ...],
+    archive: ArchiveIndexProjection,
+) -> BuildState:
+    quarter_values = dict(current.quarters)
+    statuses = dict(current.quarter_status)
+    if previous is not None:
+        for label in retained:
+            if label in previous.quarters:
+                quarter_values[label] = previous.quarters[label]
+                statuses[label] = "retained"
+    return replace(
+        current,
+        quarters=quarter_values,
+        years={str(item.year): item.fingerprint for item in years},
+        archive=archive.fingerprint,
+        quarter_status=statuses,
+    )
+
+
+def _read_site_json(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 __all__ = [

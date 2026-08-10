@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from bgm_side_b.build.site_projection import (
@@ -29,6 +29,7 @@ class BuildState:
     years: Mapping[str, str]
     archive: str
     artifacts: Mapping[str, str]
+    quarter_status: Mapping[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -38,6 +39,7 @@ class BuildState:
             "years": dict(sorted(self.years.items())),
             "archive": self.archive,
             "artifacts": dict(sorted(self.artifacts.items())),
+            "quarter_status": dict(sorted(self.quarter_status.items())),
         }
 
 
@@ -152,6 +154,7 @@ def assign_fingerprints(
         year_by_label,
         archive_value.fingerprint,
         {},
+        {label: "current" for label in quarter_by_label},
     )
     return quarter_values, year_values, archive_value, state
 
@@ -173,7 +176,8 @@ def read_build_state(path: Path) -> BuildState | None:
     quarters = _string_map(value.get("quarters"))
     years = _string_map(value.get("years"))
     artifacts = _string_map(value.get("artifacts", {}))
-    if quarters is None or years is None or artifacts is None:
+    statuses = _string_map(value.get("quarter_status", {}))
+    if quarters is None or years is None or artifacts is None or statuses is None:
         return None
     return BuildState(
         STATE_SCHEMA,
@@ -182,6 +186,7 @@ def read_build_state(path: Path) -> BuildState | None:
         years,
         value["archive"],
         artifacts,
+        statuses or {label: "current" for label in quarters},
     )
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ from bgm_side_b.repository import (
     CoverRecord,
     QuarterAppearance,
     QuarterSyncState,
+    ReviewIssue,
     SubjectRecord,
     SubjectRepository,
     SubjectSnapshot,
@@ -243,3 +245,146 @@ def test_blacklist_residue_fails_closed_before_writing_site(tmp_path: Path) -> N
     with pytest.raises(BuildError, match="blacklist residue"):
         builder.build()
     assert not (tmp_path / "dist" / "site").exists()
+
+
+def test_blocked_quarter_retains_only_its_last_good_artifacts(
+    tmp_path: Path,
+) -> None:
+    builder, database = _build_fixture(tmp_path)
+    builder.build()
+    site = tmp_path / "dist" / "site"
+    before = (site / "2026-07" / "index.html").read_bytes()
+    repository = SubjectRepository(database)
+    state = repository.get_sync_state(Quarter(2026, 7))
+    assert state is not None
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection, replace(state, facts_status="incomplete")
+        )
+        current = repository.get_subject_facts(101)
+        assert current is not None
+        changed = replace(
+            current,
+            subject=replace(current.subject, rating_score=9.0),
+        )
+        repository.replace_subject_snapshot(connection, changed)
+
+    run = builder.build()
+    assert run.dirty.dirty_quarters == ("2026-04",)
+    assert (site / "2026-07" / "index.html").read_bytes() == before
+    archive = json.loads((site / "data" / "archive-index.json").read_text("utf-8"))
+    assert [item["quarter"] for item in archive["quarters"]] == ["2026-04", "2026-07"]
+    assert any("2026-07" in warning for warning in run.warnings)
+
+
+def test_unmanaged_appearance_and_new_blocked_quarter_are_not_public(
+    tmp_path: Path,
+) -> None:
+    builder, database = _build_fixture(tmp_path)
+    repository = SubjectRepository(database)
+    current = repository.get_subject_facts(101)
+    assert current is not None
+    october = _subject(303, MediaFormat.TV, Quarter(2026, 10))
+    unmanaged = _subject(404, MediaFormat.TV, Quarter(2027, 1))
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(connection, october)
+        repository.replace_subject_snapshot(connection, unmanaged)
+        repository.write_sync_state(
+            connection,
+            QuarterSyncState(
+                Quarter(2026, 10),
+                "incomplete",
+                "incomplete",
+                1,
+                0,
+                "2026-10-01T00:00:00Z",
+                None,
+            ),
+        )
+    first = builder.build()
+    site = tmp_path / "dist" / "site"
+    archive = json.loads((site / "data" / "archive-index.json").read_text("utf-8"))
+    assert [item["quarter"] for item in archive["quarters"]] == ["2026-04", "2026-07"]
+    assert not (site / "2026-10").exists()
+    assert any("2026-10" in warning for warning in first.warnings)
+    assert any("2027-01" in warning for warning in first.warnings)
+
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection,
+            QuarterSyncState(
+                Quarter(2026, 10),
+                "complete",
+                "complete",
+                1,
+                0,
+                "2026-10-01T00:00:00Z",
+                "2026-10-01T00:00:00Z",
+            ),
+        )
+        repository.replace_review_issues(
+            connection,
+            303,
+            (
+                ReviewIssue(
+                    "TV_QUARTER_BOUNDARY",
+                    Quarter(2026, 10),
+                    "2026-09-30",
+                    {"reason": "test"},
+                    "2026-10-01T00:00:00Z",
+                ),
+            ),
+        )
+    second = builder.build()
+    archive = json.loads((site / "data" / "archive-index.json").read_text("utf-8"))
+    assert [item["quarter"] for item in archive["quarters"]] == ["2026-04", "2026-07"]
+    assert not (site / "2026-10").exists()
+    assert any("2026-10" in warning for warning in second.warnings)
+
+
+def test_blocked_last_good_without_site_is_omitted_with_warning(tmp_path: Path) -> None:
+    builder, database = _build_fixture(tmp_path)
+    builder.build()
+    site = tmp_path / "dist" / "site"
+    shutil.rmtree(site / "2026-07")
+    (site / "data" / "quarters" / "2026-07.json").unlink()
+    (site / "data" / "offline" / "2026-07.json").unlink()
+    repository = SubjectRepository(database)
+    state = repository.get_sync_state(Quarter(2026, 7))
+    assert state is not None
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection, replace(state, facts_status="incomplete")
+        )
+    run = builder.build()
+    archive = json.loads((site / "data" / "archive-index.json").read_text("utf-8"))
+    assert [item["quarter"] for item in archive["quarters"]] == ["2026-04"]
+    assert not (site / "2026-07").exists()
+    assert any("no last-known-good" in warning for warning in run.warnings)
+
+
+def test_relevant_review_on_last_good_quarter_retains_previous_output(
+    tmp_path: Path,
+) -> None:
+    builder, database = _build_fixture(tmp_path)
+    builder.build()
+    site = tmp_path / "dist" / "site"
+    before = (site / "2026-07" / "index.html").read_bytes()
+    repository = SubjectRepository(database)
+    with repository.transaction() as connection:
+        repository.replace_review_issues(
+            connection,
+            101,
+            (
+                ReviewIssue(
+                    "TV_QUARTER_BOUNDARY",
+                    Quarter(2026, 7),
+                    "2026-06-30",
+                    {"reason": "test"},
+                    "2026-07-01T00:00:00Z",
+                ),
+            ),
+        )
+    run = builder.build()
+    assert (site / "2026-07" / "index.html").read_bytes() == before
+    assert any("2026-07" in warning for warning in run.warnings)

@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from bgm_side_b.admission import (
+    AdmissionDecision,
     AdmissionStatus,
     QuarterOverride,
     ReviewFinding,
@@ -112,6 +113,7 @@ class QuarterSyncResult:
     rejected_non_japanese: int
     blacklisted: int
     reviews: tuple[ReviewIssue, ...]
+    external_reviews: tuple[dict[str, object], ...]
     warnings: tuple[dict[str, str], ...]
     errors: tuple[dict[str, str], ...]
     cover_downloaded: int = 0
@@ -282,6 +284,7 @@ class ArchiveSynchronizer:
 
         prepared: list[_PreparedSubject] = []
         reviews: list[ReviewIssue] = []
+        external_reviews: list[dict[str, object]] = []
         errors: list[dict[str, str]] = []
         blacklisted = 0
         rejected_non_japanese = 0
@@ -320,11 +323,8 @@ class ArchiveSynchronizer:
                         rejected_non_japanese += 1
                     continue
                 if decision.media_format is None or decision.japanese is None:
-                    errors.append(
-                        {
-                            "code": "review_unstorable",
-                            "summary": "media facts cannot be stored",
-                        }
+                    external_reviews.append(
+                        _external_review(candidate.subject_id, decision, quarter)
                     )
                     continue
                 try:
@@ -421,6 +421,7 @@ class ArchiveSynchronizer:
             rejected_non_japanese,
             blacklisted,
             tuple(reviews),
+            tuple(external_reviews),
             warnings,
             (),
             cover_downloaded,
@@ -434,8 +435,6 @@ class ArchiveSynchronizer:
         decision: object,
         existing: SubjectSnapshot | None,
     ) -> _PreparedSubject:
-        from bgm_side_b.admission import AdmissionDecision
-
         assert isinstance(decision, AdmissionDecision)
         assert decision.media_format is not None
         assert decision.japanese is not None
@@ -542,6 +541,7 @@ class ArchiveSynchronizer:
             blacklisted,
             (),
             (),
+            (),
             errors,
         )
 
@@ -625,7 +625,10 @@ class ArchiveSynchronizer:
                 item["rejected_non_japanese"] for item in serialized
             ),
             "blacklisted": sum(item["blacklisted"] for item in serialized),
-            "review_count": sum(len(item["reviews"]) for item in serialized),
+            "review_count": sum(
+                len(item["reviews"]) + len(item["external_reviews"])
+                for item in serialized
+            ),
             "warning_count": sum(len(item["warnings"]) for item in serialized),
             "error_count": sum(len(item["errors"]) for item in serialized),
         }
@@ -687,6 +690,27 @@ def _review_issue(finding: ReviewFinding, subject_id: int) -> ReviewIssue:
         {**finding.details, "subject_id": subject_id},
         _timestamp(),
     )
+
+
+def _external_review(
+    subject_id: int, decision: AdmissionDecision, target_quarter: Quarter
+) -> dict[str, object]:
+    """Report a REVIEW whose media format is too uncertain for formal storage."""
+    finding = decision.reviews[0]
+    return {
+        "subject_id": subject_id,
+        "issue_code": finding.issue_code,
+        "candidate_quarter": (
+            _quarter_label(finding.candidate_quarter)
+            if finding.candidate_quarter is not None
+            else None
+        ),
+        "observed_value": finding.observed_value,
+        "command": (
+            f"bgmb assign {subject_id} "
+            f"{target_quarter.year} {target_quarter.month}"
+        ),
+    }
 
 
 def _episode_count(detail: SubjectDetail) -> int | None:
@@ -752,6 +776,7 @@ def _skipped_result(quarter: Quarter, state: QuarterSyncState) -> QuarterSyncRes
         (),
         (),
         (),
+        (),
         skipped=True,
     )
 
@@ -778,6 +803,7 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
             }
             for issue in result.reviews
         ],
+        "external_reviews": list(result.external_reviews),
         "warnings": list(result.warnings),
         "errors": list(result.errors),
         "cover_downloaded": result.cover_downloaded,

@@ -108,6 +108,7 @@ def _detail(
     country: str | None = "日本",
     air_date: str = "2026-04-02",
     cover: str | None = "https://images.example/cover.png",
+    platform: str | None = None,
 ) -> SubjectDetail:
     infobox = [] if country is None else [{"key": "国家/地区", "value": country}]
     return SubjectDetail.from_payload(
@@ -118,7 +119,11 @@ def _detail(
             "name_cn": f"中文 {subject_id}",
             "summary": "raw summary",
             "date": air_date,
-            "platform": "TV" if media is MediaFormat.TV else "剧场版",
+            "platform": (
+                platform
+                if platform is not None
+                else "TV" if media is MediaFormat.TV else "剧场版"
+            ),
             "eps": 12,
             "total_episodes": 12,
             "rating": {"score": 7.5, "total": 100},
@@ -287,6 +292,44 @@ def test_search_failure_leaves_existing_facts_and_marks_quarter_incomplete(
     assert api.subject_calls == []
     assert repository.get_subject_facts(99) is not None
     assert repository.get_sync_state(QUARTER).facts_status == FACTS_INCOMPLETE  # type: ignore[union-attr]
+
+
+def test_search_only_media_review_is_reported_without_blocking_complete_facts(
+    tmp_path: Path,
+) -> None:
+    api = FakeApi({101: _detail(101), 202: _detail(202, platform="")})
+    search_only = DiscoveredSubject(
+        202,
+        frozenset(),
+        frozenset({date(2026, 4, 2)}),
+        frozenset({2}),
+        ("search:air_date:2026-03-25..2026-07-01",),
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(101, MediaFormat.TV),)),
+        DiscoveryBatch((search_only,)),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 0
+    result = run.quarters[0]
+    assert result.facts_status == FACTS_COMPLETE
+    assert result.external_reviews == (
+        {
+            "subject_id": 202,
+            "issue_code": "SEARCH_ONLY_MEDIA_UNRESOLVED",
+            "candidate_quarter": None,
+            "observed_value": "",
+            "command": "bgmb assign 202 2026 4",
+        },
+    )
+    assert repository.get_subject_facts(202) is None
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    assert report["review_count"] == 1
+    assert report["error_count"] == 0
 
 
 def test_range_skips_complete_quarters_and_parser_only_refreshes_explicitly(

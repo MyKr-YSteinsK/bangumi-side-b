@@ -363,8 +363,16 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 client.close()
         print(f"sync report: {_relative_output_path(root, run.report_path)}")
-        if scope.is_single_quarter and run.quarters and run.quarters[0].reviews:
-            print(render_review(repository, scope.start))
+        if scope.is_single_quarter and run.quarters:
+            result = run.quarters[0]
+            if result.reviews:
+                print(render_review(repository, scope.start))
+            for review in result.external_reviews:
+                print(
+                    "REVIEW "
+                    f"{review['subject_id']} {review['issue_code']}｜"
+                    f"{review['command']}"
+                )
         if run.exit_code == 0:
             print(
                 "facts synchronized; final site build pipeline is migrated in Plan 14"

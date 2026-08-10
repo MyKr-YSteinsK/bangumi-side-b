@@ -23,6 +23,7 @@ ANIME_SUBJECT_TYPE = 2
 TV_CATEGORY = 1
 MOVIE_CATEGORY = 3
 DISCOVERY_CATEGORIES = (TV_CATEGORY,)
+BROWSE_CATEGORIES = frozenset({TV_CATEGORY, MOVIE_CATEGORY})
 DEFAULT_USER_AGENT = (
     "Bangumi-Side-B/0.1.2 (+https://github.com/MyKr-YSteinsK/bangumi-side-b)"
 )
@@ -256,13 +257,15 @@ class CandidateSubject:
     platform: str | None
     name: str | None
     name_cn: str | None
-    category: int
+    category: int | None
     rating_score: float | None
     rating_total: int | None
+    candidate_date: date | None = None
+    subject_type: int | None = None
 
     @classmethod
     def from_payload(
-        cls, payload: Mapping[str, Any], category: int
+        cls, payload: Mapping[str, Any], category: int | None
     ) -> CandidateSubject:
         rating = payload.get("rating")
         rating_data = rating if isinstance(rating, Mapping) else {}
@@ -274,6 +277,8 @@ class CandidateSubject:
             category=category,
             rating_score=_optional_number(rating_data.get("score")),
             rating_total=_optional_integer(rating_data.get("total")),
+            candidate_date=_optional_date(payload.get("date")),
+            subject_type=_optional_integer(payload.get("type")),
         )
 
 
@@ -395,7 +400,7 @@ class BangumiApiClient:
         limit: int = 100,
     ) -> tuple[CandidateSubject, ...]:
         """Read every page for one month and one documented animation category."""
-        if category not in DISCOVERY_CATEGORIES:
+        if category not in BROWSE_CATEGORIES:
             raise ValueError("category must be the TV or theatrical movie category")
         offset = 0
         subjects: list[CandidateSubject] = []
@@ -490,6 +495,56 @@ class BangumiApiClient:
                 return tuple(episodes)
             offset = next_offset
 
+    def search_subjects(
+        self,
+        *,
+        air_date_start: date,
+        air_date_end: date,
+        limit: int = 100,
+    ) -> tuple[CandidateSubject, ...]:
+        """Read experimental anime search pages for one explicit date window."""
+        if air_date_end <= air_date_start:
+            raise ValueError("search air-date end must be after the start")
+        offset = 0
+        subjects: list[CandidateSubject] = []
+        while True:
+            body = self._request_json(
+                "/search/subjects",
+                {"limit": limit, "offset": offset},
+                method="POST",
+                json_body={
+                    "keyword": "",
+                    "filter": {
+                        "type": [ANIME_SUBJECT_TYPE],
+                        "air_date": [
+                            f">={air_date_start.isoformat()}",
+                            f"<{air_date_end.isoformat()}",
+                        ],
+                    },
+                },
+                request_label="discovery-search",
+                current=f"offset {offset}",
+            )
+            data = body.get("data")
+            if not isinstance(data, list):
+                raise ResponseShapeError(
+                    "invalid_page", "search response has no data list"
+                )
+            subjects.extend(
+                CandidateSubject.from_payload(item, None)
+                for item in data
+                if isinstance(item, Mapping)
+            )
+            if not data:
+                return tuple(subjects)
+            next_offset = offset + len(data)
+            total = body.get("total")
+            if len(data) < limit or (
+                isinstance(total, int) and next_offset >= total
+            ):
+                return tuple(subjects)
+            offset = next_offset
+
     def get_related_characters(self, subject_id: int) -> tuple[RelatedCharacter, ...]:
         """Fetch subject-local character relations in the API response order."""
         _validate_positive_id(subject_id, "subject")
@@ -575,6 +630,8 @@ class BangumiApiClient:
         path: str,
         params: Mapping[str, Any] | None = None,
         *,
+        method: str = "GET",
+        json_body: Mapping[str, Any] | None = None,
         request_label: str,
         entity_type: str | None = None,
         entity_id: int | None = None,
@@ -582,19 +639,27 @@ class BangumiApiClient:
     ) -> dict[str, Any]:
         context = _RequestContext(request_label, entity_type, entity_id, current)
         return self._request_with_context(
-            context, lambda: self._request_json_response(path, params)
+            context,
+            lambda: self._request_json_response(
+                path, params, method=method, json_body=json_body
+            ),
         )
 
     def _request_json_response(
         self,
         path: str,
         params: Mapping[str, Any] | None = None,
+        *,
+        method: str = "GET",
+        json_body: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         retry_after: float | None = None
         for attempt in range(self.max_retries + 1):
             self.metrics.json_requests += 1
             try:
-                response = self._client.get(path, params=params)
+                response = self._client.request(
+                    method, path, params=params, json=json_body
+                )
             except httpx.TimeoutException:
                 retry_after = None
                 failure = BangumiApiError("timeout", "request timed out")

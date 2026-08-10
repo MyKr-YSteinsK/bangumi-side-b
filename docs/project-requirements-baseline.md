@@ -38,24 +38,26 @@ SQLite + workspace/covers
 只同步、保存和构建 Anime type=2 的 TV 与剧场版；TV 支持 premiere/continuing，Movie 只支持
 premiere。仍不处理 WEB、OVA、OAD、角色、声优、角色图片或声优图片。
 
-日本 TV 判定完全自动化，不要求逐条人工审核。国家/地区分类按以下确定性顺序执行：
+日本 TV 与剧场版判定完全自动化；无法确定的候选进入持久化 REVIEW，不以默认规则放行。
+国家/地区分类按以下确定性顺序执行：
 
-1. 已验证的 Infobox 国家/地区 key 优先；一致的精确 token 包含 `日本` 或 `Japan` 时
-   收录，明确的非日本值排除；
-2. 缺失、无法解析或结构化字段冲突时，使用配置中的精确社区标签；正向标签收录，负向
-   标签排除，正负冲突排除；
-3. 没有地区证据时，仅 `type == 2`、TV、首播日期完整落在当前季度的候选按默认规则收录；
-   其余候选排除。
+1. 已验证的 `Subject.meta_tags` 公共地区证据为 primary evidence；
+2. 缺失公共地区证据时，严格回退到 Infobox 国家/地区 key；
+3. 精确的日本 token（`日本` 或 `Japan`）收录，明确 non-Japanese 值排除；
+4. 日本与其它地区并存、两类结构化 evidence 冲突或没有 evidence，均进入 REVIEW。
 
-同一结构化值中的合拍国家允许。标签和 token 均只做 NFKC、trim 和精确匹配；绝不以标题、
-简介、语言、公司或模糊标签推断国家。同步审计保存使用的证据与默认原因。
+只处理 Anime `type == 2` 的 TV 与剧场版。标签和 token 均只做 NFKC、trim 和精确匹配；绝不以
+标题、简介、语言、公司、普通社区标签或 AI 推断国家。同步审计保存使用的证据与 REVIEW 原因。
 
 ## 4. 季度
 
 合法季度月：`1 / 4 / 7 / 10`。
 
-作品永久归属于完整结构化首播日期所在季度；跨季度 TV 只在有证据时增加 continuing
-appearance，Movie 不得 continuing。缺完整日期或范围证据时不猜测，不进入新的公开季度并写入审计。
+完整结构化首播日期是事实日期；TV 的 premiere quarter 是 archive/cour ownership。
+通常自然季度与 premiere quarter 相同；季度边界前后 7 天以内，只有精确社区季度标签达到
+高置信共识时才可解析为下一 cour，否则进入 REVIEW。跨季度 TV 只在可靠结构化 `end_date`
+或临时 MainStory Episode airdate probe 证据下增加 continuing appearance；Episode 不持久化、
+不展示。Movie 不得 continuing。缺日期、范围或续播证据时不猜测，不进入新的公开季度。
 
 ## 5. API 与同步
 
@@ -77,7 +79,8 @@ appearance，Movie 不得 continuing。缺完整日期或范围证据时不猜�
 bgmb sync 2026 4
 ```
 
-`sync` 只联网同步，不 build、不 publish。
+`sync` 联网获取事实与封面；事实成功提交后触发受影响范围的增量 build。`build` 完全离线，
+`serve` 只服务已有 `dist/site`，`publish` 从不调用 `sync` 或 `build`。
 
 评分和评分人数每次刷新；稳定详情可增量复用；失败项重试；成功数据保留；局部失败最终
 退出码非零；Ctrl+C 停止新请求并保证当前事务完成或回滚。发现候选但日本 TV 收录为 0 时
@@ -115,12 +118,12 @@ unknown
 
 ```text
 原始标签
-→ 精确别名映射
-→ 白名单过滤
+→ NFKC + trim
+→ allowed-tags.toml exact membership
 → 白名单顺序
 ```
 
-禁止模糊匹配、包含匹配、编辑距离、AI 判断和自动同义词。
+禁止 alias/synonym mapping、模糊匹配、包含匹配、编辑距离、AI 判断和自动同义词。
 
 第一版白名单：
 
@@ -130,21 +133,7 @@ unknown
 穿越 机战 百合 BL 后宫 乙女 治愈 热血 萌系
 ```
 
-明确别名：
-
-```text
-搞笑→喜剧
-喜剧动画→喜剧
-日常系→日常
-治愈系→治愈
-热血系→热血
-百合向→百合
-耽美→BL
-BL向→BL
-乙女向→乙女
-```
-
-首次同步后生成标签审计报告，由人工决定是否扩充。
+不在白名单中的原始标签不展示；需要新增展示词时直接修改白名单并离线重建。
 
 ## 9. 黑名单
 
@@ -176,7 +165,7 @@ subject_review_issues
 sync_states
 ```
 
-正式 Schema v1 从空库直接创建，只接受 `TV` 和 `MOVIE`。Subject 保存原始标题、中文标题、
+正式 Schema v2 从空库直接创建，只接受 `TV` 和 `MOVIE`。Subject 保存原始标题、中文标题、
 原始简介、日期、单一集数、评分及 Japanese-only 结构化证据；别名、Infobox、候选标签、
 标准化来源、唯一归档季度、封面元数据和待复核问题分别保存。同步状态按季度记录 facts 与
 covers 是否完整，不保存实体级状态。
@@ -186,8 +175,10 @@ covers 是否完整，不保存实体级状态。
 
 ## 11. 季度、集数与封面
 
-一个 Subject 最多属于一个归档季度，季度来源明确区分 automatic/manual；未确认时允许没有
-季度行。SQLite 不保存单集记录，也不从任何列表推断总集数，只保存上游明确提供的单一集数字段。
+`subject_quarters` 保存 `(subject_id, year, quarter_month, appearance_kind)`；TV 最多一个
+premiere、可以有多个 continuing，Movie 只有一个 premiere。季度来源明确区分
+automatic/manual；未确认时允许没有季度行。SQLite 不保存单集记录，也不从任何列表推断总集数，
+只保存上游明确提供的单一集数字段。
 
 只登记通过过滤作品的唯一最终封面元数据；相对路径固定由 Subject ID 派生为
 `covers/<subject_id>.webp`，不写入 SQLite。第一版不保存、下载、展示或查询角色、声优与角色图片；
@@ -220,8 +211,10 @@ dist/site/
 - `serve`：只服务已有 `dist/site`，不读 SQLite、不 build；
 - `publish`：验证并发布已有准备好的站点，不调用 sync/build。
 
-构建只将脏 artifacts 写入临时 staging，校验后增量 patch `dist/site`；失败回滚受影响文件，
-不破坏上一版。
+构建按季度与其 archive/year 依赖规划 dirty artifacts，只将脏 artifacts 写入临时 staging，
+校验后增量 patch `dist/site`。`workspace/build-state.json` 是可删除的 derived state；缺失或
+损坏时允许一次安全的完整收敛。单个 blocked quarter 只能保留自己的 last-good artifacts，
+不能冻结其它健康季度；无法恢复时省略并给出 WARNING。
 
 ## 13. 页面与浏览
 
@@ -238,7 +231,9 @@ settings/index.html
 
 导航按 archive index 显示所有可用历史季度；季度页面默认 TV，并将 Movie 与 continuing 分开。
 
-卡片打开由同源季度 JSON 驱动的抽屉；不生成 Subject 独立详情页。浏览器返回与复杂交互属于后续前端阶段。
+季度页面使用静态 master list + detail workspace；运行时只读取同源季度/year JSON，不生成
+Subject 独立详情页。Archive 支持季度、年度和年份范围浏览；浏览器返回、Hash 直达、筛选、
+排序、分页和响应式 detail/filter workspace 均属于当前正式前端契约。
 
 搜索只匹配首选标题、原名、结构化别名；NFKC、trim、拉丁字符大小写不敏感、子串匹配；不做分词、拼音、模糊匹配或翻译。
 
@@ -262,11 +257,15 @@ settings/index.html
 
 ## 15. 卡片、抽屉、详情
 
-卡片：2:3 封面 + 独立信息区；标题、原名、TV、集数、日期、评分、人数、最多两个来源标签、最多两个社区标签；手机 2 列，桌面约 5～7 列。
+列表行保留封面、标题、原名、媒体、集数、日期、评分、人数、最多两个来源标签、最多两个社区标签；
+季度与 Archive 使用同一状态/筛选/排序引擎，手机和桌面均保持可读密度。
 
-桌面抽屉右侧约 520～600px；手机为底部高面板。抽屉不显示章节、角色、声优、STAFF。
+桌面 detail workspace 位于主列表右侧；手机为底部/单列高面板。详情不显示章节、角色、声优、
+STAFF 或角色图片。
 
-详情桌面为封面与资料双栏，手机上下布局；章节为紧凑列表，超过 50 集时初始前 24 集并可展开；不显示角色或声优区。返回进入时季度，直接打开时返回永久归属季度。
+详情展示封面、首播/当前季度、日期、集数、评分、来源、标签、别名和简介等已验证事实；缺失
+字段省略，不补造占位。continuing 详情保留 premiere quarter 证据；返回进入时季度，直接
+打开时回到永久归属季度。
 
 ## 16. PWA、版本与发布
 
@@ -290,4 +289,6 @@ SQLite upsert/黑名单引用、静态构建/链接、增量 rollback、localhos
 
 不追求覆盖率数字，不做大规模浏览器矩阵和低价值 UI 自动化。
 
-开发默认使用 `frugal-dev-runner`。目标约 6 份正式 Plan，每份约 5～7 个高内聚 Phase。每个 Phase 独立 commit，不自动 push。用户 push 后由 ChatGPT 联网检查仓库，再生成下一份 Plan。
+开发默认使用 `frugal-dev-runner`。每个 Phase 独立 commit，不在 Phase 边界 push；整份 Plan
+通过 integrated validation 后，由 Codex 普通 push 当前分支 upstream。禁止 force push、改写
+历史或把源码 push 当作 Pages publish。

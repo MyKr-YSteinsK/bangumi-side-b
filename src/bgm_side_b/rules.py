@@ -141,10 +141,14 @@ def classify_japanese(infobox: Iterable[tuple[str, str]]) -> JapaneseDecision:
     if observed:
         return JapaneseDecision(
             JapaneseClassification.UNRESOLVED,
-            "conflicting_infobox_country",
+            "unresolved_conflicting_infobox_country",
             evidence_value,
         )
-    return JapaneseDecision(JapaneseClassification.UNRESOLVED)
+    return JapaneseDecision(
+        JapaneseClassification.UNRESOLVED,
+        "unresolved_missing_infobox_country",
+        "[]",
+    )
 
 
 def display_summary(summary_raw: str | None) -> str | None:

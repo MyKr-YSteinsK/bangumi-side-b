@@ -60,8 +60,9 @@ def test_japanese_classification_uses_only_exact_structured_country_evidence() -
     assert accepted.classification is JapaneseClassification.ACCEPTED_JAPANESE
     assert rejected.classification is JapaneseClassification.REJECTED_NON_JAPANESE
     assert unresolved.classification is JapaneseClassification.UNRESOLVED
+    assert unresolved.evidence_type == "unresolved_missing_infobox_country"
     assert conflict.classification is JapaneseClassification.UNRESOLVED
-    assert conflict.evidence_type == "conflicting_infobox_country"
+    assert conflict.evidence_type == "unresolved_conflicting_infobox_country"
 
 
 def test_summary_marker_and_kana_filter_are_conservative() -> None:

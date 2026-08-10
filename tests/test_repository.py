@@ -25,6 +25,7 @@ from bgm_side_b.repository import (
     QuarterOwnership,
     QuarterSyncState,
     ReviewIssue,
+    ReviewQueueItem,
     SubjectRecord,
     SubjectRepository,
     SubjectSnapshot,
@@ -192,3 +193,34 @@ def test_quarter_sync_state_and_derived_cover_path(
     assert cover_relative_path(101) == PurePosixPath("covers/101.webp")
     with pytest.raises(ValueError, match="positive"):
         cover_relative_path(0)
+
+
+def test_review_queue_reconciles_and_preserves_unresolved_subject_facts(
+    repository: SubjectRepository,
+) -> None:
+    unresolved = replace(
+        _snapshot(),
+        subject=replace(
+            _subject(101),
+            japanese=JapaneseDecision(
+                JapaneseClassification.UNRESOLVED,
+                "unresolved_missing_infobox_country",
+                "[]",
+            ),
+        ),
+        quarter=None,
+        cover=None,
+        review_issues=(
+            ReviewIssue("japanese_unresolved", None, None, {"why": "missing"}, "now"),
+        ),
+    )
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(connection, unresolved)
+
+    assert repository.get_subject_facts(101) == unresolved
+    assert repository.list_review_issues() == (
+        ReviewQueueItem(unresolved.subject, unresolved.review_issues[0]),
+    )
+    with repository.transaction() as connection:
+        repository.replace_review_issues(connection, 101, ())
+    assert repository.list_review_issues() == ()

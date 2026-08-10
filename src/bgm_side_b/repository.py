@@ -24,7 +24,7 @@ from bgm_side_b.domain import (
 
 @dataclass(frozen=True)
 class SubjectRecord:
-    """The complete persisted row for one accepted archive subject."""
+    """The complete persisted row for an admitted or review-only subject."""
 
     subject_id: int
     name_original: str
@@ -49,8 +49,8 @@ class SubjectRecord:
             raise ValueError("rating score must be between 0 and 10")
         if self.rating_count is not None and self.rating_count < 0:
             raise ValueError("rating count must not be negative")
-        if self.japanese.classification is not JapaneseClassification.ACCEPTED_JAPANESE:
-            raise ValueError("only accepted Japanese subjects may be persisted")
+        if self.japanese.classification is JapaneseClassification.REJECTED_NON_JAPANESE:
+            raise ValueError("rejected non-Japanese subjects must not be persisted")
 
 
 @dataclass(frozen=True)
@@ -87,6 +87,14 @@ class ReviewIssue:
     observed_value: str | None
     details: Mapping[str, object]
     detected_at: str
+
+
+@dataclass(frozen=True)
+class ReviewQueueItem:
+    """One persisted issue paired with its locally stored subject facts."""
+
+    subject: SubjectRecord
+    issue: ReviewIssue
 
 
 @dataclass(frozen=True)
@@ -481,6 +489,53 @@ class SubjectRepository:
         finally:
             connection.close()
 
+    def list_review_issues(
+        self, quarter: Quarter | None = None
+    ) -> tuple[ReviewQueueItem, ...]:
+        """Return deterministic unresolved review rows without mutating SQLite."""
+        connection = self.database.connect()
+        try:
+            parameters: tuple[object, ...] = ()
+            where = ""
+            if quarter is not None:
+                where = "WHERE issue.candidate_year = ? AND issue.candidate_quarter = ?"
+                parameters = (quarter.year, quarter.month)
+            rows = connection.execute(
+                f"""
+                SELECT issue.*, subject.id FROM subject_review_issues AS issue
+                JOIN subjects AS subject ON subject.id = issue.subject_id
+                {where}
+                ORDER BY issue.candidate_year, issue.candidate_quarter,
+                         issue.issue_code, issue.subject_id
+                """,
+                parameters,
+            )
+            items: list[ReviewQueueItem] = []
+            for row in rows:
+                subject = self._subject_facts(connection, row["subject_id"])
+                if subject is None:
+                    raise RuntimeError("review issue subject is missing")
+                candidate_quarter = (
+                    Quarter(row["candidate_year"], row["candidate_quarter"])
+                    if row["candidate_year"] is not None
+                    else None
+                )
+                items.append(
+                    ReviewQueueItem(
+                        subject.subject,
+                        ReviewIssue(
+                            row["issue_code"],
+                            candidate_quarter,
+                            row["observed_value"],
+                            json.loads(row["details_json"]),
+                            row["detected_at"],
+                        ),
+                    )
+                )
+            return tuple(items)
+        finally:
+            connection.close()
+
     def _subject_facts(
         self, connection: sqlite3.Connection, subject_id: int
     ) -> SubjectSnapshot | None:
@@ -590,7 +645,7 @@ class SubjectRepository:
             row["rating_score"],
             row["rating_count"],
             JapaneseDecision(
-                JapaneseClassification.ACCEPTED_JAPANESE,
+                _stored_japanese_classification(row["japanese_evidence_type"]),
                 row["japanese_evidence_type"],
                 row["japanese_evidence_value"],
             ),
@@ -624,3 +679,9 @@ def _date_value(value: date | None) -> str | None:
 
 def _stored_date(value: object) -> date | None:
     return date.fromisoformat(value) if isinstance(value, str) else None
+
+
+def _stored_japanese_classification(evidence_type: object) -> JapaneseClassification:
+    if isinstance(evidence_type, str) and evidence_type.startswith("unresolved_"):
+        return JapaneseClassification.UNRESOLVED
+    return JapaneseClassification.ACCEPTED_JAPANESE

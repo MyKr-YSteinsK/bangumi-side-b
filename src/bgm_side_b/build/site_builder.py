@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Offline orchestration for the single deterministic ``dist/site`` tree."""
 
 from __future__ import annotations
@@ -501,91 +502,275 @@ def _root_html(archive: ArchiveIndexProjection) -> bytes:
     if latest:
         body = (
             f'<meta http-equiv="refresh" content="0;url={latest}/index.html">'
-            f'<p><a href="{latest}/index.html">Open latest quarter {latest}</a></p>'
+            f'<p class="root-redirect"><a href="{latest}/index.html">'
+            f'Open latest quarter {html.escape(latest)}</a></p>'
         )
     else:
-        body = "<p data-empty-archive>Archive is empty.</p>"
+        body = '<p class="root-redirect" data-empty-archive>Archive is empty.</p>'
     return _page("Bangumi Side B", body, "assets/app.css", "assets/app.js")
 
 
 def _archive_html(archive: ArchiveIndexProjection) -> bytes:
-    links = "".join(
-        f'<li data-quarter="{html.escape(str(item["quarter"]))}">'
-        f'<a href="../{html.escape(str(item["quarter"]))}/index.html">'
-        f'{html.escape(str(item["quarter"]))}</a> '
-        f'({item["count"]})</li>'
-        for item in archive.quarters
+    body = (
+        _site_header("../index.html", "../archive/index.html", "../settings/index.html", "ARCHIVE")
+        + '<main class="archive-page" data-archive-app '
+        'data-archive-index-url="../data/archive-index.json" data-site-root="../">'
+        '<section class="archive-intro">'
+        '<p class="archive-intro__code">ARCHIVE / INDEX</p>'
+        '<div><h1>播出档案</h1><p class="archive-intro__summary">'
+        '按季度坐标回看已核验的电视与剧场版资料。</p></div></section>'
+        '<section class="archive-selector" aria-label="Archive scope">'
+        '<div class="scope-tabs" role="tablist" aria-label="时间范围">'
+        '<button type="button" role="tab" data-scope-choice="quarter" aria-selected="true">QUARTER</button>'
+        '<button type="button" role="tab" data-scope-choice="year" aria-selected="false">YEAR</button>'
+        '<button type="button" role="tab" data-scope-choice="range" aria-selected="false">YEAR RANGE</button>'
+        '</div>'
+        '<div class="archive-selector__panel" data-archive-quarter-selector role="tabpanel">'
+        '<p class="loading-state">正在读取季度索引…</p></div>'
+        '<div class="archive-selector__panel" data-archive-year-selector role="tabpanel" hidden>'
+        '<label class="field-label" for="archive-year">年份</label>'
+        '<select id="archive-year" data-archive-year-select></select></div>'
+        '<div class="archive-selector__panel archive-range" data-archive-range-selector role="tabpanel" hidden>'
+        '<label class="field-label" for="archive-from">起始年份</label>'
+        '<input id="archive-from" data-archive-from inputmode="numeric" type="number">'
+        '<label class="field-label" for="archive-to">结束年份</label>'
+        '<input id="archive-to" data-archive-to inputmode="numeric" type="number">'
+        '<div class="archive-range__shortcuts"><button type="button" data-range-shortcut="5">5Y</button>'
+        '<button type="button" data-range-shortcut="10">10Y</button><button type="button" data-range-shortcut="all">ALL</button></div>'
+        '<button type="button" class="button button--ink" data-range-apply>显示范围</button></div>'
+        '</section>'
+        '<section class="archive-browser" data-archive-browser hidden>'
+        '<div class="archive-browser__toolbar">'
+        '<div class="mode-switch" role="tablist" aria-label="媒体类型">'
+        '<button type="button" role="tab" data-media-mode="tv" aria-selected="true">TV</button>'
+        '<button type="button" role="tab" data-media-mode="movie" aria-selected="false">MOVIE</button></div>'
+        '<div class="archive-browser__scope" data-archive-scope-label></div></div>'
+        '<div class="archive-layout" data-archive-layout>'
+        '<section class="master-pane" aria-label="Archive results">'
+        '<div class="browser-controls">'
+        '<label class="search-field"><span class="sr-only">搜索作品</span>'
+        '<input type="search" data-search placeholder="搜索标题、别名或 Bangumi ID" autocomplete="off"></label>'
+        '<button type="button" class="control-button" data-filter-toggle aria-expanded="false" aria-controls="filter-panel">筛选 <span data-filter-count></span></button>'
+        '<button type="button" class="control-button" data-sort-toggle aria-expanded="false" aria-controls="sort-popover">评分：高到低</button>'
+        '<label class="page-size"><span class="sr-only">每页数量</span><select data-page-size aria-label="每页数量"></select></label></div>'
+        '<div class="active-filter-strip" data-active-filters hidden></div>'
+        '<p class="results-summary" data-results-summary></p>'
+        '<div class="results-sections" data-list-sections></div>'
+        '<p class="no-results" data-no-results hidden><strong>NO MATCH / 00</strong><br>没有符合条件的资料。<button type="button" class="text-button" data-clear-all>清除筛选</button></p>'
+        '<nav class="pager" data-pager aria-label="结果分页"></nav></section>'
+        '<aside class="workspace" data-workspace aria-live="polite">'
+        '<section class="workspace-panel workspace-panel--scope" data-scope-panel></section>'
+        '<section class="workspace-panel" data-detail-panel hidden></section>'
+        '<section class="workspace-panel" id="filter-panel" data-filter-panel hidden></section>'
+        '</aside></div></section></main>'
+        '<footer class="site-footer"><p>事实来自已核验的本地 Archive；此页面只读取同源静态文件。</p></footer>'
     )
-    body = f"<h1>Archive</h1><ul>{links or '<li>Empty archive</li>'}</ul>"
-    return _page("Archive", body, "../assets/app.css", "../assets/app.js")
+    return _page(
+        "Archive · Bangumi Side B",
+        body,
+        "../assets/app.css",
+        "../assets/app.js",
+        body_class="season-archive",
+        data_attrs={"data-page": "archive"},
+    )
 
 
 def _settings_html() -> bytes:
+    body = (
+        _site_header("../index.html", "../archive/index.html", "../settings/index.html", "SETTINGS")
+        + '<main class="reference-page"><section class="archive-intro">'
+        '<p class="archive-intro__code">SETTINGS / LOCAL</p><div><h1>设置</h1>'
+        '<p class="archive-intro__summary">当前版本只提供静态档案浏览；页面不连接 SQLite、Bangumi API 或第三方服务。</p>'
+        '</div></section></main>'
+        '<footer class="site-footer"><p>离线资料库、安装与更新设置将在后续 PWA 阶段提供。</p></footer>'
+    )
     return _page(
-        "Settings",
-        (
-            "<h1>Settings</h1>"
-            "<p>Static archive preview. Runtime data is same-origin only.</p>"
-        ),
+        "Settings · Bangumi Side B",
+        body,
         "../assets/app.css",
         "../assets/app.js",
+        body_class="season-archive",
+        data_attrs={"data-page": "settings"},
     )
 
 
 def _quarter_html(quarter: QuarterProjection) -> bytes:
+    label = html.escape(quarter.quarter)
     sections = (
-        ("tv", "premiere", "New TV", quarter.tv_premiere),
-        ("tv", "continuing", "Continuing TV", quarter.tv_continuing),
-        ("movie", "premiere", "Movies", quarter.movie_premiere),
+        ("tv", "premiere", "本季度新番", quarter.tv_premiere),
+        ("tv", "continuing", "跨季度续播", quarter.tv_continuing),
+        ("movie", "premiere", "剧场版", quarter.movie_premiere),
     )
-    rendered: list[str] = []
-    for mode, kind, title, records in sections:
-        cards = "".join(_subject_card(item) for item in records)
-        rendered.append(
-            f'<section data-media-mode="{mode}" data-section="{kind}" '
-            f'data-quarter="{html.escape(quarter.quarter)}"><h2>{title}</h2>'
-            f'<div>{cards or "<p>None</p>"}</div></section>'
-        )
+    rendered = "".join(
+        _result_section(mode, kind, title, records)
+        for mode, kind, title, records in sections
+    )
+    counts = {
+        "tv": len(quarter.tv_premiere) + len(quarter.tv_continuing),
+        "movie": len(quarter.movie_premiere),
+        "premiere": len(quarter.tv_premiere) + len(quarter.movie_premiere),
+        "continuing": len(quarter.tv_continuing),
+    }
     body = (
-        f'<header><nav><a href="../index.html">Home</a> '
-        f'<a href="../archive/index.html">Archive</a> '
-        f'<a href="../settings/index.html">Settings</a></nav>'
-        f'<h1 data-quarter="{html.escape(quarter.quarter)}">'
-        f'{html.escape(quarter.quarter)}</h1>'
-        "</header>"
-        '<div data-media-mode-controls><button data-mode="tv">TV</button>'
-        '<button data-mode="movie">Movie</button></div>'
-        f'<main data-quarter="{html.escape(quarter.quarter)}">'
-        f'{"".join(rendered)}'
-        '<aside id="detail-mount" hidden data-detail-mount></aside></main>'
+        _site_header("../index.html", "../archive/index.html", "../settings/index.html", f"QUARTER / {quarter.quarter}")
+        + f'<main class="quarter-page season-{html.escape(quarter.quarter[-2:])}" '
+        f'data-archive-app data-page="quarter" data-quarter="{label}" '
+        f'data-data-url="../data/quarters/{label}.json" data-site-root="../" '
+        f'data-count-tv="{counts["tv"]}" data-count-movie="{counts["movie"]}" '
+        f'data-count-premiere="{counts["premiere"]}" data-count-continuing="{counts["continuing"]}">'
+        '<section class="archive-intro archive-intro--quarter">'
+        f'<p class="archive-intro__code">QUARTER / {label}</p><div>'
+        f'<h1>{label[:4]}<span>—</span>{label[-2:]}</h1>'
+        '<p class="archive-intro__summary">日本播出档案 · 已核验资料</p></div></section>'
+        '<section class="archive-layout" data-quarter-layout>'
+        '<section class="master-pane" aria-label="Quarter results">'
+        '<div class="browser-controls">'
+        '<div class="mode-switch" role="tablist" aria-label="媒体类型">'
+        '<button type="button" role="tab" data-media-mode="tv" aria-selected="true">TV</button>'
+        '<button type="button" role="tab" data-media-mode="movie" aria-selected="false">MOVIE</button></div>'
+        '<label class="search-field"><span class="sr-only">搜索作品</span>'
+        '<input type="search" data-search placeholder="搜索标题、别名或 Bangumi ID" autocomplete="off"></label>'
+        '<button type="button" class="control-button" data-filter-toggle aria-expanded="false" aria-controls="filter-panel">筛选 <span data-filter-count></span></button>'
+        '<button type="button" class="control-button" data-sort-toggle aria-expanded="false" aria-controls="sort-popover">评分：高到低</button>'
+        '<label class="page-size"><span class="sr-only">每页数量</span><select data-page-size aria-label="每页数量"></select></label></div>'
+        '<div class="sort-popover" id="sort-popover" data-sort-popover hidden></div>'
+        '<div class="active-filter-strip" data-active-filters hidden></div>'
+        '<p class="results-summary" data-results-summary></p>'
+        f'<div class="results-sections" data-list-sections>{rendered}</div>'
+        '<p class="no-results" data-no-results hidden><strong>NO MATCH / 00</strong><br>没有符合条件的资料。<button type="button" class="text-button" data-clear-all>清除筛选</button></p>'
+        '<nav class="pager" data-pager aria-label="结果分页"></nav></section>'
+        '<aside class="workspace" data-workspace aria-live="polite">'
+        '<section class="workspace-panel workspace-panel--scope" data-scope-panel></section>'
+        '<section class="workspace-panel" data-detail-panel hidden></section>'
+        '<section class="workspace-panel" id="filter-panel" data-filter-panel hidden></section>'
+        '</aside></section></main>'
+        '<footer class="site-footer"><p>数据来自已核验的本地 Archive；运行时只读取同源静态文件。</p></footer>'
     )
     return _page(
-        f"Quarter {quarter.quarter}", body, "../assets/app.css", "../assets/app.js"
+        f"{quarter.quarter} · Bangumi Side B",
+        body,
+        "../assets/app.css",
+        "../assets/app.js",
+        body_class=f"season-{quarter.quarter[-2:]}",
+        data_attrs={"data-page": "quarter"},
     )
 
 
-def _subject_card(item: SubjectProjection) -> str:
-    cover = ""
-    if item.cover_url:
-        cover = f'<img src="../{html.escape(item.cover_url.split("?", 1)[0])}" alt="">'
-    tags = " ".join(html.escape(tag) for tag in item.allowed_tags[:2])
+def _result_section(
+    mode: str,
+    kind: str,
+    title: str,
+    records: tuple[SubjectProjection, ...],
+) -> str:
+    rows = "".join(_subject_row(item, index + 1) for index, item in enumerate(records))
     return (
-        f'<article class="subject-card" data-subject-id="{item.subject_id}" '
-        f'data-appearance-kind="{item.appearance_kind}" '
-        f'data-media-format="{item.media_format}"><div>{cover}</div>'
-        f'<h3>{html.escape(item.preferred_title)}</h3>'
-        f'<p>{html.escape(item.original_title or "")}</p>'
-        f'<p data-tags>{tags}</p></article>'
+        f'<section class="result-section" data-list-section="{mode}" '
+        f'data-appearance-section="{kind}"><header class="result-section__header">'
+        f'<p class="result-section__code">{mode.upper()} / {kind.upper()}</p>'
+        f'<h2>{html.escape(title)}</h2><span data-section-count>{len(records):02d}</span>'
+        f'</header><div class="result-list" data-list>{rows}</div></section>'
     )
 
 
-def _page(title: str, body: str, css_href: str, js_href: str) -> bytes:
+def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) -> str:
+    if isinstance(item, SubjectProjection):
+        value = item.to_dict()
+        value["id"] = item.subject_id
+        value["media"] = item.media_format
+        value["appearance"] = item.appearance_kind
+        value["quarter"] = item.quarter
+        cover = item.cover_url
+    else:
+        value = dict(item)
+        cover = value.get("cover") or value.get("cover_url")
+    subject_id = int(value.get("id") or value.get("subject_id") or 0)
+    media = str(value.get("media") or value.get("media_format") or "TV").upper()
+    appearance = str(value.get("appearance") or value.get("appearance_kind") or "premiere")
+    quarter = str(value.get("quarter") or "")
+    preferred = str(value.get("preferred_title") or "")
+    original = str(value.get("original_title") or "")
+    aliases = value.get("aliases") if isinstance(value.get("aliases"), list) else []
+    source = str(value.get("source") or "unknown")
+    tags = value.get("allowed_tags") if isinstance(value.get("allowed_tags"), list) else []
+    search = " ".join([preferred, original, *(str(alias) for alias in aliases), str(subject_id)])
+    tag_value = "|".join(str(tag) for tag in tags)
+    record_key = "@".join((str(subject_id), quarter, appearance))
+    score = value.get("score", value.get("rating_score"))
+    score_label = "—" if score is None else f"{float(score):.1f}"
+    rating_count = value.get("rating_count")
+    air_date = str(value.get("air_date") or "")
+    cover_html = _cover_markup(cover, sequence, subject_id)
+    tags_html = "".join(f'<span class="tag">{html.escape(str(tag))}</span>' for tag in tags[:2])
+    return (
+        f'<article class="subject-row" role="listitem" data-subject-id="{subject_id}" '
+        f'data-record-key="{html.escape(record_key, quote=True)}" data-media="{media.lower()}" '
+        f'data-appearance="{html.escape(appearance, quote=True)}" '
+        f'data-search="{html.escape(search, quote=True)}" data-source="{html.escape(source, quote=True)}" '
+        f'data-tags="{html.escape(tag_value, quote=True)}" data-air-date="{html.escape(air_date, quote=True)}" '
+        f'data-score="{html.escape(str(score if score is not None else ""), quote=True)}" '
+        f'data-rating-count="{html.escape(str(rating_count if rating_count is not None else ""), quote=True)}" '
+        f'data-quarter="{html.escape(quarter, quote=True)}">'
+        f'<button type="button" class="subject-row__open" data-open-subject '
+        f'aria-label="打开 {html.escape(preferred)}" aria-expanded="false">'
+        f'<span class="subject-row__sequence" aria-hidden="true">{sequence:03d}</span>'
+        f'{cover_html}<span class="subject-row__content"><strong class="subject-row__title">'
+        f'{html.escape(preferred)}</strong>'
+        f'<span class="subject-row__original">{html.escape(original)}</span>'
+        f'<span class="subject-row__meta">{html.escape(media)}'
+        f'{(" · " + html.escape(str(value.get("episode_count")) + "话") if value.get("episode_count") else "")}'
+        f'{(" · " + html.escape(air_date) if air_date else "")}'
+        f'{(" · " + html.escape(quarter) if quarter and not isinstance(item, SubjectProjection) else "")}</span>'
+        f'<span class="subject-row__tags">{tags_html}</span></span>'
+        f'<span class="subject-row__score"><b>{score_label}</b>'
+        f'<small>{html.escape(str(rating_count)) if rating_count is not None else "—"}</small></span>'
+        f'</button></article>'
+    )
+
+
+def _cover_markup(cover: object, sequence: int, subject_id: int) -> str:
+    if not cover:
+        return '<span class="subject-row__cover subject-row__cover--missing" aria-label="缺少封面"><span>ARCHIVE</span></span>'
+    path = str(cover).split("?", 1)[0]
+    loading = "eager" if sequence <= 10 else "lazy"
+    return (
+        '<span class="subject-row__cover"><img width="52" height="74" '
+        f'loading="{loading}" src="../{html.escape(path, quote=True)}" '
+        f'alt="" data-cover-subject="{subject_id}"></span>'
+    )
+
+
+def _site_header(home_href: str, archive_href: str, settings_href: str, code: str) -> str:
+    return (
+        '<header class="site-header"><div class="site-header__rule">'
+        '<p>Bangumi Side B / 日本播出档案</p>'
+        f'<p>{html.escape(code)}</p></div><div class="site-header__brand">'
+        f'<a class="brand" href="{html.escape(home_href, quote=True)}">Bangumi Side B</a>'
+        '<nav class="site-nav" aria-label="主导航">'
+        f'<a href="{html.escape(archive_href, quote=True)}">Archive</a>'
+        f'<a href="{html.escape(settings_href, quote=True)}">Settings</a></nav></div></header>'
+    )
+
+
+def _page(
+    title: str,
+    body: str,
+    css_href: str,
+    js_href: str,
+    *,
+    body_class: str = "",
+    data_attrs: Mapping[str, str] | None = None,
+) -> bytes:
+    attributes = "".join(
+        f' {key}="{html.escape(value, quote=True)}"'
+        for key, value in (data_attrs or {}).items()
+    )
+    class_attr = f' class="{html.escape(body_class, quote=True)}"' if body_class else ""
     content = (
         "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         f"<title>{html.escape(title)}</title>"
         f'<link rel="stylesheet" href="{css_href}"></head>'
-        f"<body>{body}<script src=\"{js_href}\" defer></script></body></html>"
+        f"<body{class_attr}{attributes}>{body}<script src=\"{js_href}\" defer></script></body></html>"
     )
     return content.encode("utf-8")
 

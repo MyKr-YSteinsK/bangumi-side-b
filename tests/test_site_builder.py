@@ -161,6 +161,24 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert first.report_path.is_file()
 
 
+def test_quarter_output_uses_master_detail_shell_and_static_rows(
+    tmp_path: Path,
+) -> None:
+    builder, _ = _build_fixture(tmp_path)
+    builder.build()
+    page = (tmp_path / "dist" / "site" / "2026-07" / "index.html").read_text(
+        "utf-8"
+    )
+    assert 'data-page="quarter"' in page
+    assert 'data-archive-app' in page
+    assert 'class="subject-row"' in page
+    assert 'class="workspace"' in page
+    assert 'data-detail-panel' in page
+    assert 'data-media="movie"' in page
+    assert 'class="subject-card"' not in page
+    assert 'id="subject-drawer"' not in page
+
+
 def test_rating_change_only_dirties_own_quarter_and_shared_indexes(
     tmp_path: Path,
 ) -> None:

@@ -14,9 +14,10 @@ from bgm_side_b.domain import (
     JapaneseDecision,
     MediaFormat,
     Quarter,
+    QuarterAppearanceKind,
     QuarterAssignmentSource,
 )
-from bgm_side_b.repository import QuarterOwnership
+from bgm_side_b.repository import QuarterAppearance
 from bgm_side_b.rules import classify_japanese, normalize_text
 
 ANIME_SUBJECT_TYPE: Final = 2
@@ -64,7 +65,7 @@ class AdmissionDecision:
     subject_id: int
     media_format: MediaFormat | None = None
     japanese: JapaneseDecision | None = None
-    quarter: QuarterOwnership | None = None
+    premiere: QuarterAppearance | None = None
     reviews: tuple[ReviewFinding, ...] = ()
     reason: str | None = None
 
@@ -144,9 +145,11 @@ def admit_subject(
         ownership = (
             None
             if override.quarter is None
-            else QuarterOwnership(
+            else QuarterAppearance(
                 override.quarter,
+                QuarterAppearanceKind.PREMIERE,
                 QuarterAssignmentSource.MANUAL,
+                "manual_override",
                 override.reason or "quarter_override",
             )
         )
@@ -220,7 +223,7 @@ def _resolve_quarter(
     detail: SubjectDetail,
     target_quarter: Quarter,
     media_format: MediaFormat,
-) -> QuarterOwnership | ReviewFinding:
+) -> QuarterAppearance | ReviewFinding:
     if detail.air_date is None:
         issue_code = (
             TV_QUARTER_DATE_UNRESOLVED
@@ -253,13 +256,21 @@ def _resolve_quarter(
     if media_format is MediaFormat.MOVIE:
         if natural_quarter != target_quarter:
             return _date_mismatch(candidate, detail, target_quarter, natural_quarter)
-        return QuarterOwnership(
-            natural_quarter, QuarterAssignmentSource.AUTOMATIC, "air_date"
+        return QuarterAppearance(
+            natural_quarter,
+            QuarterAppearanceKind.PREMIERE,
+            QuarterAssignmentSource.AUTOMATIC,
+            "air_date",
+            detail.air_date.isoformat(),
         )
 
     if natural_quarter == target_quarter:
-        return QuarterOwnership(
-            target_quarter, QuarterAssignmentSource.AUTOMATIC, "air_date"
+        return QuarterAppearance(
+            target_quarter,
+            QuarterAppearanceKind.PREMIERE,
+            QuarterAssignmentSource.AUTOMATIC,
+            "air_date",
+            detail.air_date.isoformat(),
         )
     target_start = date(target_quarter.year, target_quarter.month, 1)
     days_before_target = (target_start - detail.air_date).days

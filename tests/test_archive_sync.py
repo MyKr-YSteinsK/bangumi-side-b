@@ -30,10 +30,11 @@ from bgm_side_b.domain import (
     JapaneseDecision,
     MediaFormat,
     Quarter,
+    QuarterAppearanceKind,
     QuarterAssignmentSource,
 )
 from bgm_side_b.repository import (
-    QuarterOwnership,
+    QuarterAppearance,
     QuarterSyncState,
     SubjectRecord,
     SubjectRepository,
@@ -191,8 +192,12 @@ def _store_existing(repository: SubjectRepository, subject_id: int) -> None:
                 '["日本"]',
             ),
         ),
-        quarter=QuarterOwnership(
-            QUARTER, QuarterAssignmentSource.AUTOMATIC, "air_date"
+        premiere=QuarterAppearance(
+            QUARTER,
+            QuarterAppearanceKind.PREMIERE,
+            QuarterAssignmentSource.AUTOMATIC,
+            "air_date",
+            "2026-04-02",
         ),
     )
     with repository.transaction() as connection:
@@ -252,13 +257,17 @@ def test_complete_facts_store_tv_movie_review_and_final_webp_cover(
     ) == (1, 1, 1)
     assert result.facts_status == FACTS_COMPLETE
     assert result.covers_status == FACTS_COMPLETE
-    assert repository.list_quarter_facts(QUARTER)[0].subject.subject_id == 101
+    assert (
+        repository.list_subjects_appearing_in_quarter(QUARTER)[0].subject.subject_id
+        == 101
+    )
     assert [
-        item.subject.subject_id for item in repository.list_quarter_facts(QUARTER)
+        item.subject.subject_id
+        for item in repository.list_subjects_appearing_in_quarter(QUARTER)
     ] == [101, 102]
     review = repository.get_subject_facts(104)
     assert review is not None
-    assert review.quarter is None
+    assert review.premiere is None
     assert review.review_issues[0].issue_code == "JAPANESE_CLASSIFICATION_UNRESOLVED"
     with Image.open(tmp_path / "covers" / "101.webp") as cover:
         assert (cover.format, cover.size) == ("WEBP", (1200, 480))
@@ -407,8 +416,12 @@ def test_manual_missing_subject_import_refuses_non_japanese_then_stores_manual_f
     imported = sync.import_single_subject(101, QuarterOverride(QUARTER))
 
     assert repository.get_subject_facts(102) is None
-    assert imported.snapshot.quarter == QuarterOwnership(
-        QUARTER, QuarterAssignmentSource.MANUAL, "quarter_override"
+    assert imported.snapshot.premiere == QuarterAppearance(
+        QUARTER,
+        QuarterAppearanceKind.PREMIERE,
+        QuarterAssignmentSource.MANUAL,
+        "manual_override",
+        "quarter_override",
     )
     assert imported.report_path.exists()
     assert (tmp_path / "covers" / "101.webp").exists()

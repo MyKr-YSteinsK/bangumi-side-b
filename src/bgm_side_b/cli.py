@@ -260,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
                 report_path = imported.report_path
         except (AssignmentError, SyncError, ValueError) as error:
             parser.error(str(error))
-        quarter = snapshot.quarter.quarter if snapshot.quarter else None
+        quarter = snapshot.premiere.quarter if snapshot.premiere else None
         if quarter is None:
             print(f"assignment saved: {snapshot.subject.subject_id} is unassigned")
         else:

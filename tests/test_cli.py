@@ -185,8 +185,8 @@ def test_assign_missing_subject_uses_one_fake_official_detail_fetch(
         Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
     ).get_subject_facts(101)
     assert facts is not None
-    assert facts.quarter is not None
-    assert facts.quarter.quarter.year == 2026
+    assert facts.premiere is not None
+    assert facts.premiere.quarter.year == 2026
     assert "subject_id = 101" in (
         root / "config" / "quarter-overrides.toml"
     ).read_text(encoding="utf-8")

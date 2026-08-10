@@ -16,11 +16,13 @@ from bgm_side_b.domain import (
     JapaneseDecision,
     MediaFormat,
     Quarter,
+    QuarterAppearanceKind,
+    QuarterAssignmentSource,
 )
 from bgm_side_b.overrides import load_quarter_overrides, save_quarter_overrides
 from bgm_side_b.repository import (
     InfoboxItem,
-    QuarterOwnership,
+    QuarterAppearance,
     ReviewIssue,
     SubjectRecord,
     SubjectRepository,
@@ -96,24 +98,37 @@ def test_overrides_round_trip_and_reject_duplicate_or_invalid_entries(
 def test_assign_unassigned_and_clear_reconcile_quarter_review(
     repository: SubjectRepository, tmp_path: Path
 ) -> None:
-    _store(repository, _snapshot())
+    continuing = QuarterAppearance(
+        Quarter(2026, 7),
+        QuarterAppearanceKind.CONTINUING,
+        QuarterAssignmentSource.AUTOMATIC,
+        "main_episode_airdate",
+        "2026-07-04",
+    )
+    _store(repository, replace(_snapshot(), continuing=(continuing,)))
     path = tmp_path / "quarter-overrides.toml"
     adjudicator = ArchiveAdjudicator(repository, path, frozenset())
 
     assigned = adjudicator.assign(101, QuarterOverride(Quarter(2026, 4), "early"))
-    assert assigned.quarter == QuarterOwnership(
-        Quarter(2026, 4), assigned.quarter.assignment_source, "early"
+    assert assigned.premiere == QuarterAppearance(
+        Quarter(2026, 4),
+        QuarterAppearanceKind.PREMIERE,
+        QuarterAssignmentSource.MANUAL,
+        "manual_override",
+        "early",
     )
     assert not assigned.review_issues
+    assert assigned.continuing == (continuing,)
     assert load_quarter_overrides(path)[101].quarter == Quarter(2026, 4)
 
     cleared = adjudicator.clear(101)
-    assert cleared.quarter is None
+    assert cleared.premiere is None
+    assert cleared.continuing == (continuing,)
     assert cleared.review_issues[0].issue_code == "TV_QUARTER_BOUNDARY"
     assert load_quarter_overrides(path) == {}
 
     unassigned = adjudicator.assign(101, QuarterOverride(None, "not seasonal"))
-    assert unassigned.quarter is None
+    assert unassigned.premiere is None
     assert load_quarter_overrides(path)[101].quarter is None
 
 

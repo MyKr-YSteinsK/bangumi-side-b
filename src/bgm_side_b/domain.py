@@ -79,6 +79,13 @@ class QuarterAssignmentSource(StrEnum):
     MANUAL = "manual"
 
 
+class QuarterAppearanceKind(StrEnum):
+    """Whether a quarter is a subject's premiere or verified continuation."""
+
+    PREMIERE = "premiere"
+    CONTINUING = "continuing"
+
+
 class JapaneseClassification(StrEnum):
     """A deterministic three-state Japanese-only classification."""
 

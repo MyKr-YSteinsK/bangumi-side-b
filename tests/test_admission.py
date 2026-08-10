@@ -123,7 +123,7 @@ def test_movie_uses_natural_quarter_and_missing_dates_are_reviewed() -> None:
     )
 
     assert movie.status is AdmissionStatus.ACCEPTED
-    assert movie.quarter is not None and movie.quarter.quarter == Quarter(2026, 4)
+    assert movie.premiere is not None and movie.premiere.quarter == Quarter(2026, 4)
     assert missing_movie.reviews[0].issue_code == MOVIE_DATE_UNRESOLVED
     assert missing_tv.reviews[0].issue_code == TV_QUARTER_DATE_UNRESOLVED
 
@@ -143,8 +143,8 @@ def test_manual_override_wins_only_after_scope_and_japanese_admission() -> None:
     )
 
     assert manual.status is AdmissionStatus.ACCEPTED
-    assert manual.quarter is not None
-    assert manual.quarter.assignment_source.value == "manual"
+    assert manual.premiere is not None
+    assert manual.premiere.assignment_source.value == "manual"
     assert unresolved.status is AdmissionStatus.REVIEW
 
 

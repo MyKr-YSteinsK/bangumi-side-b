@@ -1,4 +1,4 @@
-"""Atomic TV/MOVIE archive synchronization into the Schema v1 fact store."""
+"""Atomic TV/MOVIE archive synchronization into the current fact store."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from bgm_side_b.discovery import (
     SearchDiscoveryAdapter,
     merge_discovery_batches,
 )
-from bgm_side_b.domain import Quarter, SourceEvidence
+from bgm_side_b.domain import Quarter, QuarterAppearanceKind, SourceEvidence
 from bgm_side_b.media import MAX_COVER_CONCURRENCY, CoverResult, CoverStore
 from bgm_side_b.overrides import load_quarter_overrides
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
@@ -359,12 +359,14 @@ class ArchiveSynchronizer:
 
         stale_ids = {
             item.subject.subject_id
-            for item in self.repository.list_quarter_facts(quarter)
+            for item in self.repository.list_subjects_appearing_in_quarter(
+                quarter, appearance_kind=QuarterAppearanceKind.PREMIERE
+            )
         } - {item.snapshot.subject.subject_id for item in prepared}
         completed_at = _timestamp()
         subject_count = sum(
-            item.snapshot.quarter is not None
-            and item.snapshot.quarter.quarter == quarter
+            item.snapshot.premiere is not None
+            and item.snapshot.premiere.quarter == quarter
             for item in prepared
         )
         with self.repository.transaction() as connection:
@@ -388,8 +390,8 @@ class ArchiveSynchronizer:
             self._sync_covers(
                 item
                 for item in prepared
-                if item.snapshot.quarter is not None
-                and item.snapshot.quarter.quarter == quarter
+                if item.snapshot.premiere is not None
+                and item.snapshot.premiere.quarter == quarter
             )
         )
         warnings = tuple(cleanup_warnings + cover_warnings)
@@ -473,7 +475,8 @@ class ArchiveSynchronizer:
                 _tag_candidate(item.name, item.count) for item in detail.tags
             ),
             _source_decision(detail, self.source_rules),
-            decision.quarter,
+            decision.premiere,
+            existing.continuing if existing is not None else (),
             existing.cover if existing is not None else None,
             reviews,
         )

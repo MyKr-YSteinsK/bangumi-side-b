@@ -9,6 +9,7 @@ from bgm_side_b.domain import (
     JapaneseDecision,
     MediaFormat,
     Quarter,
+    QuarterAppearanceKind,
     QuarterAssignmentSource,
     SourceDecision,
     SourceType,
@@ -77,6 +78,10 @@ def test_source_and_assignment_enums_are_closed_contracts() -> None:
     )
     with pytest.raises(ValueError):
         QuarterAssignmentSource("review")
+    assert tuple(QuarterAppearanceKind) == (
+        QuarterAppearanceKind.PREMIERE,
+        QuarterAppearanceKind.CONTINUING,
+    )
 
 
 def test_source_decision_requires_nonempty_paired_evidence_for_known_source() -> None:

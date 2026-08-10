@@ -56,10 +56,10 @@ class ArchiveAdjudicator:
         assignments[subject_id] = override
         updated = replace(
             snapshot,
-            quarter=(
+            premiere=(
                 None
                 if override.quarter is None
-                else _manual_ownership(override)
+                else _manual_premiere(override)
             ),
             review_issues=_remaining_non_quarter_issues(snapshot.review_issues),
         )
@@ -82,7 +82,7 @@ class ArchiveAdjudicator:
             raise AssignmentError("stored subject is no longer admissible")
         reviews = _remaining_non_quarter_issues(snapshot.review_issues)
         reviews += tuple(_review_issue(finding) for finding in decision.reviews)
-        updated = replace(snapshot, quarter=decision.quarter, review_issues=reviews)
+        updated = replace(snapshot, premiere=decision.premiere, review_issues=reviews)
         self._persist(subject_id, assignments, updated)
         return updated
 
@@ -155,8 +155,8 @@ def _automatic_target(
 ) -> Quarter:
     if previous is not None and previous.quarter is not None:
         return previous.quarter
-    if snapshot.quarter is not None:
-        return snapshot.quarter.quarter
+    if snapshot.premiere is not None:
+        return snapshot.premiere.quarter
     if snapshot.subject.air_date is not None:
         return quarter_for_date(snapshot.subject.air_date)
     raise AssignmentError(
@@ -196,14 +196,16 @@ def _stored_detail(snapshot: SubjectSnapshot) -> SubjectDetail:
     )
 
 
-def _manual_ownership(override: QuarterOverride):
+def _manual_premiere(override: QuarterOverride):
     assert override.quarter is not None
-    from bgm_side_b.domain import QuarterAssignmentSource
-    from bgm_side_b.repository import QuarterOwnership
+    from bgm_side_b.domain import QuarterAppearanceKind, QuarterAssignmentSource
+    from bgm_side_b.repository import QuarterAppearance
 
-    return QuarterOwnership(
+    return QuarterAppearance(
         override.quarter,
+        QuarterAppearanceKind.PREMIERE,
         QuarterAssignmentSource.MANUAL,
+        "manual_override",
         override.reason or "quarter_override",
     )
 

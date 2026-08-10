@@ -16,6 +16,7 @@ from bgm_side_b.domain import (
     JapaneseDecision,
     MediaFormat,
     Quarter,
+    QuarterAppearanceKind,
     QuarterAssignmentSource,
     SourceDecision,
     SourceType,
@@ -60,14 +61,18 @@ class InfoboxItem:
 
 
 @dataclass(frozen=True)
-class QuarterOwnership:
+class QuarterAppearance:
+    """One persisted premiere or verified continuing quarter appearance."""
+
     quarter: Quarter
+    appearance_kind: QuarterAppearanceKind
     assignment_source: QuarterAssignmentSource
-    assignment_evidence: str
+    evidence_type: str
+    evidence_value: str
 
     def __post_init__(self) -> None:
-        if not self.assignment_evidence.strip():
-            raise ValueError("quarter assignment evidence must not be empty")
+        if not self.evidence_type.strip() or not self.evidence_value.strip():
+            raise ValueError("quarter appearance evidence must not be empty")
 
 
 @dataclass(frozen=True)
@@ -117,9 +122,35 @@ class SubjectSnapshot:
     source: SourceDecision = field(
         default_factory=lambda: SourceDecision(SourceType.UNKNOWN)
     )
-    quarter: QuarterOwnership | None = None
+    premiere: QuarterAppearance | None = None
+    continuing: tuple[QuarterAppearance, ...] = ()
     cover: CoverRecord | None = None
     review_issues: tuple[ReviewIssue, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (
+            self.premiere is not None
+            and self.premiere.appearance_kind is not QuarterAppearanceKind.PREMIERE
+        ):
+            raise ValueError("snapshot premiere must have premiere appearance kind")
+        if any(
+            item.appearance_kind is not QuarterAppearanceKind.CONTINUING
+            for item in self.continuing
+        ):
+            raise ValueError("snapshot continuing rows must have continuing kind")
+        if self.subject.media_format is MediaFormat.MOVIE and self.continuing:
+            raise ValueError("movies cannot have continuing appearances")
+        quarters = tuple(item.quarter for item in self.appearances)
+        if len(quarters) != len(set(quarters)):
+            raise ValueError("a subject cannot have duplicate quarter appearances")
+
+    @property
+    def appearances(self) -> tuple[QuarterAppearance, ...]:
+        """Return the premiere followed by deterministic continuing appearances."""
+        premiere = () if self.premiere is None else (self.premiere,)
+        return premiere + tuple(
+            sorted(self.continuing, key=lambda item: item.quarter)
+        )
 
 
 class SubjectRepository:
@@ -154,8 +185,8 @@ class SubjectRepository:
         )
         self.replace_tags(connection, snapshot.subject.subject_id, snapshot.tags)
         self.replace_source(connection, snapshot.subject.subject_id, snapshot.source)
-        self.replace_archive_quarter(
-            connection, snapshot.subject.subject_id, snapshot.quarter
+        self.replace_appearances(
+            connection, snapshot.subject.subject_id, snapshot.appearances
         )
         self.replace_cover(connection, snapshot.subject.subject_id, snapshot.cover)
         self.replace_review_issues(
@@ -288,31 +319,137 @@ class SubjectRepository:
             ),
         )
 
-    def replace_archive_quarter(
+    def replace_appearances(
         self,
         connection: sqlite3.Connection,
         subject_id: int,
-        ownership: QuarterOwnership | None,
+        appearances: Sequence[QuarterAppearance],
     ) -> None:
+        """Replace a subject's complete explicit appearance set atomically."""
         connection.execute(
             "DELETE FROM subject_quarters WHERE subject_id = ?", (subject_id,)
         )
-        if ownership is not None:
-            connection.execute(
-                """
-                INSERT INTO subject_quarters (
-                    subject_id, year, quarter_month, assignment_source,
-                    assignment_evidence
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
+        self._insert_appearances(connection, subject_id, appearances)
+
+    def replace_premiere(
+        self,
+        connection: sqlite3.Connection,
+        subject_id: int,
+        premiere: QuarterAppearance | None,
+    ) -> None:
+        """Replace only the premiere row and preserve other continuing rows."""
+        if premiere is not None:
+            _require_kind(premiere, QuarterAppearanceKind.PREMIERE)
+        connection.execute(
+            """
+            DELETE FROM subject_quarters
+            WHERE subject_id = ? AND appearance_kind = 'premiere'
+            """,
+            (subject_id,),
+        )
+        if premiere is None:
+            return
+        connection.execute(
+            """
+            DELETE FROM subject_quarters
+            WHERE subject_id = ? AND year = ? AND quarter_month = ?
+            """,
+            (subject_id, premiere.quarter.year, premiere.quarter.month),
+        )
+        self._insert_appearances(connection, subject_id, (premiere,))
+
+    def upsert_continuing_appearance(
+        self,
+        connection: sqlite3.Connection,
+        subject_id: int,
+        appearance: QuarterAppearance,
+    ) -> None:
+        """Create or refresh one continuing row without touching a premiere."""
+        _require_kind(appearance, QuarterAppearanceKind.CONTINUING)
+        existing = connection.execute(
+            """
+            SELECT appearance_kind FROM subject_quarters
+            WHERE subject_id = ? AND year = ? AND quarter_month = ?
+            """,
+            (subject_id, appearance.quarter.year, appearance.quarter.month),
+        ).fetchone()
+        if existing is not None and existing["appearance_kind"] == "premiere":
+            raise ValueError("a continuing appearance cannot replace a premiere")
+        self._insert_appearances(connection, subject_id, (appearance,))
+
+    def remove_continuing_appearance(
+        self,
+        connection: sqlite3.Connection,
+        subject_id: int,
+        quarter: Quarter,
+    ) -> None:
+        """Remove one continuing row, leaving the premiere untouched."""
+        connection.execute(
+            """
+            DELETE FROM subject_quarters
+            WHERE subject_id = ? AND year = ? AND quarter_month = ?
+              AND appearance_kind = 'continuing'
+            """,
+            (subject_id, quarter.year, quarter.month),
+        )
+
+    def replace_automatic_continuing_for_quarter(
+        self,
+        connection: sqlite3.Connection,
+        quarter: Quarter,
+        appearances: Sequence[tuple[int, QuarterAppearance]],
+    ) -> None:
+        """Atomically reconcile automatic continuing rows for one target quarter."""
+        for subject_id, appearance in appearances:
+            if subject_id <= 0 or appearance.quarter != quarter:
+                raise ValueError("continuing appearance must match its target quarter")
+            _require_kind(appearance, QuarterAppearanceKind.CONTINUING)
+            if appearance.assignment_source is not QuarterAssignmentSource.AUTOMATIC:
+                raise ValueError(
+                    "bulk continuing replacement accepts automatic rows only"
+                )
+        connection.execute(
+            """
+            DELETE FROM subject_quarters
+            WHERE year = ? AND quarter_month = ?
+              AND appearance_kind = 'continuing' AND assignment_source = 'automatic'
+            """,
+            (quarter.year, quarter.month),
+        )
+        for subject_id, appearance in appearances:
+            self.upsert_continuing_appearance(connection, subject_id, appearance)
+
+    def _insert_appearances(
+        self,
+        connection: sqlite3.Connection,
+        subject_id: int,
+        appearances: Sequence[QuarterAppearance],
+    ) -> None:
+        connection.executemany(
+            """
+            INSERT INTO subject_quarters (
+                subject_id, year, quarter_month, appearance_kind, assignment_source,
+                evidence_type, evidence_value
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(subject_id, year, quarter_month) DO UPDATE SET
+                appearance_kind = excluded.appearance_kind,
+                assignment_source = excluded.assignment_source,
+                evidence_type = excluded.evidence_type,
+                evidence_value = excluded.evidence_value
+            """,
+            (
                 (
                     subject_id,
-                    ownership.quarter.year,
-                    ownership.quarter.month,
-                    ownership.assignment_source.value,
-                    ownership.assignment_evidence,
-                ),
-            )
+                    appearance.quarter.year,
+                    appearance.quarter.month,
+                    appearance.appearance_kind.value,
+                    appearance.assignment_source.value,
+                    appearance.evidence_type,
+                    appearance.evidence_value,
+                )
+                for appearance in appearances
+            ),
+        )
 
     def replace_cover(
         self,
@@ -384,17 +521,34 @@ class SubjectRepository:
         finally:
             connection.close()
 
-    def list_quarter_facts(self, quarter: Quarter) -> tuple[SubjectSnapshot, ...]:
+    def get_premiere_appearance(self, subject_id: int) -> QuarterAppearance | None:
+        """Return a subject's unique permanent premiere appearance, if assigned."""
+        snapshot = self.get_subject_facts(subject_id)
+        return None if snapshot is None else snapshot.premiere
+
+    def list_subjects_appearing_in_quarter(
+        self,
+        quarter: Quarter,
+        *,
+        appearance_kind: QuarterAppearanceKind | None = None,
+    ) -> tuple[SubjectSnapshot, ...]:
+        """List snapshots whose explicit appearances include ``quarter``."""
         connection = self.database.connect()
         try:
+            parameters: tuple[object, ...] = (quarter.year, quarter.month)
+            kind_clause = ""
+            if appearance_kind is not None:
+                kind_clause = " AND appearance_kind = ?"
+                parameters += (appearance_kind.value,)
             subject_ids = (
                 row["subject_id"]
                 for row in connection.execute(
-                    """
+                    f"""
                     SELECT subject_id FROM subject_quarters
                     WHERE year = ? AND quarter_month = ? ORDER BY subject_id
+                    {kind_clause}
                     """,
-                    (quarter.year, quarter.month),
+                    parameters,
                 )
             )
             return tuple(
@@ -404,6 +558,17 @@ class SubjectRepository:
             )
         finally:
             connection.close()
+
+    def list_tv_subjects_appearing_in_previous_quarter(
+        self, target_quarter: Quarter
+    ) -> tuple[SubjectSnapshot, ...]:
+        """Return the carry-forward TV candidates for a target quarter."""
+        previous = _previous_quarter(target_quarter)
+        return tuple(
+            snapshot
+            for snapshot in self.list_subjects_appearing_in_quarter(previous)
+            if snapshot.subject.media_format is MediaFormat.TV
+        )
 
     def affected_quarters(self, subject_ids: frozenset[int]) -> tuple[Quarter, ...]:
         if not subject_ids:
@@ -586,17 +751,29 @@ class SubjectRepository:
                 source_row["evidence_value"],
             )
         )
-        quarter_row = connection.execute(
-            "SELECT * FROM subject_quarters WHERE subject_id = ?", (subject_id,)
-        ).fetchone()
-        ownership = (
-            None
-            if quarter_row is None
-            else QuarterOwnership(
-                Quarter(quarter_row["year"], quarter_row["quarter_month"]),
-                QuarterAssignmentSource(quarter_row["assignment_source"]),
-                quarter_row["assignment_evidence"],
+        appearance_rows = tuple(
+            connection.execute(
+                """
+                SELECT * FROM subject_quarters
+                WHERE subject_id = ?
+                ORDER BY appearance_kind = 'premiere' DESC, year, quarter_month
+                """,
+                (subject_id,),
             )
+        )
+        appearances = tuple(_appearance_from_row(item) for item in appearance_rows)
+        premiere = next(
+            (
+                item
+                for item in appearances
+                if item.appearance_kind is QuarterAppearanceKind.PREMIERE
+            ),
+            None,
+        )
+        continuing = tuple(
+            item
+            for item in appearances
+            if item.appearance_kind is QuarterAppearanceKind.CONTINUING
         )
         cover_row = connection.execute(
             "SELECT * FROM subject_covers WHERE subject_id = ?", (subject_id,)
@@ -651,14 +828,15 @@ class SubjectRepository:
             ),
         )
         return SubjectSnapshot(
-            subject,
-            aliases,
-            infobox,
-            tags,
-            source,
-            ownership,
-            cover,
-            review_issues,
+            subject=subject,
+            aliases=aliases,
+            infobox=infobox,
+            tags=tags,
+            source=source,
+            premiere=premiere,
+            continuing=continuing,
+            cover=cover,
+            review_issues=review_issues,
         )
 
 
@@ -685,3 +863,26 @@ def _stored_japanese_classification(evidence_type: object) -> JapaneseClassifica
     if isinstance(evidence_type, str) and evidence_type.startswith("unresolved_"):
         return JapaneseClassification.UNRESOLVED
     return JapaneseClassification.ACCEPTED_JAPANESE
+
+
+def _appearance_from_row(row: sqlite3.Row) -> QuarterAppearance:
+    return QuarterAppearance(
+        Quarter(row["year"], row["quarter_month"]),
+        QuarterAppearanceKind(row["appearance_kind"]),
+        QuarterAssignmentSource(row["assignment_source"]),
+        row["evidence_type"],
+        row["evidence_value"],
+    )
+
+
+def _require_kind(
+    appearance: QuarterAppearance, expected: QuarterAppearanceKind
+) -> None:
+    if appearance.appearance_kind is not expected:
+        raise ValueError(f"appearance must have {expected.value} kind")
+
+
+def _previous_quarter(quarter: Quarter) -> Quarter:
+    if quarter.month == 1:
+        return Quarter(quarter.year - 1, 10)
+    return Quarter(quarter.year, quarter.month - 3)

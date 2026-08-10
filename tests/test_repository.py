@@ -15,6 +15,7 @@ from bgm_side_b.domain import (
     JapaneseDecision,
     MediaFormat,
     Quarter,
+    QuarterAppearanceKind,
     QuarterAssignmentSource,
     SourceDecision,
     SourceType,
@@ -22,7 +23,7 @@ from bgm_side_b.domain import (
 from bgm_side_b.repository import (
     CoverRecord,
     InfoboxItem,
-    QuarterOwnership,
+    QuarterAppearance,
     QuarterSyncState,
     ReviewIssue,
     ReviewQueueItem,
@@ -67,8 +68,12 @@ def _snapshot(subject_id: int = 101) -> SubjectSnapshot:
         infobox=(InfoboxItem("国家/地区", ["日本", "美国"]),),
         tags=("奇幻", "冒险"),
         source=SourceDecision(SourceType.MANGA, "infobox", "漫画"),
-        quarter=QuarterOwnership(
-            Quarter(2026, 4), QuarterAssignmentSource.AUTOMATIC, "air_date"
+        premiere=QuarterAppearance(
+            Quarter(2026, 4),
+            QuarterAppearanceKind.PREMIERE,
+            QuarterAssignmentSource.AUTOMATIC,
+            "air_date",
+            "2026-04-01",
         ),
         cover=CoverRecord(
             "https://example.invalid/cover", "large", "a" * 64, 1200, 1800, 10
@@ -85,6 +90,16 @@ def _snapshot(subject_id: int = 101) -> SubjectSnapshot:
     )
 
 
+def _continuing(quarter: Quarter, evidence_value: str) -> QuarterAppearance:
+    return QuarterAppearance(
+        quarter,
+        QuarterAppearanceKind.CONTINUING,
+        QuarterAssignmentSource.AUTOMATIC,
+        "main_episode_airdate",
+        evidence_value,
+    )
+
+
 def test_subject_snapshot_round_trip_and_child_replacement(
     repository: SubjectRepository,
 ) -> None:
@@ -93,7 +108,9 @@ def test_subject_snapshot_round_trip_and_child_replacement(
         repository.replace_subject_snapshot(connection, snapshot)
 
     assert repository.get_subject_facts(101) == snapshot
-    assert repository.list_quarter_facts(Quarter(2026, 4)) == (snapshot,)
+    assert repository.list_subjects_appearing_in_quarter(Quarter(2026, 4)) == (
+        snapshot,
+    )
 
     updated = SubjectSnapshot(
         replace(snapshot.subject, name_cn=None, summary_raw=None),
@@ -101,8 +118,12 @@ def test_subject_snapshot_round_trip_and_child_replacement(
         infobox=(),
         tags=("日常",),
         source=SourceDecision(SourceType.UNKNOWN),
-        quarter=QuarterOwnership(
-            Quarter(2026, 4), QuarterAssignmentSource.MANUAL, "review:42"
+        premiere=QuarterAppearance(
+            Quarter(2026, 4),
+            QuarterAppearanceKind.PREMIERE,
+            QuarterAssignmentSource.MANUAL,
+            "manual_override",
+            "review:42",
         ),
         cover=None,
         review_issues=(),
@@ -136,11 +157,17 @@ def test_failed_snapshot_replacement_rolls_back_every_child(
 def test_affected_quarters_and_blacklist_purge_cascade_subject_facts(
     repository: SubjectRepository,
 ) -> None:
-    first = _snapshot(101)
+    first = replace(
+        _snapshot(101), continuing=(_continuing(Quarter(2026, 7), "2026-07-04"),)
+    )
     second = replace(
         _snapshot(202),
-        quarter=QuarterOwnership(
-            Quarter(2026, 7), QuarterAssignmentSource.MANUAL, "review:7"
+        premiere=QuarterAppearance(
+            Quarter(2026, 7),
+            QuarterAppearanceKind.PREMIERE,
+            QuarterAssignmentSource.MANUAL,
+            "manual_override",
+            "review:7",
         ),
     )
     with repository.transaction() as connection:
@@ -173,6 +200,82 @@ def test_affected_quarters_and_blacklist_purge_cascade_subject_facts(
             assert count == 0
     finally:
         connection.close()
+
+
+def test_tv_premiere_and_continuing_appearances_are_independent(
+    repository: SubjectRepository,
+) -> None:
+    snapshot = replace(
+        _snapshot(),
+        continuing=(
+            _continuing(Quarter(2026, 7), "2026-07-04"),
+            _continuing(Quarter(2026, 10), "2026-10-03"),
+            _continuing(Quarter(2027, 1), "2027-01-02"),
+        ),
+    )
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(connection, snapshot)
+
+    assert repository.get_premiere_appearance(101) == snapshot.premiere
+    assert repository.list_subjects_appearing_in_quarter(Quarter(2026, 7)) == (
+        snapshot,
+    )
+    assert repository.list_tv_subjects_appearing_in_previous_quarter(
+        Quarter(2026, 10)
+    ) == (snapshot,)
+
+    replacement = QuarterAppearance(
+        Quarter(2026, 1),
+        QuarterAppearanceKind.PREMIERE,
+        QuarterAssignmentSource.MANUAL,
+        "manual_override",
+        "review:101",
+    )
+    with repository.transaction() as connection:
+        repository.replace_premiere(connection, 101, replacement)
+
+    stored = repository.get_subject_facts(101)
+    assert stored is not None
+    assert stored.premiere == replacement
+    assert stored.continuing == snapshot.continuing
+
+
+def test_appearance_constraints_reject_duplicate_premieres_and_movie_continuing(
+    repository: SubjectRepository,
+) -> None:
+    snapshot = _snapshot()
+    movie = replace(
+        snapshot,
+        subject=replace(snapshot.subject, media_format=MediaFormat.MOVIE),
+    )
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(connection, snapshot)
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO subject_quarters (
+                    subject_id, year, quarter_month, appearance_kind,
+                    assignment_source, evidence_type, evidence_value
+                ) VALUES (
+                    101, 2026, 7, 'premiere', 'automatic', 'air_date', '2026-07-01'
+                )
+                """
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO subject_quarters (
+                    subject_id, year, quarter_month, appearance_kind,
+                    assignment_source, evidence_type, evidence_value
+                ) VALUES (101, 2026, 4, 'continuing', 'automatic',
+                          'main_episode_airdate', '2026-04-01')
+                """
+            )
+        repository.replace_subject_snapshot(connection, movie)
+        with pytest.raises(sqlite3.IntegrityError, match="movies cannot"):
+            repository.upsert_continuing_appearance(
+                connection, 101, _continuing(Quarter(2026, 7), "2026-07-01")
+            )
 
 
 def test_quarter_sync_state_and_derived_cover_path(
@@ -208,7 +311,7 @@ def test_review_queue_reconciles_and_preserves_unresolved_subject_facts(
                 "[]",
             ),
         ),
-        quarter=None,
+        premiere=None,
         cover=None,
         review_issues=(
             ReviewIssue("japanese_unresolved", None, None, {"why": "missing"}, "now"),

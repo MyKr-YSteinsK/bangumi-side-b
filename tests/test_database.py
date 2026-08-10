@@ -78,7 +78,7 @@ def test_fresh_database_has_exact_schema_metadata_and_foreign_keys(
         assert tables == EXPECTED_TABLES
         assert metadata == {
             "schema_family": "bangumi-side-b-archive",
-            "schema_version": "1",
+            "schema_version": "2",
         }
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -99,26 +99,61 @@ def test_subject_and_quarter_constraints_reject_invalid_facts(tmp_path: Path) ->
             connection.execute(
                 """
                 INSERT INTO subject_quarters (
-                    subject_id, year, quarter_month, assignment_source,
-                    assignment_evidence
-                ) VALUES (101, 2026, 2, 'automatic', 'air_date')
+                    subject_id, year, quarter_month, appearance_kind,
+                    assignment_source, evidence_type, evidence_value
+                ) VALUES (
+                    101, 2026, 2, 'premiere', 'automatic', 'air_date', '2026-04-01'
+                )
                 """
             )
         connection.execute(
             """
             INSERT INTO subject_quarters (
-                subject_id, year, quarter_month, assignment_source,
-                assignment_evidence
-            ) VALUES (101, 2026, 4, 'automatic', 'air_date')
+                subject_id, year, quarter_month, appearance_kind,
+                assignment_source, evidence_type, evidence_value
+            ) VALUES (101, 2026, 4, 'premiere', 'automatic', 'air_date', '2026-04-01')
             """
         )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 """
                 INSERT INTO subject_quarters (
-                    subject_id, year, quarter_month, assignment_source,
-                    assignment_evidence
-                ) VALUES (101, 2026, 7, 'manual', 'review')
+                    subject_id, year, quarter_month, appearance_kind,
+                    assignment_source, evidence_type, evidence_value
+                ) VALUES (
+                    101, 2026, 7, 'premiere', 'manual', 'manual_override', 'review'
+                )
+                """
+            )
+    finally:
+        connection.close()
+
+
+def test_movie_cannot_have_a_continuing_appearance(tmp_path: Path) -> None:
+    database = Database(tmp_path / "archive.sqlite3")
+    database.initialize()
+    connection = database.connect()
+    try:
+        values = list(_subject_values("MOVIE"))
+        values[0] = 202
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                id, name_original, name_cn, summary_raw, media_format, air_date,
+                end_date, episode_count, rating_score, rating_count,
+                japanese_evidence_type, japanese_evidence_value
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="movies cannot"):
+            connection.execute(
+                """
+                INSERT INTO subject_quarters (
+                    subject_id, year, quarter_month, appearance_kind,
+                    assignment_source, evidence_type, evidence_value
+                ) VALUES (202, 2026, 7, 'continuing', 'automatic',
+                          'main_episode_airdate', '2026-07-04')
                 """
             )
     finally:
@@ -197,7 +232,7 @@ def test_foreign_key_cascade_removes_every_subject_child(tmp_path: Path) -> None
         connection.execute(
             """
             INSERT INTO subject_quarters
-            VALUES (101, 2026, 4, 'automatic', 'air_date')
+            VALUES (101, 2026, 4, 'premiere', 'automatic', 'air_date', '2026-04-01')
             """
         )
         connection.execute(
@@ -234,15 +269,22 @@ def test_reopen_is_idempotent_and_unknown_or_newer_schema_is_rejected(
     database.initialize()
     connection = database.connect()
     connection.execute(
-        "UPDATE database_metadata SET value = '2' WHERE key = 'schema_version'"
+        "UPDATE database_metadata SET value = '1' WHERE key = 'schema_version'"
     )
     connection.commit()
     connection.close()
 
+    with pytest.raises(UnknownSchemaError, match="old development"):
+        database.connect()
+    with pytest.raises(UnknownSchemaError, match="old development"):
+        database.initialize()
+
+    raw = sqlite3.connect(path)
+    raw.execute("UPDATE database_metadata SET value = '3' WHERE key = 'schema_version'")
+    raw.commit()
+    raw.close()
     with pytest.raises(UnknownSchemaError, match="unsupported"):
         database.connect()
-    with pytest.raises(UnknownSchemaError, match="unsupported"):
-        database.initialize()
 
     unknown = tmp_path / "unknown.sqlite3"
     raw = sqlite3.connect(unknown)
@@ -251,6 +293,21 @@ def test_reopen_is_idempotent_and_unknown_or_newer_schema_is_rejected(
     raw.close()
     with pytest.raises(UnknownSchemaError, match="do not match"):
         Database(unknown).initialize()
+
+
+def test_quarter_appearance_contract_requires_named_indexes_and_triggers(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "archive.sqlite3"
+    database = Database(path)
+    database.initialize()
+    connection = sqlite3.connect(path)
+    connection.execute("DROP INDEX idx_subject_quarters_one_premiere")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(UnknownSchemaError, match="quarter appearance contract"):
+        database.connect()
 
 
 def test_failed_schema_creation_rolls_back_every_table(

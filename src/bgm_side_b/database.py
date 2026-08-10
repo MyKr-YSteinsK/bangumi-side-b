@@ -1,4 +1,4 @@
-"""Clean SQLite schema v1 for the archive fact store."""
+"""Clean SQLite schema v2 for the archive fact store."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ class UnknownSchemaError(DatabaseError):
 
 
 _SCHEMA_FAMILY = "bangumi-side-b-archive"
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "2"
 _EXPECTED_TABLES = frozenset(
     {
         "subjects",
@@ -98,13 +98,16 @@ _SCHEMA_STATEMENTS = (
     """,
     """
     CREATE TABLE subject_quarters (
-        subject_id INTEGER PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
+        subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
         year INTEGER NOT NULL CHECK (year > 0),
         quarter_month INTEGER NOT NULL CHECK (quarter_month IN (1, 4, 7, 10)),
+        appearance_kind TEXT NOT NULL
+            CHECK (appearance_kind IN ('premiere', 'continuing')),
         assignment_source TEXT NOT NULL
             CHECK (assignment_source IN ('automatic', 'manual')),
-        assignment_evidence TEXT NOT NULL
-            CHECK (length(trim(assignment_evidence)) > 0)
+        evidence_type TEXT NOT NULL CHECK (length(trim(evidence_type)) > 0),
+        evidence_value TEXT NOT NULL CHECK (length(trim(evidence_value)) > 0),
+        PRIMARY KEY (subject_id, year, quarter_month)
     )
     """,
     """
@@ -162,8 +165,30 @@ _SCHEMA_STATEMENTS = (
     )
     """,
     """
-    CREATE INDEX idx_subject_quarters_archive
+    CREATE INDEX idx_subject_quarters_appearance
     ON subject_quarters(year, quarter_month)
+    """,
+    """
+    CREATE UNIQUE INDEX idx_subject_quarters_one_premiere
+    ON subject_quarters(subject_id) WHERE appearance_kind = 'premiere'
+    """,
+    """
+    CREATE TRIGGER reject_movie_continuing_insert
+    BEFORE INSERT ON subject_quarters
+    WHEN NEW.appearance_kind = 'continuing'
+      AND (SELECT media_format FROM subjects WHERE id = NEW.subject_id) = 'MOVIE'
+    BEGIN
+        SELECT RAISE(ABORT, 'movies cannot have continuing appearances');
+    END
+    """,
+    """
+    CREATE TRIGGER reject_movie_continuing_update
+    BEFORE UPDATE OF appearance_kind, subject_id ON subject_quarters
+    WHEN NEW.appearance_kind = 'continuing'
+      AND (SELECT media_format FROM subjects WHERE id = NEW.subject_id) = 'MOVIE'
+    BEGIN
+        SELECT RAISE(ABORT, 'movies cannot have continuing appearances');
+    END
     """,
     """
     CREATE INDEX idx_subject_review_issues_quarter
@@ -183,7 +208,7 @@ class Database:
         self.path = path
 
     def initialize(self) -> None:
-        """Create schema v1 atomically, or verify an existing exact schema."""
+        """Create schema v2 atomically, or verify an existing exact schema."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = self._raw_connect()
         try:
@@ -213,7 +238,7 @@ class Database:
             connection.close()
 
     def connect(self) -> sqlite3.Connection:
-        """Open a validated schema v1 connection with foreign keys enabled."""
+        """Open a validated schema v2 connection with foreign keys enabled."""
         connection = self._raw_connect()
         try:
             _validate_schema(connection)
@@ -250,11 +275,63 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
         row["key"]: row["value"]
         for row in connection.execute("SELECT key, value FROM database_metadata")
     }
-    if metadata != {
-        "schema_family": _SCHEMA_FAMILY,
-        "schema_version": _SCHEMA_VERSION,
-    }:
+    if metadata.get("schema_family") != _SCHEMA_FAMILY:
         raise UnknownSchemaError("database schema family or version is unsupported")
+    if metadata.get("schema_version") != _SCHEMA_VERSION:
+        if metadata.get("schema_version") == "1":
+            raise UnknownSchemaError("unsupported old development schema")
+        raise UnknownSchemaError("database schema family or version is unsupported")
+    _validate_subject_quarters_contract(connection)
+
+
+def _validate_subject_quarters_contract(connection: sqlite3.Connection) -> None:
+    """Reject lookalike development databases before callers issue normal SQL."""
+    columns = tuple(
+        row["name"] for row in connection.execute("PRAGMA table_info(subject_quarters)")
+    )
+    if columns != (
+        "subject_id",
+        "year",
+        "quarter_month",
+        "appearance_kind",
+        "assignment_source",
+        "evidence_type",
+        "evidence_value",
+    ):
+        raise UnknownSchemaError("database quarter appearance contract is unsupported")
+    indexes = {
+        row["name"]: (bool(row["unique"]), bool(row["partial"]))
+        for row in connection.execute("PRAGMA index_list(subject_quarters)")
+    }
+    if indexes.get("idx_subject_quarters_appearance") != (False, False):
+        raise UnknownSchemaError("database quarter appearance contract is unsupported")
+    if indexes.get("idx_subject_quarters_one_premiere") != (True, True):
+        raise UnknownSchemaError("database quarter appearance contract is unsupported")
+    index_columns = {
+        name: tuple(
+            row["name"] for row in connection.execute(f"PRAGMA index_info({name})")
+        )
+        for name in (
+            "idx_subject_quarters_appearance",
+            "idx_subject_quarters_one_premiere",
+        )
+    }
+    if index_columns != {
+        "idx_subject_quarters_appearance": ("year", "quarter_month"),
+        "idx_subject_quarters_one_premiere": ("subject_id",),
+    }:
+        raise UnknownSchemaError("database quarter appearance contract is unsupported")
+    triggers = {
+        row["name"]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+        )
+    }
+    if not {
+        "reject_movie_continuing_insert",
+        "reject_movie_continuing_update",
+    }.issubset(triggers):
+        raise UnknownSchemaError("database quarter appearance contract is unsupported")
 
 
 def _verify_integrity(connection: sqlite3.Connection) -> None:

@@ -9,7 +9,7 @@ import json
 import posixpath
 import re
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +40,8 @@ from bgm_side_b.build.site_projection import (
     project_year,
 )
 from bgm_side_b.build.writer import (
+    ArtifactPlan,
+    ArtifactSpec,
     BuildBlockedError,
     IncrementalSiteWriter,
     PatchResult,
@@ -163,9 +165,19 @@ class UnifiedSiteBuilder:
                     )
             blocked = _blocked_quarters(facts)
             eligible = tuple(label for label in managed_quarters if label not in blocked)
-            retained, omitted = self._retained_quarters(previous, blocked)
+            retained_blocked, omitted = self._retained_quarters(previous, blocked)
+            projection_labels = eligible
+            retained_scope: tuple[str, ...] = ()
+            if quarter is not None and previous is not None:
+                target = _quarter_label(quarter)
+                other_eligible = tuple(label for label in eligible if label != target)
+                reusable, missing = self._retained_quarters(previous, other_eligible)
+                if not missing:
+                    projection_labels = (target,) if target in eligible else ()
+                    retained_scope = reusable
+            retained = tuple(sorted(set(retained_blocked) | set(retained_scope)))
             unmanaged = tuple(sorted(appearance_quarters - set(managed_quarters)))
-            quarter_projections = self._project_quarters(facts, eligible)
+            quarter_projections = self._project_quarters(facts, projection_labels)
             years = self._project_years(quarter_projections)
             archive = project_archive_index(quarter_projections)
             css, js = self._shared_assets()
@@ -197,7 +209,7 @@ class UnifiedSiteBuilder:
                     sorted(set(dirty.skipped_quarters) | set(retained) | set(blocked))
                 ),
             )
-            desired = self._render_site(
+            plan = self._plan_site(
                 facts,
                 quarter_projections,
                 years,
@@ -205,14 +217,21 @@ class UnifiedSiteBuilder:
                 css,
                 js,
                 retained=retained,
+                previous=previous,
+                dirty=dirty,
+            )
+            write_state = replace(
+                current,
+                artifacts={} if previous is None else previous.artifacts,
+                artifact_sizes={} if previous is None else previous.artifact_sizes,
             )
             writer = IncrementalSiteWriter(
                 self.site_directory,
                 self.workspace_directory,
             )
             result = writer.apply(
-                desired,
-                current,
+                plan,
+                write_state,
                 validate_staged=self._validate_desired,
                 validate_final=self._validate_final,
             )
@@ -241,6 +260,8 @@ class UnifiedSiteBuilder:
                 (),
                 started,
                 current,
+                retained_quarters=retained,
+                blocked_new_quarters=omitted,
             )
         except BuildBlockedError as error:
             raise BuildBlocked(str(error)) from error
@@ -422,6 +443,171 @@ class UnifiedSiteBuilder:
         js = js_path.read_bytes() if js_path.is_file() else APP_JS.encode()
         return css, js
 
+    def _plan_site(
+        self,
+        facts: ArchiveFacts,
+        quarters: tuple[QuarterProjection, ...],
+        years: tuple[YearCatalogProjection, ...],
+        archive: ArchiveIndexProjection,
+        css: bytes,
+        js: bytes,
+        *,
+        retained: tuple[str, ...],
+        previous: BuildState | None,
+        dirty: DirtySet,
+    ) -> ArtifactPlan:
+        """Plan only affected artifacts; content is materialized for dirty paths."""
+        specs: dict[str, ArtifactSpec] = {}
+        previous_artifacts = {} if previous is None else dict(previous.artifacts)
+        previous_sizes = {} if previous is None else dict(previous.artifact_sizes)
+
+        def needs(path: str, scope_dirty: bool) -> bool:
+            return (
+                previous is None
+                or scope_dirty
+                or path not in previous_artifacts
+                or not (self.site_directory / Path(path)).is_file()
+            )
+
+        def generated(
+            path: str,
+            kind: str,
+            producer: Callable[[], bytes],
+            scope_dirty: bool,
+        ) -> None:
+            if not needs(path, scope_dirty):
+                specs[path] = ArtifactSpec(
+                    path,
+                    previous_artifacts[path],
+                    previous_sizes.get(path),
+                    kind,
+                )
+                return
+            value = producer()
+            specs[path] = ArtifactSpec(
+                path,
+                hashlib.sha256(value).hexdigest(),
+                len(value),
+                kind,
+                value,
+            )
+
+        generated("assets/app.css", "shared", lambda: css, dirty.shared_dirty)
+        generated("assets/app.js", "shared", lambda: js, dirty.shared_dirty)
+        generated(
+            "index.html",
+            "root",
+            lambda: _root_html(archive),
+            dirty.archive_dirty or dirty.shared_dirty,
+        )
+        generated(
+            "archive/index.html",
+            "archive-shell",
+            lambda: _archive_html(archive),
+            dirty.archive_dirty or dirty.shared_dirty,
+        )
+        generated(
+            "settings/index.html",
+            "shared-shell",
+            _settings_html,
+            dirty.shared_dirty,
+        )
+        generated(
+            "data/archive-index.json",
+            "archive-index",
+            lambda: json_bytes(archive.to_dict()),
+            dirty.archive_dirty,
+        )
+        for year in years:
+            generated(
+                f"data/catalog/{year.year:04d}.json",
+                "year-catalog",
+                lambda year=year: json_bytes(year.to_dict()),
+                str(year.year) in dirty.dirty_years,
+            )
+
+        subject_by_id = {subject.subject_id: subject for subject in facts.subjects}
+        quarter_dirty = set(dirty.dirty_quarters)
+        for quarter in quarters:
+            label = quarter.quarter
+            generated(
+                f"{label}/index.html",
+                "quarter-html",
+                lambda quarter=quarter: _quarter_html(quarter),
+                label in quarter_dirty or dirty.shared_dirty,
+            )
+            generated(
+                f"data/quarters/{label}.json",
+                "quarter-json",
+                lambda quarter=quarter: json_bytes(quarter.to_dict()),
+                label in quarter_dirty or dirty.shared_dirty,
+            )
+            for item in (
+                *quarter.tv_premiere,
+                *quarter.tv_continuing,
+                *quarter.movie_premiere,
+            ):
+                if not item.cover_hash:
+                    continue
+                subject = subject_by_id.get(item.subject_id)
+                if subject is None or subject.cover is None:
+                    continue
+                relative = f"covers/{item.subject_id}.webp"
+                if relative in specs:
+                    continue
+                cover = subject.cover
+                reusable = (
+                    relative in previous_artifacts
+                    and previous_artifacts[relative] == cover.content_hash
+                    and (self.site_directory / Path(relative)).is_file()
+                    and (
+                        previous_sizes.get(relative) is None
+                        or previous_sizes[relative] == cover.size_bytes
+                    )
+                )
+                specs[relative] = ArtifactSpec(
+                    relative,
+                    cover.content_hash,
+                    cover.size_bytes,
+                    "cover",
+                    None if reusable else cover.source_path,
+                )
+            manifest_path = f"data/offline/{label}.json"
+            generated(
+                manifest_path,
+                "offline-manifest",
+                lambda quarter=quarter: _offline_manifest_bytes(quarter, specs),
+                label in quarter_dirty or dirty.shared_dirty,
+            )
+        for label in retained:
+            for relative in (
+                f"{label}/index.html",
+                f"data/quarters/{label}.json",
+                f"data/offline/{label}.json",
+            ):
+                if relative in specs:
+                    continue
+                specs[relative] = _reused_spec(
+                    relative,
+                    previous_artifacts,
+                    previous_sizes,
+                )
+            payload = _read_site_json(
+                self.site_directory / "data" / "quarters" / f"{label}.json"
+            )
+            for item in _quarter_items(payload):
+                cover = item.get("cover_url")
+                if not isinstance(cover, str):
+                    continue
+                relative = cover.split("?", 1)[0]
+                if relative not in specs:
+                    specs[relative] = _reused_spec(
+                        relative,
+                        previous_artifacts,
+                        previous_sizes,
+                    )
+        return ArtifactPlan(specs)
+
     def _render_site(
         self,
         facts: ArchiveFacts,
@@ -490,6 +676,15 @@ class UnifiedSiteBuilder:
         return desired
 
     def _validate_desired(self, desired: Mapping[str, bytes]) -> None:
+        if not {
+            "index.html",
+            "archive/index.html",
+            "settings/index.html",
+            "assets/app.css",
+            "assets/app.js",
+            "data/archive-index.json",
+        }.issubset(desired):
+            return
         _validate_site_mapping(desired, self.excluded_subject_ids)
 
     def _validate_final(self, site: Path) -> None:
@@ -509,6 +704,9 @@ class UnifiedSiteBuilder:
         errors: tuple[str, ...],
         started: float,
         state: BuildState | None = None,
+        *,
+        retained_quarters: tuple[str, ...] = (),
+        blocked_new_quarters: tuple[str, ...] = (),
     ) -> SiteBuildRun:
         self.reports_directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -523,6 +721,14 @@ class UnifiedSiteBuilder:
             "written_files": list(result.written),
             "deleted_files": list(result.deleted),
             "reused_files": list(result.reused),
+            "planned_dirty_files": len(result.staged),
+            "generated_small_files": result.generated_small_files,
+            "cover_files_read": result.cover_files_read,
+            "cover_files_copied": result.cover_files_copied,
+            "stale_files_deleted": len(result.deleted),
+            "reused_artifacts_count": len(result.reused),
+            "retained_quarters": list(retained_quarters),
+            "blocked_new_quarters": list(blocked_new_quarters),
             "warnings": list(warnings),
             "errors": list(errors),
             "fingerprints": {
@@ -985,6 +1191,65 @@ def _read_site_json(path: Path) -> dict[str, object]:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _reused_spec(
+    relative: str,
+    previous_artifacts: Mapping[str, str],
+    previous_sizes: Mapping[str, int],
+) -> ArtifactSpec:
+    return ArtifactSpec(
+        relative,
+        previous_artifacts.get(relative),
+        previous_sizes.get(relative),
+        "retained",
+        None,
+    )
+
+
+def _offline_manifest_bytes(
+    quarter: QuarterProjection, specs: Mapping[str, ArtifactSpec]
+) -> bytes:
+    label = quarter.quarter
+    required = [
+        f"{label}/index.html",
+        f"data/quarters/{label}.json",
+        "assets/app.css",
+        "assets/app.js",
+    ]
+    required.extend(
+        sorted(
+            {
+                item.cover_url.split("?", 1)[0]
+                for group in (
+                    quarter.tv_premiere,
+                    quarter.tv_continuing,
+                    quarter.movie_premiere,
+                )
+                for item in group
+                if item.cover_url
+            }
+        )
+    )
+    resources: list[dict[str, object]] = []
+    for relative in required:
+        spec = specs.get(relative)
+        if spec is None or spec.content_hash is None or spec.size_bytes is None:
+            raise ProjectionError(f"offline resource metadata is missing: {relative}")
+        resources.append(
+            {
+                "url": relative,
+                "content_hash": spec.content_hash,
+                "size_bytes": spec.size_bytes,
+            }
+        )
+    return json_bytes(
+        {
+            "quarter": label,
+            "revision": quarter.fingerprint,
+            "resources": resources,
+        }
+    )
 
 
 __all__ = [

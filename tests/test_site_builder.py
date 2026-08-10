@@ -388,3 +388,96 @@ def test_relevant_review_on_last_good_quarter_retains_previous_output(
     run = builder.build()
     assert (site / "2026-07" / "index.html").read_bytes() == before
     assert any("2026-07" in warning for warning in run.warnings)
+
+
+def test_noop_build_does_not_read_cover_bytes_or_scan_site(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    builder, _ = _build_fixture(tmp_path)
+    builder.build()
+    cover = (tmp_path / "workspace" / "covers" / "101.webp").resolve()
+    original_read_bytes = Path.read_bytes
+    original_rglob = Path.rglob
+
+    def fail_cover_read(path: Path) -> bytes:
+        if path.resolve() == cover:
+            raise AssertionError("no-op build read a cover")
+        return original_read_bytes(path)
+
+    def fail_site_scan(path: Path, pattern: str):
+        if path.resolve() == (tmp_path / "dist" / "site").resolve():
+            raise AssertionError("no-op build scanned the site tree")
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_cover_read)
+    monkeypatch.setattr(Path, "rglob", fail_site_scan)
+    run = builder.build()
+    assert run.patch.written == ()
+    assert run.patch.deleted == ()
+
+
+def test_rating_change_plans_only_the_subjects_owning_scopes(
+    tmp_path: Path,
+) -> None:
+    builder, database = _build_fixture(tmp_path)
+    builder.build()
+    repository = SubjectRepository(database)
+    current = repository.get_subject_facts(202)
+    assert current is not None
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection,
+            replace(current, subject=replace(current.subject, rating_score=9.1)),
+        )
+    run = builder.build()
+    assert run.dirty.dirty_quarters == ("2026-07",)
+    assert "2026-07/index.html" in run.patch.written
+    assert "2026-04/index.html" not in run.patch.written
+    assert run.patch.cover_files_read == 0
+
+
+def test_cover_change_reads_and_copies_only_the_changed_cover(
+    tmp_path: Path,
+) -> None:
+    builder, database = _build_fixture(tmp_path)
+    builder.build()
+    repository = SubjectRepository(database)
+    current = repository.get_subject_facts(101)
+    assert current is not None
+    cover_bytes = b"new-cover-101"
+    cover_path = tmp_path / "workspace" / "covers" / "101.webp"
+    cover_path.write_bytes(cover_bytes)
+    updated_cover = CoverRecord(
+        "https://example.invalid/101-v2",
+        "large",
+        hashlib.sha256(cover_bytes).hexdigest(),
+        1,
+        1,
+        len(cover_bytes),
+    )
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection, replace(current, cover=updated_cover)
+        )
+    run = builder.build()
+    assert set(run.dirty.dirty_quarters) == {"2026-04", "2026-07"}
+    assert "covers/101.webp" in run.patch.written
+    assert run.patch.cover_files_read == 1
+    assert run.patch.cover_files_copied == 1
+
+
+def test_narrow_build_projects_only_requested_quarter_when_last_good_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    builder, _ = _build_fixture(tmp_path)
+    builder.build()
+    seen: list[tuple[str, ...]] = []
+    original = builder._project_quarters
+
+    def spy(facts: object, labels: tuple[str, ...]):
+        seen.append(labels)
+        return original(facts, labels)
+
+    monkeypatch.setattr(builder, "_project_quarters", spy)
+    builder.build(Quarter(2026, 7))
+    assert seen == [("2026-07",)]

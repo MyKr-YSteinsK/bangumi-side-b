@@ -665,8 +665,6 @@ def _verified_cover(
             raise ValueError
         if not source.is_file() or source.stat().st_size != cover.size_bytes:
             raise ValueError
-        if _file_hash(source) != cover.content_hash:
-            raise ValueError
     except (OSError, ValueError):
         warnings.append(f"subject {subject.subject_id} has an invalid cover")
         return None, None
@@ -739,14 +737,6 @@ def _date_label(value: date | None) -> str | None:
 
 def _quarter_label(value: Quarter | None) -> str | None:
     return None if value is None else f"{value.year:04d}-{value.month:02d}"
-
-
-def _file_hash(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 64), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def safe_relative_path(value: str) -> PurePosixPath:

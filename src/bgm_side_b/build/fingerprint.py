@@ -30,6 +30,7 @@ class BuildState:
     archive: str
     artifacts: Mapping[str, str]
     quarter_status: Mapping[str, str] = field(default_factory=dict)
+    artifact_sizes: Mapping[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -40,6 +41,7 @@ class BuildState:
             "archive": self.archive,
             "artifacts": dict(sorted(self.artifacts.items())),
             "quarter_status": dict(sorted(self.quarter_status.items())),
+            "artifact_sizes": dict(sorted(self.artifact_sizes.items())),
         }
 
 
@@ -177,7 +179,14 @@ def read_build_state(path: Path) -> BuildState | None:
     years = _string_map(value.get("years"))
     artifacts = _string_map(value.get("artifacts", {}))
     statuses = _string_map(value.get("quarter_status", {}))
-    if quarters is None or years is None or artifacts is None or statuses is None:
+    sizes = _int_map(value.get("artifact_sizes", {}))
+    if (
+        quarters is None
+        or years is None
+        or artifacts is None
+        or statuses is None
+        or sizes is None
+    ):
         return None
     return BuildState(
         STATE_SCHEMA,
@@ -187,6 +196,7 @@ def read_build_state(path: Path) -> BuildState | None:
         value["archive"],
         artifacts,
         statuses or {label: "current" for label in quarters},
+        sizes,
     )
 
 
@@ -272,6 +282,17 @@ def _string_map(value: object) -> dict[str, str] | None:
         return None
     if not all(
         isinstance(key, str) and isinstance(item, str)
+        for key, item in value.items()
+    ):
+        return None
+    return dict(value)
+
+
+def _int_map(value: object) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    if not all(
+        isinstance(key, str) and isinstance(item, int) and item >= 0
         for key, item in value.items()
     ):
         return None

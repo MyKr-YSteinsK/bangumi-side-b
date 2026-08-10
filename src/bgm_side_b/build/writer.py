@@ -29,6 +29,30 @@ class PatchResult:
     deleted: tuple[str, ...]
     reused: tuple[str, ...]
     staged: tuple[str, ...]
+    generated_small_files: int = 0
+    cover_files_read: int = 0
+    cover_files_copied: int = 0
+
+
+ArtifactSource = bytes | Path | Callable[[], bytes] | None
+
+
+@dataclass(frozen=True)
+class ArtifactSpec:
+    """One planned output with lazy content and cheap reuse metadata."""
+
+    relative_path: str
+    content_hash: str | None
+    size_bytes: int | None
+    kind: str
+    source: ArtifactSource = None
+
+
+@dataclass(frozen=True)
+class ArtifactPlan:
+    """A bounded mapping of output paths to lazy artifact specifications."""
+
+    specs: Mapping[str, ArtifactSpec]
 
 
 class IncrementalSiteWriter:
@@ -50,32 +74,40 @@ class IncrementalSiteWriter:
 
     def apply(
         self,
-        desired: Mapping[str, bytes],
+        desired: Mapping[str, bytes] | Mapping[str, ArtifactSpec] | ArtifactPlan,
         state: BuildState,
         *,
         validate_staged: Callable[[Mapping[str, bytes]], None],
         validate_final: Callable[[Path], None] | None = None,
     ) -> PatchResult:
         """Stage, validate, patch, validate again, and commit state last."""
-        normalized = {
-            _safe_path(path): bytes(content) for path, content in desired.items()
-        }
+        plan = _coerce_plan(desired)
         self._cleanup_staging()
         self.site_directory.mkdir(parents=True, exist_ok=True)
         old_artifacts = dict(state.artifacts)
         existing = self._existing_paths(old_artifacts)
         changed = tuple(
             path
-            for path, content in sorted(normalized.items())
-            if not _same_file(self.site_directory / Path(path), content)
+            for path, spec in sorted(plan.specs.items())
+            if _needs_materialization(
+                self.site_directory / Path(path),
+                spec,
+                old_artifacts.get(path),
+                state,
+            )
         )
         stale = tuple(
             path
-            for path in sorted(existing - set(normalized))
+            for path in sorted(existing - set(plan.specs))
             if (self.site_directory / Path(path)).exists()
         )
+        materialized: dict[str, bytes] = {}
         try:
-            validate_staged(normalized)
+            materialized = {
+                path: _materialize(plan.specs[path]) for path in changed
+            }
+            if materialized:
+                validate_staged(materialized)
         except SiteWriteError:
             raise
         except BaseException as error:
@@ -89,28 +121,53 @@ class IncrementalSiteWriter:
         touched = tuple(sorted(set(changed) | set(stale)))
         backups: dict[str, bool] = {}
         try:
-            self._stage_files(run_directory, normalized, changed)
+            self._stage_files(run_directory, materialized, changed)
             self._backup_files(backup_directory, touched, backups)
-            self._apply_files(run_directory, normalized, changed, stale)
-            if validate_final is not None:
+            self._apply_files(run_directory, materialized, changed, stale)
+            if validate_final is not None and touched:
                 validate_final(self.site_directory)
+            final_artifacts = {
+                path: (
+                    _sha256(materialized[path])
+                    if path in materialized
+                    else plan.specs[path].content_hash
+                    or old_artifacts.get(path, "")
+                )
+                for path in sorted(plan.specs)
+            }
+            final_sizes = {
+                path: (
+                    len(materialized[path])
+                    if path in materialized
+                    else plan.specs[path].size_bytes
+                    if plan.specs[path].size_bytes is not None
+                    else state.artifact_sizes.get(path)
+                )
+                for path in sorted(plan.specs)
+            }
             final_state = BuildState(
                 state.schema,
                 state.shared,
                 state.quarters,
                 state.years,
                 state.archive,
+                final_artifacts,
+                state.quarter_status,
                 {
-                    path: _sha256(content)
-                    for path, content in sorted(normalized.items())
+                    path: int(size)
+                    for path, size in final_sizes.items()
+                    if size is not None
                 },
             )
             self._commit_state(final_state)
             return PatchResult(
                 changed,
                 stale,
-                tuple(sorted(set(normalized) - set(changed))),
+                tuple(sorted(set(plan.specs) - set(changed))),
                 changed,
+                sum(plan.specs[path].kind != "cover" for path in changed),
+                sum(plan.specs[path].kind == "cover" for path in changed),
+                sum(plan.specs[path].kind == "cover" for path in changed),
             )
         except PermissionError as error:
             self._restore(backup_directory, touched, backups)
@@ -264,15 +321,91 @@ def _safe_path(value: str) -> str:
     return path.as_posix()
 
 
-def _same_file(path: Path, content: bytes) -> bool:
+def _coerce_plan(
+    desired: Mapping[str, bytes] | Mapping[str, ArtifactSpec] | ArtifactPlan,
+) -> ArtifactPlan:
+    if isinstance(desired, ArtifactPlan):
+        specs = desired.specs
+    else:
+        specs = desired
+    normalized: dict[str, ArtifactSpec] = {}
+    for path, value in specs.items():
+        safe = _safe_path(path)
+        if isinstance(value, ArtifactSpec):
+            normalized[safe] = ArtifactSpec(
+                safe,
+                value.content_hash,
+                value.size_bytes,
+                value.kind,
+                value.source,
+            )
+            continue
+        content = bytes(value)
+        normalized[safe] = ArtifactSpec(
+            safe,
+            _sha256(content),
+            len(content),
+            "generated",
+            content,
+        )
+    return ArtifactPlan(normalized)
+
+
+def _needs_materialization(
+    path: Path,
+    spec: ArtifactSpec,
+    previous_hash: str | None,
+    state: BuildState,
+) -> bool:
     if not path.is_file():
-        return False
-    try:
-        if path.stat().st_size != len(content):
-            return False
-        return path.read_bytes() == content
-    except OSError:
-        return False
+        return True
+    if spec.content_hash is None and spec.source is not None:
+        return True
+    expected_hash = spec.content_hash or previous_hash
+    if expected_hash is None or previous_hash != expected_hash:
+        return True
+    expected_size = spec.size_bytes
+    if expected_size is None:
+        expected_size = state.artifact_sizes.get(spec.relative_path)
+    if expected_size is not None:
+        try:
+            if path.stat().st_size != expected_size:
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def _materialize(spec: ArtifactSpec) -> bytes:
+    source = spec.source
+    if isinstance(source, bytes):
+        content = source
+    elif isinstance(source, Path):
+        try:
+            with source.open("rb") as stream:
+                content = b"".join(
+                    chunk for chunk in iter(lambda: stream.read(64 * 1024), b"")
+                )
+        except OSError as error:
+            raise SiteWriteError(
+                f"cannot read generated source: {spec.relative_path}"
+            ) from error
+    elif callable(source):
+        try:
+            content = source()
+        except BaseException as error:
+            raise SiteWriteError(
+                f"cannot generate artifact: {spec.relative_path}"
+            ) from error
+        if not isinstance(content, bytes):
+            raise SiteWriteError("artifact generator must return bytes")
+    else:
+        raise SiteWriteError(f"artifact source is unavailable: {spec.relative_path}")
+    if spec.size_bytes is not None and len(content) != spec.size_bytes:
+        raise SiteWriteError(f"artifact size is invalid: {spec.relative_path}")
+    if spec.content_hash is not None and _sha256(content) != spec.content_hash:
+        raise SiteWriteError(f"artifact hash is invalid: {spec.relative_path}")
+    return content
 
 
 def _sha256(content: bytes) -> str:

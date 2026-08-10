@@ -39,6 +39,8 @@ from bgm_side_b.build.site_projection import (
     project_year,
 )
 from bgm_side_b.build.writer import (
+    ArtifactPlan,
+    ArtifactSpec,
     BuildBlockedError,
     IncrementalSiteWriter,
     PatchResult,
@@ -49,6 +51,8 @@ __all__ = [
     "ArchiveFacts",
     "ArchiveFactsReader",
     "ArchiveIndexProjection",
+    "ArtifactPlan",
+    "ArtifactSpec",
     "BuildState",
     "BuildBlockedError",
     "BuildBlocked",

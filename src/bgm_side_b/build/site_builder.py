@@ -561,7 +561,7 @@ def _archive_html(archive: ArchiveIndexProjection) -> bytes:
         '<nav class="pager" data-pager aria-label="结果分页"></nav></section>'
         '<aside class="workspace" data-workspace aria-live="polite">'
         '<section class="workspace-panel workspace-panel--scope" data-scope-panel></section>'
-        '<section class="workspace-panel" data-detail-panel hidden></section>'
+        '<section class="workspace-panel" id="detail-panel" data-detail-panel hidden></section>'
         '<section class="workspace-panel" id="filter-panel" data-filter-panel hidden></section>'
         '</aside></div></section></main>'
         '<footer class="site-footer"><p>事实来自已核验的本地 Archive；此页面只读取同源静态文件。</p></footer>'
@@ -581,9 +581,9 @@ def _settings_html() -> bytes:
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "SETTINGS")
         + '<main class="reference-page"><section class="archive-intro">'
         '<p class="archive-intro__code">SETTINGS / LOCAL</p><div><h1>设置</h1>'
-        '<p class="archive-intro__summary">当前版本只提供静态档案浏览；页面不连接 SQLite、Bangumi API 或第三方服务。</p>'
+        '<p class="archive-intro__summary">当前页面只统一站点导航与排版；浏览运行时不连接 SQLite、Bangumi API 或第三方服务。</p>'
         '</div></section></main>'
-        '<footer class="site-footer"><p>离线资料库、安装与更新设置将在后续 PWA 阶段提供。</p></footer>'
+        '<footer class="site-footer"><p>档案页面保持同源静态资源与可复现构建边界。</p></footer>'
     )
     return _page(
         "Settings · Bangumi Side B",
@@ -642,7 +642,7 @@ def _quarter_html(quarter: QuarterProjection) -> bytes:
         '<nav class="pager" data-pager aria-label="结果分页"></nav></section>'
         '<aside class="workspace" data-workspace aria-live="polite">'
         '<section class="workspace-panel workspace-panel--scope" data-scope-panel></section>'
-        '<section class="workspace-panel" data-detail-panel hidden></section>'
+        '<section class="workspace-panel" id="detail-panel" data-detail-panel hidden></section>'
         '<section class="workspace-panel" id="filter-panel" data-filter-panel hidden></section>'
         '</aside></section></main>'
         '<footer class="site-footer"><p>数据来自已核验的本地 Archive；运行时只读取同源静态文件。</p></footer>'
@@ -712,7 +712,8 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
         f'data-rating-count="{html.escape(str(rating_count if rating_count is not None else ""), quote=True)}" '
         f'data-quarter="{html.escape(quarter, quote=True)}">'
         f'<button type="button" class="subject-row__open" data-open-subject '
-        f'aria-label="打开 {html.escape(preferred)}" aria-expanded="false">'
+        f'aria-label="打开 {html.escape(preferred)}" aria-controls="detail-panel" '
+        f'aria-expanded="false">'
         f'<span class="subject-row__sequence" aria-hidden="true">{sequence:03d}</span>'
         f'{cover_html}<span class="subject-row__content"><strong class="subject-row__title">'
         f'{html.escape(preferred)}</strong>'
@@ -720,6 +721,7 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
         f'<span class="subject-row__meta">{html.escape(media)}'
         f'{(" · " + html.escape(str(value.get("episode_count")) + "话") if value.get("episode_count") else "")}'
         f'{(" · " + html.escape(air_date) if air_date else "")}'
+        f'{(" · " + html.escape(source) if source else "")}'
         f'{(" · " + html.escape(quarter) if quarter and not isinstance(item, SubjectProjection) else "")}</span>'
         f'<span class="subject-row__tags">{tags_html}</span></span>'
         f'<span class="subject-row__score"><b>{score_label}</b>'

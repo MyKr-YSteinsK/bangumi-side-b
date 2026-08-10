@@ -400,7 +400,11 @@
       button.setAttribute("aria-selected", String(button.dataset.mediaMode === state.media));
     });
     const filterButton = quarterRoot.querySelector("[data-filter-toggle]");
-    if (filterButton) filterButton.querySelector("[data-filter-count]").textContent = filterCount() ? `(${filterCount()})` : "";
+    if (filterButton) {
+      filterButton.querySelector("[data-filter-count]").textContent = filterCount() ? `(${filterCount()})` : "";
+      filterButton.setAttribute("aria-expanded", String(state.workspaceMode === "filter"));
+    }
+    if (sortButton) sortButton.setAttribute("aria-expanded", String(quarterRoot.querySelector("[data-sort-popover]")?.hidden === false));
   }
 
   function filterCount() {
@@ -433,11 +437,13 @@
       <div><dt>首播季度</dt><dd>${esc(record.premiere_quarter || record.quarter || "—")}</dd></div>
       <div><dt>集数</dt><dd>${esc(record.episode_count ?? "—")}</dd></div>
       <div><dt>播出日期</dt><dd>${esc(record.air_date || "—")}</dd></div>
+      <div><dt>结束日期</dt><dd>${esc(record.end_date || "—")}</dd></div>
       <div><dt>评分</dt><dd class="detail-score">${record.score ?? record.rating_score ?? "—"}</dd></div>
-      <div><dt>评分人数</dt><dd>${esc(record.rating_count ?? "—")}</dd></div></dl>
+      <div><dt>评分人数</dt><dd>${esc(record.rating_count ?? "—")}</dd></div>
+      <div><dt>来源</dt><dd>${esc(record.source || "unknown")}</dd></div></dl>
       ${record.appearance === "continuing" ? `<p class="detail-continuing">当前 appearance：continuing · premiere ${esc(record.premiere_quarter || "—")}</p>` : ""}
       ${shownAliases.length ? `<section class="detail-section"><h3>别名</h3><div class="detail-tags">${shownAliases.map((alias) => `<span class="tag">${esc(alias)}</span>`).join("")}${moreAliases ? `<span class="detail-more">+ 另外 ${moreAliases} 个标题</span>` : ""}</div></section>` : ""}
-      ${tags ? `<section class="detail-section"><h3>标签 / 来源</h3><div class="detail-tags"><span class="tag tag--source">${esc(record.source || "unknown")}</span>${tags}</div></section>` : ""}
+      ${tags ? `<section class="detail-section"><h3>标签</h3><div class="detail-tags">${tags}</div></section>` : ""}
       ${summaryText ? `<section class="detail-section detail-summary"><h3>简介</h3><p>${esc(summaryText).replaceAll("\n", "<br>")}</p></section>` : ""}
       <p class="detail-footer"><a class="text-link" href="${esc(record.bangumi_url || `https://bgm.tv/subject/${record.id}`)}" target="_blank" rel="noreferrer">在 Bangumi 查看 ↗</a></p>`;
   }
@@ -645,6 +651,15 @@
 
   async function load() {
     bindControls();
+    rows.forEach((row) => {
+      const image = row.querySelector(".subject-row__cover img");
+      image?.addEventListener("error", () => {
+        image.remove();
+        const cover = row.querySelector(".subject-row__cover");
+        cover?.classList.add("subject-row__cover--missing");
+        if (cover) cover.innerHTML = "<span>ARCHIVE</span>";
+      }, { once: true });
+    });
     renderScope({ all: [], page: [], pageCount: 1, page: 1, total: 0 });
     try {
       const response = await fetch(quarterRoot.dataset.dataUrl, { credentials: "same-origin" });
@@ -817,6 +832,7 @@
     button.className = "subject-row__open";
     button.dataset.openSubject = "true";
     button.setAttribute("aria-label", `打开 ${record.preferred_title}`);
+    button.setAttribute("aria-controls", "detail-panel");
     button.setAttribute("aria-expanded", "false");
     const number = document.createElement("span");
     number.className = "subject-row__sequence";
@@ -856,7 +872,7 @@
     content.append(original);
     const metadata = document.createElement("span");
     metadata.className = "subject-row__meta";
-    metadata.textContent = [record.media, record.episode_count ? `${record.episode_count}话` : "", record.air_date || "", record.quarter || ""]
+    metadata.textContent = [record.media, record.episode_count ? `${record.episode_count}话` : "", record.air_date || "", record.source || "", record.quarter || ""]
       .filter(Boolean).join(" · ");
     content.append(metadata);
     const tagList = document.createElement("span");
@@ -1042,7 +1058,11 @@
       button.setAttribute("aria-selected", String(button.dataset.mediaMode === state.media));
     });
     const filterButton = root.querySelector("[data-filter-toggle]");
-    if (filterButton) filterButton.querySelector("[data-filter-count]").textContent = filterCount() ? `(${filterCount()})` : "";
+    if (filterButton) {
+      filterButton.querySelector("[data-filter-count]").textContent = filterCount() ? `(${filterCount()})` : "";
+      filterButton.setAttribute("aria-expanded", String(state.workspaceMode === "filter"));
+    }
+    if (sortButton) sortButton.setAttribute("aria-expanded", String(selectors.sortPopover?.hidden === false));
   }
 
   function filterCount() {
@@ -1059,10 +1079,10 @@
     const summary = record.display_summary || "";
     return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="关闭详情">×</button><p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}</p>
       <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}<p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
-      <dl class="detail-facts"><div><dt>当前季度</dt><dd>${esc(record.quarter)}</dd></div><div><dt>首播季度</dt><dd>${esc(record.premiere_quarter || record.quarter || "—")}</dd></div><div><dt>集数</dt><dd>${esc(record.episode_count ?? "—")}</dd></div><div><dt>播出日期</dt><dd>${esc(record.air_date || "—")}</dd></div><div><dt>评分</dt><dd class="detail-score">${record.score ?? "—"}</dd></div><div><dt>评分人数</dt><dd>${esc(record.rating_count ?? "—")}</dd></div></dl>
+      <dl class="detail-facts"><div><dt>当前季度</dt><dd>${esc(record.quarter)}</dd></div><div><dt>首播季度</dt><dd>${esc(record.premiere_quarter || record.quarter || "—")}</dd></div><div><dt>集数</dt><dd>${esc(record.episode_count ?? "—")}</dd></div><div><dt>播出日期</dt><dd>${esc(record.air_date || "—")}</dd></div><div><dt>结束日期</dt><dd>${esc(record.end_date || "—")}</dd></div><div><dt>评分</dt><dd class="detail-score">${record.score ?? "—"}</dd></div><div><dt>评分人数</dt><dd>${esc(record.rating_count ?? "—")}</dd></div><div><dt>来源</dt><dd>${esc(record.source || "unknown")}</dd></div></dl>
       ${record.appearance === "continuing" ? `<p class="detail-continuing">当前 appearance：continuing · premiere ${esc(record.premiere_quarter || "—")}</p>` : ""}
       ${aliases.length ? `<section class="detail-section"><h3>别名</h3><div class="detail-tags">${aliases.slice(0, 3).map((alias) => `<span class="tag">${esc(alias)}</span>`).join("")}${aliases.length > 3 ? `<span class="detail-more">+ 另外 ${aliases.length - 3} 个标题</span>` : ""}</div></section>` : ""}
-      ${tags ? `<section class="detail-section"><h3>标签 / 来源</h3><div class="detail-tags"><span class="tag tag--source">${esc(record.source || "unknown")}</span>${tags}</div></section>` : ""}
+      ${tags ? `<section class="detail-section"><h3>标签</h3><div class="detail-tags">${tags}</div></section>` : ""}
       ${summary ? `<section class="detail-section detail-summary"><h3>简介</h3><p>${esc(summary).replaceAll("\n", "<br>")}</p></section>` : ""}
       <p class="detail-footer"><a class="text-link" href="${esc(record.bangumi_url || `https://bgm.tv/subject/${record.id}`)}" target="_blank" rel="noreferrer">在 Bangumi 查看 ↗</a></p>`;
   }

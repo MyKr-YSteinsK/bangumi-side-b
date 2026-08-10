@@ -1,0 +1,154 @@
+"""Risk-focused tests for the Plan 15 static projection layer."""
+
+from __future__ import annotations
+
+import hashlib
+from datetime import date
+from pathlib import Path
+
+from bgm_side_b.build.site_projection import (
+    ArchiveFactsReader,
+    json_bytes,
+    project_quarter,
+)
+from bgm_side_b.config import load_tag_rules
+from bgm_side_b.database import Database
+from bgm_side_b.domain import (
+    JapaneseClassification,
+    JapaneseDecision,
+    MediaFormat,
+    Quarter,
+    QuarterAppearanceKind,
+    QuarterAssignmentSource,
+    SourceDecision,
+    SourceType,
+)
+from bgm_side_b.repository import (
+    CoverRecord,
+    QuarterAppearance,
+    SubjectRecord,
+    SubjectRepository,
+    SubjectSnapshot,
+)
+
+ROOT = Path(__file__).parents[1]
+
+
+def _snapshot(
+    subject_id: int,
+    media_format: MediaFormat,
+    *,
+    premiere: Quarter,
+    continuing: Quarter | None = None,
+    cover: CoverRecord | None = None,
+) -> SubjectSnapshot:
+    return SubjectSnapshot(
+        SubjectRecord(
+            subject_id,
+            f"Original {subject_id}",
+            f"中文 {subject_id}",
+            "第一行\r\n\r\n\r\n第二行",
+            media_format,
+            date(premiere.year, premiere.month, 2),
+            None,
+            12,
+            8.5,
+            100,
+            JapaneseDecision(
+                JapaneseClassification.ACCEPTED_JAPANESE,
+                "bangumi_public_region_tag",
+                "日本",
+            ),
+        ),
+        aliases=(f"Alias {subject_id}",),
+        tags=("搞笑", "奇幻", "未收录"),
+        source=SourceDecision(SourceType.MANGA, "infobox", "漫画"),
+        premiere=QuarterAppearance(
+            premiere,
+            QuarterAppearanceKind.PREMIERE,
+            QuarterAssignmentSource.AUTOMATIC,
+            "air_date",
+            f"{premiere.year:04d}-{premiere.month:02d}-02",
+        ),
+        continuing=(
+            ()
+            if continuing is None
+            else (
+                QuarterAppearance(
+                    continuing,
+                    QuarterAppearanceKind.CONTINUING,
+                    QuarterAssignmentSource.AUTOMATIC,
+                    "main_episode_airdate",
+                    f"{continuing.year:04d}-{continuing.month:02d}-03",
+                ),
+            )
+        ),
+        cover=cover,
+    )
+
+
+def _rules():
+    return load_tag_rules(
+        ROOT / "config" / "allowed-tags.toml",
+        ROOT / "config" / "tag-aliases.toml",
+    )
+
+
+def test_projection_separates_tv_movie_and_continuing_and_is_deterministic(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    database = Database(workspace / "data" / "archive.sqlite3")
+    database.initialize()
+    cover_path = workspace / "covers" / "101.webp"
+    cover_path.parent.mkdir(parents=True)
+    cover_path.write_bytes(b"cover-101")
+    cover_hash = hashlib.sha256(b"cover-101").hexdigest()
+    repository = SubjectRepository(database)
+    tv = _snapshot(
+        101,
+        MediaFormat.TV,
+        premiere=Quarter(2026, 4),
+        continuing=Quarter(2026, 7),
+        cover=CoverRecord("https://example.invalid/101", "large", cover_hash, 9, 1, 9),
+    )
+    movie = _snapshot(202, MediaFormat.MOVIE, premiere=Quarter(2026, 7))
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(connection, tv)
+        repository.replace_subject_snapshot(connection, movie)
+
+    facts = ArchiveFactsReader(database, workspace).read()
+    april = project_quarter(facts, Quarter(2026, 4), _rules(), workspace)
+    july = project_quarter(facts, Quarter(2026, 7), _rules(), workspace)
+
+    assert [item.subject_id for item in april.tv_premiere] == [101]
+    assert not april.tv_continuing
+    assert [item.subject_id for item in july.tv_continuing] == [101]
+    assert [item.subject_id for item in july.movie_premiere] == [202]
+    card = april.tv_premiere[0]
+    assert card.preferred_title == "中文 101"
+    assert card.original_title == "Original 101"
+    assert card.allowed_tags[:2] == ("喜剧", "奇幻")
+    assert card.display_summary == "第一行\n\n第二行"
+    assert card.cover_url == f"covers/101.webp?v={cover_hash[:12]}"
+    assert card.premiere_quarter == "2026-04"
+    assert json_bytes(april.to_dict()) == json_bytes(
+        project_quarter(facts, Quarter(2026, 4), _rules(), workspace).to_dict()
+    )
+
+
+def test_projection_missing_cover_is_a_warning_and_null_url(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    database = Database(workspace / "archive.sqlite3")
+    database.initialize()
+    repository = SubjectRepository(database)
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection,
+            _snapshot(303, MediaFormat.TV, premiere=Quarter(2026, 4)),
+        )
+
+    facts = ArchiveFactsReader(database, workspace).read()
+    projection = project_quarter(facts, Quarter(2026, 4), _rules(), workspace)
+    assert projection.tv_premiere[0].cover_url is None
+    assert projection.warnings == ("subject 303 has no cover",)

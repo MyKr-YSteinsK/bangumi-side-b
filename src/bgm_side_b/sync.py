@@ -329,6 +329,7 @@ class ArchiveSynchronizer:
         rejected_non_japanese = 0
         accepted_tv = 0
         accepted_movie = 0
+        premiere_conflict_warnings: list[dict[str, str]] = []
         try:
             for candidate in batch.candidates:
                 if candidate.subject_id in self.settings.excluded_subject_ids:
@@ -370,6 +371,22 @@ class ArchiveSynchronizer:
                     continue
                 try:
                     existing = self.repository.get_subject_facts(candidate.subject_id)
+                    if (
+                        existing is not None
+                        and existing.premiere is not None
+                        and existing.premiere.quarter != quarter
+                    ):
+                        premiere_conflict_warnings.append(
+                            {
+                                "code": "premiere_retained",
+                                "summary": (
+                                    f"retained existing premiere for subject "
+                                    f"{candidate.subject_id} instead of later "
+                                    f"{_quarter_label(quarter)} discovery"
+                                ),
+                            }
+                        )
+                        continue
                     prepared_subject = self._prepare_subject(detail, decision, existing)
                 except ValueError:
                     errors.append(
@@ -493,7 +510,12 @@ class ArchiveSynchronizer:
             )
         )
         warnings = tuple(
-            [*cleanup_warnings, *cover_warnings, *reconciliation.warnings]
+            [
+                *premiere_conflict_warnings,
+                *cleanup_warnings,
+                *cover_warnings,
+                *reconciliation.warnings,
+            ]
         )
         covers_status = (
             COVERS_COMPLETE

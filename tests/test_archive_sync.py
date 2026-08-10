@@ -542,7 +542,7 @@ def test_main_episode_in_target_creates_continuing(tmp_path: Path) -> None:
     assert result.continuing_episode == 1
 
 
-def test_current_premiere_is_excluded_from_continuing_probe_and_counts(
+def test_later_discovery_cannot_overwrite_an_existing_premiere(
     tmp_path: Path,
 ) -> None:
     target = Quarter(2026, 7)
@@ -559,10 +559,12 @@ def test_current_premiere_is_excluded_from_continuing_probe_and_counts(
 
     facts = repository.get_subject_facts(101)
     assert facts is not None
-    assert facts.premiere is not None and facts.premiere.quarter == target
-    assert facts.continuing == ()
-    assert api.episode_calls == []
-    assert result.continuing_episode == 0
+    assert facts.premiere is not None and facts.premiere.quarter == QUARTER
+    assert facts.continuing == (_continuing(target, "2026-07-04"),)
+    assert api.episode_calls == [101]
+    assert result.accepted_tv == 0
+    assert result.continuing_episode == 1
+    assert result.warnings[0]["code"] == "premiere_retained"
 
 
 def test_early_end_date_and_target_episode_create_a_conflict_review(

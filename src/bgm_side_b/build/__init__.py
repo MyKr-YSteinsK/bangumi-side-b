@@ -1,5 +1,14 @@
 """Deterministic, read-only data models for static archive builds."""
 
+from bgm_side_b.build.fingerprint import (
+    BuildState,
+    DirtySet,
+    assign_fingerprints,
+    derive_dirty_set,
+    fingerprint,
+    read_build_state,
+    shared_fingerprint,
+)
 from bgm_side_b.build.projection import BuildProjection
 from bgm_side_b.build.queries import BuildDataError, BuildQueries
 from bgm_side_b.build.site_projection import (
@@ -22,6 +31,7 @@ __all__ = [
     "ArchiveFacts",
     "ArchiveFactsReader",
     "ArchiveIndexProjection",
+    "BuildState",
     "BuildDataError",
     "BuildProjection",
     "BuildQueries",
@@ -30,9 +40,15 @@ __all__ = [
     "QuarterProjection",
     "SubjectProjection",
     "YearCatalogProjection",
+    "DirtySet",
+    "assign_fingerprints",
+    "derive_dirty_set",
+    "fingerprint",
     "json_bytes",
     "project_archive_index",
     "project_offline_manifest",
     "project_quarter",
     "project_year",
+    "read_build_state",
+    "shared_fingerprint",
 ]

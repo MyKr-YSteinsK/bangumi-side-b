@@ -34,6 +34,8 @@ from bgm_side_b.release.workflow import (
 from bgm_side_b.repository import SubjectRepository as ArchiveSubjectRepository
 from bgm_side_b.sync import ArchiveSynchronizer, SyncError, parse_sync_scope
 
+MAX_INLINE_SYNC_REVIEWS = 10
+
 
 def find_project_root(start: Path | None = None) -> Path | None:
     """Find the nearest project root without exposing local paths on failure."""
@@ -366,12 +368,24 @@ def main(argv: list[str] | None = None) -> int:
         if scope.is_single_quarter and run.quarters:
             result = run.quarters[0]
             if result.reviews:
-                print(render_review(repository, scope.start))
-            for review in result.external_reviews:
+                if len(result.reviews) <= MAX_INLINE_SYNC_REVIEWS:
+                    print(render_review(repository, scope.start))
+                else:
+                    print(
+                        f"{len(result.reviews)} persisted REVIEW items; "
+                        "run bgmb review for the complete local queue"
+                    )
+            for review in result.external_reviews[:MAX_INLINE_SYNC_REVIEWS]:
                 print(
                     "REVIEW "
                     f"{review['subject_id']} {review['issue_code']}｜"
                     f"{review['command']}"
+                )
+            remaining = len(result.external_reviews) - MAX_INLINE_SYNC_REVIEWS
+            if remaining > 0:
+                print(
+                    f"{remaining} additional Search-only REVIEW items "
+                    "are in the sync report"
                 )
         if run.exit_code == 0:
             print(

@@ -296,7 +296,9 @@ class ArchiveSynchronizer:
                     blacklisted += 1
                     continue
                 try:
-                    detail = self.api.get_subject(candidate.subject_id)
+                    detail = candidate.detail or self.api.get_subject(
+                        candidate.subject_id
+                    )
                     decision = admit_subject(
                         candidate,
                         detail,

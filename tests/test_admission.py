@@ -36,6 +36,8 @@ def _detail(
     platform: str | None = "TV",
     air_date: str | None = "2026-04-02",
     country: str | None = "日本",
+    meta_tags: tuple[str, ...] = (),
+    tags: tuple[str, ...] = (),
 ) -> SubjectDetail:
     infobox = [] if country is None else [{"key": "国家/地区", "value": country}]
     return SubjectDetail.from_payload(
@@ -49,7 +51,8 @@ def _detail(
             "eps": 12,
             "rating": {"score": 7.5, "total": 100},
             "infobox": infobox,
-            "tags": [],
+            "meta_tags": list(meta_tags),
+            "tags": [{"name": value, "count": 1} for value in tags],
             "images": {},
         }
     )
@@ -78,6 +81,28 @@ def test_japanese_three_state_admission_never_guesses() -> None:
     assert rejected.status is AdmissionStatus.REJECTED
     assert unresolved.status is AdmissionStatus.REVIEW
     assert unresolved.reviews[0].issue_code == JAPANESE_CLASSIFICATION_UNRESOLVED
+
+
+def test_public_regions_are_decisive_and_ordinary_region_tags_have_no_effect() -> None:
+    accepted = admit_subject(
+        _candidate(), _detail(country=None, meta_tags=("日本",)), Quarter(2026, 4)
+    )
+    rejected = admit_subject(
+        _candidate(), _detail(country=None, meta_tags=("中国",)), Quarter(2026, 4)
+    )
+    conflict = admit_subject(
+        _candidate(),
+        _detail(country=None, meta_tags=("日本", "中国")),
+        Quarter(2026, 4),
+    )
+    ordinary_tag = admit_subject(
+        _candidate(), _detail(country=None, tags=("日本",)), Quarter(2026, 4)
+    )
+
+    assert accepted.status is AdmissionStatus.ACCEPTED
+    assert rejected.status is AdmissionStatus.REJECTED
+    assert conflict.reviews[0].issue_code == "JAPANESE_REGION_CONFLICT"
+    assert ordinary_tag.status is AdmissionStatus.REVIEW
 
 
 def test_tv_boundary_observation_is_reviewed_at_one_to_seven_days_only() -> None:

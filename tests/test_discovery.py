@@ -84,6 +84,7 @@ def test_browse_queries_tv_and_movie_months_and_merges_provenance() -> None:
     tv, movie = batch.candidates
     assert tv.candidate_media_format is MediaFormat.TV
     assert tv.provenance == ("browse:TV:2026-04", "browse:TV:2026-05")
+    assert tv.detail is not None and tv.detail.subject_id == 101
     assert movie.candidate_media_format is MediaFormat.MOVIE
     assert not batch.failures
 

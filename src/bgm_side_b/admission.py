@@ -18,7 +18,7 @@ from bgm_side_b.domain import (
     QuarterAssignmentSource,
 )
 from bgm_side_b.repository import QuarterAppearance
-from bgm_side_b.rules import classify_japanese, normalize_text
+from bgm_side_b.rules import classify_japanese_with_public_regions, normalize_text
 
 ANIME_SUBJECT_TYPE: Final = 2
 TV_QUARTER_BOUNDARY: Final = "TV_QUARTER_BOUNDARY"
@@ -103,7 +103,9 @@ def admit_subject(
         )
     assert media_format is not None
 
-    japanese = classify_japanese(_country_values(detail))
+    japanese = classify_japanese_with_public_regions(
+        detail.meta_tags, _country_values(detail)
+    )
     if japanese.classification is JapaneseClassification.REJECTED_NON_JAPANESE:
         return AdmissionDecision(
             AdmissionStatus.REJECTED,
@@ -114,7 +116,7 @@ def admit_subject(
         )
     if japanese.classification is JapaneseClassification.UNRESOLVED:
         review = ReviewFinding(
-            JAPANESE_CLASSIFICATION_UNRESOLVED,
+            _japanese_review_code(japanese),
             None,
             detail.air_date.isoformat() if detail.air_date else None,
             {
@@ -340,3 +342,11 @@ def _platform_media_format(value: str | None) -> MediaFormat | None:
 
 def _quarter_label(quarter: Quarter) -> str:
     return f"{quarter.year:04d}-{quarter.month:02d}"
+
+
+def _japanese_review_code(japanese: JapaneseDecision) -> str:
+    if japanese.evidence_type == "unresolved_japanese_region_conflict":
+        return "JAPANESE_REGION_CONFLICT"
+    if japanese.evidence_type == "unresolved_japanese_evidence_conflict":
+        return "JAPANESE_EVIDENCE_CONFLICT"
+    return JAPANESE_CLASSIFICATION_UNRESOLVED

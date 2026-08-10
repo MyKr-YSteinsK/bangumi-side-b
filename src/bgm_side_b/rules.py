@@ -18,6 +18,7 @@ from bgm_side_b.domain import (
 
 _COUNTRY_KEYS = frozenset({"制片国家/地区", "国家/地区"})
 _JAPANESE_TOKENS = frozenset({"日本", "Japan"})
+_PUBLIC_REGION_TAGS = frozenset({"日本", "中国", "美国", "韩国", "欧美"})
 _COUNTRY_SEPARATOR = re.compile(r"[/／,，、;；|]")
 _SUMMARY_MARKER = re.compile(r"\[\s*简介原文\s*\]")
 _KANA = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")
@@ -151,6 +152,51 @@ def classify_japanese(infobox: Iterable[tuple[str, str]]) -> JapaneseDecision:
     )
 
 
+def classify_japanese_with_public_regions(
+    meta_tags: Iterable[str], infobox: Iterable[tuple[str, str]]
+) -> JapaneseDecision:
+    """Use exact public region tags first, then strict structured country fallback."""
+    public_regions = {
+        normalized
+        for value in meta_tags
+        if (normalized := normalize_text(value)) in _PUBLIC_REGION_TAGS
+    }
+    infobox_regions = _infobox_regions(infobox)
+    if public_regions and infobox_regions and public_regions != infobox_regions:
+        return JapaneseDecision(
+            JapaneseClassification.UNRESOLVED,
+            "unresolved_japanese_evidence_conflict",
+            _evidence_json(public_regions | infobox_regions),
+        )
+    regions = public_regions or infobox_regions
+    evidence_type = (
+        "bangumi_public_region_tag" if public_regions else "infobox_country"
+    )
+    if regions == {"日本"}:
+        return JapaneseDecision(
+            JapaneseClassification.ACCEPTED_JAPANESE,
+            evidence_type,
+            "日本",
+        )
+    if regions and "日本" not in regions:
+        return JapaneseDecision(
+            JapaneseClassification.REJECTED_NON_JAPANESE,
+            evidence_type,
+            _evidence_json(regions),
+        )
+    if regions:
+        return JapaneseDecision(
+            JapaneseClassification.UNRESOLVED,
+            "unresolved_japanese_region_conflict",
+            _evidence_json(regions),
+        )
+    return JapaneseDecision(
+        JapaneseClassification.UNRESOLVED,
+        "unresolved_missing_japanese_region",
+        "[]",
+    )
+
+
 def display_summary(summary_raw: str | None) -> str | None:
     """Return a conservative display summary while preserving raw SQLite facts."""
     if summary_raw is None:
@@ -178,3 +224,17 @@ def _normalize_summary(value: str) -> str:
 
 def _evidence_json(values: set[str]) -> str:
     return json.dumps(sorted(values), ensure_ascii=False, separators=(",", ":"))
+
+
+def _infobox_regions(infobox: Iterable[tuple[str, str]]) -> set[str]:
+    regions: set[str] = set()
+    for item_key, value in infobox:
+        if normalize_text(item_key) not in _COUNTRY_KEYS:
+            continue
+        for part in _COUNTRY_SEPARATOR.split(normalize_text(value)):
+            token = normalize_text(part)
+            if token in _JAPANESE_TOKENS:
+                regions.add("日本")
+            elif token:
+                regions.add(token)
+    return regions

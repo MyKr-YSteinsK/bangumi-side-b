@@ -110,6 +110,7 @@ def _detail(
     air_date: str = "2026-04-02",
     cover: str | None = "https://images.example/cover.png",
     platform: str | None = None,
+    meta_tags: tuple[str, ...] = (),
 ) -> SubjectDetail:
     infobox = [] if country is None else [{"key": "国家/地区", "value": country}]
     return SubjectDetail.from_payload(
@@ -128,6 +129,7 @@ def _detail(
             "eps": 12,
             "total_episodes": 12,
             "rating": {"score": 7.5, "total": 100},
+            "meta_tags": list(meta_tags),
             "tags": [{"name": "漫画改编", "count": 3}],
             "infobox": infobox,
             "images": {"large": cover} if cover else {},
@@ -275,6 +277,28 @@ def test_complete_facts_store_tv_movie_review_and_final_webp_cover(
     report = json.loads(run.report_path.read_text(encoding="utf-8"))
     assert report["accepted_tv"] == 1
     assert report["quarters"][0]["reviews"][0]["subject_id"] == 104
+
+
+def test_full_browse_snapshot_uses_public_region_without_subject_get(
+    tmp_path: Path,
+) -> None:
+    detail = _detail(101, country=None, meta_tags=("日本", "TV"))
+    candidate = DiscoveredSubject(
+        101,
+        frozenset({MediaFormat.TV}),
+        frozenset({date(2026, 4, 2)}),
+        frozenset({2}),
+        ("browse:TV:2026-04",),
+        detail,
+    )
+    api = FakeApi({101: detail})
+    sync, repository = _sync(tmp_path, api, DiscoveryBatch((candidate,)))
+
+    assert sync.run(SyncScope(QUARTER, QUARTER)).exit_code == 0
+    assert api.subject_calls == []
+    facts = repository.get_subject_facts(101)
+    assert facts is not None
+    assert facts.subject.japanese.evidence_type == "bangumi_public_region_tag"
 
 
 def test_search_failure_leaves_existing_facts_and_marks_quarter_incomplete(

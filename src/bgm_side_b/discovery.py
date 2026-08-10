@@ -13,6 +13,7 @@ from bgm_side_b.api import (
     BangumiApiClient,
     BangumiApiError,
     CandidateSubject,
+    SubjectDetail,
 )
 from bgm_side_b.domain import MediaFormat, Quarter
 
@@ -46,6 +47,7 @@ class DiscoveredSubject:
     candidate_dates: frozenset[date]
     subject_types: frozenset[int]
     provenance: tuple[str, ...]
+    detail: SubjectDetail | None = None
 
     def __post_init__(self) -> None:
         if self.subject_id <= 0:
@@ -204,6 +206,14 @@ def _batch(
                     }
                 )
             ),
+            next(
+                (
+                    candidate.detail
+                    for candidate in observations
+                    if candidate.detail is not None
+                ),
+                None,
+            ),
         )
         for subject_id, observations in sorted(grouped.items())
     )
@@ -223,20 +233,26 @@ def _batch(
 
 
 def _from_api_candidate(
-    candidate: CandidateSubject,
+    candidate: CandidateSubject | SubjectDetail,
     media_format: MediaFormat | None,
     provenance: str,
 ) -> DiscoveredSubject:
+    candidate_date = (
+        candidate.air_date
+        if isinstance(candidate, SubjectDetail)
+        else candidate.candidate_date
+    )
     return DiscoveredSubject(
         candidate.subject_id,
         frozenset(() if media_format is None else (media_format,)),
         frozenset(
-            () if candidate.candidate_date is None else (candidate.candidate_date,)
+            () if candidate_date is None else (candidate_date,)
         ),
         frozenset(
             () if candidate.subject_type is None else (candidate.subject_type,)
         ),
         (provenance,),
+        candidate if isinstance(candidate, SubjectDetail) else None,
     )
 
 

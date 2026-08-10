@@ -190,6 +190,7 @@ def _stored_detail(snapshot: SubjectSnapshot) -> SubjectDetail:
         None,
         subject.rating_score,
         subject.rating_count,
+        (),
         tuple(ApiTag(tag, None) for tag in snapshot.tags),
         tuple(ApiInfoboxItem(item.item_key, item.value) for item in snapshot.infobox),
         ImageUrls(),

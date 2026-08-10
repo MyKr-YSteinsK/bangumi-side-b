@@ -124,7 +124,7 @@ class CandidateSubject:
 
 @dataclass(frozen=True)
 class SubjectDetail:
-    """The complete public subject payload needed by the Plan 13 archive model."""
+    """The complete public subject payload needed by the archive model."""
 
     subject_id: int
     subject_type: int | None
@@ -137,6 +137,7 @@ class SubjectDetail:
     total_episodes: int | None
     rating_score: float | None
     rating_total: int | None
+    meta_tags: tuple[str, ...]
     tags: tuple[ApiTag, ...]
     infobox: tuple[ApiInfoboxItem, ...]
     images: ImageUrls
@@ -157,6 +158,7 @@ class SubjectDetail:
             _optional_integer(payload.get("total_episodes")),
             _optional_number(rating_data.get("score")),
             _optional_integer(rating_data.get("total")),
+            _meta_tags_from_payload(payload.get("meta_tags")),
             _tags_from_payload(payload.get("tags")),
             _infobox_from_payload(payload.get("infobox")),
             ImageUrls.from_payload(payload.get("images")),
@@ -220,12 +222,12 @@ class BangumiApiClient:
 
     def browse_subjects(
         self, *, year: int, month: int, category: int, limit: int = 100
-    ) -> tuple[CandidateSubject, ...]:
+    ) -> tuple[SubjectDetail, ...]:
         """Read every documented Browse page for one month and media category."""
         if category not in BROWSE_CATEGORIES:
             raise ValueError("category must be the TV or theatrical movie category")
         return tuple(
-            CandidateSubject.from_payload(item, category)
+            SubjectDetail.from_payload(item)
             for item in self._paged_json(
                 "/subjects",
                 {
@@ -245,7 +247,7 @@ class BangumiApiClient:
         air_date_start: date,
         air_date_end: date,
         limit: int = 100,
-    ) -> tuple[CandidateSubject, ...]:
+    ) -> tuple[SubjectDetail, ...]:
         """Use the official experimental date search as a supplementary signal."""
         if air_date_start >= air_date_end:
             raise ValueError("search air-date range must be non-empty")
@@ -260,7 +262,7 @@ class BangumiApiClient:
             },
         }
         return tuple(
-            CandidateSubject.from_payload(item, None)
+            SubjectDetail.from_payload(item)
             for item in self._paged_json(
                 "/search/subjects",
                 {},
@@ -419,6 +421,20 @@ def _tags_from_payload(value: Any) -> tuple[ApiTag, ...]:
         for item in value
         if isinstance(item, Mapping)
         and (name := _optional_string(item.get("name"))) is not None
+    )
+
+
+def _meta_tags_from_payload(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(
+        sorted(
+            {
+                name
+                for item in value
+                if (name := _optional_string(item)) is not None
+            }
+        )
     )
 
 

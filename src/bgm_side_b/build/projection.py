@@ -212,9 +212,8 @@ def _project_tags(raw_tags: Iterable[str], rules: TagRules) -> tuple[TagView, ..
     allowed = set(rules.allowed_tags)
     for raw_tag in raw_tags:
         normalized = normalize("NFKC", raw_tag).strip()
-        canonical = rules.aliases.get(normalized, normalized)
-        if canonical in allowed:
-            selected.add(canonical)
+        if normalized in allowed:
+            selected.add(normalized)
     return tuple(TagView(tag) for tag in rules.allowed_tags if tag in selected)
 
 

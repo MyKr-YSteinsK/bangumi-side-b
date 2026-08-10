@@ -644,9 +644,8 @@ def _allowed_tags(values: tuple[str, ...], rules: TagRules) -> tuple[str, ...]:
     selected: set[str] = set()
     for value in values:
         normalized = normalize("NFKC", value).strip()
-        canonical = rules.aliases.get(normalized, normalized)
-        if canonical in allowed:
-            selected.add(canonical)
+        if normalized in allowed:
+            selected.add(normalized)
     return tuple(tag for tag in rules.allowed_tags if tag in selected)
 
 

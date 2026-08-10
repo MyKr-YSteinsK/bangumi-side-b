@@ -268,13 +268,9 @@ def _without_revision(value: dict[str, object]) -> dict[str, object]:
 
 def _tag_rules_value(value: object) -> object:
     allowed = getattr(value, "allowed_tags", None)
-    aliases = getattr(value, "aliases", None)
-    if not isinstance(allowed, tuple) or aliases is None:
+    if not isinstance(allowed, tuple):
         return repr(value)
-    return {
-        "allowed_tags": list(allowed),
-        "aliases": dict(sorted(dict(aliases).items())),
-    }
+    return {"allowed_tags": list(allowed)}
 
 
 def _string_map(value: object) -> dict[str, str] | None:

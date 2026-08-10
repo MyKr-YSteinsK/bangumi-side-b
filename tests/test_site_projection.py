@@ -62,7 +62,7 @@ def _snapshot(
             ),
         ),
         aliases=(f"Alias {subject_id}",),
-        tags=("搞笑", "奇幻", "未收录"),
+        tags=("喜剧", "搞笑", "奇幻", "未收录"),
         source=SourceDecision(SourceType.MANGA, "infobox", "漫画"),
         premiere=QuarterAppearance(
             premiere,
@@ -91,7 +91,6 @@ def _snapshot(
 def _rules():
     return load_tag_rules(
         ROOT / "config" / "allowed-tags.toml",
-        ROOT / "config" / "tag-aliases.toml",
     )
 
 
@@ -130,12 +129,40 @@ def test_projection_separates_tv_movie_and_continuing_and_is_deterministic(
     assert card.preferred_title == "中文 101"
     assert card.original_title == "Original 101"
     assert card.allowed_tags[:2] == ("喜剧", "奇幻")
+    assert "搞笑" not in card.allowed_tags
     assert card.display_summary == "第一行\n\n第二行"
     assert card.cover_url == f"covers/101.webp?v={cover_hash[:12]}"
     assert card.premiere_quarter == "2026-04"
     assert json_bytes(april.to_dict()) == json_bytes(
         project_quarter(facts, Quarter(2026, 4), _rules(), workspace).to_dict()
     )
+
+
+def test_tag_display_uses_nfkc_trim_exact_membership_and_whitelist_order(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    database = Database(workspace / "archive.sqlite3")
+    database.initialize()
+    repository = SubjectRepository(database)
+    snapshot = _snapshot(505, MediaFormat.TV, premiere=Quarter(2026, 4))
+    snapshot = SubjectSnapshot(
+        snapshot.subject,
+        aliases=snapshot.aliases,
+        tags=("　奇幻　", "搞笑", "喜剧"),
+        source=snapshot.source,
+        premiere=snapshot.premiere,
+        continuing=snapshot.continuing,
+        cover=snapshot.cover,
+    )
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(connection, snapshot)
+
+    facts = ArchiveFactsReader(database, workspace).read()
+    projection = project_quarter(facts, Quarter(2026, 4), _rules(), workspace)
+
+    assert projection.tv_premiere[0].allowed_tags == ("喜剧", "奇幻")
+    assert "搞笑" not in projection.tv_premiere[0].allowed_tags
 
 
 def test_year_catalog_keeps_display_fields_for_offline_archive_detail(

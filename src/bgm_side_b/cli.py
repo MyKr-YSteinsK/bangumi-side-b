@@ -409,7 +409,6 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 tags = load_tag_rules(
                     root / "config" / "allowed-tags.toml",
-                    root / "config" / "tag-aliases.toml",
                 )
                 with create_progress_reporter(args, "build") as build_reporter:
                     build_run = UnifiedSiteBuilder(
@@ -454,7 +453,6 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_archive_sync_settings(root / "config" / "bangumi.toml")
         tag_rules = load_tag_rules(
             root / "config" / "allowed-tags.toml",
-            root / "config" / "tag-aliases.toml",
         )
         database = ArchiveDatabase(
             root / "workspace" / "data" / "bangumi-side-b.sqlite3"

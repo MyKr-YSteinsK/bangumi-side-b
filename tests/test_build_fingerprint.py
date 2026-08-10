@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from bgm_side_b.build.fingerprint import (
@@ -68,7 +69,6 @@ def test_dirty_propagates_quarter_changes_to_year_and_archive() -> None:
 def test_shared_fingerprint_includes_whitelist_and_blacklist() -> None:
     rules = load_tag_rules(
         ROOT / "config" / "allowed-tags.toml",
-        ROOT / "config" / "tag-aliases.toml",
     )
     first = shared_fingerprint(
         stylesheet=b"css",
@@ -83,3 +83,19 @@ def test_shared_fingerprint_includes_whitelist_and_blacklist() -> None:
         excluded_subject_ids=frozenset({101}),
     )
     assert first != second
+
+    reordered = replace(rules, allowed_tags=tuple(reversed(rules.allowed_tags)))
+    assert shared_fingerprint(
+        stylesheet=b"css",
+        script=b"js",
+        tag_rules=reordered,
+        excluded_subject_ids=frozenset(),
+    ) != first
+
+    alias_only = replace(rules, aliases={"搞笑": "恋爱"})
+    assert shared_fingerprint(
+        stylesheet=b"css",
+        script=b"js",
+        tag_rules=alias_only,
+        excluded_subject_ids=frozenset(),
+    ) == first

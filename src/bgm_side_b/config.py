@@ -56,7 +56,7 @@ class ProjectSettings:
 
 @dataclass(frozen=True)
 class TagRules:
-    """Exact display-tag mappings and their fixed whitelist order."""
+    """Exact display-tag whitelist, with aliases retained only for legacy reads."""
 
     allowed_tags: tuple[str, ...]
     aliases: Mapping[str, str]
@@ -204,12 +204,10 @@ def load_project_settings(path: Path) -> ProjectSettings:
     )
 
 
-def load_tag_rules(allowed_path: Path, aliases_path: Path) -> TagRules:
-    """Load display-tag whitelist and exact aliases from TOML files."""
+def load_tag_rules(allowed_path: Path, aliases_path: Path | None = None) -> TagRules:
+    """Load the exact whitelist, optionally retaining legacy alias metadata."""
     allowed_data = _read_toml(allowed_path)
-    alias_data = _read_toml(aliases_path)
     allowed = allowed_data["allowed_tags"]
-    aliases = alias_data["aliases"]
     valid_allowed = isinstance(allowed, list) and all(
         isinstance(item, str) for item in allowed
     )
@@ -217,13 +215,18 @@ def load_tag_rules(allowed_path: Path, aliases_path: Path) -> TagRules:
         raise ValueError("allowed_tags must be an array of strings")
     if len(set(allowed)) != len(allowed):
         raise ValueError("allowed_tags must not contain duplicates")
-    if not isinstance(aliases, dict) or not all(
-        isinstance(key, str) and isinstance(value, str)
-        for key, value in aliases.items()
-    ):
-        raise ValueError("aliases must be a table of strings")
-    if not set(aliases.values()).issubset(allowed):
-        raise ValueError("aliases must target an allowed tag")
+    aliases: Mapping[str, str] = {}
+    if aliases_path is not None:
+        alias_data = _read_toml(aliases_path)
+        raw_aliases = alias_data["aliases"]
+        if not isinstance(raw_aliases, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in raw_aliases.items()
+        ):
+            raise ValueError("aliases must be a table of strings")
+        if not set(raw_aliases.values()).issubset(allowed):
+            raise ValueError("aliases must target an allowed tag")
+        aliases = raw_aliases
 
     return TagRules(tuple(allowed), MappingProxyType(dict(aliases)))
 

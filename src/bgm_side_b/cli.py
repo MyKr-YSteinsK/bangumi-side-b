@@ -6,11 +6,16 @@ import argparse
 from pathlib import Path
 
 from bgm_side_b import __version__
+from bgm_side_b.adjudication import ArchiveAdjudicator, AssignmentError, render_review
+from bgm_side_b.admission import QuarterOverride
 from bgm_side_b.api import BangumiApiClient
+from bgm_side_b.archive_config import load_archive_sync_settings
 from bgm_side_b.audit import ReleaseDataAuditor
 from bgm_side_b.build.builder import ArchiveBuilder, BuildError
 from bgm_side_b.build.queries import BuildDataError
 from bgm_side_b.config import load_rules
+from bgm_side_b.database import Database as ArchiveDatabase
+from bgm_side_b.domain import Quarter
 from bgm_side_b.legacy_database import Database
 from bgm_side_b.legacy_repository import SubjectRepository
 from bgm_side_b.progress import create_progress_reporter
@@ -22,6 +27,7 @@ from bgm_side_b.release.workflow import (
     prepare_release,
     publish_prepared_release,
 )
+from bgm_side_b.repository import SubjectRepository as ArchiveSubjectRepository
 from bgm_side_b.sync import (
     SubjectSynchronizer,
     parse_sync_scope,
@@ -69,6 +75,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Revalidate and redownload cached cover images.",
     )
+    review_command = subparsers.add_parser(
+        "review", help="List unresolved archive review items."
+    )
+    review_command.add_argument("scope", nargs="*", metavar="YEAR_OR_QUARTER")
+    assign_command = subparsers.add_parser(
+        "assign", help="Set one manual archive quarter."
+    )
+    assign_command.add_argument("subject_id", type=int, metavar="BGM_ID")
+    assign_command.add_argument("assignment", nargs="*", metavar="YEAR_OR_QUARTER")
+    assign_group = assign_command.add_mutually_exclusive_group()
+    assign_group.add_argument("--unassigned", action="store_true")
+    assign_group.add_argument("--clear", action="store_true")
     build_command = subparsers.add_parser(
         "build", help="Build offline static archive pages from local SQLite facts."
     )
@@ -152,6 +170,51 @@ def main(argv: list[str] | None = None) -> int:
         result = ReleaseDataAuditor(root, settings).audit()
         print(result.render())
         return 0 if result.passed else 1
+    if args.command in {"review", "assign"}:
+        root = find_project_root()
+        if root is None:
+            parser.error(
+                "could not find a project root containing pyproject.toml and config"
+            )
+        try:
+            settings = load_archive_sync_settings(root / "config" / "bangumi.toml")
+            database = ArchiveDatabase(
+                root / "workspace" / "data" / "bangumi-side-b.sqlite3"
+            )
+            repository = ArchiveSubjectRepository(database)
+            if args.command == "review":
+                if len(args.scope) not in {0, 2}:
+                    parser.error("review accepts no scope or YEAR QUARTER_MONTH")
+                quarter = (
+                    None
+                    if not args.scope
+                    else Quarter(int(args.scope[0]), int(args.scope[1]))
+                )
+                print(render_review(repository, quarter))
+                return 0
+            override = _assignment_override(args)
+            adjudicator = ArchiveAdjudicator(
+                repository,
+                root / "config" / "quarter-overrides.toml",
+                settings.excluded_subject_ids,
+            )
+            snapshot = (
+                adjudicator.clear(args.subject_id)
+                if args.clear
+                else adjudicator.assign(args.subject_id, override)
+            )
+        except (AssignmentError, ValueError) as error:
+            parser.error(str(error))
+        quarter = snapshot.quarter.quarter if snapshot.quarter else None
+        if quarter is None:
+            print(f"assignment saved: {snapshot.subject.subject_id} is unassigned")
+        else:
+            print(
+                "assignment saved: "
+                f"{snapshot.subject.subject_id} -> "
+                f"{quarter.year:04d}-{quarter.month:02d}"
+            )
+        return 0
     if getattr(args, "verbose", False) and getattr(args, "progress", "auto") == "off":
         parser.error("--progress off cannot be combined with --verbose")
     if args.command in {"doctor", "status", "release"}:
@@ -329,3 +392,19 @@ def _relative_output_path(root: Path, path: Path) -> str:
         return path.relative_to(root).as_posix()
     except ValueError:
         return "report unavailable"
+
+
+def _assignment_override(args: argparse.Namespace) -> QuarterOverride:
+    if args.clear:
+        if args.assignment or args.unassigned:
+            raise ValueError(
+                "--clear cannot be combined with a quarter or --unassigned"
+            )
+        return QuarterOverride(None)
+    if args.unassigned:
+        if args.assignment:
+            raise ValueError("--unassigned cannot be combined with a quarter")
+        return QuarterOverride(None)
+    if len(args.assignment) != 2:
+        raise ValueError("assign requires YEAR QUARTER_MONTH, --unassigned, or --clear")
+    return QuarterOverride(Quarter(int(args.assignment[0]), int(args.assignment[1])))

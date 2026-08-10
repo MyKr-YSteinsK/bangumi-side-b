@@ -65,6 +65,20 @@ def test_sync_parser_requires_one_year_and_one_quarter() -> None:
     assert error.value.code == 2
 
 
+def test_review_and_assign_parsers_accept_manual_workflow() -> None:
+    parser = build_parser()
+
+    review = parser.parse_args(["review", "2026", "4"])
+    assign = parser.parse_args(["assign", "101", "2026", "4"])
+    unassigned = parser.parse_args(["assign", "101", "--unassigned"])
+    clear = parser.parse_args(["assign", "101", "--clear"])
+
+    assert review.scope == ["2026", "4"]
+    assert assign.assignment == ["2026", "4"]
+    assert unassigned.unassigned
+    assert clear.clear
+
+
 def test_shared_progress_arguments_are_available_on_every_long_command() -> None:
     parser = build_parser()
 

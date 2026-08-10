@@ -398,7 +398,15 @@ class ArchiveSynchronizer:
                 blacklisted=blacklisted,
             )
 
-        reconciliation = self._reconcile_continuing(quarter)
+        premiere_subject_ids = {
+            item.snapshot.subject.subject_id
+            for item in prepared
+            if item.snapshot.premiere is not None
+            and item.snapshot.premiere.quarter == quarter
+        }
+        reconciliation = self._reconcile_continuing(
+            quarter, excluded_subject_ids=frozenset(premiere_subject_ids)
+        )
         if reconciliation.errors:
             return self._write_incomplete(
                 quarter,
@@ -415,12 +423,6 @@ class ArchiveSynchronizer:
             )
         } - {item.snapshot.subject.subject_id for item in prepared}
         completed_at = _timestamp()
-        premiere_subject_ids = {
-            item.snapshot.subject.subject_id
-            for item in prepared
-            if item.snapshot.premiere is not None
-            and item.snapshot.premiere.quarter == quarter
-        }
         continuing_appearances = tuple(
             (subject_id, appearance)
             for subject_id, appearance in reconciliation.appearances
@@ -589,7 +591,10 @@ class ArchiveSynchronizer:
         )
 
     def _reconcile_continuing(
-        self, quarter: Quarter
+        self,
+        quarter: Quarter,
+        *,
+        excluded_subject_ids: frozenset[int] = frozenset(),
     ) -> _ContinuingReconciliation:
         """Gather all continuing evidence before mutating target-quarter rows."""
         target_start = date(quarter.year, quarter.month, 1)
@@ -606,7 +611,7 @@ class ArchiveSynchronizer:
         ):
             premiere = snapshot.premiere
             subject = snapshot.subject
-            if (
+            if subject.subject_id in excluded_subject_ids or (
                 premiere is None
                 or premiere.quarter >= quarter
                 or subject.air_date is None
@@ -715,7 +720,15 @@ class ArchiveSynchronizer:
         state = self.repository.get_sync_state(target)
         if state is None:
             return ()
-        reconciliation = self._reconcile_continuing(target)
+        premiere_subject_ids = {
+            snapshot.subject.subject_id
+            for snapshot in self.repository.list_subjects_appearing_in_quarter(
+                target, appearance_kind=QuarterAppearanceKind.PREMIERE
+            )
+        }
+        reconciliation = self._reconcile_continuing(
+            target, excluded_subject_ids=frozenset(premiere_subject_ids)
+        )
         if reconciliation.errors:
             return tuple(
                 {
@@ -724,12 +737,6 @@ class ArchiveSynchronizer:
                 }
                 for item in reconciliation.errors
             )
-        premiere_subject_ids = {
-            snapshot.subject.subject_id
-            for snapshot in self.repository.list_subjects_appearing_in_quarter(
-                target, appearance_kind=QuarterAppearanceKind.PREMIERE
-            )
-        }
         appearances = tuple(
             (subject_id, appearance)
             for subject_id, appearance in reconciliation.appearances

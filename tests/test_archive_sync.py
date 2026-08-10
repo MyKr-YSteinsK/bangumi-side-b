@@ -542,6 +542,29 @@ def test_main_episode_in_target_creates_continuing(tmp_path: Path) -> None:
     assert result.continuing_episode == 1
 
 
+def test_current_premiere_is_excluded_from_continuing_probe_and_counts(
+    tmp_path: Path,
+) -> None:
+    target = Quarter(2026, 7)
+    detail = _detail(101, air_date="2026-07-04")
+    api = FakeApi({101: detail}, episode_airdates={101: (date(2026, 7, 4),)})
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(101, MediaFormat.TV, date(2026, 7, 4)),)),
+    )
+    _store_existing(repository, 101)
+
+    result = sync.run(SyncScope(target, target)).quarters[0]
+
+    facts = repository.get_subject_facts(101)
+    assert facts is not None
+    assert facts.premiere is not None and facts.premiere.quarter == target
+    assert facts.continuing == ()
+    assert api.episode_calls == []
+    assert result.continuing_episode == 0
+
+
 def test_early_end_date_and_target_episode_create_a_conflict_review(
     tmp_path: Path,
 ) -> None:

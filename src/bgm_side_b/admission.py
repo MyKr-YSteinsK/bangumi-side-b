@@ -92,7 +92,8 @@ def admit_subject(
         )
 
     media_format, media_review = _resolve_media(candidate, detail)
-    if media_review is not None:
+    if media_format is None:
+        assert media_review is not None
         return AdmissionDecision(
             AdmissionStatus.REVIEW,
             detail.subject_id,
@@ -126,8 +127,17 @@ def admit_subject(
             detail.subject_id,
             media_format,
             japanese,
-            reviews=(review,),
+            reviews=tuple(item for item in (media_review, review) if item is not None),
             reason=review.issue_code,
+        )
+    if media_review is not None:
+        return AdmissionDecision(
+            AdmissionStatus.REVIEW,
+            detail.subject_id,
+            media_format,
+            japanese,
+            reviews=(media_review,),
+            reason=media_review.issue_code,
         )
 
     if override is not None:
@@ -177,14 +187,22 @@ def _resolve_media(
 ) -> tuple[MediaFormat | None, ReviewFinding | None]:
     detail_format = _platform_media_format(detail.platform)
     if candidate.has_media_conflict:
-        return None, _media_review(candidate, detail, "conflicting_browse_categories")
+        if detail_format is None:
+            return None, _media_review(
+                candidate, detail, "conflicting_browse_categories"
+            )
+        return detail_format, _media_review(
+            candidate, detail, "conflicting_browse_categories"
+        )
     candidate_format = candidate.candidate_media_format
     if (
         candidate_format is not None
         and detail_format is not None
         and candidate_format is not detail_format
     ):
-        return None, _media_review(candidate, detail, "browse_platform_conflict")
+        return detail_format, _media_review(
+            candidate, detail, "browse_platform_conflict"
+        )
     if candidate_format is not None:
         return candidate_format, None
     if detail_format is not None:

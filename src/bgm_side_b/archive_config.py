@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from bgm_side_b.domain import SourceType
 
 
 @dataclass(frozen=True)
@@ -15,6 +18,15 @@ class ArchiveSyncSettings:
     api_concurrency: int
     request_timeout_seconds: int
     max_retries: int
+
+
+@dataclass(frozen=True)
+class ArchiveSourceRules:
+    """Exact configured source evidence used by clean fact normalization."""
+
+    infobox_keys: frozenset[str]
+    infobox_values: Mapping[str, SourceType]
+    tag_values: Mapping[str, SourceType]
 
 
 def load_archive_sync_settings(path: Path) -> ArchiveSyncSettings:
@@ -51,3 +63,45 @@ def _integer(value: object) -> bool:
 
 def _positive_id(value: object) -> bool:
     return _integer(value) and value > 0
+
+
+def load_archive_source_rules(path: Path) -> ArchiveSourceRules:
+    """Read only exact source evidence mappings into archive-domain values."""
+    with path.open("rb") as file:
+        data = tomllib.load(file)
+    infobox = data.get("infobox")
+    tag_fallback = data.get("tag_fallback")
+    if not isinstance(infobox, dict) or not isinstance(tag_fallback, dict):
+        raise ValueError("source rules must define infobox and tag_fallback tables")
+    keys = infobox.get("source_keys")
+    infobox_values = infobox.get("exact_values")
+    tag_values = tag_fallback.get("exact_values")
+    if not isinstance(keys, list) or not all(
+        isinstance(value, str) and value for value in keys
+    ):
+        raise ValueError("source rule keys must be non-empty strings")
+    return ArchiveSourceRules(
+        frozenset(keys),
+        _source_mapping(infobox_values),
+        _source_mapping(tag_values),
+    )
+
+
+def _source_mapping(value: object) -> Mapping[str, SourceType]:
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    ):
+        raise ValueError("source rule mappings must contain strings")
+    types = {
+        "manga": SourceType.MANGA,
+        "light_novel": SourceType.LIGHT_NOVEL,
+        "novel": SourceType.NOVEL,
+        "game": SourceType.GAME,
+        "visual_novel": SourceType.VISUAL_NOVEL,
+        "original": SourceType.ORIGINAL_ANIME,
+        "other": SourceType.OTHER_ADAPTATION,
+    }
+    try:
+        return {key: types[item] for key, item in value.items()}
+    except KeyError as error:
+        raise ValueError("source rule mapping contains an unknown source") from error

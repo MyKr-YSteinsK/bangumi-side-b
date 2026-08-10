@@ -20,8 +20,8 @@ from bgm_side_b.legacy_repository import (
     SubjectRepository,
     SubjectTitle,
 )
+from bgm_side_b.legacy_sync import SyncScope
 from bgm_side_b.progress import ConsoleProgressReporter
-from bgm_side_b.sync import SyncScope
 
 ROOT = Path(__file__).parents[1]
 

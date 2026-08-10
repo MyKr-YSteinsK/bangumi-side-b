@@ -9,7 +9,10 @@ from bgm_side_b import __version__
 from bgm_side_b.adjudication import ArchiveAdjudicator, AssignmentError, render_review
 from bgm_side_b.admission import QuarterOverride
 from bgm_side_b.api import BangumiApiClient
-from bgm_side_b.archive_config import load_archive_sync_settings
+from bgm_side_b.archive_config import (
+    load_archive_source_rules,
+    load_archive_sync_settings,
+)
 from bgm_side_b.audit import ReleaseDataAuditor
 from bgm_side_b.build.builder import ArchiveBuilder, BuildError
 from bgm_side_b.build.queries import BuildDataError
@@ -17,7 +20,8 @@ from bgm_side_b.config import load_rules
 from bgm_side_b.database import Database as ArchiveDatabase
 from bgm_side_b.domain import Quarter
 from bgm_side_b.legacy_database import Database
-from bgm_side_b.legacy_repository import SubjectRepository
+from bgm_side_b.legacy_sync import parse_sync_scope as parse_legacy_sync_scope
+from bgm_side_b.overrides import load_quarter_overrides, save_quarter_overrides
 from bgm_side_b.progress import create_progress_reporter
 from bgm_side_b.release.publish import Publisher, PublishError
 from bgm_side_b.release.workflow import (
@@ -28,11 +32,7 @@ from bgm_side_b.release.workflow import (
     publish_prepared_release,
 )
 from bgm_side_b.repository import SubjectRepository as ArchiveSubjectRepository
-from bgm_side_b.sync import (
-    SubjectSynchronizer,
-    parse_sync_scope,
-    validate_release_scope,
-)
+from bgm_side_b.sync import ArchiveSynchronizer, SyncError, parse_sync_scope
 
 
 def find_project_root(start: Path | None = None) -> Path | None:
@@ -64,16 +64,23 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", help="快速查看本地发布状态。")
     sync_parser = subparsers.add_parser("sync", help="Synchronise subject facts only.")
     _add_progress_arguments(sync_parser)
-    sync_parser.add_argument("scope", nargs=2, metavar=("YEAR", "QUARTER_MONTH"))
+    sync_parser.add_argument("scope", nargs="*", metavar="YEAR_OR_QUARTER")
     sync_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Refresh stable subject details as well as ratings.",
+        "--from",
+        dest="range_start",
+        nargs=2,
+        metavar=("YEAR", "QUARTER_MONTH"),
     )
     sync_parser.add_argument(
-        "--force-images",
+        "--to",
+        dest="range_end",
+        nargs=2,
+        metavar=("YEAR", "QUARTER_MONTH"),
+    )
+    sync_parser.add_argument(
+        "--refresh-existing",
         action="store_true",
-        help="Revalidate and redownload cached cover images.",
+        help="Refresh complete quarters inside an explicit range.",
     )
     review_command = subparsers.add_parser(
         "review", help="List unresolved archive review items."
@@ -190,20 +197,66 @@ def main(argv: list[str] | None = None) -> int:
                     if not args.scope
                     else Quarter(int(args.scope[0]), int(args.scope[1]))
                 )
+                if not database.path.exists():
+                    print("Bangumi Side B — REVIEW\n\n0 unresolved subjects")
+                    return 0
                 print(render_review(repository, quarter))
                 return 0
+            database.initialize()
             override = _assignment_override(args)
             adjudicator = ArchiveAdjudicator(
                 repository,
                 root / "config" / "quarter-overrides.toml",
                 settings.excluded_subject_ids,
             )
-            snapshot = (
-                adjudicator.clear(args.subject_id)
-                if args.clear
-                else adjudicator.assign(args.subject_id, override)
-            )
-        except (AssignmentError, ValueError) as error:
+            existing = repository.get_subject_facts(args.subject_id)
+            if existing is not None:
+                snapshot = (
+                    adjudicator.clear(args.subject_id)
+                    if args.clear
+                    else adjudicator.assign(args.subject_id, override)
+                )
+                report_path = None
+            else:
+                if args.clear:
+                    raise AssignmentError(
+                        "cannot clear an assignment for an unknown subject"
+                    )
+                assignments = load_quarter_overrides(
+                    root / "config" / "quarter-overrides.toml"
+                )
+                previous = dict(assignments)
+                assignments[args.subject_id] = override
+                save_quarter_overrides(
+                    root / "config" / "quarter-overrides.toml", assignments
+                )
+                client = BangumiApiClient(
+                    timeout_seconds=settings.request_timeout_seconds,
+                    max_retries=settings.max_retries,
+                    concurrency=settings.api_concurrency,
+                )
+                try:
+                    imported = ArchiveSynchronizer(
+                        repository,
+                        client,
+                        settings,
+                        load_archive_source_rules(
+                            root / "config" / "source-rules.toml"
+                        ),
+                        overrides_path=root / "config" / "quarter-overrides.toml",
+                        workspace_directory=root / "workspace",
+                        reports_directory=root / "workspace" / "reports",
+                    ).import_single_subject(args.subject_id, override)
+                except BaseException:
+                    save_quarter_overrides(
+                        root / "config" / "quarter-overrides.toml", previous
+                    )
+                    raise
+                finally:
+                    client.close()
+                snapshot = imported.snapshot
+                report_path = imported.report_path
+        except (AssignmentError, SyncError, ValueError) as error:
             parser.error(str(error))
         quarter = snapshot.quarter.quarter if snapshot.quarter else None
         if quarter is None:
@@ -214,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"{snapshot.subject.subject_id} -> "
                 f"{quarter.year:04d}-{quarter.month:02d}"
             )
+        if report_path is not None:
+            print(f"manual import report: {_relative_output_path(root, report_path)}")
         return 0
     if getattr(args, "verbose", False) and getattr(args, "progress", "auto") == "off":
         parser.error("--progress off cannot be combined with --verbose")
@@ -260,7 +315,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "sync":
         try:
-            scope = parse_sync_scope(args.scope)
+            scope = parse_sync_scope(
+                args.scope,
+                range_start=args.range_start,
+                range_end=args.range_end,
+                refresh_existing=args.refresh_existing,
+            )
         except ValueError as error:
             parser.error(str(error))
         root = find_project_root()
@@ -268,30 +328,32 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 "could not find a project root containing pyproject.toml and config"
             )
-        settings, tag_rules, source_rules = load_rules(root / "config")
-        try:
-            validate_release_scope(scope, settings)
-        except ValueError as error:
-            parser.error(str(error))
-        database = Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
-        repository = SubjectRepository(database)
+        settings = load_archive_sync_settings(root / "config" / "bangumi.toml")
+        source_rules = load_archive_source_rules(root / "config" / "source-rules.toml")
+        database = ArchiveDatabase(
+            root / "workspace" / "data" / "bangumi-side-b.sqlite3"
+        )
+        repository = ArchiveSubjectRepository(database)
         with create_progress_reporter(args, "sync") as reporter:
             client = BangumiApiClient(
-                timeout_seconds=settings.sync.request_timeout_seconds,
-                max_retries=settings.sync.max_retries,
-                concurrency=settings.sync.api_concurrency,
+                timeout_seconds=settings.request_timeout_seconds,
+                max_retries=settings.max_retries,
+                concurrency=settings.api_concurrency,
                 reporter=reporter,
             )
             try:
-                run = SubjectSynchronizer(
+                run = ArchiveSynchronizer(
                     repository,
                     client,
                     settings,
-                    tag_rules,
                     source_rules,
+                    overrides_path=root / "config" / "quarter-overrides.toml",
+                    workspace_directory=root / "workspace",
                     reports_directory=root / "workspace" / "reports",
                     reporter=reporter,
-                ).run(scope, force=args.force, force_images=args.force_images)
+                ).run(scope)
+            except (SyncError, ValueError) as error:
+                parser.error(str(error))
             except KeyboardInterrupt:
                 reporter.warning(
                     stage="interrupted",
@@ -300,15 +362,19 @@ def main(argv: list[str] | None = None) -> int:
                 return 130
             finally:
                 client.close()
-        print(f"sync report: {_relative_output_path(root, run.sync_report)}")
-        print(f"tag audit: {_relative_output_path(root, run.tag_audit_report)}")
-        print(f"country audit: {_relative_output_path(root, run.country_audit_report)}")
+        print(f"sync report: {_relative_output_path(root, run.report_path)}")
+        if scope.is_single_quarter and run.quarters and run.quarters[0].reviews:
+            print(render_review(repository, scope.start))
+        if run.exit_code == 0:
+            print(
+                "facts synchronized; final site build pipeline is migrated in Plan 14"
+            )
         return run.exit_code
     if args.command == "build":
         if args.all == bool(args.scope):
             parser.error("build accepts one scope or --all")
         try:
-            scope = None if args.all else parse_sync_scope(args.scope)
+            scope = None if args.all else parse_legacy_sync_scope(args.scope)
         except ValueError as error:
             parser.error(str(error))
         root = find_project_root()

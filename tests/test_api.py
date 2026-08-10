@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from bgm_side_b.api import (
+from bgm_side_b.legacy_api import (
     DEFAULT_USER_AGENT,
     MOVIE_CATEGORY,
     TV_CATEGORY,

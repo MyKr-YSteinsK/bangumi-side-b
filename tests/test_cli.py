@@ -7,8 +7,18 @@ from pathlib import Path
 
 import pytest
 
+import bgm_side_b.cli as cli
 from bgm_side_b import __version__
+from bgm_side_b.api import ImageResponse, SubjectDetail
 from bgm_side_b.cli import _relative_output_path, build_parser, find_project_root, main
+from bgm_side_b.database import Database
+from bgm_side_b.repository import SubjectRepository
+
+_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xcf\xc0\xf0"
+    b"\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
 def test_help_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
@@ -57,10 +67,8 @@ def test_build_parser_accepts_scope_or_all_and_profile_target() -> None:
 
 
 def test_sync_parser_requires_one_year_and_one_quarter() -> None:
-    parser = build_parser()
-
     with pytest.raises(SystemExit) as error:
-        parser.parse_args(["sync", "2026"])
+        main(["sync", "2026"])
 
     assert error.value.code == 2
 
@@ -72,11 +80,16 @@ def test_review_and_assign_parsers_accept_manual_workflow() -> None:
     assign = parser.parse_args(["assign", "101", "2026", "4"])
     unassigned = parser.parse_args(["assign", "101", "--unassigned"])
     clear = parser.parse_args(["assign", "101", "--clear"])
+    range_sync = parser.parse_args(
+        ["sync", "--from", "2026", "4", "--to", "2026", "7"]
+    )
 
     assert review.scope == ["2026", "4"]
     assert assign.assignment == ["2026", "4"]
     assert unassigned.unassigned
     assert clear.clear
+    assert range_sync.range_start == ["2026", "4"]
+    assert range_sync.range_end == ["2026", "7"]
 
 
 def test_shared_progress_arguments_are_available_on_every_long_command() -> None:
@@ -112,7 +125,7 @@ def test_final_report_path_is_project_relative() -> None:
     assert _relative_output_path(root, report) == "workspace/reports/sync.json"
 
 
-def test_sync_cli_rejects_every_scope_outside_2026_04(
+def test_sync_cli_rejects_malformed_scope_before_any_network_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = tmp_path / "project"
@@ -121,10 +134,62 @@ def test_sync_cli_rejects_every_scope_outside_2026_04(
     monkeypatch.chdir(root)
 
     with pytest.raises(SystemExit) as error:
-        main(["sync", "2026", "1"])
+        main(["sync", "2026"])
 
     assert error.value.code == 2
-    assert "只允许 2026-04" in capsys.readouterr().err
+    assert "requires YEAR QUARTER_MONTH" in capsys.readouterr().err
+
+
+def test_assign_missing_subject_uses_one_fake_official_detail_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "project"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "config", root / "config")
+    (root / "pyproject.toml").write_text("[project]\nname = 'test'\n", "utf-8")
+    calls: list[int] = []
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def get_subject(self, subject_id: int) -> SubjectDetail:
+            calls.append(subject_id)
+            return SubjectDetail.from_payload(
+                {
+                    "id": subject_id,
+                    "type": 2,
+                    "name": "Original",
+                    "platform": "TV",
+                    "date": "2026-04-02",
+                    "infobox": [{"key": "国家/地区", "value": "日本"}],
+                    "images": {"large": "https://images.example/cover.png"},
+                }
+            )
+
+        def fetch_image(self, url: str, *, max_bytes: int) -> ImageResponse:
+            assert url == "https://images.example/cover.png"
+            assert len(_PNG) <= max_bytes
+            return ImageResponse(_PNG, "image/png", url)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(cli, "BangumiApiClient", FakeClient)
+
+    assert main(["assign", "101", "2026", "4"]) == 0
+
+    assert calls == [101]
+    assert "assignment saved: 101 -> 2026-04" in capsys.readouterr().out
+    facts = SubjectRepository(
+        Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
+    ).get_subject_facts(101)
+    assert facts is not None
+    assert facts.quarter is not None
+    assert facts.quarter.quarter.year == 2026
+    assert "subject_id = 101" in (
+        root / "config" / "quarter-overrides.toml"
+    ).read_text(encoding="utf-8")
 
 
 def test_build_cli_rejects_every_scope_outside_2026_04(

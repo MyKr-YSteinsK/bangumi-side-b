@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from bgm_side_b.api import (
+from bgm_side_b.config import ProjectSettings, load_rules
+from bgm_side_b.legacy_api import (
     ApiEpisode,
     BangumiApiError,
     CandidateSubject,
@@ -15,18 +16,17 @@ from bgm_side_b.api import (
     ImageResponse,
     SubjectDetail,
 )
-from bgm_side_b.config import ProjectSettings, load_rules
 from bgm_side_b.legacy_database import Database
 from bgm_side_b.legacy_repository import SubjectRepository
-from bgm_side_b.progress import ConsoleProgressReporter, ProgressReporter
-from bgm_side_b.release.candidate import data_generation_is_dirty, read_data_generation
-from bgm_side_b.sync import (
+from bgm_side_b.legacy_sync import (
     SubjectSynchronizer,
     SyncScope,
     _normalise_summary,
     parse_sync_scope,
     validate_release_scope,
 )
+from bgm_side_b.progress import ConsoleProgressReporter, ProgressReporter
+from bgm_side_b.release.candidate import data_generation_is_dirty, read_data_generation
 
 _PNG = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"

@@ -28,9 +28,9 @@ from bgm_side_b.build.report import ProfileBuildReport, write_build_report
 from bgm_side_b.build.templates import RenderMedia, TemplateRenderer
 from bgm_side_b.config import ProjectSettings, SourceRules, TagRules
 from bgm_side_b.legacy_database import Database
+from bgm_side_b.legacy_sync import SyncScope, validate_release_scope
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.release.candidate import read_data_generation, write_pages_build_marker
-from bgm_side_b.sync import SyncScope, validate_release_scope
 
 
 class BuildError(RuntimeError):

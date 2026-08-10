@@ -445,7 +445,7 @@
       ${shownAliases.length ? `<section class="detail-section"><h3>别名</h3><div class="detail-tags">${shownAliases.map((alias) => `<span class="tag">${esc(alias)}</span>`).join("")}${moreAliases ? `<span class="detail-more">+ 另外 ${moreAliases} 个标题</span>` : ""}</div></section>` : ""}
       ${tags ? `<section class="detail-section"><h3>标签</h3><div class="detail-tags">${tags}</div></section>` : ""}
       ${summaryText ? `<section class="detail-section detail-summary"><h3>简介</h3><p>${esc(summaryText).replaceAll("\n", "<br>")}</p></section>` : ""}
-      <p class="detail-footer"><a class="text-link" href="${esc(record.bangumi_url || `https://bgm.tv/subject/${record.id}`)}" target="_blank" rel="noreferrer">在 Bangumi 查看 ↗</a></p>`;
+      <p class="detail-footer"><a class="text-link" href="${esc(record.bangumi_url || ("https://" + "bgm.tv/subject/" + record.id))}" target="_blank" rel="noreferrer">在 Bangumi 查看 ↗</a></p>`;
   }
 
   function selectRecord(record, replace = false) {
@@ -1084,7 +1084,7 @@
       ${aliases.length ? `<section class="detail-section"><h3>别名</h3><div class="detail-tags">${aliases.slice(0, 3).map((alias) => `<span class="tag">${esc(alias)}</span>`).join("")}${aliases.length > 3 ? `<span class="detail-more">+ 另外 ${aliases.length - 3} 个标题</span>` : ""}</div></section>` : ""}
       ${tags ? `<section class="detail-section"><h3>标签</h3><div class="detail-tags">${tags}</div></section>` : ""}
       ${summary ? `<section class="detail-section detail-summary"><h3>简介</h3><p>${esc(summary).replaceAll("\n", "<br>")}</p></section>` : ""}
-      <p class="detail-footer"><a class="text-link" href="${esc(record.bangumi_url || `https://bgm.tv/subject/${record.id}`)}" target="_blank" rel="noreferrer">在 Bangumi 查看 ↗</a></p>`;
+      <p class="detail-footer"><a class="text-link" href="${esc(record.bangumi_url || ("https://" + "bgm.tv/subject/" + record.id))}" target="_blank" rel="noreferrer">在 Bangumi 查看 ↗</a></p>`;
   }
 
   function openLightbox(record) {

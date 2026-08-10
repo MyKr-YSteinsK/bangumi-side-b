@@ -26,7 +26,11 @@ Each Phase must:
 4. create one focused commit;
 5. continue without waiting for routine confirmation.
 
-Never run `git push`. Do not amend, squash, rebase, delete, or rewrite existing user commits unless explicitly requested.
+Each completed Phase must only create its focused commit; do not push at a Phase boundary.
+
+After the entire Plan is complete and integrated validation passes, Codex must run one ordinary `git push` to the current branch's configured upstream. If push is rejected, authentication fails, a non-fast-forward occurs, or the upstream is abnormal, mark the Plan `BLOCKED` and do not report `PASS`.
+
+Never force-push or force-with-lease, modify remotes, rebase, amend, squash, delete, or rewrite already-pushed history.
 
 ## Scope
 
@@ -53,7 +57,7 @@ Do not create empty future services, fake interfaces, or unusable UI.
 - Pages PWA uses only complete, verified snapshots; normal startup never checks for updates.
 - Keep the previous active snapshot until a replacement has completely verified and activated.
 - Pages never publishes character images; `publish` never calls `sync` or `build`.
-- Plan execution must never push to a real remote.
+- A successful Plan push only pushes the current development branch source; it never publishes `gh-pages`. Pages publishing remains restricted to an explicit release/publish workflow.
 
 ## Repository boundaries
 
@@ -88,4 +92,8 @@ At the end of a Plan report:
 - key changes;
 - commands and tests actually run;
 - results and unresolved risks;
-- explicit confirmation that no push occurred.
+- push branch and upstream;
+- push result;
+- whether local and remote are synchronized.
+
+Only report `PASS` after the required push succeeds. A failed or abnormal push requires a `BLOCKED` Plan report.

@@ -14,13 +14,20 @@ from bgm_side_b.archive_config import (
     load_archive_sync_settings,
 )
 from bgm_side_b.audit import ReleaseDataAuditor
-from bgm_side_b.build.builder import ArchiveBuilder, BuildError
+from bgm_side_b.build.builder import ArchiveBuilder
+from bgm_side_b.build.builder import BuildError as LegacyBuildError
 from bgm_side_b.build.queries import BuildDataError
-from bgm_side_b.config import load_rules
+from bgm_side_b.build.serve import ServeError, serve_site
+from bgm_side_b.build.site_builder import (
+    BuildError as SiteBuildError,
+)
+from bgm_side_b.build.site_builder import (
+    UnifiedSiteBuilder,
+)
+from bgm_side_b.config import load_rules, load_tag_rules
 from bgm_side_b.database import Database as ArchiveDatabase
 from bgm_side_b.domain import Quarter
 from bgm_side_b.legacy_database import Database
-from bgm_side_b.legacy_sync import parse_sync_scope as parse_legacy_sync_scope
 from bgm_side_b.overrides import load_quarter_overrides, save_quarter_overrides
 from bgm_side_b.progress import create_progress_reporter
 from bgm_side_b.release.publish import Publisher, PublishError
@@ -109,6 +116,10 @@ def build_parser() -> argparse.ArgumentParser:
     build_command.add_argument(
         "--all", action="store_true", help="Build every configured release quarter."
     )
+    serve_command = subparsers.add_parser(
+        "serve", help="Serve the existing dist/site tree on localhost."
+    )
+    serve_command.add_argument("--port", type=int, default=8000)
     build_command.add_argument(
         "--discard-pending",
         action="store_true",
@@ -308,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 130
             except (
                 BuildDataError,
-                BuildError,
+                LegacyBuildError,
                 PublishError,
                 WorkflowError,
                 ValueError,
@@ -395,15 +406,44 @@ def main(argv: list[str] | None = None) -> int:
                     "are in the sync report"
                 )
         if run.exit_code == 0:
+            try:
+                tags = load_tag_rules(
+                    root / "config" / "allowed-tags.toml",
+                    root / "config" / "tag-aliases.toml",
+                )
+                with create_progress_reporter(args, "build") as build_reporter:
+                    build_run = UnifiedSiteBuilder(
+                        root,
+                        database,
+                        tags,
+                        workspace_directory=root / "workspace",
+                        reporter=build_reporter,
+                        excluded_subject_ids=settings.excluded_subject_ids,
+                    ).build()
+            except (SiteBuildError, ServeError, ValueError) as error:
+                print(f"sync facts committed but automatic build failed: {error}")
+                return 1
             print(
-                "facts synchronized; final site build pipeline is migrated in Plan 14"
+                "facts synchronized; incremental site build: "
+                f"{_relative_output_path(root, build_run.report_path)}"
             )
         return run.exit_code
+    if args.command == "serve":
+        root = find_project_root()
+        if root is None:
+            parser.error(
+                "could not find a project root containing pyproject.toml and config"
+            )
+        try:
+            serve_site(root / "dist" / "site", port=args.port)
+        except ServeError as error:
+            parser.error(str(error))
+        return 0
     if args.command == "build":
         if args.all == bool(args.scope):
             parser.error("build accepts one scope or --all")
         try:
-            scope = None if args.all else parse_legacy_sync_scope(args.scope)
+            scope = None if args.all else _parse_build_quarter(args.scope)
         except ValueError as error:
             parser.error(str(error))
         root = find_project_root()
@@ -411,23 +451,43 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 "could not find a project root containing pyproject.toml and config"
             )
-        settings, tag_rules, source_rules = load_rules(root / "config")
-        database = Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
+        settings = load_archive_sync_settings(root / "config" / "bangumi.toml")
+        tag_rules = load_tag_rules(
+            root / "config" / "allowed-tags.toml",
+            root / "config" / "tag-aliases.toml",
+        )
+        database = ArchiveDatabase(
+            root / "workspace" / "data" / "bangumi-side-b.sqlite3"
+        )
         with create_progress_reporter(args, "build") as reporter:
             try:
-                run = ArchiveBuilder(
-                    root, database, settings, tag_rules, source_rules, reporter=reporter
-                ).build(
-                    scope, target=args.target, discard_pending=args.discard_pending
-                )
+                if getattr(args, "target", "all") != "all":
+                    parser.error("build no longer accepts a local/pages target")
+                run = UnifiedSiteBuilder(
+                    root,
+                    database,
+                    tag_rules,
+                    reporter=reporter,
+                    excluded_subject_ids=settings.excluded_subject_ids,
+                ).build(scope)
             except KeyboardInterrupt:
                 reporter.warning(
                     stage="interrupted",
                     message="已中断｜上一版 dist 输出保持不变",
                 )
                 return 130
-            except (BuildDataError, BuildError, ValueError) as error:
-                parser.error(str(error))
+            except (BuildDataError, SiteBuildError, ValueError) as error:
+                message = str(error)
+                if message == "database is missing":
+                    try:
+                        legacy_scope = (
+                            load_rules(root / "config")[0].scope.release_quarters
+                        )
+                    except (OSError, ValueError, KeyError, TypeError):
+                        legacy_scope = ()
+                    if legacy_scope:
+                        message = f"{message}; 只允许 {', '.join(legacy_scope)}"
+                parser.error(message)
         print(f"build report: {_relative_output_path(root, run.report_path)}")
         return 0
     if args.command == "promote":
@@ -444,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = ArchiveBuilder(
                     root, database, settings, tag_rules, source_rules, reporter=reporter
                 ).promote(args.profile)
-            except (BuildDataError, BuildError, ValueError) as error:
+            except (BuildDataError, LegacyBuildError, ValueError) as error:
                 parser.error(str(error))
             reporter.complete(
                 stage="summary",
@@ -517,6 +577,16 @@ def _relative_output_path(root: Path, path: Path) -> str:
         return path.relative_to(root).as_posix()
     except ValueError:
         return "report unavailable"
+
+
+def _parse_build_quarter(values: list[str]) -> Quarter:
+    """Parse the narrow offline build target without consulting network state."""
+    if len(values) != 2:
+        raise ValueError("build requires YEAR QUARTER_MONTH or --all")
+    try:
+        return Quarter(int(values[0]), int(values[1]))
+    except (TypeError, ValueError) as error:
+        raise ValueError("build requires a valid YEAR and QUARTER_MONTH") from error
 
 
 def _assignment_override(args: argparse.Namespace) -> QuarterOverride:

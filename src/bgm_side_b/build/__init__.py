@@ -11,6 +11,18 @@ from bgm_side_b.build.fingerprint import (
 )
 from bgm_side_b.build.projection import BuildProjection
 from bgm_side_b.build.queries import BuildDataError, BuildQueries
+from bgm_side_b.build.serve import (
+    DEFAULT_BASE_PATH,
+    ServeError,
+    create_preview_server,
+    serve_site,
+)
+from bgm_side_b.build.site_builder import (
+    BuildBlocked,
+    BuildError,
+    SiteBuildRun,
+    UnifiedSiteBuilder,
+)
 from bgm_side_b.build.site_projection import (
     ArchiveFacts,
     ArchiveFactsReader,
@@ -39,9 +51,12 @@ __all__ = [
     "ArchiveIndexProjection",
     "BuildState",
     "BuildBlockedError",
+    "BuildBlocked",
     "BuildDataError",
     "BuildProjection",
     "BuildQueries",
+    "DEFAULT_BASE_PATH",
+    "BuildError",
     "OfflineManifestProjection",
     "IncrementalSiteWriter",
     "PatchResult",
@@ -49,6 +64,10 @@ __all__ = [
     "QuarterProjection",
     "SubjectProjection",
     "SiteWriteError",
+    "SiteBuildRun",
+    "ServeError",
+    "UnifiedSiteBuilder",
+    "create_preview_server",
     "YearCatalogProjection",
     "DirtySet",
     "assign_fingerprints",
@@ -61,4 +80,5 @@ __all__ = [
     "project_year",
     "read_build_state",
     "shared_fingerprint",
+    "serve_site",
 ]

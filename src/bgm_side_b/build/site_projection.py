@@ -341,14 +341,14 @@ class QuarterProjection:
             "quarter": self.quarter,
             "revision": self.fingerprint,
             "tv": {
-                "premiere": [item.to_dict(list_tags=True) for item in self.tv_premiere],
+                "premiere": [item.to_dict() for item in self.tv_premiere],
                 "continuing": [
-                    item.to_dict(list_tags=True) for item in self.tv_continuing
+                    item.to_dict() for item in self.tv_continuing
                 ],
             },
             "movie": {
                 "premiere": [
-                    item.to_dict(list_tags=True) for item in self.movie_premiere
+                    item.to_dict() for item in self.movie_premiere
                 ]
             },
         }

@@ -25,29 +25,29 @@ bgmb doctor
 
 ## 修改后的验收
 
-UI 或静态资源修改后，先运行自动测试，再构建和准备发布：
+代码或静态资源修改后，先运行自动测试，再构建唯一站点：
 
 ```powershell
 python -m pytest tests -q
 python -m ruff check .
-bgmb build --all --target pages
-bgmb release prepare
+bgmb build --all
+bgmb serve --port 8000
 ```
 
-`release prepare` 依次执行本地预检、资料审计、Pages-only build 和 publish
-dry-run，并生成绑定当前 HEAD、程序版本、资料代次、Pages candidate 与远端
-`gh-pages` 的 prepared state。它不会同步、构建 local、push 或真实发布。
+`build` 只读 SQLite、配置、静态源文件和已校验封面，写入 `dist/site`；第二次相同
+构建应无 artifact 写入。`serve` 只服务已有 `dist/site`，不读 SQLite、不构建、不同步
+也不发布。release prepare 属于后续发布生命周期。
 
-确认准备结果后，由操作者明确执行：
+整份 Plan 的集成验证通过后，按仓库规则由 Codex 执行一次普通分支 push；它不是 Pages
+发布。真实发布仍需明确执行：
 
 ```powershell
 git push origin main
 bgmb release publish
 ```
 
-真实发布会重新确认 prepared state、`HEAD == origin/main`、候选内容、远端
-`gh-pages` 和 pending promotion。任一事实改变后都必须重新运行
-`bgmb release prepare`。项目不提供 preview 或 watch 工具。
+真实发布会重新确认 prepared state、`HEAD == origin/main`、候选内容、远端 `gh-pages`
+和 pending promotion。任一事实改变后都必须重新运行 `bgmb release prepare`。
 
 ## CI
 

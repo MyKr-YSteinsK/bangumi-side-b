@@ -126,14 +126,25 @@ def assign_fingerprints(
         for item in sorted(years, key=lambda item: item.year)
     )
     year_by_label = {str(item.year): item.fingerprint for item in year_values}
+    archive_quarters = tuple(
+        {
+            **entry,
+            "revision": quarter_by_label.get(str(entry.get("quarter")), ""),
+        }
+        for entry in archive.quarters
+    )
     archive_value = fingerprint(
         {
             "projection": PROJECTION_VERSION,
             "years": archive.years,
-            "quarters": archive.quarters,
+            "quarters": archive_quarters,
         }
     )
-    archive_value = replace(archive, fingerprint=archive_value)
+    archive_value = replace(
+        archive,
+        quarters=archive_quarters,
+        fingerprint=archive_value,
+    )
     state = BuildState(
         STATE_SCHEMA,
         shared,

@@ -319,6 +319,7 @@ async function acceptOperation(reason, clientId, requestedOperationId) {
 async function failOperation(operationId, error) {
   const state = await readState();
   if (!ownsOperation(state, operationId)) return state;
+  if (state.staging.status === "failed") return state;
   if (state.staging.status === "paused" && (error?.name === "AbortError" || safeError(error) === "download-failed")) return state;
   state.staging.status = "failed";
   state.staging.failure = failureDetails(error);

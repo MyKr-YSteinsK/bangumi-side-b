@@ -1,4 +1,4 @@
-/* Pages-only bridge: all network and Cache Storage operations live in sw.js. */
+/* Pages-only bridge: normal network and Cache Storage operations live in sw.js. */
 const pwaState = {
   status: "checking-local-state",
   active: null,
@@ -6,14 +6,60 @@ const pwaState = {
   controller_ready: false,
 };
 const mutationCommands = new Set(["start", "resume", "pause", "cancel", "redownload", "clear", "update"]);
+const DOWNLOAD_STALL_TIMEOUT_MS = 8000;
 let mutationInFlight = false;
+let pendingMutation = Promise.resolve();
+let settleMutation = null;
+let downloadWatchdog = null;
 let controllerBootstrap = null;
 let probeInFlight = null;
 let initializationInFlight = null;
 
 function emit(state) {
   Object.assign(pwaState, { command_error: null }, state);
+  resetDownloadWatchdog(pwaState);
   window.dispatchEvent(new CustomEvent("bsb-pwa-state", { detail: { ...pwaState } }));
+}
+
+function resetDownloadWatchdog(state) {
+  clearTimeout(downloadWatchdog);
+  downloadWatchdog = null;
+  const operationId = state.staging?.operation_id;
+  if (state.status !== "downloading" || !operationId) return;
+  downloadWatchdog = setTimeout(() => {
+    const current = pwaState.staging;
+    if (pwaState.status === "downloading" && current?.operation_id === operationId) {
+      failStalledDownload(operationId).catch(() => {});
+    }
+  }, DOWNLOAD_STALL_TIMEOUT_MS);
+}
+
+async function failStalledDownload(operationId) {
+  const registration = await navigator.serviceWorker.ready;
+  const key = new URL("__bsb_control__/state", registration.scope);
+  const cache = await caches.open("bsb-control-v1");
+  const response = await cache.match(key);
+  if (!response) return;
+  const state = await response.json();
+  if (state?.status !== "downloading" || state.staging?.operation_id !== operationId) return;
+  state.staging.status = "failed";
+  state.staging.failure = {
+    error_code: "file-download-timeout",
+    failed_url: null,
+    category: "network",
+    http_status: null,
+    expected_bytes: null,
+    actual_bytes: null,
+    expected_sha256_prefix: null,
+    actual_sha256_prefix: null,
+    failed_at: new Date().toISOString(),
+  };
+  state.staging.last_error = state.staging.failure.error_code;
+  state.status = "failed";
+  await cache.put(key, new Response(JSON.stringify(state), {
+    headers: { "Content-Type": "application/json" },
+  }));
+  emit({ ...state, controller_ready: Boolean(controller()) });
 }
 
 function controller() {
@@ -27,7 +73,10 @@ async function workerMessage(type, payload = {}) {
     emit(result);
     return result;
   }
-  if (mutation) mutationInFlight = true;
+  if (mutation) {
+    mutationInFlight = true;
+    pendingMutation = new Promise((resolve) => { settleMutation = resolve; });
+  }
   try {
     const target = controller();
     if (!target) throw new Error("controller-unavailable");
@@ -49,8 +98,16 @@ async function workerMessage(type, payload = {}) {
     if (error?.message === "worker-command-timeout") workerMessage("state").catch(() => {});
     throw error;
   } finally {
-    if (mutation) mutationInFlight = false;
+    if (mutation) {
+      mutationInFlight = false;
+      settleMutation?.();
+      settleMutation = null;
+    }
   }
+}
+
+async function waitForPendingMutation() {
+  while (mutationInFlight) await pendingMutation;
 }
 
 function listenForWorkerMessages() {
@@ -115,6 +172,7 @@ async function initialize() {
     return state;
   }
   initializationInFlight = (async () => {
+    await waitForPendingMutation();
     let state = pwaState.controller_ready && controller()
       ? await readControllerState()
       : await enableController();

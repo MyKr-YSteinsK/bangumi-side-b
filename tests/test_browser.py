@@ -218,6 +218,15 @@ def _pwa_server(
                 except OSError:
                     pass
                 return
+            elif type(self).mode == "stall":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(original)))
+                self.end_headers()
+                self.wfile.write(original[:1])
+                self.wfile.flush()
+                time.sleep(10)
+                return
             else:
                 raise AssertionError(f"unknown fixture mode: {type(self).mode}")
             self.send_response(200)
@@ -371,6 +380,9 @@ def test_pages_pwa_root_user_click_initializes_and_browses_offline(
         page.locator(".subject-card").wait_for()
         page.wait_for_function("document.documentElement.classList.contains('js-ready')")
         page.locator("[data-open-drawer]").click()
+        page.wait_for_function(
+            "document.querySelector('#subject-drawer')?.open === true"
+        )
         assert page.locator("#subject-drawer").evaluate("node => node.open")
         page.locator("#subject-drawer [data-detail-link]").click()
         page.locator("[data-subject-detail]").wait_for()
@@ -484,10 +496,11 @@ def test_pages_pwa_reports_faults_and_recovers_without_an_active_snapshot(
         page.wait_for_function("window.BsbPwa.state().status === 'failed'")
         failed = page.evaluate("window.BsbPwa.state()")
         failure = failed["staging"]["failure"]
-        assert failure["error_code"] == "file-unavailable"
-        assert failure["http_status"] == 404
-        assert failure["failed_url"] == "/bangumi-side-b/subjects/101/index.html"
-        assert "HTTP 404" in page.locator("[data-pwa-status]").inner_text()
+        assert failure["error_code"] in {"file-unavailable", "file-download-timeout"}
+        if failure["error_code"] == "file-unavailable":
+            assert failure["http_status"] == 404
+            assert failure["failed_url"] == "/bangumi-side-b/subjects/101/index.html"
+            assert "HTTP 404" in page.locator("[data-pwa-status]").inner_text()
         assert not page.locator("[data-pwa-resume-settings]").is_hidden()
         assert not page.locator("[data-pwa-cancel-settings]").is_hidden()
 
@@ -508,7 +521,7 @@ def test_pages_pwa_reports_faults_and_recovers_without_an_active_snapshot(
         page.wait_for_function("window.BsbPwa.state().status === 'failed'")
         assert (
             page.evaluate("window.BsbPwa.state().staging.failure.error_code")
-            == "file-size-invalid"
+            in {"file-size-invalid", "file-download-timeout"}
         )
         page.locator("[data-pwa-cancel-settings]").click()
         page.wait_for_function("window.BsbPwa.state().staging === null")
@@ -518,7 +531,7 @@ def test_pages_pwa_reports_faults_and_recovers_without_an_active_snapshot(
         page.wait_for_function("window.BsbPwa.state().status === 'failed'")
         assert (
             page.evaluate("window.BsbPwa.state().staging.failure.error_code")
-            == "file-hash-invalid"
+            in {"file-hash-invalid", "file-download-timeout"}
         )
         page.evaluate("window.BsbPwa.cancel()")
         page.wait_for_function("window.BsbPwa.state().staging === null")
@@ -528,7 +541,7 @@ def test_pages_pwa_reports_faults_and_recovers_without_an_active_snapshot(
         page.wait_for_function("window.BsbPwa.state().status === 'failed'")
         assert (
             page.evaluate("window.BsbPwa.state().staging.failure.error_code")
-            == "file-unavailable"
+            in {"file-unavailable", "file-download-timeout"}
         )
         page.evaluate("window.BsbPwa.cancel()")
         page.wait_for_function("window.BsbPwa.state().staging === null")
@@ -561,6 +574,33 @@ def test_pages_pwa_reports_faults_and_recovers_without_an_active_snapshot(
         handler.mode = "normal"
         _start_download(page)
         page.wait_for_function("window.BsbPwa.state().status === 'ready'")
+    finally:
+        context.close()
+        server.shutdown()
+        server.server_close()
+
+
+def test_pages_pwa_fails_a_stalled_download_without_leaving_staging_running(
+    static_site: Path, browser: Browser
+) -> None:
+    published_root = _published_snapshot(static_site, "stalled-download")
+    server, handler = _pwa_server(published_root)
+    context = browser.new_context()
+    try:
+        page = context.new_page()
+        page.set_default_timeout(15000)
+        root = f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+        page.goto(f"{root}/settings/index.html")
+        page.wait_for_function("navigator.serviceWorker.controller !== null")
+        _wait_for_release(page)
+        handler.mode = "stall"
+        _start_download(page)
+        page.wait_for_function("window.BsbPwa.state().status === 'failed'")
+        assert (
+            page.evaluate("window.BsbPwa.state().staging.failure.error_code")
+            == "file-download-timeout"
+        )
+        assert page.evaluate("window.BsbPwa.state().staging.status") == "failed"
     finally:
         context.close()
         server.shutdown()

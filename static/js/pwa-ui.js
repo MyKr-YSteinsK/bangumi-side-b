@@ -25,6 +25,7 @@ const errorMessages = {
   "manifest-hash-invalid": "发布清单校验失败，未开始下载资料。",
   "storage-insufficient": "浏览器剩余空间不足，旧资料已保留。",
   "file-unavailable": "下载文件不可用，可重试或取消未完成下载。",
+  "file-download-timeout": "下载响应超时，可重试或取消未完成下载。",
   "file-size-invalid": "下载文件大小不正确，可重试或取消未完成下载。",
   "file-hash-invalid": "下载文件校验失败，可重试或取消未完成下载。",
   "file-cache-write-failed": "浏览器无法写入下载文件，可重试或取消未完成下载。",

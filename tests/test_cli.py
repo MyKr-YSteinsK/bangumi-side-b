@@ -10,9 +10,17 @@ import pytest
 import bgm_side_b.cli as cli
 from bgm_side_b import __version__
 from bgm_side_b.api import ImageResponse, SubjectDetail
-from bgm_side_b.cli import _relative_output_path, build_parser, find_project_root, main
+from bgm_side_b.cli import (
+    _relative_output_path,
+    _sync_summary_lines,
+    build_parser,
+    find_project_root,
+    main,
+)
 from bgm_side_b.database import Database
+from bgm_side_b.domain import Quarter
 from bgm_side_b.repository import SubjectRepository
+from bgm_side_b.sync import QuarterSyncResult
 
 _PNG = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -123,6 +131,40 @@ def test_final_report_path_is_project_relative() -> None:
     report = root / "workspace" / "reports" / "sync.json"
 
     assert _relative_output_path(root, report) == "workspace/reports/sync.json"
+
+
+def test_sync_summary_is_compact_and_lists_early_premiere_evidence() -> None:
+    result = QuarterSyncResult(
+        Quarter(2026, 4),
+        "complete",
+        "complete",
+        3,
+        2,
+        1,
+        0,
+        0,
+        (),
+        (),
+        ({"code": "continuing_not_confirmed", "summary": "none"},),
+        (),
+        continuing_end_date=1,
+        continuing_episode=2,
+        early_premieres=(
+            {
+                "subject_id": 101,
+                "air_date": "2026-03-28",
+                "premiere_quarter": "2026-04",
+                "evidence": "2026年4月:448",
+            },
+        ),
+    )
+
+    assert _sync_summary_lines(result) == (
+        "NEW TV 2 | CONTINUING TV 3 | MOVIE 1",
+        "continuing evidence: end_date=1, main_episode=2, unresolved=0",
+        "AUTO PREMIERE 101: 2026-03-28 -> 2026-04 (2026年4月:448)",
+        "exceptions: warnings=1, errors=0",
+    )
 
 
 def test_sync_cli_rejects_malformed_scope_before_any_network_request(

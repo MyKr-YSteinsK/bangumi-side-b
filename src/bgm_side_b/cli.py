@@ -32,7 +32,12 @@ from bgm_side_b.release.workflow import (
     publish_prepared_release,
 )
 from bgm_side_b.repository import SubjectRepository as ArchiveSubjectRepository
-from bgm_side_b.sync import ArchiveSynchronizer, SyncError, parse_sync_scope
+from bgm_side_b.sync import (
+    ArchiveSynchronizer,
+    QuarterSyncResult,
+    SyncError,
+    parse_sync_scope,
+)
 
 MAX_INLINE_SYNC_REVIEWS = 10
 
@@ -367,6 +372,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"sync report: {_relative_output_path(root, run.report_path)}")
         if scope.is_single_quarter and run.quarters:
             result = run.quarters[0]
+            for line in _sync_summary_lines(result):
+                print(line)
             if result.reviews:
                 if len(result.reviews) <= MAX_INLINE_SYNC_REVIEWS:
                     print(render_review(repository, scope.start))
@@ -472,6 +479,36 @@ def main(argv: list[str] | None = None) -> int:
             print(f"已发布资料版本：{run.release_version}")
         return 0
     return 2
+
+
+def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:
+    """Render the bounded evidence summary for a single-quarter sync."""
+    lines = [
+        (
+            f"NEW TV {result.accepted_tv} | "
+            f"CONTINUING TV {result.continuing_end_date + result.continuing_episode} | "
+            f"MOVIE {result.accepted_movie}"
+        ),
+        (
+            "continuing evidence: "
+            f"end_date={result.continuing_end_date}, "
+            f"main_episode={result.continuing_episode}, "
+            f"unresolved={result.continuing_unresolved}"
+        ),
+    ]
+    lines.extend(
+        (
+            "AUTO PREMIERE "
+            f"{item['subject_id']}: {item['air_date']} -> "
+            f"{item['premiere_quarter']} ({item['evidence']})"
+        )
+        for item in result.early_premieres
+    )
+    if result.warnings or result.errors:
+        lines.append(
+            f"exceptions: warnings={len(result.warnings)}, errors={len(result.errors)}"
+        )
+    return tuple(lines)
 
 
 def _relative_output_path(root: Path, path: Path) -> str:

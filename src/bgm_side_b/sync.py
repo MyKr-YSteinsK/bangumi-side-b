@@ -130,6 +130,9 @@ class QuarterSyncResult:
     continuing_end_date: int = 0
     continuing_episode: int = 0
     continuing_unresolved: int = 0
+    natural_premiere_tv: int = 0
+    early_premieres: tuple[dict[str, object], ...] = ()
+    boundary_reviews: int = 0
     skipped: bool = False
 
 
@@ -427,6 +430,30 @@ class ArchiveSynchronizer:
             premiere_subject_ids
             | {subject_id for subject_id, _ in continuing_appearances}
         )
+        natural_premiere_tv = sum(
+            item.snapshot.subject.media_format.value == "TV"
+            and item.snapshot.premiere is not None
+            and item.snapshot.premiere.quarter == quarter
+            and item.snapshot.premiere.evidence_type == "air_date"
+            for item in prepared
+        )
+        early_premieres = tuple(
+            {
+                "subject_id": item.snapshot.subject.subject_id,
+                "air_date": item.snapshot.subject.air_date.isoformat(),
+                "premiere_quarter": _quarter_label(quarter),
+                "evidence": item.snapshot.premiere.evidence_value,
+            }
+            for item in prepared
+            if item.snapshot.subject.media_format.value == "TV"
+            and item.snapshot.premiere is not None
+            and item.snapshot.premiere.quarter == quarter
+            and item.snapshot.premiere.evidence_type == "community_quarter_tag"
+            and item.snapshot.subject.air_date is not None
+        )
+        boundary_reviews = sum(
+            issue.issue_code == "TV_QUARTER_BOUNDARY" for issue in reviews
+        )
         with self.repository.transaction() as connection:
             for item in prepared:
                 self.repository.replace_subject_snapshot(connection, item.snapshot)
@@ -503,6 +530,9 @@ class ArchiveSynchronizer:
             reconciliation.confirmed_by_end_date,
             reconciliation.confirmed_by_episode,
             reconciliation.unresolved,
+            natural_premiere_tv,
+            early_premieres,
+            boundary_reviews,
         )
 
     def _prepare_subject(
@@ -1128,6 +1158,16 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
         "continuing_end_date": result.continuing_end_date,
         "continuing_episode": result.continuing_episode,
         "continuing_unresolved": result.continuing_unresolved,
+        "premiere": {
+            "natural_tv": result.natural_premiere_tv,
+            "early_auto_resolved": list(result.early_premieres),
+            "boundary_reviews": result.boundary_reviews,
+        },
+        "continuing": {
+            "confirmed_by_end_date": result.continuing_end_date,
+            "confirmed_by_main_episode": result.continuing_episode,
+            "unresolved": result.continuing_unresolved,
+        },
         "skipped": result.skipped,
     }
 

@@ -503,7 +503,8 @@ def test_end_date_crossing_target_creates_continuing_without_episode_probe(
     sync, repository = _sync(tmp_path, api, DiscoveryBatch(()))
     _store_existing(repository, 101, end_date=date(2026, 7, 1))
 
-    result = sync.run(SyncScope(target, target)).quarters[0]
+    run = sync.run(SyncScope(target, target))
+    result = run.quarters[0]
 
     facts = repository.get_subject_facts(101)
     assert facts is not None
@@ -519,6 +520,12 @@ def test_end_date_crossing_target_creates_continuing_without_episode_probe(
     assert api.episode_calls == []
     assert result.continuing_end_date == 1
     assert result.continuing_episode == 0
+    report = json.loads(run.report_path.read_text())
+    assert report["quarters"][0]["continuing"] == {
+        "confirmed_by_end_date": 1,
+        "confirmed_by_main_episode": 0,
+        "unresolved": 0,
+    }
 
 
 def test_main_episode_in_target_creates_continuing(tmp_path: Path) -> None:

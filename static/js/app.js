@@ -163,7 +163,7 @@
     const start = (page - 1) * state.pageSize;
     return {
       all: ordered,
-      page: ordered.slice(start, start + state.pageSize),
+      pageRecords: ordered.slice(start, start + state.pageSize),
       page,
       pageCount,
       total: ordered.length,
@@ -287,7 +287,7 @@
   }
 
   function renderRows(result) {
-    const visible = new Set(result.page.map((record) => record.key));
+    const visible = new Set(result.pageRecords.map((record) => record.key));
     const position = new Map(result.all.map((record, index) => [record.key, index + 1]));
     for (const row of rows) {
       const record = records.find((item) => item.key === row.dataset.recordKey);
@@ -823,7 +823,7 @@
     article.dataset.recordKey = record.key;
     article.dataset.media = record.media.toLowerCase();
     article.dataset.appearance = record.appearance;
-    article.dataset.search = record.search;
+    article.dataset.searchText = record.search;
     article.dataset.source = record.source || "";
     article.dataset.tags = record.allowed_tags.join("|");
     article.dataset.quarter = record.quarter || "";
@@ -967,7 +967,7 @@
   }
 
   function renderRows(result) {
-    const visible = new Set(result.page.map((record) => record.key));
+    const visible = new Set(result.pageRecords.map((record) => record.key));
     const position = new Map(result.all.map((record, item) => [record.key, item + 1]));
     rows.forEach((row) => {
       const record = records.find((item) => item.key === row.dataset.recordKey);

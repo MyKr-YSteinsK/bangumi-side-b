@@ -513,7 +513,7 @@ def _root_html(archive: ArchiveIndexProjection) -> bytes:
 def _archive_html(archive: ArchiveIndexProjection) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "ARCHIVE")
-        + '<main class="archive-page" data-archive-app '
+        + '<main class="archive-page" data-archive-app data-page="archive" '
         'data-archive-index-url="../data/archive-index.json" data-site-root="../">'
         '<section class="archive-intro">'
         '<p class="archive-intro__code">ARCHIVE / INDEX</p>'
@@ -706,7 +706,7 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
         f'<article class="subject-row" role="listitem" data-subject-id="{subject_id}" '
         f'data-record-key="{html.escape(record_key, quote=True)}" data-media="{media.lower()}" '
         f'data-appearance="{html.escape(appearance, quote=True)}" '
-        f'data-search="{html.escape(search, quote=True)}" data-source="{html.escape(source, quote=True)}" '
+        f'data-search-text="{html.escape(search, quote=True)}" data-source="{html.escape(source, quote=True)}" '
         f'data-tags="{html.escape(tag_value, quote=True)}" data-air-date="{html.escape(air_date, quote=True)}" '
         f'data-score="{html.escape(str(score if score is not None else ""), quote=True)}" '
         f'data-rating-count="{html.escape(str(rating_count if rating_count is not None else ""), quote=True)}" '

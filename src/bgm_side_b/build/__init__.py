@@ -26,19 +26,29 @@ from bgm_side_b.build.site_projection import (
     project_quarter,
     project_year,
 )
+from bgm_side_b.build.writer import (
+    BuildBlockedError,
+    IncrementalSiteWriter,
+    PatchResult,
+    SiteWriteError,
+)
 
 __all__ = [
     "ArchiveFacts",
     "ArchiveFactsReader",
     "ArchiveIndexProjection",
     "BuildState",
+    "BuildBlockedError",
     "BuildDataError",
     "BuildProjection",
     "BuildQueries",
     "OfflineManifestProjection",
+    "IncrementalSiteWriter",
+    "PatchResult",
     "ProjectionError",
     "QuarterProjection",
     "SubjectProjection",
+    "SiteWriteError",
     "YearCatalogProjection",
     "DirtySet",
     "assign_fingerprints",

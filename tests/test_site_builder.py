@@ -436,6 +436,37 @@ def test_rating_change_plans_only_the_subjects_owning_scopes(
     assert run.patch.cover_files_read == 0
 
 
+def test_missing_artifact_triggers_targeted_repair_without_cover_read(
+    tmp_path: Path,
+) -> None:
+    builder, _ = _build_fixture(tmp_path)
+    builder.build()
+    target = tmp_path / "dist" / "site" / "data" / "quarters" / "2026-07.json"
+    target.unlink()
+    run = builder.build()
+    assert "data/quarters/2026-07.json" in run.patch.written
+    assert run.patch.cover_files_read == 0
+
+
+def test_corrupt_build_state_uses_full_safe_convergence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    builder, _ = _build_fixture(tmp_path)
+    builder.build()
+    (tmp_path / "workspace" / "build-state.json").write_text("{bad", encoding="utf-8")
+    original_rglob = Path.rglob
+    scans: list[Path] = []
+
+    def record_scan(path: Path, pattern: str):
+        if path.resolve() == (tmp_path / "dist" / "site").resolve():
+            scans.append(path)
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(Path, "rglob", record_scan)
+    builder.build()
+    assert scans
+
+
 def test_cover_change_reads_and_copies_only_the_changed_cover(
     tmp_path: Path,
 ) -> None:

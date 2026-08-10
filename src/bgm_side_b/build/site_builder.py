@@ -220,6 +220,12 @@ class UnifiedSiteBuilder:
                 previous=previous,
                 dirty=dirty,
             )
+            _validate_plan_contract(
+                plan,
+                quarter_projections,
+                archive,
+                self.excluded_subject_ids,
+            )
             write_state = replace(
                 current,
                 artifacts={} if previous is None else previous.artifacts,
@@ -232,8 +238,10 @@ class UnifiedSiteBuilder:
             result = writer.apply(
                 plan,
                 write_state,
-                validate_staged=self._validate_desired,
-                validate_final=self._validate_final,
+                validate_staged=lambda mapping: self._validate_desired(mapping, plan),
+                validate_final=lambda site: self._validate_final(
+                    site, plan, full=previous is None
+                ),
             )
             warnings = tuple(
                 warning
@@ -675,25 +683,31 @@ class UnifiedSiteBuilder:
                     desired[relative] = source.read_bytes()
         return desired
 
-    def _validate_desired(self, desired: Mapping[str, bytes]) -> None:
-        if not {
-            "index.html",
-            "archive/index.html",
-            "settings/index.html",
-            "assets/app.css",
-            "assets/app.js",
-            "data/archive-index.json",
-        }.issubset(desired):
+    def _validate_desired(
+        self, desired: Mapping[str, bytes], plan: ArtifactPlan
+    ) -> None:
+        if len(desired) == len(plan.specs):
+            _validate_site_mapping(desired, self.excluded_subject_ids)
             return
-        _validate_site_mapping(desired, self.excluded_subject_ids)
+        _validate_dirty_mapping(
+            desired,
+            plan,
+            self.site_directory,
+            self.excluded_subject_ids,
+        )
 
-    def _validate_final(self, site: Path) -> None:
-        mapping = {
-            path.relative_to(site).as_posix(): path.read_bytes()
-            for path in site.rglob("*")
-            if path.is_file()
-        }
-        _validate_site_mapping(mapping, self.excluded_subject_ids)
+    def _validate_final(
+        self, site: Path, plan: ArtifactPlan, *, full: bool = False
+    ) -> None:
+        if full:
+            mapping = {
+                path.relative_to(site).as_posix(): path.read_bytes()
+                for path in site.rglob("*")
+                if path.is_file()
+            }
+            _validate_site_mapping(mapping, self.excluded_subject_ids)
+            return
+        _validate_scoped_site(site, plan, self.excluded_subject_ids)
 
     def _write_report(
         self,
@@ -843,6 +857,215 @@ def _validate_site_mapping(
                     normalized = "index.html"
                 if normalized not in mapping:
                     raise BuildError(f"site HTML references missing artifact: {target}")
+
+
+def _validate_dirty_mapping(
+    mapping: Mapping[str, bytes],
+    plan: ArtifactPlan,
+    site: Path,
+    excluded_subject_ids: frozenset[int],
+) -> None:
+    """Validate only newly materialized files and their cheap dependencies."""
+    for path, content in mapping.items():
+        spec = plan.specs.get(path)
+        if spec is None:
+            raise BuildError(f"artifact is not in the current plan: {path}")
+        if spec.kind == "cover":
+            if spec.content_hash != hashlib.sha256(content).hexdigest():
+                raise BuildError(f"cover artifact hash is invalid: {path}")
+            if spec.size_bytes is not None and spec.size_bytes != len(content):
+                raise BuildError(f"cover artifact size is invalid: {path}")
+        if path.endswith(".html"):
+            _validate_html_links(path, content, plan, site)
+        if path.startswith("data/quarters/") and path.endswith(".json"):
+            _validate_quarter_payload(path, content, plan, site, excluded_subject_ids)
+        if path.startswith("data/catalog/") and path.endswith(".json"):
+            _validate_year_payload(path, content, plan, site)
+        if path == "data/archive-index.json":
+            _validate_archive_payload(content, plan, site)
+        if path.startswith("data/offline/") and path.endswith(".json"):
+            _validate_offline_payload(content, mapping, plan, site)
+
+
+def _validate_scoped_site(
+    site: Path, plan: ArtifactPlan, excluded_subject_ids: frozenset[int]
+) -> None:
+    """Check retained artifacts by metadata and dirty artifacts by their sources."""
+    source_bytes = {
+        path: spec.source
+        for path, spec in plan.specs.items()
+        if isinstance(spec.source, bytes)
+    }
+    _validate_dirty_mapping(source_bytes, plan, site, excluded_subject_ids)
+    for relative, spec in plan.specs.items():
+        target = site / Path(relative)
+        if not target.is_file():
+            raise BuildError(f"planned artifact is missing: {relative}")
+        if spec.size_bytes is not None:
+            try:
+                if target.stat().st_size != spec.size_bytes:
+                    raise BuildError(f"planned artifact size is invalid: {relative}")
+            except OSError as error:
+                raise BuildError(f"planned artifact cannot be inspected: {relative}") from error
+
+
+def _validate_html_links(
+    path: str, content: bytes, plan: ArtifactPlan, site: Path
+) -> None:
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise BuildError(f"generated HTML is not UTF-8: {path}") from error
+    for href in _HREF_RE.findall(text):
+        if href.startswith(("https://bgm.tv/subject/", "#", "mailto:")):
+            continue
+        target = href.split("?", 1)[0].split("#", 1)[0]
+        if not target or target.startswith("/"):
+            raise BuildError("site HTML contains an unsafe absolute URL")
+        candidate = Path(path).parent / Path(target)
+        normalized = posixpath.normpath(candidate.as_posix())
+        if normalized == ".":
+            normalized = "index.html"
+        if normalized not in plan.specs and not (site / Path(normalized)).is_file():
+            raise BuildError(f"site HTML references missing artifact: {target}")
+
+
+def _validate_quarter_payload(
+    path: str,
+    content: bytes,
+    plan: ArtifactPlan,
+    site: Path,
+    excluded_subject_ids: frozenset[int],
+) -> None:
+    payload = _load_json({path: content}, path)
+    expected = Path(path).stem
+    if payload.get("quarter") != expected:
+        raise BuildError(f"quarter payload label is invalid: {path}")
+    movie = payload.get("movie")
+    if isinstance(movie, dict) and movie.get("continuing"):
+        raise BuildError(f"movie continuing appearance in {path}")
+    for item in _quarter_items(payload):
+        subject_id = item.get("subject_id")
+        if subject_id in excluded_subject_ids:
+            raise BuildError("blacklisted subject appears in site output")
+        cover = item.get("cover_url")
+        if isinstance(cover, str):
+            relative = cover.split("?", 1)[0]
+            if relative not in plan.specs and not (site / Path(relative)).is_file():
+                raise BuildError(f"cover artifact is missing: {relative}")
+
+
+def _validate_year_payload(
+    path: str, content: bytes, plan: ArtifactPlan, site: Path
+) -> None:
+    payload = _load_json({path: content}, path)
+    records = payload.get("records", [])
+    if not isinstance(records, list):
+        raise BuildError(f"year catalog records are invalid: {path}")
+    for item in records:
+        if not isinstance(item, dict):
+            raise BuildError(f"year catalog record is invalid: {path}")
+        quarter = item.get("quarter")
+        if isinstance(quarter, str):
+            target = f"data/quarters/{quarter}.json"
+            if target not in plan.specs and not (site / Path(target)).is_file():
+                raise BuildError(f"year catalog references missing quarter: {quarter}")
+
+
+def _validate_archive_payload(
+    content: bytes, plan: ArtifactPlan, site: Path
+) -> None:
+    payload = _load_json({"data/archive-index.json": content}, "data/archive-index.json")
+    quarters = payload.get("quarters", [])
+    if not isinstance(quarters, list):
+        raise BuildError("archive index quarters are invalid")
+    for item in quarters:
+        if not isinstance(item, dict) or not isinstance(item.get("quarter"), str):
+            raise BuildError("archive index entry is invalid")
+        target = f"data/quarters/{item['quarter']}.json"
+        if target not in plan.specs and not (site / Path(target)).is_file():
+            raise BuildError(f"archive index references missing quarter: {item['quarter']}")
+
+
+def _validate_offline_payload(
+    content: bytes,
+    mapping: Mapping[str, bytes],
+    plan: ArtifactPlan,
+    site: Path,
+) -> None:
+    payload = _load_json({"offline.json": content}, "offline.json")
+    resources = payload.get("resources", [])
+    if not isinstance(resources, list):
+        raise BuildError("offline manifest resources are invalid")
+    for resource in resources:
+        if not isinstance(resource, dict):
+            raise BuildError("offline resource entry is invalid")
+        url = resource.get("url")
+        if not isinstance(url, str) or url.startswith(("http:", "https:", "/")):
+            raise BuildError("offline manifest contains a non-local URL")
+        if url in mapping:
+            data = mapping[url]
+            if resource.get("content_hash") != hashlib.sha256(data).hexdigest():
+                raise BuildError(f"offline resource hash is invalid: {url}")
+            if resource.get("size_bytes") != len(data):
+                raise BuildError(f"offline resource size is invalid: {url}")
+            continue
+        spec = plan.specs.get(url)
+        target = site / Path(url)
+        if spec is None and not target.is_file():
+            raise BuildError(f"offline resource is missing: {url}")
+        expected_hash = spec.content_hash if spec is not None else None
+        expected_size = spec.size_bytes if spec is not None else None
+        if expected_hash is not None and resource.get("content_hash") != expected_hash:
+            raise BuildError(f"offline resource hash is invalid: {url}")
+        if expected_size is not None and resource.get("size_bytes") != expected_size:
+            raise BuildError(f"offline resource size is invalid: {url}")
+
+
+def _validate_plan_contract(
+    plan: ArtifactPlan,
+    quarters: tuple[QuarterProjection, ...],
+    archive: ArchiveIndexProjection,
+    excluded_subject_ids: frozenset[int],
+) -> None:
+    required = {
+        "index.html",
+        "archive/index.html",
+        "settings/index.html",
+        "assets/app.css",
+        "assets/app.js",
+        "data/archive-index.json",
+    }
+    missing = sorted(required - set(plan.specs))
+    if missing:
+        raise BuildError(f"required site artifact is missing: {missing[0]}")
+    if any(
+        path.startswith(("subjects/", "episodes/", "characters/", "persons/"))
+        for path in plan.specs
+    ):
+        raise BuildError("forbidden detail or entity artifact exists")
+    archive_labels = {
+        str(item.get("quarter"))
+        for item in archive.quarters
+        if isinstance(item, dict)
+    }
+    for quarter in quarters:
+        if quarter.quarter not in archive_labels:
+            raise BuildError(f"quarter is not listed in archive index: {quarter.quarter}")
+        if any(
+            item.subject_id in excluded_subject_ids
+            for group in (
+                quarter.tv_premiere,
+                quarter.tv_continuing,
+                quarter.movie_premiere,
+            )
+            for item in group
+        ):
+            raise BuildError("blacklisted subject appears in site output")
+        if quarter.movie_premiere and any(
+            item.appearance_kind == "continuing" for item in quarter.movie_premiere
+        ):
+            raise BuildError(f"movie continuing appearance in {quarter.quarter}")
 
 
 def _load_json(mapping: Mapping[str, bytes], path: str) -> dict[str, object]:

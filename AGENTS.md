@@ -41,11 +41,18 @@ Do not create empty future services, fake interfaces, or unusable UI.
 ## Product constraints
 
 - First version includes only TV and theatrical movies.
+- Managed archive facts currently cover the verified quarters present in SQLite,
+  including TV premiere/continuing appearances and movie premiere appearances.
 - AI must not decide quarter ownership, continuation, format, source, tags, blacklist, or generated facts.
-- `sync`, `build`, and `publish` remain independent.
+- `sync` commits facts/covers and then triggers an affected-scope incremental build;
+  `build` remains fully offline, and `publish` never calls either command.
 - Runtime pages use static HTML, CSS, and native JavaScript.
 - Runtime pages do not read SQLite or request Bangumi data.
-- Local and Pages builds share one data model, generator, template system, and frontend source.
+- The only formal generated site is `dist/site`; localhost preview is an HTTP view
+  of that same tree, not a second product output.
+- Build reads only SQLite, verified workspace covers, config, and source assets.
+- `workspace/build-state.json` and build reports are derived, ignored state; the
+  site must be reproducible after deleting `dist/site`.
 - Pages/PWA must not publish character images.
 - Voice-actor images are not stored.
 - Build must work offline.
@@ -71,13 +78,15 @@ Never commit:
 - secrets, tokens, authorization headers, `.env`;
 - private absolute paths, local usernames, full API dumps, or raw stack traces.
 
-`dist/pages` belongs on `gh-pages`, not `main`.
+`dist/site` is a local derived artifact and is never committed to `main`.
 
 ## Engineering
 
 Prefer the standard library and small justified dependencies. Avoid ORMs, Web frameworks, task queues, DI frameworks, large logging systems, React, Vue, Node frontend tooling, SQLite WASM, and runtime business IndexedDB.
 
-Use numbered transactional SQLite migrations with backup and rollback.
+Keep the clean supported SQLite schema contract strict. Unknown or old development
+schemas are rejected; do not add migration baggage until a released fact store
+requires a real upgrade path.
 
 Keep tests compact and risk-focused. Never claim a command or test passed unless it was executed.
 

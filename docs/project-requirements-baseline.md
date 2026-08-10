@@ -22,22 +22,21 @@ Bangumi API
     ↓
 本地同步与确定性规范化
     ↓
-SQLite
+SQLite + workspace/covers
     ↓
-静态网站生成
-    ├── Windows 本地完整版本
-    └── GitHub Pages / PWA 轻量版本
+唯一静态网站生成（dist/site）
+    └── localhost preview / GitHub Pages / PWA
 ```
 
-页面运行时只使用静态 HTML、CSS、原生 JavaScript；不读取 SQLite、不访问 Bangumi API、不请求远程业务数据、不依赖 Web 服务。卡片预渲染，抽屉数据内嵌，详情页独立生成。
+页面运行时只使用静态 HTML、CSS、原生 JavaScript；不读取 SQLite、不访问 Bangumi API、不请求远程业务数据。页面通过同源生成 JSON 读取详情 payload；不生成 Subject 独立详情文件。
 
 禁止 React、Vue、Node.js 前端构建链、大型 UI 框架、SQLite WASM 和运行时业务 IndexedDB。
 
 ## 3. 第一版范围
 
-第一次正式资料范围仅为 `2026-04`（2026-04-01 至 2026-06-30）。只同步、保存和发布
-首播日期完整落在该季度的 TV；不处理剧场版、其他季度、跨季度续播、角色、声优、角色
-图片或声优图片。
+当前开发资料范围以 SQLite 中已验证的受管季度为准（当前为 `2026-04` 与 `2026-07`）。
+只同步、保存和构建 Anime type=2 的 TV 与剧场版；TV 支持 premiere/continuing，Movie 只支持
+premiere。仍不处理 WEB、OVA、OAD、角色、声优、角色图片或声优图片。
 
 日本 TV 判定完全自动化，不要求逐条人工审核。国家/地区分类按以下确定性顺序执行：
 
@@ -55,13 +54,13 @@ SQLite
 
 合法季度月：`1 / 4 / 7 / 10`。
 
-作品永久归属于完整结构化首播日期所在季度。当前只接受 2026-04 内的 TV 首播；缺完整
-日期或范围证据时不猜测，不进入页面并写入审计。页面只使用“本季度新番”分区。
+作品永久归属于完整结构化首播日期所在季度；跨季度 TV 只在有证据时增加 continuing
+appearance，Movie 不得 continuing。缺完整日期或范围证据时不猜测，不进入新的公开季度并写入审计。
 
 ## 5. API 与同步
 
-候选发现只对 2026-04、05、06 的 TV 分页查询、合并并按 subject ID 去重。最终季度
-归属以详情中的完整结构化日期为准，随后执行自动的日本 TV 国家/地区分类。
+候选发现按同步目标季度查询 TV 与 Movie，合并并按 subject ID 去重。最终季度归属以详情中的
+完整结构化日期、人工裁决和续播证据为准，随后执行自动的日本-only 分类。
 
 - 匿名访问；
 - 明确 User-Agent；
@@ -200,43 +199,46 @@ local 和 Pages 均无角色区。
 
 ```text
 workspace/data/bangumi-side-b.sqlite3
-workspace/media/covers/
+workspace/covers/
 workspace/reports/
 workspace/tmp/
 workspace/backups/
 ```
 
-构建：
+构建唯一写入：
 
 ```text
-dist/local/
-dist/pages/
+dist/site/
 ```
 
 `main` 不提交 SQLite、媒体、报告、临时文件、备份或生成站点。Pages 最终发布到 `gh-pages`。
 
 命令严格解耦：
 
-- `sync`：联网同步；
-- `build`：断网构建；
-- `publish`：验证并发布已有 Pages 产物。
+- `sync`：联网同步并在事实成功后触发受影响范围的增量 build；
+- `build`：完全离线构建唯一 `dist/site`；
+- `serve`：只服务已有 `dist/site`，不读 SQLite、不 build；
+- `publish`：验证并发布已有准备好的站点，不调用 sync/build。
 
-构建先写临时目录，成功后整体替换，失败不破坏上一版。
+构建只将脏 artifacts 写入临时 staging，校验后增量 patch `dist/site`；失败回滚受影响文件，
+不破坏上一版。
 
 ## 13. 页面与浏览
 
 路径：
 
 ```text
-quarters/YYYY-MM/index.html
-subjects/ID/index.html
+YYYY-MM/index.html
+data/quarters/YYYY-MM.json
+archive/index.html
+settings/index.html
 ```
 
-首页进入按季度年月判断的最新已构建季度。
+首页进入最新已构建季度；无季度时显示简洁 empty state。
 
-导航只显示 `2026-04`，首页直接进入该季度；不显示历史、未来或置灰季度。
+导航按 archive index 显示所有可用历史季度；季度页面默认 TV，并将 Movie 与 continuing 分开。
 
-卡片打开抽屉；“完整资料”进入详情。浏览器返回恢复同一次浏览中的搜索、筛选、排序和滚动位置；抽屉打开时返回键优先关闭；切换季度或刷新恢复默认。
+卡片打开由同源季度 JSON 驱动的抽屉；不生成 Subject 独立详情页。浏览器返回与复杂交互属于后续前端阶段。
 
 搜索只匹配首选标题、原名、结构化别名；NFKC、trim、拉丁字符大小写不敏感、子串匹配；不做分词、拼音、模糊匹配或翻译。
 
@@ -282,8 +284,8 @@ PWA 使用完整离线快照，不提供在线浏览模式。首次完整初始�
 
 ## 17. 测试与协作
 
-测试精简、风险优先：唯一季度、TV、结构化国家 token、标签/来源、少量真实 Fixture、
-SQLite upsert/迁移/黑名单引用、静态构建/链接、file://、Pages 子路径、PWA 初始化/断网/
+测试精简、风险优先：季度 projection、TV/Movie/continuing、结构化国家 token、标签/来源、少量真实 Fixture、
+SQLite upsert/黑名单引用、静态构建/链接、增量 rollback、localhost Pages 子路径、PWA 初始化/断网/
 失败保旧版、发布边界。
 
 不追求覆盖率数字，不做大规模浏览器矩阵和低价值 UI 自动化。

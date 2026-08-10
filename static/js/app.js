@@ -537,7 +537,16 @@
       }
     });
     quarterRoot.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
-      state.workspaceMode = state.workspaceMode === "filter" ? "scope" : "filter";
+      if (state.workspaceMode === "filter") {
+        const result = archive.applyPipeline(records, state);
+        const selected = archive.selectedRecord(records, state.selectedSubjectId, state.selectedOccurrence);
+        state.workspaceMode = selected && result.all.some((record) => record.key === selected.key)
+          ? "detail"
+          : "scope";
+        if (state.workspaceMode === "scope") clearSelection(true);
+      } else {
+        state.workspaceMode = "filter";
+      }
       renderFilterPanel();
       render();
     });
@@ -563,7 +572,15 @@
       tags: [...new Set(records.flatMap((record) => record.allowed_tags))].sort(),
       sections: state.media === "tv" ? ["premiere", "continuing"] : ["premiere"],
     };
-    filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2>`;
+    filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
+    const optionSearch = filterPanel.querySelector("[data-filter-option-search]");
+    let optionQuery = "";
+    optionSearch?.addEventListener("input", () => {
+      optionQuery = archive.normalize(optionSearch.value);
+      filterPanel.querySelectorAll("[data-filter-option]").forEach((option) => {
+        option.hidden = option.dataset.filterOption?.includes(optionQuery) === false;
+      });
+    });
     for (const [group, values] of Object.entries(options)) {
       if (values.length <= 1) continue;
       const section = document.createElement("fieldset");
@@ -574,6 +591,7 @@
       for (const value of values) {
         const label = document.createElement("label");
         label.className = "filter-option";
+        label.dataset.filterOption = archive.normalize(value);
         const input = document.createElement("input");
         input.type = "checkbox";
         input.checked = state.filters[group].includes(value);
@@ -582,7 +600,12 @@
             ? [...state.filters[group], value]
             : state.filters[group].filter((item) => item !== value);
           state.page = 1;
-          clearSelection(true);
+          const selected = archive.selectedRecord(records, state.selectedSubjectId, state.selectedOccurrence);
+          const result = archive.applyPipeline(records, state);
+          if (selected && !result.all.some((record) => record.key === selected.key)) {
+            clearSelection(true);
+          }
+          state.workspaceMode = "filter";
           render();
           renderFilterPanel();
         });
@@ -591,8 +614,28 @@
       }
       filterPanel.append(section);
     }
+    const applyButton = document.createElement("button");
+    applyButton.type = "button";
+    applyButton.className = "filter-apply-mobile button button--ink";
+    applyButton.dataset.filterClose = "true";
+    applyButton.textContent = `显示 ${archive.applyPipeline(records, state).total} 部`;
+    applyButton.addEventListener("click", () => {
+      const result = archive.applyPipeline(records, state);
+      const selected = archive.selectedRecord(records, state.selectedSubjectId, state.selectedOccurrence);
+      state.workspaceMode = selected && result.all.some((record) => record.key === selected.key)
+        ? "detail"
+        : "scope";
+      if (state.workspaceMode === "scope") clearSelection(true);
+      render();
+    });
+    filterPanel.append(applyButton);
     filterPanel.querySelector("[data-filter-close]")?.addEventListener("click", () => {
-      state.workspaceMode = "scope";
+      const result = archive.applyPipeline(records, state);
+      const selected = archive.selectedRecord(records, state.selectedSubjectId, state.selectedOccurrence);
+      state.workspaceMode = selected && result.all.some((record) => record.key === selected.key)
+        ? "detail"
+        : "scope";
+      if (state.workspaceMode === "scope") clearSelection(true);
       render();
     });
   }

@@ -10,6 +10,7 @@ from bgm_side_b.build.site_projection import (
     ArchiveFactsReader,
     json_bytes,
     project_quarter,
+    project_year,
 )
 from bgm_side_b.config import load_tag_rules
 from bgm_side_b.database import Database
@@ -135,6 +136,30 @@ def test_projection_separates_tv_movie_and_continuing_and_is_deterministic(
     assert json_bytes(april.to_dict()) == json_bytes(
         project_quarter(facts, Quarter(2026, 4), _rules(), workspace).to_dict()
     )
+
+
+def test_year_catalog_keeps_display_fields_for_offline_archive_detail(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    database = Database(workspace / "archive.sqlite3")
+    database.initialize()
+    repository = SubjectRepository(database)
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection,
+            _snapshot(404, MediaFormat.TV, premiere=Quarter(2026, 4)),
+        )
+
+    facts = ArchiveFactsReader(database, workspace).read()
+    quarter = project_quarter(facts, Quarter(2026, 4), _rules(), workspace)
+    record = project_year(2026, (quarter,)).to_dict()["records"][0]
+    assert record["id"] == 404
+    assert record["aliases"] == ["Alias 404"]
+    assert record["episode_count"] == 12
+    assert record["display_summary"] == "第一行\n\n第二行"
+    assert record["premiere_quarter"] == "2026-04"
+    assert record["bangumi_url"] == "https://bgm.tv/subject/404"
 
 
 def test_projection_missing_cover_is_a_warning_and_null_url(tmp_path: Path) -> None:

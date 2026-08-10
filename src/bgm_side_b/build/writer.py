@@ -6,6 +6,7 @@ import hashlib
 import os
 import shutil
 import tempfile
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -19,6 +20,10 @@ class SiteWriteError(RuntimeError):
 
 class BuildBlockedError(SiteWriteError):
     """Raised for a locked or otherwise unavailable output file."""
+
+
+class SiteRecoveryError(SiteWriteError):
+    """Raised when touched output cannot be proven restored."""
 
 
 @dataclass(frozen=True)
@@ -160,6 +165,7 @@ class IncrementalSiteWriter:
                 },
             )
             self._commit_state(final_state)
+            self._cleanup_recovery()
             return PatchResult(
                 changed,
                 stale,
@@ -170,13 +176,13 @@ class IncrementalSiteWriter:
                 sum(plan.specs[path].kind == "cover" for path in changed),
             )
         except PermissionError as error:
-            self._restore(backup_directory, touched, backups)
+            self._rollback(backup_directory, touched, backups)
             raise BuildBlockedError(
                 "site patch blocked by a file in use: "
                 f"{_relative_message(error, touched)}"
             ) from error
         except BaseException as error:
-            self._restore(backup_directory, touched, backups)
+            self._rollback(backup_directory, touched, backups)
             if isinstance(error, SiteWriteError):
                 raise
             raise SiteWriteError(
@@ -186,13 +192,38 @@ class IncrementalSiteWriter:
             shutil.rmtree(run_directory, ignore_errors=True)
             shutil.rmtree(backup_directory, ignore_errors=True)
 
+    def _rollback(
+        self,
+        backup_directory: Path,
+        touched: tuple[str, ...],
+        backups: Mapping[str, bool],
+    ) -> None:
+        try:
+            self._restore(backup_directory, touched, backups)
+        except SiteRecoveryError as error:
+            recovery = self._retain_recovery(backup_directory, touched, backups)
+            self._invalidate_state(recovery)
+            relative = recovery.relative_to(self.workspace_directory).as_posix()
+            raise SiteRecoveryError(
+                f"site recovery incomplete; next build required: {relative}"
+            ) from error
+
     def _cleanup_staging(self) -> None:
         self.staging_directory.mkdir(parents=True, exist_ok=True)
         for child in tuple(self.staging_directory.iterdir()):
-            if child.is_dir() and child.name not in {".keep"}:
+            if (
+                child.is_dir()
+                and child.name not in {".keep"}
+                and not child.name.startswith("recovery-")
+            ):
                 shutil.rmtree(child, ignore_errors=True)
             elif child.is_file():
                 child.unlink(missing_ok=True)
+
+    def _cleanup_recovery(self) -> None:
+        for child in tuple(self.staging_directory.glob("recovery-*")):
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
 
     def _existing_paths(self, old_artifacts: Mapping[str, str]) -> set[str]:
         if old_artifacts:
@@ -270,6 +301,7 @@ class IncrementalSiteWriter:
         touched: tuple[str, ...],
         backups: Mapping[str, bool],
     ) -> None:
+        failures: list[str] = []
         for relative in touched:
             target = self.site_directory / Path(relative)
             backup = backup_directory / Path(relative)
@@ -282,9 +314,48 @@ class IncrementalSiteWriter:
                 else:
                     target.unlink(missing_ok=True)
             except OSError:
-                # A subsequent build will safely mark the site dirty.  Never mask
-                # the original failure with a best-effort rollback error.
+                failures.append(relative)
+        if failures:
+            raise SiteRecoveryError(
+                "site recovery incomplete: " + ", ".join(failures)
+            )
+
+    def _retain_recovery(
+        self,
+        backup_directory: Path,
+        touched: tuple[str, ...],
+        backups: Mapping[str, bool],
+    ) -> Path:
+        recovery = self.staging_directory / f"recovery-{uuid.uuid4().hex}"
+        recovery.mkdir(parents=True, exist_ok=False)
+        for relative in touched:
+            if not backups.get(relative, False):
                 continue
+            backup = backup_directory / Path(relative)
+            if not backup.is_file():
+                continue
+            target = recovery / Path(relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(backup, target)
+        return recovery
+
+    def _invalidate_state(self, recovery: Path) -> None:
+        if not self.state_path.exists():
+            return
+        target = recovery / "build-state.invalid.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(self.state_path, target)
+        except OSError as error:
+            try:
+                self.state_path.unlink()
+            except OSError as unlink_error:
+                raise SiteRecoveryError(
+                    "site recovery incomplete; build state could not be invalidated"
+                ) from unlink_error
+            raise SiteRecoveryError(
+                "site recovery incomplete; build state move failed"
+            ) from error
 
     def _commit_state(self, state: BuildState) -> None:
         from bgm_side_b.build.site_projection import json_bytes

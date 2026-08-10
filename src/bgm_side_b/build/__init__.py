@@ -44,6 +44,7 @@ from bgm_side_b.build.writer import (
     BuildBlockedError,
     IncrementalSiteWriter,
     PatchResult,
+    SiteRecoveryError,
     SiteWriteError,
 )
 
@@ -68,6 +69,7 @@ __all__ = [
     "QuarterProjection",
     "SubjectProjection",
     "SiteWriteError",
+    "SiteRecoveryError",
     "SiteBuildRun",
     "ServeError",
     "UnifiedSiteBuilder",

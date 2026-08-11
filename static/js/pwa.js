@@ -529,7 +529,7 @@
   function quarterProgress(quarter, resources, verified) {
     return {
       quarter,
-      verified_resources: verified.size,
+      verified_resources: resources.filter((item) => verified.has(item.content_hash)).length,
       total_resources: resources.length,
       verified_bytes: resources
         .filter((item) => verified.has(item.content_hash))
@@ -541,8 +541,18 @@
   async function downloadResources(quarter, manifest, state, generation) {
     const resources = manifest.resources;
     const verified = new Set(state.staging?.verified_hashes || []);
+    const inFlight = new Map();
     let cursor = 0;
     let failure = null;
+
+    function ensureShared(resource) {
+      const hash = resource.content_hash;
+      if (!inFlight.has(hash)) {
+        const operation = ensureResource(resource).finally(() => inFlight.delete(hash));
+        inFlight.set(hash, operation);
+      }
+      return inFlight.get(hash);
+    }
 
     async function worker() {
       while (cursor < resources.length && !failure) {
@@ -555,7 +565,7 @@
         if (!resource) throw new Error("季度资源索引无效");
         if (verified.has(resource.content_hash)) continue;
         try {
-          await ensureResource(resource);
+          await ensureShared(resource);
           await assertQueueGeneration(generation);
           const result = await updateQuarterDownloadState(
             quarter,
@@ -1598,6 +1608,7 @@
     validateQuarterManifest,
     fetchQuarterManifest,
     getQuarterState,
+    __quarterProgress: quarterProgress,
     __updateQuarterDownloadState: updateQuarterDownloadState,
     listQuarterStates,
     currentQueue,

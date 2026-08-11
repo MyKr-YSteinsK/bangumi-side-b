@@ -579,6 +579,64 @@ def test_quarter_downloader_deduplicates_shared_cover_and_garbage_collects(
     context.close()
 
 
+def test_quarter_progress_counts_logical_resources_and_shares_inflight_hash(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    original = next(
+        item for item in manifest["resources"]
+        if item["url"] == "data/quarters/2026-07.json"
+    )
+    other = next(
+        item for item in manifest["resources"]
+        if item["url"] == "2026-07/index.html"
+    )
+    alias_url = "data/quarters/2026-07-alias.json"
+    alias_path = pwa_site / alias_url
+    alias_path.write_bytes((pwa_site / original["url"]).read_bytes())
+    alias = {**original, "url": alias_url}
+    manifest["resources"] = [original, alias, other]
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    context = chromium.new_context()
+    page = context.new_page()
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    progress = page.evaluate(
+        """
+        async () => {
+          const state = await window.BsbPwa.getQuarterState("2026-07");
+          const hash = state.active.resources[0].content_hash;
+          return window.BsbPwa.__quarterProgress(
+            "2026-07",
+            state.active.resources,
+            new Set([hash]),
+          );
+        }
+        """
+    )
+    assert progress["verified_resources"] == 2
+    assert progress["total_resources"] == 3
+    assert progress["verified_bytes"] == original["size_bytes"] * 2
+    resource_requests = [
+        url
+        for url in requests
+        if url.endswith(original["url"]) or url.endswith(alias_url)
+    ]
+    assert len(resource_requests) == 1, resource_requests
+    context.close()
+
+
 def test_running_queue_merges_new_labels_without_replacing_generation(
     chromium: Browser,
     pwa_server: str,

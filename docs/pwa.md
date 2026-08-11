@@ -1,8 +1,8 @@
 # Pages PWA contract
 
-This document defines the product contract that Plan 20 will implement. It does
-not describe the legacy Pages release implementation that remains temporarily in
-the repository.
+This document defines the active product contract for the Pages PWA. The PWA is
+part of the unified static site and is implemented by the current generated
+`dist/site` runtime.
 
 ## One online site
 
@@ -49,6 +49,20 @@ used, and the application does not promise downloads will continue after the
 operating system terminates it. Cancel stops the current operation; it is not the
 same action as remove quarter.
 
+Progress counts logical manifest resources and bytes. Content-addressed storage
+deduplicates equal hashes, and equal-hash resources in one quarter task share an
+in-flight fetch. A failed or interrupted update keeps the active version while
+its staging version is marked `UPDATE_INCOMPLETE`.
+
+Settings exposes a retry action when Service Worker registration fails; it is
+hidden while registration is still in progress or when the browser does not
+support the required APIs. Quarter pages never retry registration directly: when
+offline capability is unavailable they link to Settings. Settings also exposes a
+confirmed remove action for `INCOMPLETE`, `UPDATE_INCOMPLETE`, and
+`UPDATE_AVAILABLE` records. Removal deletes the active/staging metadata and
+progress record, then garbage-collects only content that no remaining shell or
+quarter references.
+
 ## Cover cache identity
 
 The offline manifest identifies one physical cover as:
@@ -77,6 +91,6 @@ ordinary online startup.
 ## Legacy boundary
 
 `static/js/pwa-controller.js`, `static/js/pwa-ui.js`, and `static/sw.js` belong to
-the legacy snapshot implementation. Plan 20 must not inherit their product
-semantics. They remain isolated from the formal unified-site runtime until the
-legacy release path is removed in Plan 21.
+the legacy snapshot implementation. They are not part of the formal
+unified-site runtime and must not be used to define current PWA behavior. Any
+future cleanup of these files is a separate explicit maintenance task.

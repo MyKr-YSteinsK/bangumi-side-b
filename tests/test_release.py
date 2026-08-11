@@ -244,7 +244,7 @@ def test_public_readme_and_changelog_use_chinese_project_information() -> None:
     for heading in (
         "项目简介",
         "当前收录范围",
-        "PWA 安装与首次初始化",
+        "PWA 与离线使用",
         "数据与版权说明",
     ):
         assert heading in readme

@@ -584,6 +584,12 @@
         try {
           await ensureShared(resource);
           await assertQueueGeneration(generation);
+          if (verified.has(resource.content_hash)) continue;
+          // Claim the logical hash before the metadata transaction. A second
+          // worker can reuse the completed fetch while the owner commits the
+          // hash; a failed commit leaves the persisted closure incomplete and
+          // forces the next resume to re-persist it.
+          verified.add(resource.content_hash);
           const result = await updateQuarterDownloadState(
             quarter,
             generation,
@@ -607,7 +613,6 @@
               };
             },
           );
-          verified.clear();
           for (const hash of result.state.staging?.verified_hashes || []) {
             verified.add(hash);
           }

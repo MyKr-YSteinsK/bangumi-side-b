@@ -766,6 +766,102 @@ def test_quarter_progress_counts_logical_resources_and_shares_inflight_hash(
     context.close()
 
 
+def test_same_hash_dedupe_survives_delayed_metadata_commit(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    original = next(
+        item for item in manifest["resources"]
+        if item["url"] == "data/quarters/2026-07.json"
+    )
+    alias_url = "data/quarters/2026-07-alias.json"
+    (pwa_site / alias_url).write_bytes((pwa_site / original["url"]).read_bytes())
+    other = [
+        item for item in manifest["resources"]
+        if item["url"] in {"2026-07/index.html", "covers/101.webp"}
+    ]
+    manifest["resources"] = [original, *other, {**original, "url": alias_url}]
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    context = chromium.new_context()
+    page = context.new_page()
+    page.add_init_script(
+        """
+        (() => {
+          const nativePut = Cache.prototype.put;
+          const nativeFetch = window.fetch.bind(window);
+          let held = false;
+          window.__holdQuarterState = false;
+          window.__quarterStatePutHeld = false;
+          window.__releaseQuarterStatePut = null;
+          window.fetch = async (...args) => {
+            const response = await nativeFetch(...args);
+            const url = String(args[0]?.url || args[0] || "");
+            if (url.includes("data/quarters/2026-07.json")) {
+              window.__holdQuarterState = true;
+            }
+            return response;
+          };
+          Cache.prototype.put = function(request, response) {
+            if (window.__holdQuarterState && !held && request.url.includes(
+              "/__bsb_meta__/quarters/2026-07.json")) {
+              held = true;
+              window.__quarterStatePutHeld = true;
+              const copy = response.clone();
+              return new Promise((resolve, reject) => {
+                window.__releaseQuarterStatePut = () =>
+                  nativePut.call(this, request, copy).then(resolve, reject);
+              });
+            }
+            return nativePut.call(this, request, response);
+          };
+        })();
+        """
+    )
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    page.wait_for_function("window.__quarterStatePutHeld === true")
+    page.evaluate(
+        """
+        async (hash) => {
+          const cache = await caches.open("bsb-content-v1");
+          await cache.delete(new Request(new URL(
+            `../__bsb_content__/${hash}`, location.href)));
+        }
+        """,
+        original["content_hash"],
+    )
+    page.wait_for_timeout(250)
+    resource_requests = [
+        url for url in requests
+        if url.endswith(original["url"]) or url.endswith(alias_url)
+    ]
+    assert len(resource_requests) == 1, resource_requests
+    page.evaluate(
+        """
+        async (resource) => {
+          const response = await fetch(new URL(`../${resource.url}`, location.href));
+          const cache = await caches.open("bsb-content-v1");
+          await cache.put(new Request(new URL(
+            `../__bsb_content__/${resource.content_hash}`, location.href)), response);
+        }
+        """,
+        original,
+    )
+    page.evaluate("window.__releaseQuarterStatePut()")
+    _wait_for_queue(page, 1)
+    context.close()
+
+
 def test_running_queue_merges_new_labels_without_replacing_generation(
     chromium: Browser,
     pwa_server: str,

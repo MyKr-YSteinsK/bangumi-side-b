@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import http.server
+import json
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -258,6 +259,118 @@ def test_filter_media_switch_and_archive_detail_history(
         "data-workspace-mode"
     ) == "detail"
     assert page.evaluate("window.BsbArchive.sourceLabel('unknown')") == "来源未知"
+
+
+def _facet_record(
+    base: dict[str, object], subject_id: int, source: str, tag: str
+) -> dict[str, object]:
+    record = dict(base)
+    record["id"] = subject_id
+    record["subject_id"] = subject_id
+    record["preferred_title"] = f"Facet {subject_id}"
+    record["original_title"] = f"Facet Original {subject_id}"
+    record["source"] = source
+    record["allowed_tags"] = [tag]
+    return record
+
+
+def test_quarter_filters_are_media_local_and_normalized(
+    chromium: Browser,
+    site_server: str,
+    unified_site: Path,
+) -> None:
+    payload = json.loads(
+        (unified_site / "data" / "quarters" / "2026-07.json").read_text("utf-8")
+    )
+    tv = payload["tv"]["continuing"][0]
+    movie = payload["movie"]["premiere"][0]
+    payload["tv"]["continuing"] = [
+        _facet_record(tv, 101, "shared-source", "shared-tag"),
+        _facet_record(tv, 301, "tv-only-source", "tv-only-tag"),
+    ]
+    payload["movie"]["premiere"] = [
+        _facet_record(movie, 202, "shared-source", "shared-tag"),
+        _facet_record(movie, 401, "movie-only-source", "movie-only-tag"),
+    ]
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/quarters/2026-07.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        ),
+    )
+    _open_quarter(page, site_server, (1440, 900))
+
+    page.locator("[data-filter-toggle]").click()
+    assert page.get_by_label("tv-only-source").is_visible()
+    assert page.get_by_label("tv-only-tag").is_visible()
+    assert page.get_by_label("movie-only-source").count() == 0
+    assert page.get_by_label("movie-only-tag").count() == 0
+    page.get_by_label("tv-only-source").check()
+    page.get_by_label("tv-only-tag").check()
+    page.locator('[data-media-mode="movie"]').click()
+    assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
+    assert page.locator("[data-filter-count]").inner_text() == ""
+
+    page.locator("[data-filter-toggle]").click()
+    assert page.get_by_label("movie-only-source").is_visible()
+    assert page.get_by_label("movie-only-tag").is_visible()
+    assert page.get_by_label("tv-only-source").count() == 0
+    assert page.get_by_label("tv-only-tag").count() == 0
+    page.get_by_label("shared-source").check()
+    page.get_by_label("shared-tag").check()
+    page.locator('[data-media-mode="tv"]').click()
+    assert page.locator("[data-filter-count]").inner_text() == "(2)"
+
+
+def test_archive_filters_are_media_local_and_normalized(
+    chromium: Browser,
+    site_server: str,
+    unified_site: Path,
+) -> None:
+    payload = json.loads(
+        (unified_site / "data" / "catalog" / "2026.json").read_text("utf-8")
+    )
+    tv = next(record for record in payload["records"] if record["media"] == "TV")
+    movie = next(
+        record for record in payload["records"] if record["media"] == "MOVIE"
+    )
+    payload["records"] = [
+        _facet_record(tv, 301, "tv-only-source", "tv-only-tag"),
+        _facet_record(tv, 101, "shared-source", "shared-tag"),
+        _facet_record(movie, 401, "movie-only-source", "movie-only-tag"),
+        _facet_record(movie, 202, "shared-source", "shared-tag"),
+    ]
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/catalog/2026.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        ),
+    )
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+    )
+
+    page.locator("[data-filter-toggle]").click()
+    assert page.get_by_label("tv-only-source").is_visible()
+    assert page.get_by_label("movie-only-source").count() == 0
+    page.get_by_label("tv-only-source").check()
+    page.get_by_label("tv-only-tag").check()
+    page.locator('[data-media-mode="movie"]').click()
+    assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
+    assert page.locator("[data-filter-count]").inner_text() == ""
+    page.locator("[data-filter-toggle]").click()
+    assert page.get_by_label("movie-only-source").is_visible()
+    assert page.get_by_label("movie-only-tag").is_visible()
+    assert page.get_by_label("tv-only-source").count() == 0
 
 
 def test_archive_lazy_loads_and_reuses_selected_quarter_details(

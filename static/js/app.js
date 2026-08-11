@@ -194,9 +194,25 @@
     return value && value !== "unknown" ? value : "来源未知";
   }
 
-  function normalizeSectionFilters(state) {
-    const allowed = state.media === "movie" ? ["premiere"] : ["premiere", "continuing"];
-    state.filters.sections = state.filters.sections.filter((value) => allowed.includes(value));
+  function recordsForMedia(records, media) {
+    const value = media === "movie" ? "MOVIE" : "TV";
+    return records.filter((record) => record.media === value);
+  }
+
+  function availableFilterValues(records, media) {
+    const local = recordsForMedia(records, media);
+    return {
+      sources: [...new Set(local.map((record) => record.source).filter(Boolean))].sort(),
+      tags: [...new Set(local.flatMap((record) => record.allowed_tags))].sort(),
+      sections: media === "movie" ? ["premiere"] : ["premiere", "continuing"],
+    };
+  }
+
+  function normalizeFiltersForMedia(state, records) {
+    const available = availableFilterValues(records, state.media);
+    for (const group of ["sources", "tags", "sections"]) {
+      state.filters[group] = state.filters[group].filter((value) => available[group].includes(value));
+    }
   }
 
   const api = Object.freeze({
@@ -218,7 +234,9 @@
     selectedRecord,
     appearanceLabel,
     sourceLabel,
-    normalizeSectionFilters,
+    recordsForMedia,
+    availableFilterValues,
+    normalizeFiltersForMedia,
   });
   window.BsbArchive = api;
 })();
@@ -523,8 +541,8 @@
       setHash(null, true);
       return;
     }
-    if (candidate.media === "MOVIE") state.media = "movie";
-    archive.normalizeSectionFilters(state);
+    state.media = candidate.media === "MOVIE" ? "movie" : "tv";
+    archive.normalizeFiltersForMedia(state, records);
     const result = archive.applyPipeline(records, state);
     const index = result.all.findIndex((record) => record.key === candidate.key);
     if (index >= 0) state.page = Math.floor(index / state.pageSize) + 1;
@@ -542,9 +560,10 @@
     quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
       button.addEventListener("click", () => {
         state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv";
-        archive.normalizeSectionFilters(state);
+        archive.normalizeFiltersForMedia(state, records);
         state.page = 1;
         clearSelection(true);
+        renderFilterPanel();
         render();
       });
     });
@@ -602,11 +621,7 @@
 
   function renderFilterPanel() {
     if (!filterPanel) return;
-    const options = {
-      sources: [...new Set(records.map((record) => record.source).filter(Boolean))].sort(),
-      tags: [...new Set(records.flatMap((record) => record.allowed_tags))].sort(),
-      sections: state.media === "tv" ? ["premiere", "continuing"] : ["premiere"],
-    };
+    const options = archive.availableFilterValues(records, state.media);
     filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
     const optionSearch = filterPanel.querySelector("[data-filter-option-search]");
     let optionQuery = "";
@@ -1238,7 +1253,7 @@
       return;
     }
     state.media = candidate.media === "MOVIE" ? "movie" : "tv";
-    archive.normalizeSectionFilters(state);
+    archive.normalizeFiltersForMedia(state, records);
     const result = archive.applyPipeline(records, state);
     const position = result.all.findIndex((record) => record.key === candidate.key);
     if (position >= 0) state.page = Math.floor(position / state.pageSize) + 1;
@@ -1247,11 +1262,7 @@
 
   function renderFilterPanel() {
     if (!selectors.filterPanel) return;
-    const options = {
-      sources: [...new Set(records.map((record) => record.source).filter(Boolean))].sort(),
-      tags: [...new Set(records.flatMap((record) => record.allowed_tags))].sort(),
-      sections: state.media === "tv" ? ["premiere", "continuing"] : ["premiere"],
-    };
+    const options = archive.availableFilterValues(records, state.media);
     selectors.filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
     const optionSearch = selectors.filterPanel.querySelector("[data-filter-option-search]");
     optionSearch?.addEventListener("input", () => {
@@ -1313,7 +1324,7 @@
       pageSize.addEventListener("change", () => { state.pageSize = archive.writePageSize(pageSize.value); state.page = 1; clearSelection(true); render(); });
     }
     selectors.search?.addEventListener("input", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); });
-    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; archive.normalizeSectionFilters(state); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
+    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
     root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => { if (state.workspaceMode === "filter") closeFilter(); else state.workspaceMode = "filter"; renderFilterPanel(); render(); });
     root.querySelector("[data-sort-toggle]")?.addEventListener("click", () => {
       if (!selectors.sortPopover) return;

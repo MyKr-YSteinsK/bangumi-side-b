@@ -167,8 +167,9 @@ sync_states
 
 正式 Schema v2 从空库直接创建，只接受 `TV` 和 `MOVIE`。Subject 保存原始标题、中文标题、
 原始简介、日期、单一集数、评分及 Japanese-only 结构化证据；别名、Infobox、候选标签、
-标准化来源、唯一归档季度、封面元数据和待复核问题分别保存。同步状态按季度记录 facts 与
-covers 是否完整，不保存实体级状态。
+标准化来源、季度 appearances、封面元数据和待复核问题分别保存。`subject_quarters` 是季度
+appearance 表：TV 最多一个 premiere、可以有多个 continuing，Movie 只有一个 premiere。
+同步状态按季度记录 facts 与 covers 是否完整，不保存实体级状态。
 
 数据库以 family/version 元数据识别，未知或更高版本直接拒绝；不维护旧开发 migration chain。
 使用纯日期、外键、原子建库和事务失败回滚。短暂异常通常不立即删除历史事实。
@@ -204,6 +205,11 @@ dist/site/
 
 `main` 不提交 SQLite、媒体、报告、临时文件、备份或生成站点。Pages 最终发布到 `gh-pages`。
 
+`config/bangumi.toml` 中的 `[scope]`、`[country_filter]`、`[roles]` 和旧 Infobox 配置只供
+legacy audit/doctor/release 链路读取；clean Sync 只通过 `archive_config.py` 读取 `[filters]`
+与 `[sync]`，clean Build/Frontend 不依赖旧季度范围、国家默认放行或角色配置。旧 loader 与配置
+将在 Plan 20 随 legacy release 链路统一删除。
+
 命令严格解耦：
 
 - `sync`：联网同步并在事实成功后触发受影响范围的增量 build；
@@ -235,7 +241,8 @@ settings/index.html
 Subject 独立详情页。Archive 支持季度、年度和年份范围浏览；浏览器返回、Hash 直达、筛选、
 排序、分页和响应式 detail/filter workspace 均属于当前正式前端契约。
 
-搜索只匹配首选标题、原名、结构化别名；NFKC、trim、拉丁字符大小写不敏感、子串匹配；不做分词、拼音、模糊匹配或翻译。
+搜索只匹配首选标题、原名、结构化别名和 Bangumi Subject ID；NFKC、trim、拉丁字符大小写
+不敏感、子串匹配；不做分词、拼音、模糊匹配或翻译。
 
 同维度 OR，不同维度 AND。
 
@@ -257,10 +264,13 @@ Subject 独立详情页。Archive 支持季度、年度和年份范围浏览；�
 
 ## 15. 卡片、抽屉、详情
 
-列表行保留封面、标题、原名、媒体、集数、日期、评分、人数、最多两个来源标签、最多两个社区标签；
-季度与 Archive 使用同一状态/筛选/排序引擎，手机和桌面均保持可读密度。
+列表行保留封面、标题、原名、媒体、集数、日期、评分、人数、一个 normalized source label 和
+最多两个社区标签；详情展示全部命中白名单的社区标签。季度与 Archive 使用同一状态/筛选/
+排序引擎，手机和桌面均保持可读密度。
 
-桌面 detail workspace 位于主列表右侧；手机为底部/单列高面板。详情不显示章节、角色、声优、
+桌面 detail workspace 位于主列表右侧。小于 768px 时，未选择作品的 scope 模式使用全宽列表和
+紧凑控件；选择作品或进入 Filter 后保留窄 context rail，并在右侧展示 detail/filter workspace，
+不使用底部面板、全屏 overlay 或单列详情替代 master-detail。详情不显示章节、角色、声优、
 STAFF 或角色图片。
 
 详情展示封面、首播/当前季度、日期、集数、评分、来源、标签、别名和简介等已验证事实；缺失
@@ -269,9 +279,18 @@ STAFF 或角色图片。
 
 ## 16. PWA、版本与发布
 
-PWA 使用完整离线快照，不提供在线浏览模式。首次完整初始化并校验后才可进入；支持暂停、继续、失败重试、关闭续传、取消 staging。正常启动只读本地快照，不自动联网。
+GitHub Pages 本身是可联网直接浏览的正式静态站点。PWA precache app shell，并用 runtime cache
+缓存访问过的页面、数据和封面；默认不下载全部历史，也不要求完整离线初始化后才能进入。
 
-用户主动检查更新时请求小型 `release.json`。新快照下载到 staging，校验成功后原子切换并删除旧应用缓存；失败保留旧版。允许跨版本直接升级；第一版不做差分和降级。
+用户可以主动下载单个 quarter；Settings 可按 current/year/range/all 排队，但 quarter 始终是完整
+离线单位，并以 `data/offline/YYYY-MM.json` 的逐文件 hash/size 做差分和已完成资源复用。下载只在
+页面保持打开时进行，不使用 Background Fetch，也不承诺关闭应用后的后台下载。支持 pause、
+continue、cancel；重新打开后按 manifest diff resume，网络恢复后继续，重试间隔为 1s、3s、10s。
+失败保留已完成内容并标记 INCOMPLETE；remove quarter 与 cancel 是不同操作。storage estimate 与
+persist 只陈述浏览器真实返回的结果。
+
+更新只显示轻量、非阻塞提示，由用户主动 refresh；不得意外 reload。不得把全部历史资料库作为
+单一 monolithic snapshot。
 
 程序版本使用语义化版本；资料版本使用 `YYYY.MM.DD.N`。
 
@@ -284,8 +303,8 @@ PWA 使用完整离线快照，不提供在线浏览模式。首次完整初始�
 ## 17. 测试与协作
 
 测试精简、风险优先：季度 projection、TV/Movie/continuing、结构化国家 token、标签/来源、少量真实 Fixture、
-SQLite upsert/黑名单引用、静态构建/链接、增量 rollback、localhost Pages 子路径、PWA 初始化/断网/
-失败保旧版、发布边界。
+SQLite upsert/黑名单引用、静态构建/链接、增量 rollback、localhost Pages 子路径、PWA 在线浏览/
+quarter 离线下载/断网续传/失败保留已完成内容、发布边界。
 
 不追求覆盖率数字，不做大规模浏览器矩阵和低价值 UI 自动化。
 

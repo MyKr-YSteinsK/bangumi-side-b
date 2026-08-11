@@ -6,6 +6,9 @@ api_concurrency = 3
 request_timeout_seconds = 20
 max_retries = 3
 
+# LEGACY-ONLY: audit/doctor/release compatibility. Clean Sync reads only
+# [filters]/[sync]; clean Build and Frontend do not consume the sections below.
+# Remove these fields with the legacy loaders in Plan 20.
 [scope]
 release_quarters = ["2026-04"]
 formats = ["tv"]

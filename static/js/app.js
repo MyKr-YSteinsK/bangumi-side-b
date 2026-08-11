@@ -186,6 +186,19 @@
     return candidates.find((record) => record.appearance === "premiere") || candidates[0] || null;
   }
 
+  function appearanceLabel(value) {
+    return value === "continuing" ? "续播" : "首播";
+  }
+
+  function sourceLabel(value) {
+    return value && value !== "unknown" ? value : "来源未知";
+  }
+
+  function normalizeSectionFilters(state) {
+    const allowed = state.media === "movie" ? ["premiere"] : ["premiere", "continuing"];
+    state.filters.sections = state.filters.sections.filter((value) => allowed.includes(value));
+  }
+
   const api = Object.freeze({
     PAGE_SIZES,
     SORTS,
@@ -203,6 +216,9 @@
     applyPipeline,
     scopeCounts,
     selectedRecord,
+    appearanceLabel,
+    sourceLabel,
+    normalizeSectionFilters,
   });
   window.BsbArchive = api;
 })();
@@ -219,7 +235,7 @@
     scope: { kind: "quarter", value: quarterRoot.dataset.quarter || "" },
   });
   const rows = [...quarterRoot.querySelectorAll(".subject-row")];
-  const rowByKey = new Map(rows.map((row) => [row.dataset.recordKey, row]));
+  let recordByKey = new Map();
   const sections = [...quarterRoot.querySelectorAll("[data-list-section]")];
   const scopePanel = quarterRoot.querySelector("[data-scope-panel]");
   const detailPanel = quarterRoot.querySelector("[data-detail-panel]");
@@ -290,7 +306,7 @@
     const visible = new Set(result.pageRecords.map((record) => record.key));
     const position = new Map(result.all.map((record, index) => [record.key, index + 1]));
     for (const row of rows) {
-      const record = records.find((item) => item.key === row.dataset.recordKey);
+      const record = recordByKey.get(row.dataset.recordKey);
       const show = record && visible.has(record.key);
       row.hidden = !show;
       row.classList.toggle("is-selected", Boolean(record && state.selectedOccurrence === record.key));
@@ -357,9 +373,9 @@
     activeFilters.replaceChildren();
     const values = [
       ...(state.query ? [{ label: `搜索：${state.query}`, type: "query", value: state.query }] : []),
-      ...state.filters.sources.map((value) => ({ label: `来源：${value}`, type: "sources", value })),
+      ...state.filters.sources.map((value) => ({ label: `来源：${archive.sourceLabel(value)}`, type: "sources", value })),
       ...state.filters.tags.map((value) => ({ label: `标签：${value}`, type: "tags", value })),
-      ...state.filters.sections.map((value) => ({ label: `分区：${value}`, type: "sections", value })),
+      ...state.filters.sections.map((value) => ({ label: `分区：${archive.appearanceLabel(value)}`, type: "sections", value })),
     ];
     activeFilters.hidden = values.length === 0;
     for (const item of values) {
@@ -418,6 +434,16 @@
     if (removeHash) setHash(null, true);
   }
 
+  function closeFilter() {
+    const result = archive.applyPipeline(records, state);
+    const selected = archive.selectedRecord(records, state.selectedSubjectId, state.selectedOccurrence);
+    if (selected && result.all.some((record) => record.key === selected.key)) {
+      state.workspaceMode = "detail";
+    } else {
+      clearSelection(true);
+    }
+  }
+
   function detailHtml(record) {
     const aliases = Array.isArray(record.aliases) ? record.aliases : [];
     const shownAliases = aliases.slice(0, 3);
@@ -428,20 +454,23 @@
       : `<div class="detail-cover detail-cover--missing"><span>ARCHIVE</span></div>`;
     const tags = (record.allowed_tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
     const summaryText = record.display_summary || record.summary;
+    const facts = [
+      record.quarter ? ["播出季度", record.quarter] : null,
+      record.premiere_quarter ? ["首播季度", record.premiere_quarter] : null,
+      record.episode_count !== null && record.episode_count !== undefined ? ["集数", record.episode_count] : null,
+      record.air_date ? ["播出日期", record.air_date] : null,
+      record.end_date ? ["结束日期", record.end_date] : null,
+      ["评分", record.score ?? record.rating_score ?? "—", "detail-score"],
+      record.rating_count !== null && record.rating_count !== undefined ? ["评分人数", record.rating_count] : null,
+      ["来源", archive.sourceLabel(record.source)],
+    ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");
     return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="关闭详情">×</button>
       <p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}</p>
       <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>
       ${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}
       <p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
-      <dl class="detail-facts"><div><dt>播出季度</dt><dd>${esc(record.quarter)}</dd></div>
-      <div><dt>首播季度</dt><dd>${esc(record.premiere_quarter || record.quarter || "—")}</dd></div>
-      <div><dt>集数</dt><dd>${esc(record.episode_count ?? "—")}</dd></div>
-      <div><dt>播出日期</dt><dd>${esc(record.air_date || "—")}</dd></div>
-      <div><dt>结束日期</dt><dd>${esc(record.end_date || "—")}</dd></div>
-      <div><dt>评分</dt><dd class="detail-score">${record.score ?? record.rating_score ?? "—"}</dd></div>
-      <div><dt>评分人数</dt><dd>${esc(record.rating_count ?? "—")}</dd></div>
-      <div><dt>来源</dt><dd>${esc(record.source || "unknown")}</dd></div></dl>
-      ${record.appearance === "continuing" ? `<p class="detail-continuing">当前 appearance：continuing · premiere ${esc(record.premiere_quarter || "—")}</p>` : ""}
+      <dl class="detail-facts">${facts}</dl>
+      ${record.appearance === "continuing" ? `<p class="detail-continuing">当前归档：续播${record.premiere_quarter ? ` · 首播 ${esc(record.premiere_quarter)}` : ""}</p>` : ""}
       ${shownAliases.length ? `<section class="detail-section"><h3>别名</h3><div class="detail-tags">${shownAliases.map((alias) => `<span class="tag">${esc(alias)}</span>`).join("")}${moreAliases ? `<span class="detail-more">+ 另外 ${moreAliases} 个标题</span>` : ""}</div></section>` : ""}
       ${tags ? `<section class="detail-section"><h3>标签</h3><div class="detail-tags">${tags}</div></section>` : ""}
       ${summaryText ? `<section class="detail-section detail-summary"><h3>简介</h3><p>${esc(summaryText).replaceAll("\n", "<br>")}</p></section>` : ""}
@@ -495,6 +524,7 @@
       return;
     }
     if (candidate.media === "MOVIE") state.media = "movie";
+    archive.normalizeSectionFilters(state);
     const result = archive.applyPipeline(records, state);
     const index = result.all.findIndex((record) => record.key === candidate.key);
     if (index >= 0) state.page = Math.floor(index / state.pageSize) + 1;
@@ -512,6 +542,7 @@
     quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
       button.addEventListener("click", () => {
         state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv";
+        archive.normalizeSectionFilters(state);
         state.page = 1;
         clearSelection(true);
         render();
@@ -547,12 +578,7 @@
     });
     quarterRoot.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
       if (state.workspaceMode === "filter") {
-        const result = archive.applyPipeline(records, state);
-        const selected = archive.selectedRecord(records, state.selectedSubjectId, state.selectedOccurrence);
-        state.workspaceMode = selected && result.all.some((record) => record.key === selected.key)
-          ? "detail"
-          : "scope";
-        if (state.workspaceMode === "scope") clearSelection(true);
+        closeFilter();
       } else {
         state.workspaceMode = "filter";
       }
@@ -568,7 +594,7 @@
       render();
     });
     rows.forEach((row) => row.querySelector("[data-open-subject]")?.addEventListener("click", () => {
-      selectRecord(records.find((record) => record.key === row.dataset.recordKey));
+      selectRecord(recordByKey.get(row.dataset.recordKey));
     }));
     window.addEventListener("popstate", openHash);
     window.addEventListener("hashchange", openHash);
@@ -600,7 +626,12 @@
       for (const value of values) {
         const label = document.createElement("label");
         label.className = "filter-option";
-        label.dataset.filterOption = archive.normalize(value);
+        const shown = group === "sections"
+          ? archive.appearanceLabel(value)
+          : group === "sources"
+            ? archive.sourceLabel(value)
+            : value;
+        label.dataset.filterOption = archive.normalize(shown);
         const input = document.createElement("input");
         input.type = "checkbox";
         input.checked = state.filters[group].includes(value);
@@ -609,16 +640,11 @@
             ? [...state.filters[group], value]
             : state.filters[group].filter((item) => item !== value);
           state.page = 1;
-          const selected = archive.selectedRecord(records, state.selectedSubjectId, state.selectedOccurrence);
-          const result = archive.applyPipeline(records, state);
-          if (selected && !result.all.some((record) => record.key === selected.key)) {
-            clearSelection(true);
-          }
           state.workspaceMode = "filter";
           render();
           renderFilterPanel();
         });
-        label.append(input, document.createTextNode(value));
+        label.append(input, document.createTextNode(shown));
         section.append(label);
       }
       filterPanel.append(section);
@@ -629,22 +655,12 @@
     applyButton.dataset.filterClose = "true";
     applyButton.textContent = `显示 ${archive.applyPipeline(records, state).total} 部`;
     applyButton.addEventListener("click", () => {
-      const result = archive.applyPipeline(records, state);
-      const selected = archive.selectedRecord(records, state.selectedSubjectId, state.selectedOccurrence);
-      state.workspaceMode = selected && result.all.some((record) => record.key === selected.key)
-        ? "detail"
-        : "scope";
-      if (state.workspaceMode === "scope") clearSelection(true);
+      closeFilter();
       render();
     });
     filterPanel.append(applyButton);
     filterPanel.querySelector("[data-filter-close]")?.addEventListener("click", () => {
-      const result = archive.applyPipeline(records, state);
-      const selected = archive.selectedRecord(records, state.selectedSubjectId, state.selectedOccurrence);
-      state.workspaceMode = selected && result.all.some((record) => record.key === selected.key)
-        ? "detail"
-        : "scope";
-      if (state.workspaceMode === "scope") clearSelection(true);
+      closeFilter();
       render();
     });
   }
@@ -666,6 +682,7 @@
       if (!response.ok) throw new Error("data unavailable");
       payload = await response.json();
       records = archive.recordsFromQuarter(payload);
+      recordByKey = new Map(records.map((record) => [record.key, record]));
       renderFilterPanel();
       render();
       openHash();
@@ -707,7 +724,7 @@
   let index = null;
   let records = [];
   let rows = [];
-  let rowByKey = new Map();
+  let recordByKey = new Map();
   let loadError = false;
 
   const esc = (value) => String(value ?? "")
@@ -728,6 +745,39 @@
     url.hash = "";
     if (replace) window.history.replaceState({}, "", url);
     else window.history.pushState({}, "", url);
+  }
+
+  function scopeFromLocation() {
+    const params = new URLSearchParams(window.location.search);
+    const year = params.get("year");
+    if (year && (index?.years || []).map(String).includes(year)) {
+      return { kind: "year", value: year };
+    }
+    const range = normalRange(params.get("from"), params.get("to"));
+    if (params.has("from") && params.has("to") && range) {
+      return { kind: "range", value: range };
+    }
+    const latest = String(index?.latest_quarter || "").slice(0, 4)
+      || String(Math.max(...(index?.years || [0])));
+    return { kind: "year", value: latest };
+  }
+
+  function sameScope(left, right) {
+    if (left.kind !== right.kind) return false;
+    if (left.kind === "range") {
+      return left.value?.from === right.value.from && left.value?.to === right.value.to;
+    }
+    return String(left.value) === String(right.value);
+  }
+
+  async function restoreArchiveLocation() {
+    if (!index) return;
+    const location = scopeFromLocation();
+    if (sameScope(state.scope, location) && records.length) {
+      openHash();
+      return;
+    }
+    await setScope(location.kind, location.value, false);
   }
 
   function setTab(kind) {
@@ -872,7 +922,7 @@
     content.append(original);
     const metadata = document.createElement("span");
     metadata.className = "subject-row__meta";
-    metadata.textContent = [record.media, record.episode_count ? `${record.episode_count}话` : "", record.air_date || "", record.source || "", record.quarter || ""]
+    metadata.textContent = [record.media, record.episode_count ? `${record.episode_count}话` : "", record.air_date || "", archive.sourceLabel(record.source), record.quarter || ""]
       .filter(Boolean).join(" · ");
     content.append(metadata);
     const tagList = document.createElement("span");
@@ -901,7 +951,6 @@
   function buildLists() {
     if (!selectors.list) return;
     selectors.list.replaceChildren();
-    rowByKey = new Map();
     const groups = [
       ["tv", "premiere", "本季度新番"],
       ["tv", "continuing", "跨季度续播"],
@@ -929,7 +978,6 @@
       list.className = "result-list";
       values.forEach((record, position) => {
         const row = createRow(record, position + 1);
-        rowByKey.set(record.key, row);
         list.append(row);
       });
       section.append(header, list);
@@ -966,11 +1014,21 @@
     }
   }
 
+  function closeFilter() {
+    const result = archive.applyPipeline(records, state);
+    const selected = archive.selectedRecord(records, state.selectedSubjectId, state.selectedOccurrence);
+    if (selected && result.all.some((record) => record.key === selected.key)) {
+      state.workspaceMode = "detail";
+    } else {
+      clearSelection(true);
+    }
+  }
+
   function renderRows(result) {
     const visible = new Set(result.pageRecords.map((record) => record.key));
     const position = new Map(result.all.map((record, item) => [record.key, item + 1]));
     rows.forEach((row) => {
-      const record = records.find((item) => item.key === row.dataset.recordKey);
+      const record = recordByKey.get(row.dataset.recordKey);
       row.hidden = !record || !visible.has(record.key);
       row.classList.toggle("is-selected", Boolean(record && record.key === state.selectedOccurrence));
       const number = row.querySelector(".subject-row__sequence");
@@ -1018,9 +1076,9 @@
     selectors.activeFilters.replaceChildren();
     const values = [
       ...(state.query ? [{ type: "query", value: state.query, label: `搜索：${state.query}` }] : []),
-      ...state.filters.sources.map((value) => ({ type: "sources", value, label: `来源：${value}` })),
+      ...state.filters.sources.map((value) => ({ type: "sources", value, label: `来源：${archive.sourceLabel(value)}` })),
       ...state.filters.tags.map((value) => ({ type: "tags", value, label: `标签：${value}` })),
-      ...state.filters.sections.map((value) => ({ type: "sections", value, label: `分区：${value}` })),
+      ...state.filters.sections.map((value) => ({ type: "sections", value, label: `分区：${archive.appearanceLabel(value)}` })),
     ];
     selectors.activeFilters.hidden = values.length === 0;
     values.forEach((item) => {
@@ -1052,6 +1110,7 @@
     if (selectors.scopePanel) selectors.scopePanel.hidden = state.workspaceMode !== "scope";
     if (selectors.detailPanel) selectors.detailPanel.hidden = state.workspaceMode !== "detail";
     if (selectors.filterPanel) selectors.filterPanel.hidden = state.workspaceMode !== "filter";
+    root.dataset.workspaceMode = state.workspaceMode;
     const sortButton = root.querySelector("[data-sort-toggle]");
     if (sortButton) sortButton.textContent = archive.SORTS[state.sort];
     root.querySelectorAll("[data-media-mode]").forEach((button) => {
@@ -1077,10 +1136,20 @@
       : `<div class="detail-cover detail-cover--missing"><span>ARCHIVE</span></div>`;
     const tags = (record.allowed_tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
     const summary = record.display_summary || "";
+    const facts = [
+      record.quarter ? ["当前季度", record.quarter] : null,
+      record.premiere_quarter ? ["首播季度", record.premiere_quarter] : null,
+      record.episode_count !== null && record.episode_count !== undefined ? ["集数", record.episode_count] : null,
+      record.air_date ? ["播出日期", record.air_date] : null,
+      record.end_date ? ["结束日期", record.end_date] : null,
+      ["评分", record.score ?? "—", "detail-score"],
+      record.rating_count !== null && record.rating_count !== undefined ? ["评分人数", record.rating_count] : null,
+      ["来源", archive.sourceLabel(record.source)],
+    ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");
     return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="关闭详情">×</button><p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}</p>
       <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}<p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
-      <dl class="detail-facts"><div><dt>当前季度</dt><dd>${esc(record.quarter)}</dd></div><div><dt>首播季度</dt><dd>${esc(record.premiere_quarter || record.quarter || "—")}</dd></div><div><dt>集数</dt><dd>${esc(record.episode_count ?? "—")}</dd></div><div><dt>播出日期</dt><dd>${esc(record.air_date || "—")}</dd></div><div><dt>结束日期</dt><dd>${esc(record.end_date || "—")}</dd></div><div><dt>评分</dt><dd class="detail-score">${record.score ?? "—"}</dd></div><div><dt>评分人数</dt><dd>${esc(record.rating_count ?? "—")}</dd></div><div><dt>来源</dt><dd>${esc(record.source || "unknown")}</dd></div></dl>
-      ${record.appearance === "continuing" ? `<p class="detail-continuing">当前 appearance：continuing · premiere ${esc(record.premiere_quarter || "—")}</p>` : ""}
+      <dl class="detail-facts">${facts}</dl>
+      ${record.appearance === "continuing" ? `<p class="detail-continuing">当前归档：续播${record.premiere_quarter ? ` · 首播 ${esc(record.premiere_quarter)}` : ""}</p>` : ""}
       ${aliases.length ? `<section class="detail-section"><h3>别名</h3><div class="detail-tags">${aliases.slice(0, 3).map((alias) => `<span class="tag">${esc(alias)}</span>`).join("")}${aliases.length > 3 ? `<span class="detail-more">+ 另外 ${aliases.length - 3} 个标题</span>` : ""}</div></section>` : ""}
       ${tags ? `<section class="detail-section"><h3>标签</h3><div class="detail-tags">${tags}</div></section>` : ""}
       ${summary ? `<section class="detail-section detail-summary"><h3>简介</h3><p>${esc(summary).replaceAll("\n", "<br>")}</p></section>` : ""}
@@ -1122,7 +1191,13 @@
 
   function openHash() {
     const match = window.location.hash.match(/^#bgm-(\d+)$/);
-    if (!match || !records.length) return;
+    if (!match || !records.length) {
+      if (!match && state.selectedOccurrence !== null) {
+        clearSelection(false);
+        render();
+      }
+      return;
+    }
     const candidate = archive.selectedRecord(records, Number(match[1]));
     if (!candidate) {
       const url = new URL(window.location.href);
@@ -1131,6 +1206,7 @@
       return;
     }
     state.media = candidate.media === "MOVIE" ? "movie" : "tv";
+    archive.normalizeSectionFilters(state);
     const result = archive.applyPipeline(records, state);
     const position = result.all.findIndex((record) => record.key === candidate.key);
     if (position >= 0) state.page = Math.floor(position / state.pageSize) + 1;
@@ -1144,7 +1220,14 @@
       tags: [...new Set(records.flatMap((record) => record.allowed_tags))].sort(),
       sections: state.media === "tv" ? ["premiere", "continuing"] : ["premiere"],
     };
-    selectors.filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2>`;
+    selectors.filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
+    const optionSearch = selectors.filterPanel.querySelector("[data-filter-option-search]");
+    optionSearch?.addEventListener("input", () => {
+      const query = archive.normalize(optionSearch.value);
+      selectors.filterPanel.querySelectorAll("[data-filter-option]").forEach((option) => {
+        option.hidden = option.dataset.filterOption?.includes(query) === false;
+      });
+    });
     Object.entries(options).forEach(([group, values]) => {
       if (values.length <= 1) return;
       const fieldset = document.createElement("fieldset");
@@ -1155,20 +1238,23 @@
       values.forEach((value) => {
         const label = document.createElement("label");
         label.className = "filter-option";
+        const shown = group === "sections"
+          ? archive.appearanceLabel(value)
+          : group === "sources"
+            ? archive.sourceLabel(value)
+            : value;
+        label.dataset.filterOption = archive.normalize(shown);
         const input = document.createElement("input");
         input.type = "checkbox";
         input.checked = state.filters[group].includes(value);
         input.addEventListener("change", () => {
           state.filters[group] = input.checked ? [...state.filters[group], value] : state.filters[group].filter((item) => item !== value);
           state.page = 1;
-          const selected = archive.selectedRecord(records, state.selectedSubjectId, state.selectedOccurrence);
-          const result = archive.applyPipeline(records, state);
-          if (selected && !result.all.some((item) => item.key === selected.key)) clearSelection(true);
           state.workspaceMode = "filter";
           render();
           renderFilterPanel();
         });
-        label.append(input, document.createTextNode(value));
+        label.append(input, document.createTextNode(shown));
         fieldset.append(label);
       });
       selectors.filterPanel.append(fieldset);
@@ -1177,9 +1263,9 @@
     apply.type = "button";
     apply.className = "filter-apply-mobile button button--ink";
     apply.textContent = `显示 ${archive.applyPipeline(records, state).total} 部`;
-    apply.addEventListener("click", () => { state.workspaceMode = "scope"; render(); });
+    apply.addEventListener("click", () => { closeFilter(); render(); });
     selectors.filterPanel.append(apply);
-    selectors.filterPanel.querySelector("[data-filter-close]")?.addEventListener("click", () => { state.workspaceMode = "scope"; render(); });
+    selectors.filterPanel.querySelector("[data-filter-close]")?.addEventListener("click", () => { closeFilter(); render(); });
   }
 
   function bindControls() {
@@ -1195,8 +1281,8 @@
       pageSize.addEventListener("change", () => { state.pageSize = archive.writePageSize(pageSize.value); state.page = 1; clearSelection(true); render(); });
     }
     selectors.search?.addEventListener("input", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); });
-    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
-    root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => { state.workspaceMode = state.workspaceMode === "filter" ? "scope" : "filter"; renderFilterPanel(); render(); });
+    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; archive.normalizeSectionFilters(state); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
+    root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => { if (state.workspaceMode === "filter") closeFilter(); else state.workspaceMode = "filter"; renderFilterPanel(); render(); });
     root.querySelector("[data-sort-toggle]")?.addEventListener("click", () => {
       if (!selectors.sortPopover) return;
       selectors.sortPopover.hidden = !selectors.sortPopover.hidden;
@@ -1221,10 +1307,15 @@
         setScope("year", value);
       }
       if (kind === "range") {
-        const from = Number(root.querySelector("[data-archive-from]")?.value);
-        const to = Number(root.querySelector("[data-archive-to]")?.value);
-        const range = normalRange(from, to);
-        if (range) setScope("range", range);
+        const fallback = Number(
+          state.scope.kind === "year"
+            ? state.scope.value
+            : String(index?.latest_quarter || "").slice(0, 4)
+        );
+        const from = root.querySelector("[data-archive-from]");
+        const to = root.querySelector("[data-archive-to]");
+        if (from && !from.value) from.value = String(fallback);
+        if (to && !to.value) to.value = String(fallback);
       }
     }));
     root.querySelector("[data-archive-year-select]")?.addEventListener("change", (event) => setScope("year", event.target.value));
@@ -1240,7 +1331,7 @@
       root.querySelector("[data-archive-to]").value = String(value.to);
       setScope("range", value);
     }));
-    window.addEventListener("popstate", openHash);
+    window.addEventListener("popstate", () => { void restoreArchiveLocation(); });
     window.addEventListener("hashchange", openHash);
   }
 
@@ -1267,6 +1358,7 @@
     loadError = false;
     try {
       records = await loadCatalogs(yearsForScope(kind, normalized));
+      recordByKey = new Map(records.map((record) => [record.key, record]));
       buildLists();
       renderFilterPanel();
       if (selectors.scopeLabel) selectors.scopeLabel.textContent = kind === "range" ? `RANGE / ${normalized.from}—${normalized.to}` : `YEAR / ${normalized}`;
@@ -1285,17 +1377,8 @@
       index = await response.json();
       renderQuarterSelector();
       renderYearSelector();
-      const params = new URLSearchParams(window.location.search);
-      const year = params.get("year");
-      const from = params.get("from");
-      const to = params.get("to");
       bindControls();
-      if (year && (index.years || []).map(String).includes(year)) await setScope("year", year, false);
-      else if (from && to && normalRange(from, to)) await setScope("range", normalRange(from, to), false);
-      else {
-        const latestYear = String(index.latest_quarter || "").slice(0, 4) || String(Math.max(...(index.years || [0])));
-        await setScope("year", latestYear, false);
-      }
+      await restoreArchiveLocation();
     } catch {
       loadError = true;
       setTab("quarter");

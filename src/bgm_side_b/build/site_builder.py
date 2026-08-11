@@ -1105,7 +1105,7 @@ def _root_html(archive: ArchiveIndexProjection) -> bytes:
 def _archive_html(archive: ArchiveIndexProjection) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "ARCHIVE")
-        + '<main class="archive-page" data-archive-app data-page="archive" '
+        + '<main class="archive-page" data-archive-app data-page="archive" data-workspace-mode="scope" '
         'data-archive-index-url="../data/archive-index.json" data-site-root="../">'
         '<section class="archive-intro">'
         '<p class="archive-intro__code">ARCHIVE / INDEX</p>'
@@ -1207,7 +1207,7 @@ def _quarter_html(quarter: QuarterProjection) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", f"QUARTER / {quarter.quarter}")
         + f'<main class="quarter-page season-{html.escape(quarter.quarter[-2:])}" '
-        f'data-archive-app data-page="quarter" data-quarter="{label}" '
+        f'data-archive-app data-page="quarter" data-quarter="{label}" data-workspace-mode="scope" '
         f'data-data-url="../data/quarters/{label}.json" data-site-root="../" '
         f'data-count-tv="{counts["tv"]}" data-count-movie="{counts["movie"]}" '
         f'data-count-premiere="{counts["premiere"]}" data-count-continuing="{counts["continuing"]}">'
@@ -1284,6 +1284,7 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
     original = str(value.get("original_title") or "")
     aliases = value.get("aliases") if isinstance(value.get("aliases"), list) else []
     source = str(value.get("source") or "unknown")
+    source_label = "来源未知" if source == "unknown" else source
     tags = value.get("allowed_tags") if isinstance(value.get("allowed_tags"), list) else []
     search = " ".join([preferred, original, *(str(alias) for alias in aliases), str(subject_id)])
     tag_value = "|".join(str(tag) for tag in tags)
@@ -1313,7 +1314,7 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
         f'<span class="subject-row__meta">{html.escape(media)}'
         f'{(" · " + html.escape(str(value.get("episode_count")) + "话") if value.get("episode_count") else "")}'
         f'{(" · " + html.escape(air_date) if air_date else "")}'
-        f'{(" · " + html.escape(source) if source else "")}'
+        f'{(" · " + html.escape(source_label) if source_label else "")}'
         f'{(" · " + html.escape(quarter) if quarter and not isinstance(item, SubjectProjection) else "")}</span>'
         f'<span class="subject-row__tags">{tags_html}</span></span>'
         f'<span class="subject-row__score"><b>{score_label}</b>'

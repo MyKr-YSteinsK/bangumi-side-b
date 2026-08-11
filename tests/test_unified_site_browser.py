@@ -206,8 +206,10 @@ def test_mobile_scope_detail_and_filter_keep_the_context_rail(
     assert root.get_attribute("data-workspace-mode") == "detail"
 
     page.locator("[data-filter-toggle]").click()
-    page.get_by_label("首播").check()
+    assert page.get_by_label("首播").count() == 0
+    assert page.get_by_label("续播").count() == 0
     page.get_by_role("button", name="关闭筛选").click()
+    page.get_by_role("button", name="关闭详情").click()
     assert root.get_attribute("data-workspace-mode") == "scope"
     assert page.url.endswith("/2026-07/index.html")
 
@@ -220,7 +222,7 @@ def test_filter_media_switch_and_archive_detail_history(
     page.set_default_timeout(8000)
     _open_quarter(page, site_server, (1440, 900))
     page.locator("[data-filter-toggle]").click()
-    page.get_by_label("续播").check()
+    assert page.get_by_label("续播").count() == 0
     page.get_by_role("button", name="关闭筛选").click()
     page.locator('[data-media-mode="movie"]').click()
     assert "1 / 1" in page.locator("[data-results-summary]").inner_text()

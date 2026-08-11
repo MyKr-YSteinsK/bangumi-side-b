@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from bgm_side_b.build.site_builder import BuildError, UnifiedSiteBuilder
 from bgm_side_b.config import load_tag_rules
@@ -188,6 +189,117 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert second.patch.written == ()
     assert second.dirty.skipped_quarters == ("2026-04", "2026-07")
     assert first.report_path.is_file()
+
+
+def test_unified_pwa_shell_is_complete_stable_and_prefix_safe(tmp_path: Path) -> None:
+    builder, _ = _build_fixture(tmp_path)
+    builder.build()
+    site = tmp_path / "dist" / "site"
+    expected = {
+        "sw.js",
+        "manifest.webmanifest",
+        "assets/pwa.js",
+        "icons/pwa-192.png",
+        "icons/pwa-512.png",
+        "icons/pwa-maskable-512.png",
+        "icons/favicon.svg",
+        "data/pwa-shell.json",
+    }
+    state = json.loads((tmp_path / "workspace" / "build-state.json").read_text("utf-8"))
+    assert expected <= set(state["artifacts"])
+
+    manifest = json.loads((site / "manifest.webmanifest").read_text("utf-8"))
+    assert manifest["id"] == manifest["start_url"] == manifest["scope"] == "./"
+    assert manifest["display"] == "standalone"
+    assert any(icon.get("purpose") == "maskable" for icon in manifest["icons"])
+    for relative, dimensions in (
+        ("icons/pwa-192.png", (192, 192)),
+        ("icons/pwa-512.png", (512, 512)),
+        ("icons/pwa-maskable-512.png", (512, 512)),
+    ):
+        with Image.open(site / relative) as icon:
+            assert icon.size == dimensions
+
+    shell = json.loads((site / "data" / "pwa-shell.json").read_text("utf-8"))
+    shell_urls = {item["url"] for item in shell["resources"]}
+    assert shell["schema"] == 1
+    assert expected - {"sw.js", "data/pwa-shell.json"} <= shell_urls
+    assert "index.html" in shell_urls
+    assert "archive/index.html" in shell_urls
+    assert "settings/index.html" in shell_urls
+    assert "data/archive-index.json" not in shell_urls
+    assert not any(
+        url.startswith(("2026-", "data/quarters/", "covers/"))
+        for url in shell_urls
+    )
+    assert shell["revision"] in (site / "sw.js").read_text("utf-8")
+
+    for relative in (
+        "index.html",
+        "archive/index.html",
+        "settings/index.html",
+        "2026-07/index.html",
+    ):
+        page = (site / relative).read_text("utf-8")
+        assert 'rel="manifest"' in page
+        assert 'name="theme-color"' in page
+        assert 'rel="icon"' in page
+        assert "assets/pwa.js?v=" in page
+        assert "assets/app.css?v=" in page
+        assert "assets/app.js?v=" in page
+    root = (site / "index.html").read_text("utf-8")
+    assert "http-equiv=\"refresh\"" not in root
+    assert "2026-07" not in root
+    assert 'data-archive-index-url="data/archive-index.json"' in root
+
+
+def test_pwa_shell_revision_changes_only_with_shell_inputs(tmp_path: Path) -> None:
+    builder, database = _build_fixture(tmp_path)
+    isolated_root = tmp_path / "project"
+    shutil.copytree(ROOT / "static", isolated_root / "static")
+    builder.root = isolated_root.resolve()
+    builder.build()
+    site = tmp_path / "dist" / "site"
+
+    def shell_state() -> tuple[str, bytes]:
+        shell = json.loads((site / "data" / "pwa-shell.json").read_text("utf-8"))
+        return shell["revision"], (site / "sw.js").read_bytes()
+
+    initial = shell_state()
+    repository = SubjectRepository(database)
+    subject = repository.get_subject_facts(202)
+    assert subject is not None
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection,
+            replace(subject, subject=replace(subject.subject, rating_score=9.2)),
+        )
+    builder.build()
+    assert shell_state() == initial
+
+    css = isolated_root / "static" / "css" / "site.css"
+    css.write_text(
+        css.read_text("utf-8") + "\n/* shell revision test */\n",
+        encoding="utf-8",
+    )
+    builder.build()
+    after_css = shell_state()
+    assert after_css[0] != initial[0]
+    assert after_css[1] != initial[1]
+
+    manifest = isolated_root / "static" / "pwa" / "manifest.webmanifest"
+    manifest.write_text(
+        manifest.read_text("utf-8").replace("Side B", "BGM B"),
+        encoding="utf-8",
+    )
+    builder.build()
+    after_manifest = shell_state()
+    assert after_manifest[0] != after_css[0]
+
+    icon = isolated_root / "static" / "icons" / "pwa-192.png"
+    icon.write_bytes(icon.read_bytes() + b"test")
+    builder.build()
+    assert shell_state()[0] != after_manifest[0]
 
 
 def test_quarter_output_uses_master_detail_shell_and_static_rows(

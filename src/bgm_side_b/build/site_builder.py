@@ -61,6 +61,31 @@ class BuildBlocked(BuildError):
 
 
 _HREF_RE = re.compile(r"(?:href|src)=\"([^\"]+)\"")
+_THEME_COLOR = "#17201d"
+_PWA_SOURCE_PATHS = {
+    "assets/app.css": "static/css/site.css",
+    "assets/app.js": "static/js/app.js",
+    "assets/pwa.js": "static/js/pwa.js",
+    "manifest.webmanifest": "static/pwa/manifest.webmanifest",
+    "icons/pwa-192.png": "static/icons/pwa-192.png",
+    "icons/pwa-512.png": "static/icons/pwa-512.png",
+    "icons/pwa-maskable-512.png": "static/icons/pwa-maskable-512.png",
+    "icons/favicon.svg": "static/icons/favicon.svg",
+    "sw.js": "static/pwa/sw.js",
+}
+_SHELL_RESOURCE_PATHS = (
+    "index.html",
+    "archive/index.html",
+    "settings/index.html",
+    "assets/app.css",
+    "assets/app.js",
+    "assets/pwa.js",
+    "manifest.webmanifest",
+    "icons/pwa-192.png",
+    "icons/pwa-512.png",
+    "icons/pwa-maskable-512.png",
+    "icons/favicon.svg",
+)
 
 
 class UnifiedSiteBuilder:
@@ -136,12 +161,19 @@ class UnifiedSiteBuilder:
             quarter_projections = self._project_quarters(facts, projection_labels)
             years = self._project_years(quarter_projections)
             archive = project_archive_index(quarter_projections)
-            css, js = self._shared_assets()
+            sources = self._shared_assets()
+            css = sources["assets/app.css"]
+            js = sources["assets/app.js"]
             shared = shared_fingerprint(
                 stylesheet=css,
                 script=js,
                 tag_rules=self.tag_rules,
                 excluded_subject_ids=self.excluded_subject_ids,
+                pwa_assets={
+                    path: content
+                    for path, content in sources.items()
+                    if path not in {"assets/app.css", "assets/app.js"}
+                },
             )
             quarter_projections, years, archive, current = assign_fingerprints(
                 quarter_projections,
@@ -170,8 +202,7 @@ class UnifiedSiteBuilder:
                 quarter_projections,
                 years,
                 archive,
-                css,
-                js,
+                sources,
                 retained=retained,
                 previous=previous,
                 dirty=dirty,
@@ -498,13 +529,12 @@ class UnifiedSiteBuilder:
             archive_revision,
         )
 
-    def _shared_assets(self) -> tuple[bytes, bytes]:
-        css_path = self.root / "static" / "css" / "site.css"
-        js_path = self.root / "static" / "js" / "app.js"
-        assets: list[bytes] = []
-        for path in (css_path, js_path):
+    def _shared_assets(self) -> dict[str, bytes]:
+        assets: dict[str, bytes] = {}
+        for output, source in _PWA_SOURCE_PATHS.items():
+            path = self.root / Path(source)
             try:
-                assets.append(path.read_bytes())
+                assets[output] = path.read_bytes()
             except OSError as error:
                 try:
                     relative = path.relative_to(self.root).as_posix()
@@ -513,7 +543,7 @@ class UnifiedSiteBuilder:
                 raise BuildError(
                     f"required frontend source asset is unavailable: {relative}"
                 ) from error
-        return assets[0], assets[1]
+        return assets
 
     def _plan_site(
         self,
@@ -521,8 +551,7 @@ class UnifiedSiteBuilder:
         quarters: tuple[QuarterProjection, ...],
         years: tuple[YearCatalogProjection, ...],
         archive: ArchiveIndexProjection,
-        css: bytes,
-        js: bytes,
+        sources: Mapping[str, bytes],
         *,
         retained: tuple[str, ...],
         previous: BuildState | None,
@@ -564,24 +593,57 @@ class UnifiedSiteBuilder:
                 value,
             )
 
-        generated("assets/app.css", "shared", lambda: css, dirty.shared_dirty)
-        generated("assets/app.js", "shared", lambda: js, dirty.shared_dirty)
+        for path in (
+            "assets/app.css",
+            "assets/app.js",
+            "assets/pwa.js",
+            "manifest.webmanifest",
+            "icons/pwa-192.png",
+            "icons/pwa-512.png",
+            "icons/pwa-maskable-512.png",
+            "icons/favicon.svg",
+        ):
+            generated(
+                path,
+                "shared",
+                lambda path=path: sources[path],
+                dirty.shared_dirty,
+            )
+        revisions = {
+            path: specs[path].content_hash or ""
+            for path in ("assets/app.css", "assets/app.js", "assets/pwa.js")
+        }
         generated(
             "index.html",
             "root",
-            lambda: _root_html(archive),
-            dirty.archive_dirty or dirty.shared_dirty,
+            lambda: _root_html(revisions),
+            dirty.shared_dirty,
         )
         generated(
             "archive/index.html",
             "archive-shell",
-            lambda: _archive_html(archive),
-            dirty.archive_dirty or dirty.shared_dirty,
+            lambda: _archive_html(revisions),
+            dirty.shared_dirty,
         )
         generated(
             "settings/index.html",
             "shared-shell",
-            _settings_html,
+            lambda: _settings_html(revisions),
+            dirty.shared_dirty,
+        )
+        shell = _pwa_shell_bytes(specs)
+        shell_payload = json.loads(shell.decode("utf-8"))
+        shell_revision = str(shell_payload["revision"])
+        generated(
+            "data/pwa-shell.json",
+            "pwa-shell",
+            lambda: shell,
+            dirty.shared_dirty,
+        )
+        generated(
+            "sw.js",
+            "service-worker",
+            lambda: _service_worker_bytes(sources["sw.js"], shell_revision),
             dirty.shared_dirty,
         )
         generated(
@@ -605,7 +667,7 @@ class UnifiedSiteBuilder:
             generated(
                 f"{label}/index.html",
                 "quarter-html",
-                lambda quarter=quarter: _quarter_html(quarter),
+                lambda quarter=quarter: _quarter_html(quarter, revisions),
                 label in quarter_dirty or dirty.shared_dirty,
             )
             generated(
@@ -794,7 +856,15 @@ def _validate_site_mapping(
         "settings/index.html",
         "assets/app.css",
         "assets/app.js",
+        "assets/pwa.js",
+        "manifest.webmanifest",
+        "sw.js",
+        "data/pwa-shell.json",
         "data/archive-index.json",
+        "icons/pwa-192.png",
+        "icons/pwa-512.png",
+        "icons/pwa-maskable-512.png",
+        "icons/favicon.svg",
     }
     missing = sorted(required - set(mapping))
     if missing:
@@ -805,6 +875,12 @@ def _validate_site_mapping(
     ):
         raise BuildError("forbidden detail or entity artifact exists")
     archive = _load_json(mapping, "data/archive-index.json")
+    _validate_manifest_payload(
+        _load_json(mapping, "manifest.webmanifest")
+    )
+    _validate_pwa_shell_payload(
+        mapping["data/pwa-shell.json"], mapping, ArtifactPlan({}), Path(".")
+    )
     quarter_labels = {
         item["quarter"]
         for item in archive.get("quarters", [])
@@ -884,6 +960,10 @@ def _validate_dirty_mapping(
             _validate_archive_payload(content, plan, site)
         if path.startswith("data/offline/") and path.endswith(".json"):
             _validate_offline_payload(content, mapping, plan, site)
+        if path == "manifest.webmanifest":
+            _validate_manifest_payload(_load_json({path: content}, path))
+        if path == "data/pwa-shell.json":
+            _validate_pwa_shell_payload(content, mapping, plan, site)
 
 
 def _validate_scoped_site(
@@ -1021,6 +1101,73 @@ def _validate_offline_payload(
             raise BuildError(f"offline resource size is invalid: {url}")
 
 
+def _validate_manifest_payload(payload: Mapping[str, object]) -> None:
+    for key in ("id", "start_url", "scope"):
+        if payload.get(key) != "./":
+            raise BuildError(f"web app manifest {key} must be relative to site scope")
+    if payload.get("display") != "standalone":
+        raise BuildError("web app manifest display is invalid")
+    icons = payload.get("icons")
+    if not isinstance(icons, list) or len(icons) < 3:
+        raise BuildError("web app manifest icons are invalid")
+    if not any(
+        isinstance(icon, dict) and icon.get("purpose") == "maskable"
+        for icon in icons
+    ):
+        raise BuildError("web app manifest maskable icon is missing")
+    for icon in icons:
+        if not isinstance(icon, dict):
+            raise BuildError("web app manifest icon is invalid")
+        source = icon.get("src")
+        if not isinstance(source, str) or source.startswith(("/", "http:", "https:")):
+            raise BuildError("web app manifest icon URL is unsafe")
+
+
+def _validate_pwa_shell_payload(
+    content: bytes,
+    mapping: Mapping[str, bytes],
+    plan: ArtifactPlan,
+    site: Path,
+) -> None:
+    payload = _load_json({"pwa-shell.json": content}, "pwa-shell.json")
+    resources = payload.get("resources")
+    if payload.get("schema") != 1 or not isinstance(resources, list):
+        raise BuildError("PWA shell manifest is invalid")
+    if [item.get("url") for item in resources if isinstance(item, dict)] != list(
+        _SHELL_RESOURCE_PATHS
+    ):
+        raise BuildError("PWA shell resources are invalid")
+    expected_revision = fingerprint(
+        [
+            (item.get("url"), item.get("content_hash"), item.get("size_bytes"))
+            for item in resources
+            if isinstance(item, dict)
+        ]
+    )
+    if payload.get("revision") != expected_revision:
+        raise BuildError("PWA shell revision is invalid")
+    for item in resources:
+        if not isinstance(item, dict):
+            raise BuildError("PWA shell resource is invalid")
+        relative = item.get("url")
+        if not isinstance(relative, str):
+            raise BuildError("PWA shell resource URL is invalid")
+        if relative in mapping:
+            expected_hash = hashlib.sha256(mapping[relative]).hexdigest()
+            expected_size = len(mapping[relative])
+        else:
+            spec = plan.specs.get(relative)
+            target = site / Path(relative)
+            if spec is None and not target.is_file():
+                raise BuildError(f"PWA shell resource is missing: {relative}")
+            expected_hash = spec.content_hash if spec is not None else None
+            expected_size = spec.size_bytes if spec is not None else None
+        if expected_hash is not None and item.get("content_hash") != expected_hash:
+            raise BuildError(f"PWA shell resource hash is invalid: {relative}")
+        if expected_size is not None and item.get("size_bytes") != expected_size:
+            raise BuildError(f"PWA shell resource size is invalid: {relative}")
+
+
 def _validate_plan_contract(
     plan: ArtifactPlan,
     quarters: tuple[QuarterProjection, ...],
@@ -1033,7 +1180,15 @@ def _validate_plan_contract(
         "settings/index.html",
         "assets/app.css",
         "assets/app.js",
+        "assets/pwa.js",
+        "manifest.webmanifest",
+        "sw.js",
+        "data/pwa-shell.json",
         "data/archive-index.json",
+        "icons/pwa-192.png",
+        "icons/pwa-512.png",
+        "icons/pwa-maskable-512.png",
+        "icons/favicon.svg",
     }
     missing = sorted(required - set(plan.specs))
     if missing:
@@ -1088,20 +1243,31 @@ def _quarter_items(payload: Mapping[str, object]) -> tuple[Mapping[str, object],
     return tuple(values)
 
 
-def _root_html(archive: ArchiveIndexProjection) -> bytes:
-    latest = archive.latest_quarter
-    if latest:
-        body = (
-            f'<meta http-equiv="refresh" content="0;url={latest}/index.html">'
-            f'<p class="root-redirect"><a href="{latest}/index.html">'
-            f'Open latest quarter {html.escape(latest)}</a></p>'
-        )
-    else:
-        body = '<p class="root-redirect" data-empty-archive>Archive is empty.</p>'
-    return _page("Bangumi Side B", body, "assets/app.css", "assets/app.js")
+def _root_html(revisions: Mapping[str, str]) -> bytes:
+    body = (
+        '<main class="root-entry" data-root-loading><p class="archive-intro__code">'
+        'ARCHIVE / LATEST</p><h1>正在打开最新季度…</h1></main>'
+        '<main class="root-entry" data-root-fallback hidden><p>当前无法读取季度索引。</p>'
+        '<p><a href="archive/index.html">打开 Archive</a> · '
+        '<a href="settings/index.html">打开 Settings</a></p></main>'
+    )
+    return _page(
+        "Bangumi Side B",
+        body,
+        "assets/app.css",
+        "assets/app.js",
+        "assets/pwa.js",
+        "manifest.webmanifest",
+        "icons/favicon.svg",
+        revisions,
+        data_attrs={
+            "data-page": "root",
+            "data-archive-index-url": "data/archive-index.json",
+        },
+    )
 
 
-def _archive_html(archive: ArchiveIndexProjection) -> bytes:
+def _archive_html(revisions: Mapping[str, str]) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "ARCHIVE")
         + '<main class="archive-page" data-archive-app data-page="archive" data-workspace-mode="scope" '
@@ -1162,12 +1328,16 @@ def _archive_html(archive: ArchiveIndexProjection) -> bytes:
         body,
         "../assets/app.css",
         "../assets/app.js",
+        "../assets/pwa.js",
+        "../manifest.webmanifest",
+        "../icons/favicon.svg",
+        revisions,
         body_class="season-archive",
         data_attrs={"data-page": "archive"},
     )
 
 
-def _settings_html() -> bytes:
+def _settings_html(revisions: Mapping[str, str]) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "SETTINGS")
         + '<main class="reference-page"><section class="archive-intro">'
@@ -1181,12 +1351,18 @@ def _settings_html() -> bytes:
         body,
         "../assets/app.css",
         "../assets/app.js",
+        "../assets/pwa.js",
+        "../manifest.webmanifest",
+        "../icons/favicon.svg",
+        revisions,
         body_class="season-archive",
         data_attrs={"data-page": "settings"},
     )
 
 
-def _quarter_html(quarter: QuarterProjection) -> bytes:
+def _quarter_html(
+    quarter: QuarterProjection, revisions: Mapping[str, str]
+) -> bytes:
     label = html.escape(quarter.quarter)
     sections = (
         ("tv", "premiere", "本季度新番", quarter.tv_premiere),
@@ -1243,6 +1419,10 @@ def _quarter_html(quarter: QuarterProjection) -> bytes:
         body,
         "../assets/app.css",
         "../assets/app.js",
+        "../assets/pwa.js",
+        "../manifest.webmanifest",
+        "../icons/favicon.svg",
+        revisions,
         body_class=f"season-{quarter.quarter[-2:]}",
         data_attrs={"data-page": "quarter"},
     )
@@ -1351,6 +1531,10 @@ def _page(
     body: str,
     css_href: str,
     js_href: str,
+    pwa_href: str,
+    manifest_href: str,
+    favicon_href: str,
+    revisions: Mapping[str, str],
     *,
     body_class: str = "",
     data_attrs: Mapping[str, str] | None = None,
@@ -1363,11 +1547,21 @@ def _page(
     content = (
         "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<meta name="theme-color" content="{_THEME_COLOR}">'
         f"<title>{html.escape(title)}</title>"
-        f'<link rel="stylesheet" href="{css_href}"></head>'
-        f"<body{class_attr}{attributes}>{body}<script src=\"{js_href}\" defer></script></body></html>"
+        f'<link rel="manifest" href="{manifest_href}">'
+        f'<link rel="icon" href="{favicon_href}" type="image/svg+xml">'
+        f'<link rel="stylesheet" href="{_revision_href(css_href, revisions["assets/app.css"])}"></head>'
+        f"<body{class_attr}{attributes}>{body}"
+        f'<script src="{_revision_href(js_href, revisions["assets/app.js"])}" defer></script>'
+        f'<script src="{_revision_href(pwa_href, revisions["assets/pwa.js"])}" defer></script>'
+        "</body></html>"
     )
     return content.encode("utf-8")
+
+
+def _revision_href(path: str, revision: str) -> str:
+    return f"{path}?v={revision}"
 
 
 def _quarter_label(quarter: Quarter) -> str:
@@ -1444,6 +1638,7 @@ def _offline_manifest_bytes(
         f"data/quarters/{label}.json",
         "assets/app.css",
         "assets/app.js",
+        "assets/pwa.js",
     ]
     required.extend(
         sorted(
@@ -1478,6 +1673,35 @@ def _offline_manifest_bytes(
             "resources": resources,
         }
     )
+
+
+def _pwa_shell_bytes(specs: Mapping[str, ArtifactSpec]) -> bytes:
+    resources: list[dict[str, object]] = []
+    for relative in _SHELL_RESOURCE_PATHS:
+        spec = specs.get(relative)
+        if spec is None or spec.content_hash is None or spec.size_bytes is None:
+            raise ProjectionError(f"PWA shell resource metadata is missing: {relative}")
+        resources.append(
+            {
+                "url": relative,
+                "content_hash": spec.content_hash,
+                "size_bytes": spec.size_bytes,
+            }
+        )
+    revision = fingerprint(
+        [
+            (item["url"], item["content_hash"], item["size_bytes"])
+            for item in resources
+        ]
+    )
+    return json_bytes({"schema": 1, "revision": revision, "resources": resources})
+
+
+def _service_worker_bytes(source: bytes, shell_revision: str) -> bytes:
+    token = b"__BSB_SHELL_REVISION__"
+    if source.count(token) != 1:
+        raise ProjectionError("service worker shell revision token is invalid")
+    return source.replace(token, shell_revision.encode("ascii"))
 
 
 __all__ = [

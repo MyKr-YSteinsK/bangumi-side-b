@@ -1684,6 +1684,15 @@ def test_settings_can_remove_update_incomplete_and_keep_shared_content(
     page.wait_for_function(
         "async () => (await window.BsbPwa.getQuarterState('2026-07')).status === 'NONE'"
     )
+    page.wait_for_function(
+        """async (hash) => {
+          const cache = await caches.open("bsb-content-v1");
+          const response = await cache.match(new URL(
+            `../__bsb_content__/${hash}`, location.href));
+          return !response;
+        }""",
+        arg=unique_hash,
+    )
     assert page.evaluate(
         """
         (hash) => caches.open("bsb-content-v1")

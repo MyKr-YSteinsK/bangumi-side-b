@@ -440,6 +440,13 @@ def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_byte
     assert failed["status"] == "INCOMPLETE"
     assert failed["active"]["revision"] == original["active"]["revision"]
     assert failed["staging"]["revision"] == "updated-quarter-revision"
+    page.wait_for_function(
+        "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
+        "?.textContent.includes('已离线 · 更新未完成')"
+    )
+    assert page.locator('[data-offline-quarter="2026-07"]').get_by_role(
+        "button", name="继续更新"
+    ).is_visible()
     old_hash = next(
         item["content_hash"]
         for item in original["active"]["resources"]

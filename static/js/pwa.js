@@ -952,7 +952,18 @@
       INCOMPLETE: "INCOMPLETE",
       COMPLETE: "已离线",
       UPDATE_AVAILABLE: "有更新",
+      UPDATE_INCOMPLETE: "已离线 · 更新未完成",
     }[status] || "未下载";
+  }
+
+  function quarterView(state) {
+    if (state?.active && state?.staging) return { status: "UPDATE_INCOMPLETE" };
+    if (!state?.active && state?.staging) return { status: "INCOMPLETE" };
+    if (state?.active && state.status === "UPDATE_AVAILABLE") {
+      return { status: "UPDATE_AVAILABLE" };
+    }
+    if (state?.active) return { status: "COMPLETE" };
+    return { status: "NONE" };
   }
 
   function actionLabel(status) {
@@ -961,6 +972,7 @@
       INCOMPLETE: "继续",
       COMPLETE: "移除",
       UPDATE_AVAILABLE: "更新",
+      UPDATE_INCOMPLETE: "继续更新",
     }[status] || "下载";
   }
 
@@ -976,16 +988,18 @@
     }
     container.innerHTML = `<div class="offline-quarter-list">${labels.map((quarter) => {
       const state = stateByQuarter.get(quarter) || initialQuarterState(quarter);
+      const view = quarterView(state);
       return `<article class="offline-quarter" data-offline-quarter="${quarter}">
-        <div><strong>${quarter}</strong><span>${statusLabel(state.status)}</span>${state.error ? `<small>${escapeHtml(state.error)}</small>` : ""}</div>
-        <button type="button" class="button" data-quarter-action="${actionLabel(state.status)}">${actionLabel(state.status)}</button>
+        <div><strong>${quarter}</strong><span>${statusLabel(view.status)}</span>${state.error ? `<small>${escapeHtml(state.error)}</small>` : ""}</div>
+        <button type="button" class="button" data-quarter-action="${actionLabel(view.status)}">${actionLabel(view.status)}</button>
       </article>`;
     }).join("")}</div>`;
     container.querySelectorAll("[data-offline-quarter]").forEach((row) => {
       const quarter = row.dataset.offlineQuarter;
       const state = stateByQuarter.get(quarter) || initialQuarterState(quarter);
+      const view = quarterView(state);
       row.querySelector("[data-quarter-action]")?.addEventListener("click", async () => {
-        if (state.status === "COMPLETE") {
+        if (view.status === "COMPLETE") {
           if (!window.confirm(`移除 ${quarter} 的离线缓存？`)) return;
           await removeQuarter(quarter);
         } else {
@@ -1055,6 +1069,8 @@
     if (!container) return;
     const queue = await currentQueue();
     const progress = queue.progress;
+    const succeeded = queue.succeeded || queue.completed || [];
+    const failed = queue.failed || [];
     const stateLabel = {
       idle: "队列空闲",
       downloading: "正在下载",
@@ -1064,7 +1080,7 @@
     }[queue.state] || queue.state;
     container.innerHTML = `<div class="queue-status">
       <p><strong>${stateLabel}</strong>${queue.current ? ` · ${queue.current}` : ""}</p>
-      ${progress ? `<p>${progress.verified_resources} / ${progress.total_resources} resources<br>${formatBytes(progress.verified_bytes)} / ${formatBytes(progress.total_bytes)}<br>${queue.completed.length} / ${queue.labels.length} quarters</p>` : `<p>${queue.completed.length} / ${queue.labels.length} quarters</p>`}
+      ${progress ? `<p>${progress.verified_resources} / ${progress.total_resources} resources<br>${formatBytes(progress.verified_bytes)} / ${formatBytes(progress.total_bytes)}<br>成功 ${succeeded.length} · 失败 ${failed.length} / ${queue.labels.length} quarters</p>` : `<p>成功 ${succeeded.length} · 失败 ${failed.length} / ${queue.labels.length} quarters</p>`}
       ${queue.errors.length ? `<ul class="queue-errors">${queue.errors.map((error) => `<li><strong>${escapeHtml(error.quarter)}</strong> · ${escapeHtml(error.stage)} · ${escapeHtml(error.summary)}</li>`).join("")}</ul>` : ""}
       <div class="queue-actions">
         ${["downloading", "waiting-network"].includes(queue.state) ? '<button type="button" class="button" data-queue-pause>暂停</button>' : ""}
@@ -1133,6 +1149,7 @@
       getQuarterState(quarter),
       currentQueue(),
     ]);
+    const view = quarterView(state);
     const progress = queue.current === quarter ? queue.progress : null;
     if (progress) {
       const total = progress.total_bytes || progress.total_resources;
@@ -1140,9 +1157,9 @@
         ? progress.verified_bytes
         : progress.verified_resources;
       const percent = total ? Math.floor((completed / total) * 100) : 0;
-      status.textContent = `${statusLabel(state.status)} · ${percent}%`;
+      status.textContent = `${statusLabel(view.status)} · ${percent}%`;
     } else {
-      status.textContent = statusLabel(state.status);
+      status.textContent = statusLabel(view.status);
     }
     actions.replaceChildren();
     if (queue.current === quarter && ["downloading", "waiting-network"].includes(queue.state)) {
@@ -1154,17 +1171,17 @@
     }
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `button${state.status === "NONE" ? " button--ink" : ""}`;
-    button.textContent = state.status === "NONE"
+    button.className = `button${view.status === "NONE" ? " button--ink" : ""}`;
+    button.textContent = view.status === "NONE"
       ? "下载当前季度供离线使用"
-      : state.status === "INCOMPLETE"
+      : ["INCOMPLETE", "UPDATE_INCOMPLETE"].includes(view.status)
         ? "继续离线下载"
-        : state.status === "UPDATE_AVAILABLE"
+        : view.status === "UPDATE_AVAILABLE"
           ? "更新离线资料"
           : "移除离线缓存";
-    button.disabled = !navigator.onLine && state.status !== "COMPLETE";
+    button.disabled = !navigator.onLine && view.status !== "COMPLETE";
     button.addEventListener("click", async () => {
-      if (state.status === "COMPLETE") {
+      if (view.status === "COMPLETE") {
         if (!window.confirm(`移除 ${quarter} 的离线缓存？`)) return;
         await removeQuarter(quarter);
       } else {

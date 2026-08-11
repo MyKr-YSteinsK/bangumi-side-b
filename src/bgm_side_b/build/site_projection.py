@@ -8,7 +8,6 @@ serialization rule is explicit so the same facts produce byte-identical output.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 from collections import defaultdict
@@ -401,22 +400,6 @@ class ArchiveIndexProjection:
         }
 
 
-@dataclass(frozen=True)
-class OfflineManifestProjection:
-    """Same-origin resources required to use one quarter offline."""
-
-    quarter: str
-    revision: str
-    resources: tuple[dict[str, object], ...]
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "quarter": self.quarter,
-            "revision": self.revision,
-            "resources": [dict(item) for item in self.resources],
-        }
-
-
 def project_quarter(
     facts: ArchiveFacts,
     quarter: Quarter,
@@ -528,49 +511,6 @@ def project_archive_index(
         years,
         entries,
         ordered[-1].quarter if ordered else None,
-    )
-
-
-def project_offline_manifest(
-    quarter: QuarterProjection,
-    artifact_bytes: dict[str, bytes],
-) -> OfflineManifestProjection:
-    """Build a manifest from final same-origin artifact bytes."""
-    quarter_label = quarter.quarter
-    required = [
-        f"{quarter_label}/index.html",
-        f"data/quarters/{quarter_label}.json",
-        "assets/app.css",
-        "assets/app.js",
-    ]
-    required.extend(
-        sorted(
-            {
-                item.cover_url.split("?", 1)[0]
-                for group in (
-                    quarter.tv_premiere,
-                    quarter.tv_continuing,
-                    quarter.movie_premiere,
-                )
-                for item in group
-                if item.cover_url
-            }
-        )
-    )
-    resources: list[dict[str, object]] = []
-    for url in required:
-        content = artifact_bytes.get(url)
-        if content is None:
-            raise ProjectionError(f"offline resource is missing: {url}")
-        resources.append(
-            {
-                "url": url,
-                "content_hash": hashlib.sha256(content).hexdigest(),
-                "size_bytes": len(content),
-            }
-        )
-    return OfflineManifestProjection(
-        quarter_label, quarter.fingerprint, tuple(resources)
     )
 
 

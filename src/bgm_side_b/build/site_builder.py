@@ -35,7 +35,6 @@ from bgm_side_b.build.site_projection import (
     YearCatalogProjection,
     json_bytes,
     project_archive_index,
-    project_offline_manifest,
     project_quarter,
     project_year,
 )
@@ -328,16 +327,114 @@ class UnifiedSiteBuilder:
         retained: list[str] = []
         omitted: list[str] = []
         for label in sorted(blocked):
-            required = (
-                self.site_directory / label / "index.html",
-                self.site_directory / "data" / "quarters" / f"{label}.json",
-                self.site_directory / "data" / "offline" / f"{label}.json",
-            )
-            if label in previous.quarters and all(path.is_file() for path in required):
+            if self._retained_quarter_is_complete(previous, label):
                 retained.append(label)
             else:
                 omitted.append(label)
         return tuple(retained), tuple(omitted)
+
+    def _retained_quarter_is_complete(
+        self, previous: BuildState, label: str
+    ) -> bool:
+        """Require the complete last-good dependency closure before retaining it."""
+        if label not in previous.quarters:
+            return False
+        core = (
+            f"{label}/index.html",
+            f"data/quarters/{label}.json",
+            f"data/offline/{label}.json",
+        )
+        for relative in core:
+            path = self.site_directory / Path(relative)
+            expected_size = previous.artifact_sizes.get(relative)
+            if (
+                relative not in previous.artifacts
+                or expected_size is None
+                or not path.is_file()
+            ):
+                return False
+            try:
+                if path.stat().st_size != expected_size:
+                    return False
+            except OSError:
+                return False
+
+        quarter = _read_required_site_json(
+            self.site_directory / "data" / "quarters" / f"{label}.json"
+        )
+        manifest = _read_required_site_json(
+            self.site_directory / "data" / "offline" / f"{label}.json"
+        )
+        archive = _read_required_site_json(
+            self.site_directory / "data" / "archive-index.json"
+        )
+        year = _read_required_site_json(
+            self.site_directory / "data" / "catalog" / f"{label[:4]}.json"
+        )
+        if None in (quarter, manifest, archive, year):
+            return False
+        assert quarter is not None
+        assert manifest is not None
+        assert archive is not None
+        assert year is not None
+
+        archive_entries = archive.get("quarters")
+        year_records = year.get("records")
+        if not isinstance(archive_entries, list) or not isinstance(year_records, list):
+            return False
+        if not any(
+            isinstance(item, dict) and item.get("quarter") == label
+            for item in archive_entries
+        ):
+            return False
+        retained_records = tuple(
+            item
+            for item in year_records
+            if isinstance(item, dict) and item.get("quarter") == label
+        )
+        if len(retained_records) != len(_quarter_items(quarter)):
+            return False
+
+        resources = manifest.get("resources")
+        if manifest.get("quarter") != label or not isinstance(resources, list):
+            return False
+        cover_resources: dict[str, Mapping[str, object]] = {}
+        for item in resources:
+            if not isinstance(item, dict):
+                return False
+            relative = item.get("url")
+            if isinstance(relative, str) and relative.startswith("covers/"):
+                cover_resources[relative] = item
+        expected_covers = {
+            cover.split("?", 1)[0]
+            for item in _quarter_items(quarter)
+            if isinstance((cover := item.get("cover_url")), str)
+        }
+        if any(
+            re.fullmatch(r"covers/[1-9][0-9]*\.webp", relative) is None
+            for relative in expected_covers
+        ) or expected_covers != set(cover_resources):
+            return False
+        for relative, item in cover_resources.items():
+            path = self.site_directory / Path(relative)
+            content_hash = item.get("content_hash")
+            size = item.get("size_bytes")
+            if (
+                not isinstance(content_hash, str)
+                or not isinstance(size, int)
+                or isinstance(size, bool)
+                or size < 0
+                or previous.artifacts.get(relative) != content_hash
+                or previous.artifact_sizes.get(relative) != size
+                or not path.is_file()
+            ):
+                return False
+            try:
+                if path.stat().st_size != size:
+                    return False
+            except OSError:
+                return False
+        return True
 
     def _merge_retained_indexes(
         self,
@@ -616,73 +713,6 @@ class UnifiedSiteBuilder:
                     )
         return ArtifactPlan(specs)
 
-    def _render_site(
-        self,
-        facts: ArchiveFacts,
-        quarters: tuple[QuarterProjection, ...],
-        years: tuple[YearCatalogProjection, ...],
-        archive: ArchiveIndexProjection,
-        css: bytes,
-        js: bytes,
-        *,
-        retained: tuple[str, ...] = (),
-    ) -> dict[str, bytes]:
-        desired: dict[str, bytes] = {
-            "assets/app.css": css,
-            "assets/app.js": js,
-            "index.html": _root_html(archive),
-            "archive/index.html": _archive_html(archive),
-            "settings/index.html": _settings_html(),
-            "data/archive-index.json": json_bytes(archive.to_dict()),
-        }
-        for year in years:
-            desired[f"data/catalog/{year.year:04d}.json"] = json_bytes(year.to_dict())
-        subject_by_id = {subject.subject_id: subject for subject in facts.subjects}
-        for quarter in quarters:
-            label = quarter.quarter
-            desired[f"{label}/index.html"] = _quarter_html(quarter)
-            desired[f"data/quarters/{label}.json"] = json_bytes(quarter.to_dict())
-            for item in (
-                *quarter.tv_premiere,
-                *quarter.tv_continuing,
-                *quarter.movie_premiere,
-            ):
-                if item.cover_hash is None:
-                    continue
-                source = subject_by_id[item.subject_id].cover
-                if source is None:
-                    continue
-                if not source.source_path.is_file():
-                    continue
-                desired[
-                    f"covers/{item.subject_id}.webp"
-                ] = source.source_path.read_bytes()
-        for quarter in quarters:
-            label = quarter.quarter
-            manifest = project_offline_manifest(quarter, desired)
-            desired[f"data/offline/{label}.json"] = json_bytes(manifest.to_dict())
-        for label in retained:
-            for relative in (
-                f"{label}/index.html",
-                f"data/quarters/{label}.json",
-                f"data/offline/{label}.json",
-            ):
-                source = self.site_directory / Path(relative)
-                if source.is_file():
-                    desired[relative] = source.read_bytes()
-            payload = _read_site_json(
-                self.site_directory / "data" / "quarters" / f"{label}.json"
-            )
-            for item in _quarter_items(payload):
-                cover = item.get("cover_url")
-                if not isinstance(cover, str):
-                    continue
-                relative = cover.split("?", 1)[0]
-                source = self.site_directory / Path(relative)
-                if relative not in desired and source.is_file():
-                    desired[relative] = source.read_bytes()
-        return desired
-
     def _validate_desired(
         self, desired: Mapping[str, bytes], plan: ArtifactPlan
     ) -> None:
@@ -734,7 +764,7 @@ class UnifiedSiteBuilder:
             "shared_dirty": dirty.shared_dirty,
             "written_files": list(result.written),
             "deleted_files": list(result.deleted),
-            "reused_files": list(result.reused),
+            "reused_files_sample": list(result.reused[:20]),
             "planned_dirty_files": len(result.staged),
             "generated_small_files": result.generated_small_files,
             "cover_files_read": result.cover_files_read,
@@ -1415,6 +1445,11 @@ def _read_site_json(path: Path) -> dict[str, object]:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _read_required_site_json(path: Path) -> dict[str, object] | None:
+    value = _read_site_json(path)
+    return value or None
 
 
 def _reused_spec(

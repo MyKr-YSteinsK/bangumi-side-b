@@ -379,8 +379,59 @@ def test_blocked_last_good_without_site_is_omitted_with_warning(tmp_path: Path) 
     run = builder.build()
     archive = json.loads((site / "data" / "archive-index.json").read_text("utf-8"))
     assert [item["quarter"] for item in archive["quarters"]] == ["2026-04"]
-    assert not (site / "2026-07").exists()
+    assert not (site / "2026-07" / "index.html").exists()
     assert any("no last-known-good" in warning for warning in run.warnings)
+
+
+def test_blocked_last_good_with_missing_cover_is_omitted_safely(
+    tmp_path: Path,
+) -> None:
+    builder, database = _build_fixture(tmp_path)
+    builder.build()
+    site = tmp_path / "dist" / "site"
+    (site / "covers" / "101.webp").unlink()
+    repository = SubjectRepository(database)
+    state = repository.get_sync_state(Quarter(2026, 7))
+    assert state is not None
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection, replace(state, facts_status="incomplete")
+        )
+
+    run = builder.build()
+
+    archive = json.loads((site / "data" / "archive-index.json").read_text("utf-8"))
+    assert [item["quarter"] for item in archive["quarters"]] == ["2026-04"]
+    assert not (site / "2026-07" / "index.html").exists()
+    assert not (site / "data" / "quarters" / "2026-07.json").exists()
+    assert "covers/101.webp" in run.patch.written
+    assert (site / "2026-04" / "index.html").is_file()
+    assert any("2026-07" in warning for warning in run.warnings)
+
+
+def test_blocked_last_good_without_aggregate_metadata_is_omitted(
+    tmp_path: Path,
+) -> None:
+    builder, database = _build_fixture(tmp_path)
+    builder.build()
+    site = tmp_path / "dist" / "site"
+    (site / "data" / "catalog" / "2026.json").unlink()
+    repository = SubjectRepository(database)
+    state = repository.get_sync_state(Quarter(2026, 7))
+    assert state is not None
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection, replace(state, facts_status="incomplete")
+        )
+
+    run = builder.build()
+
+    archive = json.loads((site / "data" / "archive-index.json").read_text("utf-8"))
+    catalog = json.loads((site / "data" / "catalog" / "2026.json").read_text("utf-8"))
+    assert [item["quarter"] for item in archive["quarters"]] == ["2026-04"]
+    assert {item["quarter"] for item in catalog["records"]} == {"2026-04"}
+    assert not (site / "2026-07" / "index.html").exists()
+    assert any("2026-07" in warning for warning in run.warnings)
 
 
 def test_relevant_review_on_last_good_quarter_retains_previous_output(
@@ -434,6 +485,14 @@ def test_noop_build_does_not_read_cover_bytes_or_scan_site(
     run = builder.build()
     assert run.patch.written == ()
     assert run.patch.deleted == ()
+    report = json.loads(run.report_path.read_text("utf-8"))
+    assert report["reused_artifacts_count"] == len(run.patch.reused)
+    assert report["reused_files_sample"] == list(run.patch.reused[:20])
+    assert len(report["reused_files_sample"]) <= 20
+    assert "reused_files" not in report
+    assert report["generated_small_files"] == 0
+    assert report["cover_files_read"] == 0
+    assert report["cover_files_copied"] == 0
 
 
 def test_rating_change_plans_only_the_subjects_owning_scopes(

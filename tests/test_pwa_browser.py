@@ -684,6 +684,107 @@ def test_two_pages_share_one_queue_runner_and_persist_merge(
     context.close()
 
 
+def test_simultaneous_cross_tab_enqueue_serializes_queue_metadata(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    first = context.new_page()
+    second = context.new_page()
+    first.goto(f"{pwa_server}/settings/index.html")
+    second.goto(f"{pwa_server}/settings/index.html")
+    first.wait_for_function("Boolean(window.BsbPwa)")
+    second.wait_for_function("Boolean(window.BsbPwa)")
+    first.evaluate(
+        """
+        void navigator.locks.request(
+          "bsb-offline-queue-mutation",
+          { mode: "exclusive" },
+          async () => {
+            window.__mutationHeld = true;
+            await new Promise((resolve) => { window.__releaseMutation = resolve; });
+          },
+        );
+        """
+    )
+    first.wait_for_function("window.__mutationHeld === true")
+    first.evaluate(
+        "void (window.__enqueueA = window.BsbPwa.enqueue(['2026-07']))"
+    )
+    second.evaluate(
+        "void (window.__enqueueB = window.BsbPwa.enqueue(['2026-04']))"
+    )
+    second.wait_for_timeout(100)
+    first.evaluate("window.__releaseMutation()")
+    first_queue = first.evaluate("window.__enqueueA")
+    second_queue = second.evaluate("window.__enqueueB")
+    assert first_queue["generation"] == second_queue["generation"]
+    assert second_queue["labels"] == ["2026-07", "2026-04"]
+    _wait_for_queue(second, 2)
+    queue = second.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert queue["succeeded"] == ["2026-07", "2026-04"]
+    assert queue["failed"] == []
+    context.close()
+
+
+def test_cancelled_runner_cannot_modify_new_queue_generation(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+
+    def delay_manifest(route) -> None:
+        time.sleep(0.5)
+        route.continue_()
+
+    page.route("**/data/offline/2026-07.json", delay_manifest)
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    old = page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    page.evaluate("async () => window.BsbPwa.cancelQueue()")
+    new = page.evaluate("async () => window.BsbPwa.enqueue(['2026-04'])")
+    _wait_for_queue(page, 1)
+    queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert new["generation"] != old["generation"]
+    assert queue["generation"] == new["generation"]
+    assert queue["succeeded"] == ["2026-04"]
+    assert queue["failed"] == []
+    context.close()
+
+
+def test_requeued_failed_quarter_clears_error_before_success(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    failed_once = [False]
+
+    def fail_first_quarter_request(route) -> None:
+        if not failed_once[0]:
+            failed_once[0] = True
+            route.abort()
+            return
+        route.continue_()
+
+    page.route("**/data/quarters/2026-07.json", fail_first_quarter_request)
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07', '2026-04'])")
+    page.wait_for_function(
+        "window.BsbPwa.currentQueue().then((queue) => "
+        "queue.current === '2026-04' && queue.failed.includes('2026-07'))"
+    )
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 2)
+    queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert queue["succeeded"] == ["2026-07", "2026-04"]
+    assert queue["failed"] == []
+    assert queue["errors"] == []
+    context.close()
+
+
 def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_bytes(
     chromium: Browser,
     pwa_server: str,

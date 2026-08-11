@@ -11,6 +11,7 @@
   const META_PATH = "__bsb_meta__/";
   const QUEUE_META = "queue.json";
   const QUEUE_LOCK_NAME = "bsb-offline-queue-runner";
+  const QUEUE_MUTATION_LOCK_NAME = "bsb-offline-queue-mutation";
   const STATE_CHANNEL_NAME = "bsb-pwa-state";
   const HEX_64 = /^[a-f0-9]{64}$/;
   const QUARTER = /^\d{4}-(?:01|04|07|10)$/;
@@ -356,13 +357,36 @@
 
   function updateQueue(mutator) {
     const operation = queueMutation.then(async () => {
-      const current = await readQueue();
-      const next = normalizeQueue(mutator(current));
-      await writeMeta(QUEUE_META, next);
-      return next;
+      const mutate = async () => {
+        const current = await readQueue();
+        const next = normalizeQueue(mutator(current));
+        await writeMeta(QUEUE_META, next);
+        return next;
+      };
+      if (typeof navigator.locks?.request !== "function") return mutate();
+      let entered = false;
+      try {
+        return await navigator.locks.request(
+          QUEUE_MUTATION_LOCK_NAME,
+          { mode: "exclusive" },
+          async () => {
+            entered = true;
+            return mutate();
+          },
+        );
+      } catch (error) {
+        if (entered) throw error;
+        return mutate();
+      }
     });
     queueMutation = operation.catch(() => {});
     return operation;
+  }
+
+  function updateOwnedQueue(generation, mutator) {
+    return updateQueue((current) => (
+      current.generation === generation ? mutator(current) : current
+    ));
   }
 
   function mergeQueueLabels(queue, labels) {
@@ -376,6 +400,7 @@
       ...queue,
       labels: ordered,
       failed: queue.failed.filter((label) => !requeued.includes(label)),
+      errors: queue.errors.filter((item) => !requeued.includes(item?.quarter)),
     };
   }
 
@@ -383,9 +408,10 @@
     return capabilityState === "ready" && Boolean(serviceWorkerRegistration?.active);
   }
 
-  async function parkQueueForServiceWorker() {
+  async function parkQueueForServiceWorker(generation = null) {
     return updateQueue((current) => (
-      ["downloading", "waiting-network"].includes(current.state)
+      (!generation || current.generation === generation)
+      && ["downloading", "waiting-network"].includes(current.state)
         ? { ...current, state: "waiting-service-worker" }
         : current
     ));
@@ -406,7 +432,7 @@
         return false;
       }
       if (!canRunGuaranteedQueue()) {
-        await parkQueueForServiceWorker();
+        await parkQueueForServiceWorker(generation);
         return false;
       }
       if (queue.state === "downloading" && navigator.onLine) return true;
@@ -590,14 +616,14 @@
     if (!generation) return;
     while (true) {
       if (!canRunGuaranteedQueue()) {
-        await parkQueueForServiceWorker();
+        await parkQueueForServiceWorker(generation);
         return;
       }
       let queue = await readQueue();
       if (queue.generation !== generation || ["idle", "paused", "cancelled"].includes(queue.state)) return;
       if (queue.state === "waiting-service-worker") {
-        queue = await updateQueue((current) => (
-          current.generation === generation && current.state === "waiting-service-worker"
+        queue = await updateOwnedQueue(generation, (current) => (
+          current.state === "waiting-service-worker"
             ? {
                 ...current,
                 state: navigator.onLine ? "downloading" : "waiting-network",
@@ -608,7 +634,7 @@
       }
       if (!navigator.onLine) {
         if (queue.state !== "waiting-network") {
-          queue = await updateQueue((current) => (
+          queue = await updateOwnedQueue(generation, (current) => (
             current.state === "downloading"
               ? { ...current, state: "waiting-network" }
               : current
@@ -618,7 +644,7 @@
         continue;
       }
       if (queue.state === "waiting-network") {
-        queue = await updateQueue((current) => (
+        queue = await updateOwnedQueue(generation, (current) => (
           current.state === "waiting-network" && navigator.onLine
             ? { ...current, state: "downloading" }
             : current
@@ -628,16 +654,15 @@
         (label) => !queue.succeeded.includes(label) && !queue.failed.includes(label),
       );
       if (!remaining.length) {
-        queue = await updateQueue((current) => current.generation === generation
-          ? { ...current, state: "idle", current: null }
-          : current);
+        queue = await updateOwnedQueue(generation, (current) => (
+          { ...current, state: "idle", current: null }
+        ));
         return;
       }
       const quarter = remaining[0];
       await deleteMeta(progressMetaName(quarter));
-      queue = await updateQueue((current) => (
-        current.generation === generation
-        && current.state === "downloading"
+      queue = await updateOwnedQueue(generation, (current) => (
+        current.state === "downloading"
         && current.labels.includes(quarter)
         && !current.succeeded.includes(quarter)
         && !current.failed.includes(quarter)
@@ -648,22 +673,20 @@
       if (queue.state !== "downloading" || queue.current !== quarter) continue;
       try {
         await downloadQuarter(quarter, generation);
-        queue = await updateQueue((current) => {
-          if (current.generation !== generation || current.state === "cancelled") return current;
+        queue = await updateOwnedQueue(generation, (current) => {
+          if (current.state === "cancelled") return current;
           return {
             ...current,
             succeeded: [...new Set([...current.succeeded, quarter])],
             current: null,
+            errors: current.errors.filter((item) => item?.quarter !== quarter),
           };
         });
         if (queue.generation !== generation || queue.state === "cancelled") return;
       } catch (error) {
         if (error instanceof StaleQueueError) return;
-        queue = await updateQueue((current) => {
-          if (
-            current.generation !== generation
-            || ["paused", "cancelled", "waiting-network"].includes(current.state)
-          ) {
+        queue = await updateOwnedQueue(generation, (current) => {
+          if (["paused", "cancelled", "waiting-network", "waiting-service-worker"].includes(current.state)) {
             return current;
           }
           return {
@@ -678,7 +701,7 @@
         });
         if (
           queue.generation !== generation
-          || ["paused", "cancelled", "waiting-network"].includes(queue.state)
+          || ["paused", "cancelled", "waiting-network", "waiting-service-worker"].includes(queue.state)
         ) return;
       }
     }

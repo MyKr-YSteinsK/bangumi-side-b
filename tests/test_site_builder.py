@@ -156,9 +156,15 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert 'data-archive-index-url="../data/archive-index.json"' in archive_html
     assert 'data-scope-choice="range"' in archive_html
     catalog = json.loads((site / "data" / "catalog" / "2026.json").read_text("utf-8"))
-    assert {"aliases", "display_summary", "premiere_quarter"} <= set(
+    assert {"aliases", "quarter", "appearance", "cover"} <= set(
         catalog["records"][0]
     )
+    assert not {
+        "display_summary",
+        "end_date",
+        "premiere_quarter",
+        "bangumi_url",
+    } & set(catalog["records"][0])
     july = json.loads(
         (site / "data" / "quarters" / "2026-07.json").read_text("utf-8")
     )

@@ -369,13 +369,7 @@ class QuarterProjection:
 
 @dataclass(frozen=True)
 class YearCatalogProjection:
-    """A year-level appearance catalog used by the offline archive browser.
-
-    Year catalogs intentionally carry the same display-safe subject fields as a
-    quarter payload.  That lets Archive year/range views open a detail without
-    loading every quarter (or falling back to a remote API), while still keeping
-    the persisted SQLite schema and all fact decisions outside the runtime.
-    """
+    """Light list/search records used to locate quarter-owned detail payloads."""
 
     year: int
     records: tuple[dict[str, object], ...]
@@ -501,15 +495,11 @@ def project_year(
                     "original_title": subject.original_title,
                     "aliases": list(subject.aliases),
                     "air_date": subject.air_date,
-                    "end_date": subject.end_date,
                     "episode_count": subject.episode_count,
                     "score": subject.rating_score,
                     "rating_count": subject.rating_count,
                     "source": subject.source,
                     "allowed_tags": list(subject.allowed_tags),
-                    "display_summary": subject.display_summary,
-                    "premiere_quarter": subject.premiere_quarter,
-                    "bangumi_url": subject.bangumi_url,
                     "cover": subject.cover_url,
                 }
             )

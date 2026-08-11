@@ -165,7 +165,7 @@ def test_tag_display_uses_nfkc_trim_exact_membership_and_whitelist_order(
     assert "搞笑" not in projection.tv_premiere[0].allowed_tags
 
 
-def test_year_catalog_keeps_display_fields_for_offline_archive_detail(
+def test_year_catalog_keeps_only_list_and_lookup_fields(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -184,9 +184,12 @@ def test_year_catalog_keeps_display_fields_for_offline_archive_detail(
     assert record["id"] == 404
     assert record["aliases"] == ["Alias 404"]
     assert record["episode_count"] == 12
-    assert record["display_summary"] == "第一行\n\n第二行"
-    assert record["premiere_quarter"] == "2026-04"
-    assert record["bangumi_url"] == "https://bgm.tv/subject/404"
+    assert record["quarter"] == "2026-04"
+    assert record["appearance"] == "premiere"
+    assert "display_summary" not in record
+    assert "end_date" not in record
+    assert "premiere_quarter" not in record
+    assert "bangumi_url" not in record
 
 
 def test_projection_missing_cover_is_a_warning_and_null_url(tmp_path: Path) -> None:

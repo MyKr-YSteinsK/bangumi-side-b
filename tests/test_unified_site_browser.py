@@ -251,3 +251,75 @@ def test_filter_media_switch_and_archive_detail_history(
         "data-workspace-mode"
     ) == "detail"
     assert page.evaluate("window.BsbArchive.sourceLabel('unknown')") == "来源未知"
+
+
+def test_archive_lazy_loads_and_reuses_selected_quarter_details(
+    chromium: Browser,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    page.set_default_timeout(8000)
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+    )
+
+    def detail_requests() -> list[str]:
+        return [url for url in requests if "/data/quarters/" in url]
+
+    assert detail_requests() == []
+
+    occurrences = page.locator('[data-subject-id="101"] [data-open-subject]')
+    occurrences.nth(0).click()
+    page.wait_for_function(
+        "document.querySelector('[data-detail-panel]')?.textContent.includes('Summary')"
+    )
+    assert len(detail_requests()) == 1
+    assert detail_requests()[0].endswith("/data/quarters/2026-04.json")
+
+    occurrences.nth(0).click()
+    page.wait_for_function(
+        "document.querySelector('[data-detail-panel]')?.textContent.includes('Summary')"
+    )
+    assert len(detail_requests()) == 1
+
+    occurrences.nth(1).click()
+    page.wait_for_function(
+        "document.querySelector('[data-detail-panel]')?.textContent.includes('2026-07')"
+    )
+    assert len(detail_requests()) == 2
+    assert detail_requests()[1].endswith("/data/quarters/2026-07.json")
+
+    page.locator('[data-media-mode="movie"]').click()
+    page.locator('[data-subject-id="202"] [data-open-subject]').click()
+    page.wait_for_function(
+        "document.querySelector('[data-detail-panel]')"
+        "?.textContent.includes('中文 202')"
+    )
+    assert len(detail_requests()) == 2
+
+
+def test_archive_detail_failure_stays_same_origin_and_reports_rebuild(
+    chromium: Browser,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/quarters/*.json",
+        lambda route: route.fulfill(status=404, body="missing"),
+    )
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+    )
+    page.locator('[data-subject-id="101"] [data-open-subject]').first.click()
+    page.wait_for_function(
+        "document.querySelector('[data-detail-panel]')"
+        "?.textContent.includes('DATA UNAVAILABLE')"
+    )
+    detail = page.locator("[data-detail-panel]").inner_text()
+    assert "当前资料详情未完整生成" in detail
+    assert "重新 build" in detail

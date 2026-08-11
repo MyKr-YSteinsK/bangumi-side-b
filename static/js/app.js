@@ -725,6 +725,8 @@
   let records = [];
   let rows = [];
   let recordByKey = new Map();
+  const detailByQuarter = new Map();
+  let detailRequest = 0;
   let loadError = false;
 
   const esc = (value) => String(value ?? "")
@@ -774,7 +776,7 @@
     if (!index) return;
     const location = scopeFromLocation();
     if (sameScope(state.scope, location) && records.length) {
-      openHash();
+      await openHash();
       return;
     }
     await setScope(location.kind, location.value, false);
@@ -856,6 +858,21 @@
       return response.json();
     }));
     return responses.flatMap((payload) => archive.recordsFromCatalog(payload));
+  }
+
+  async function loadDetailRecord(record) {
+    let quarterRecords = detailByQuarter.get(record.quarter);
+    if (!quarterRecords) {
+      const response = await fetch(`../data/quarters/${record.quarter}.json`, {
+        credentials: "same-origin",
+      });
+      if (!response.ok) throw new Error("quarter detail unavailable");
+      quarterRecords = archive.recordsFromQuarter(await response.json());
+      detailByQuarter.set(record.quarter, quarterRecords);
+    }
+    const detail = quarterRecords.find((item) => item.key === record.key);
+    if (!detail) throw new Error("quarter detail record unavailable");
+    return detail;
   }
 
   function yearsForScope(kind, value) {
@@ -944,7 +961,7 @@
     score.append(scoreValue, count);
     button.append(score);
     article.append(button);
-    button.addEventListener("click", () => selectRecord(record));
+    button.addEventListener("click", () => { void selectRecord(record); });
     return article;
   }
 
@@ -1004,6 +1021,7 @@
   }
 
   function clearSelection(removeHash = false) {
+    detailRequest += 1;
     state.selectedSubjectId = null;
     state.selectedOccurrence = null;
     state.workspaceMode = "scope";
@@ -1130,7 +1148,7 @@
 
   function detailHtml(record) {
     const aliases = record.aliases || [];
-    const cover = record.cover;
+    const cover = record.cover || record.cover_url;
     const coverHtml = cover
       ? `<button type="button" class="detail-cover-button" data-lightbox aria-label="查看封面"><img src="../${esc(String(cover).split("?", 1)[0])}" alt="${esc(record.preferred_title)}" width="180" height="270"></button>`
       : `<div class="detail-cover detail-cover--missing"><span>ARCHIVE</span></div>`;
@@ -1157,10 +1175,11 @@
   }
 
   function openLightbox(record) {
-    if (!record.cover) return;
+    const cover = record.cover || record.cover_url;
+    if (!cover) return;
     const dialog = document.createElement("dialog");
     dialog.className = "cover-lightbox";
-    dialog.innerHTML = `<button type="button" class="lightbox-close" aria-label="关闭封面">×</button><img src="../${esc(String(record.cover).split("?", 1)[0])}" alt="${esc(record.preferred_title)}">`;
+    dialog.innerHTML = `<button type="button" class="lightbox-close" aria-label="关闭封面">×</button><img src="../${esc(String(cover).split("?", 1)[0])}" alt="${esc(record.preferred_title)}">`;
     document.body.append(dialog);
     const close = () => { dialog.close(); dialog.remove(); };
     dialog.querySelector("button").addEventListener("click", close);
@@ -1169,8 +1188,9 @@
     dialog.showModal();
   }
 
-  function selectRecord(record, replace = false) {
+  async function selectRecord(record, replace = false) {
     if (!record) return;
+    const request = ++detailRequest;
     const hadSelection = state.selectedOccurrence !== null;
     state.selectedSubjectId = record.id;
     state.selectedOccurrence = record.key;
@@ -1181,15 +1201,27 @@
     else if (!replace) window.history.pushState({}, "", url);
     else window.history.replaceState({}, "", url);
     if (selectors.detailPanel) {
-      selectors.detailPanel.innerHTML = detailHtml(record);
+      selectors.detailPanel.innerHTML = '<p class="workspace-panel__code">DETAIL</p><p class="loading-state">正在读取季度详情…</p>';
       selectors.detailPanel.scrollTop = 0;
-      selectors.detailPanel.querySelector("[data-detail-close]")?.addEventListener("click", () => { clearSelection(true); render(); });
-      selectors.detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(record));
     }
     render();
+    try {
+      const detail = await loadDetailRecord(record);
+      if (request !== detailRequest || state.selectedOccurrence !== record.key) return;
+      if (selectors.detailPanel) {
+        selectors.detailPanel.innerHTML = detailHtml(detail);
+        selectors.detailPanel.querySelector("[data-detail-close]")?.addEventListener("click", () => { clearSelection(true); render(); });
+        selectors.detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(detail));
+      }
+    } catch {
+      if (request !== detailRequest || state.selectedOccurrence !== record.key) return;
+      if (selectors.detailPanel) {
+        selectors.detailPanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>当前资料详情未完整生成</h2><p>建议重新 build。</p>';
+      }
+    }
   }
 
-  function openHash() {
+  async function openHash() {
     const match = window.location.hash.match(/^#bgm-(\d+)$/);
     if (!match || !records.length) {
       if (!match && state.selectedOccurrence !== null) {
@@ -1210,7 +1242,7 @@
     const result = archive.applyPipeline(records, state);
     const position = result.all.findIndex((record) => record.key === candidate.key);
     if (position >= 0) state.page = Math.floor(position / state.pageSize) + 1;
-    selectRecord(candidate, true);
+    await selectRecord(candidate, true);
   }
 
   function renderFilterPanel() {
@@ -1363,7 +1395,7 @@
       renderFilterPanel();
       if (selectors.scopeLabel) selectors.scopeLabel.textContent = kind === "range" ? `RANGE / ${normalized.from}—${normalized.to}` : `YEAR / ${normalized}`;
       render();
-      openHash();
+      await openHash();
     } catch {
       loadError = true;
       if (selectors.scopePanel) selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>页面资料未完整生成</h2><p>建议重新 build。</p>';

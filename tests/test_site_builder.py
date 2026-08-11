@@ -501,6 +501,48 @@ def test_noop_build_does_not_read_cover_bytes_or_scan_site(
     assert report["cover_files_copied"] == 0
 
 
+@pytest.mark.parametrize("relative", ["static/js/app.js", "static/css/site.css"])
+def test_missing_frontend_asset_preserves_last_good_site(
+    tmp_path: Path, relative: str
+) -> None:
+    builder, _ = _build_fixture(tmp_path)
+    isolated_root = tmp_path / "project"
+    shutil.copytree(ROOT / "static", isolated_root / "static")
+    builder.root = isolated_root.resolve()
+    builder.build()
+    site = tmp_path / "dist" / "site"
+    before = {
+        path.relative_to(site).as_posix(): path.read_bytes()
+        for path in site.rglob("*")
+        if path.is_file()
+    }
+    (isolated_root / Path(relative)).unlink()
+
+    with pytest.raises(BuildError, match="required frontend source asset"):
+        builder.build()
+
+    after = {
+        path.relative_to(site).as_posix(): path.read_bytes()
+        for path in site.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
+def test_unified_builder_has_no_frontend_fallback() -> None:
+    source = (
+        ROOT / "src" / "bgm_side_b" / "build" / "site_builder.py"
+    ).read_text(encoding="utf-8")
+    for stale in (
+        "APP_JS",
+        "APP_CSS_FALLBACK",
+        "subject-card fallback",
+        "detail-mount fallback",
+        "#detail-mount",
+    ):
+        assert stale not in source
+
+
 def test_rating_change_plans_only_the_subjects_owning_scopes(
     tmp_path: Path,
 ) -> None:

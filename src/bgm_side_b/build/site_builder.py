@@ -60,49 +60,6 @@ class BuildBlocked(BuildError):
     """Raised when a filesystem lock prevents an atomic site patch."""
 
 
-APP_CSS_FALLBACK = """
-:root { font-family: system-ui, sans-serif; color: #17201d; background: #f5f1e8; }
-body { margin: 0 auto; max-width: 1100px; padding: 2rem; }
-a { color: #682337; }
-.subject-card {
-  border: 1px solid #c9c6bb;
-  background: #fffdf8;
-  padding: 1rem;
-  margin: .5rem 0;
-}
-.subject-card[hidden] { display: none; }
-[data-media-mode="movie"] { border-color: #c95c32; }
-nav { display: flex; gap: 1rem; flex-wrap: wrap; }
-button { padding: .4rem .7rem; }
-#detail-mount { border-top: 1px solid #c9c6bb; margin-top: 1rem; padding-top: 1rem; }
-"""
-APP_JS = """(() => {
-  const root = document.querySelector('[data-quarter]');
-  if (!root) return;
-  const quarter = root.dataset.quarter;
-  const mount = document.querySelector('#detail-mount');
-  const dataUrl = `../data/quarters/${quarter}.json`;
-  let payload = null;
-  fetch(dataUrl)
-    .then((response) => response.json())
-    .then((value) => { payload = value; });
-  document.querySelectorAll('[data-subject-id]').forEach((card) => {
-    card.addEventListener('click', () => {
-      if (!payload || !mount) return;
-      const id = Number(card.dataset.subjectId);
-      const groups = [
-        payload.tv.premiere,
-        payload.tv.continuing,
-        payload.movie.premiere,
-      ];
-      const item = groups.flat().find((entry) => entry.subject_id === id);
-      if (!item) return;
-      mount.hidden = false;
-      mount.textContent = item.display_summary || item.preferred_title;
-    });
-  });
-})();
-"""
 _HREF_RE = re.compile(r"(?:href|src)=\"([^\"]+)\"")
 
 
@@ -543,10 +500,20 @@ class UnifiedSiteBuilder:
 
     def _shared_assets(self) -> tuple[bytes, bytes]:
         css_path = self.root / "static" / "css" / "site.css"
-        css = css_path.read_bytes() if css_path.is_file() else APP_CSS_FALLBACK.encode()
         js_path = self.root / "static" / "js" / "app.js"
-        js = js_path.read_bytes() if js_path.is_file() else APP_JS.encode()
-        return css, js
+        assets: list[bytes] = []
+        for path in (css_path, js_path):
+            try:
+                assets.append(path.read_bytes())
+            except OSError as error:
+                try:
+                    relative = path.relative_to(self.root).as_posix()
+                except ValueError:
+                    relative = path.name
+                raise BuildError(
+                    f"required frontend source asset is unavailable: {relative}"
+                ) from error
+        return assets[0], assets[1]
 
     def _plan_site(
         self,

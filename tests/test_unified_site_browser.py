@@ -274,6 +274,43 @@ def _facet_record(
     return record
 
 
+def test_section_facets_only_include_active_media_appearances(
+    chromium: Browser,
+    site_server: str,
+) -> None:
+    page = chromium.new_page()
+    page.goto(f"{site_server}/archive/index.html")
+    values = page.evaluate(
+        """
+        () => {
+          const record = (media, appearance) => ({
+            id: 1,
+            media,
+            appearance,
+            source: "original",
+            allowed_tags: [],
+          });
+          return {
+            premiereOnly: window.BsbArchive.availableFilterValues(
+              [record("TV", "premiere")], "tv"
+            ).sections,
+            tvBoth: window.BsbArchive.availableFilterValues(
+              [record("TV", "continuing"), record("TV", "premiere")], "tv"
+            ).sections,
+            movie: window.BsbArchive.availableFilterValues(
+              [record("MOVIE", "premiere")], "movie"
+            ).sections,
+          };
+        }
+        """
+    )
+    assert values == {
+        "premiereOnly": ["premiere"],
+        "tvBoth": ["premiere", "continuing"],
+        "movie": ["premiere"],
+    }
+
+
 def test_quarter_filters_are_media_local_and_normalized(
     chromium: Browser,
     site_server: str,

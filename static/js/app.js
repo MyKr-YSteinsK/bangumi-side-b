@@ -201,10 +201,11 @@
 
   function availableFilterValues(records, media) {
     const local = recordsForMedia(records, media);
+    const appearances = new Set(local.map((record) => record.appearance));
     return {
       sources: [...new Set(local.map((record) => record.source).filter(Boolean))].sort(),
       tags: [...new Set(local.flatMap((record) => record.allowed_tags))].sort(),
-      sections: media === "movie" ? ["premiere"] : ["premiere", "continuing"],
+      sections: ["premiere", "continuing"].filter((value) => appearances.has(value)),
     };
   }
 

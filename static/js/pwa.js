@@ -69,6 +69,7 @@
   }
 
   function notify() {
+    renderUpdateNotice();
     window.dispatchEvent(new CustomEvent("bsb:pwa-state"));
     for (const listener of listeners) listener();
   }
@@ -588,6 +589,285 @@
     return true;
   }
 
+  async function promptInstall() {
+    if (!installPrompt) return null;
+    const prompt = installPrompt;
+    installPrompt = null;
+    await prompt.prompt();
+    const result = await prompt.userChoice;
+    notify();
+    return result;
+  }
+
+  let archiveIndex = null;
+  let persistenceResult = null;
+  const settingsSelection = { kind: "current", year: "", from: "", to: "" };
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function formatBytes(value) {
+    if (!Number.isFinite(value) || value < 0) return "—";
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KiB`;
+    if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MiB`;
+    return `${(value / 1024 ** 3).toFixed(1)} GiB`;
+  }
+
+  function quarterLabels() {
+    if (!Array.isArray(archiveIndex?.quarters)) return [];
+    return archiveIndex.quarters
+      .map((item) => item?.quarter)
+      .filter((label) => QUARTER.test(label || ""))
+      .sort()
+      .reverse();
+  }
+
+  function years() {
+    return [...new Set(quarterLabels().map((label) => label.slice(0, 4)))].sort().reverse();
+  }
+
+  function selectedQueueLabels() {
+    const labels = quarterLabels();
+    if (settingsSelection.kind === "current") return labels.slice(0, 1);
+    if (settingsSelection.kind === "year") {
+      return labels.filter((label) => label.startsWith(`${settingsSelection.year}-`));
+    }
+    if (settingsSelection.kind === "range") {
+      const from = Number(settingsSelection.from);
+      const to = Number(settingsSelection.to);
+      if (!Number.isInteger(from) || !Number.isInteger(to)) return [];
+      const lower = Math.min(from, to);
+      const upper = Math.max(from, to);
+      return labels.filter((label) => {
+        const year = Number(label.slice(0, 4));
+        return year >= lower && year <= upper;
+      });
+    }
+    return labels;
+  }
+
+  async function renderAppSettings(container) {
+    if (!container) return;
+    const hasSupport = supported();
+    const controlled = Boolean(navigator.serviceWorker?.controller);
+    const canInstall = Boolean(installPrompt);
+    container.innerHTML = `
+      <dl class="settings-facts">
+        <div><dt>PWA</dt><dd>${hasSupport ? "supported" : "unavailable"}</dd></div>
+        <div><dt>Service Worker</dt><dd>${controlled ? "controlling" : "not controlling"}</dd></div>
+        <div><dt>App update</dt><dd>${updateRegistration?.waiting ? "available" : "current"}</dd></div>
+      </dl>
+      ${canInstall ? '<button type="button" class="button button--ink" data-install-app>安装应用</button>' : '<p class="settings-note">如浏览器支持，可从浏览器菜单选择“安装”或“添加到主屏幕”。</p>'}
+    `;
+    container.querySelector("[data-install-app]")?.addEventListener("click", async () => {
+      await promptInstall();
+      renderSettings();
+    });
+  }
+
+  async function renderStorageSettings(container) {
+    if (!container) return;
+    let estimate = null;
+    let persisted = "unsupported";
+    try {
+      estimate = await navigator.storage?.estimate?.();
+    } catch {
+      estimate = null;
+    }
+    try {
+      if (navigator.storage?.persisted) {
+        persisted = await navigator.storage.persisted() ? "granted" : "not granted";
+      }
+    } catch {
+      persisted = "unsupported";
+    }
+    const estimateHtml = estimate
+      ? `<dl class="settings-facts"><div><dt>Usage</dt><dd>${formatBytes(estimate.usage)}</dd></div><div><dt>Quota</dt><dd>${formatBytes(estimate.quota)}</dd></div></dl>`
+      : '<p class="settings-note">浏览器未提供存储估算</p>';
+    container.innerHTML = `${estimateHtml}<p class="settings-note">Persistent storage: <strong>${persistenceResult || persisted}</strong></p>${navigator.storage?.persist ? '<button type="button" class="button" data-request-persistence>申请持久存储</button>' : ""}`;
+    container.querySelector("[data-request-persistence]")?.addEventListener("click", async () => {
+      try {
+        persistenceResult = await navigator.storage.persist() ? "granted" : "not granted";
+      } catch {
+        persistenceResult = "unsupported";
+      }
+      renderSettings();
+    });
+  }
+
+  function statusLabel(status) {
+    return {
+      NONE: "未下载",
+      INCOMPLETE: "INCOMPLETE",
+      COMPLETE: "已离线",
+      UPDATE_AVAILABLE: "有更新",
+    }[status] || "未下载";
+  }
+
+  function actionLabel(status) {
+    return {
+      NONE: "下载",
+      INCOMPLETE: "继续",
+      COMPLETE: "移除",
+      UPDATE_AVAILABLE: "更新",
+    }[status] || "下载";
+  }
+
+  async function renderQuarterSettings(container) {
+    if (!container) return;
+    const stateByQuarter = new Map(
+      (await listQuarterStates()).map((state) => [state.quarter, state]),
+    );
+    const labels = quarterLabels();
+    if (!labels.length) {
+      container.innerHTML = '<p class="settings-note">当前没有可公开季度。</p>';
+      return;
+    }
+    container.innerHTML = `<div class="offline-quarter-list">${labels.map((quarter) => {
+      const state = stateByQuarter.get(quarter) || initialQuarterState(quarter);
+      return `<article class="offline-quarter" data-offline-quarter="${quarter}">
+        <div><strong>${quarter}</strong><span>${statusLabel(state.status)}</span>${state.error ? `<small>${escapeHtml(state.error)}</small>` : ""}</div>
+        <button type="button" class="button" data-quarter-action="${actionLabel(state.status)}">${actionLabel(state.status)}</button>
+      </article>`;
+    }).join("")}</div>`;
+    container.querySelectorAll("[data-offline-quarter]").forEach((row) => {
+      const quarter = row.dataset.offlineQuarter;
+      const state = stateByQuarter.get(quarter) || initialQuarterState(quarter);
+      row.querySelector("[data-quarter-action]")?.addEventListener("click", async () => {
+        if (state.status === "COMPLETE") {
+          if (!window.confirm(`移除 ${quarter} 的离线缓存？`)) return;
+          await removeQuarter(quarter);
+        } else {
+          await enqueue([quarter]);
+        }
+        renderSettings();
+      });
+    });
+  }
+
+  function renderQueueSelector(container) {
+    if (!container) return;
+    const availableYears = years();
+    if (!settingsSelection.year) settingsSelection.year = availableYears[0] || "";
+    if (!settingsSelection.from) settingsSelection.from = availableYears.at(-1) || "";
+    if (!settingsSelection.to) settingsSelection.to = availableYears[0] || "";
+    const yearOptions = availableYears
+      .map((year) => `<option value="${year}">${year}</option>`)
+      .join("");
+    const labels = selectedQueueLabels();
+    container.innerHTML = `<div class="queue-selector">
+      <label>范围<select data-queue-kind>
+        <option value="current">当前季度</option><option value="year">指定年份</option>
+        <option value="range">年份范围</option><option value="all">全部季度</option>
+      </select></label>
+      <label data-queue-year ${settingsSelection.kind === "year" ? "" : "hidden"}>年份<select>${yearOptions}</select></label>
+      <div class="queue-range" data-queue-range ${settingsSelection.kind === "range" ? "" : "hidden"}>
+        <label>从<select>${yearOptions}</select></label><label>到<select>${yearOptions}</select></label>
+      </div>
+      <p class="queue-preview"><strong>${labels.length}</strong> 个季度 · newest → oldest</p>
+      <button type="button" class="button button--ink" data-start-queue ${!labels.length || !navigator.onLine ? "disabled" : ""}>加入下载队列</button>
+    </div>`;
+    const kind = container.querySelector("[data-queue-kind]");
+    kind.value = settingsSelection.kind;
+    kind.addEventListener("change", () => {
+      settingsSelection.kind = kind.value;
+      renderSettings();
+    });
+    const year = container.querySelector("[data-queue-year] select");
+    if (year) {
+      year.value = settingsSelection.year;
+      year.addEventListener("change", () => {
+        settingsSelection.year = year.value;
+        renderSettings();
+      });
+    }
+    const range = container.querySelectorAll("[data-queue-range] select");
+    if (range.length === 2) {
+      range[0].value = settingsSelection.from;
+      range[1].value = settingsSelection.to;
+      range[0].addEventListener("change", () => {
+        settingsSelection.from = range[0].value;
+        renderSettings();
+      });
+      range[1].addEventListener("change", () => {
+        settingsSelection.to = range[1].value;
+        renderSettings();
+      });
+    }
+    container.querySelector("[data-start-queue]")?.addEventListener("click", async () => {
+      await enqueue(selectedQueueLabels());
+      renderSettings();
+    });
+  }
+
+  async function renderQueue(container) {
+    if (!container) return;
+    const queue = await currentQueue();
+    const progress = queue.progress;
+    const stateLabel = {
+      idle: "队列空闲",
+      downloading: "正在下载",
+      paused: "已暂停",
+      "waiting-network": "等待网络",
+      cancelled: "已取消",
+    }[queue.state] || queue.state;
+    container.innerHTML = `<div class="queue-status">
+      <p><strong>${stateLabel}</strong>${queue.current ? ` · ${queue.current}` : ""}</p>
+      ${progress ? `<p>${progress.verified_resources} / ${progress.total_resources} resources<br>${formatBytes(progress.verified_bytes)} / ${formatBytes(progress.total_bytes)}<br>${queue.completed.length} / ${queue.labels.length} quarters</p>` : `<p>${queue.completed.length} / ${queue.labels.length} quarters</p>`}
+      ${queue.errors.length ? `<ul class="queue-errors">${queue.errors.map((error) => `<li><strong>${escapeHtml(error.quarter)}</strong> · ${escapeHtml(error.stage)} · ${escapeHtml(error.summary)}</li>`).join("")}</ul>` : ""}
+      <div class="queue-actions">
+        ${["downloading", "waiting-network"].includes(queue.state) ? '<button type="button" class="button" data-queue-pause>暂停</button>' : ""}
+        ${queue.state === "paused" ? '<button type="button" class="button button--ink" data-queue-resume>继续</button>' : ""}
+        ${["downloading", "waiting-network", "paused"].includes(queue.state) ? '<button type="button" class="button" data-queue-cancel>取消</button>' : ""}
+      </div></div>`;
+    container.querySelector("[data-queue-pause]")?.addEventListener("click", pauseQueue);
+    container.querySelector("[data-queue-resume]")?.addEventListener("click", resumeQueue);
+    container.querySelector("[data-queue-cancel]")?.addEventListener("click", cancelQueue);
+  }
+
+  async function renderSettings() {
+    const root = document.querySelector("[data-pwa-settings]");
+    if (!root) return;
+    await Promise.all([
+      renderAppSettings(root.querySelector("[data-settings-app]")),
+      renderStorageSettings(root.querySelector("[data-settings-storage]")),
+      renderQuarterSettings(root.querySelector("[data-settings-quarters]")),
+      renderQueue(root.querySelector("[data-settings-queue]")),
+    ]);
+    renderQueueSelector(root.querySelector("[data-settings-selector]"));
+  }
+
+  async function initializeSettings() {
+    const root = document.querySelector("[data-pwa-settings]");
+    if (!root) return;
+    try {
+      const response = await fetch(root.dataset.archiveIndexUrl, {
+        credentials: "same-origin",
+      });
+      if (response.ok) archiveIndex = await response.json();
+    } catch {
+      archiveIndex = null;
+    }
+    subscribe(renderSettings);
+    await renderSettings();
+    await detectUpdates();
+  }
+
+  function renderUpdateNotice() {
+    const notice = document.querySelector("[data-pwa-update-notice]");
+    if (!notice) return;
+    notice.hidden = !updateRegistration?.waiting;
+    const refresh = notice.querySelector("[data-pwa-refresh]");
+    if (refresh) refresh.onclick = refreshApp;
+  }
+
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     installPrompt = event;
@@ -610,6 +890,7 @@
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.addEventListener("controllerchange", () => {
       if (refreshRequested) window.location.reload();
+      else notify();
     });
     window.addEventListener("load", async () => {
       try {
@@ -648,9 +929,11 @@
     subscribe,
     refreshApp,
     installPrompt: () => installPrompt,
-    promptInstall: async () => installPrompt?.prompt(),
+    promptInstall,
     updateAvailable: () => Boolean(updateRegistration?.waiting),
   });
 
+  renderUpdateNotice();
+  initializeSettings();
   openLatestQuarter();
 })();

@@ -537,3 +537,65 @@ def test_runtime_resource_is_promoted_and_hash_mismatch_is_refetched(
     assert not any("covers/101.webp" in url for url in runtime_entries)
     assert f"{pwa_server}/2026-07/index.html" not in runtime_entries
     context.close()
+
+
+def test_settings_reports_storage_and_controls_quarter_downloads(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    context.add_init_script(
+        """
+        window.__persistCalls = 0;
+        Object.defineProperty(navigator, "storage", {
+          configurable: true,
+          value: {
+            estimate: async () => ({ usage: 2048, quota: 8192 }),
+            persisted: async () => false,
+            persist: async () => {
+              window.__persistCalls += 1;
+              return false;
+            },
+          },
+        });
+        """
+    )
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function(
+        "document.querySelectorAll('[data-offline-quarter]').length === 2"
+    )
+    for heading in ("应用", "存储", "离线档案", "下载队列"):
+        assert page.get_by_role("heading", name=heading).is_visible()
+    assert page.get_by_text("2.0 KiB").is_visible()
+    assert page.get_by_text("8.0 KiB").is_visible()
+    assert page.evaluate("window.__persistCalls") == 0
+    page.get_by_role("button", name="申请持久存储").click()
+    page.wait_for_function("window.__persistCalls === 1")
+    assert page.get_by_text("Persistent storage: not granted").is_visible()
+    assert page.get_by_role("button", name="安装应用").count() == 0
+    assert page.get_by_text("添加到主屏幕").is_visible()
+
+    selector = page.locator("[data-queue-kind]")
+    assert selector.locator("option").all_text_contents() == [
+        "当前季度",
+        "指定年份",
+        "年份范围",
+        "全部季度",
+    ]
+    july = page.locator('[data-offline-quarter="2026-07"]')
+    july.get_by_role("button", name="下载").click()
+    _wait_for_queue(page, 1)
+    page.evaluate("window.dispatchEvent(new CustomEvent('bsb:pwa-state'))")
+    page.wait_for_function(
+        "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
+        "?.textContent.includes('已离线')"
+    )
+    assert july.get_by_role("button", name="移除").is_visible()
+    page.on("dialog", lambda dialog: dialog.accept())
+    july.get_by_role("button", name="移除").click()
+    page.wait_for_function(
+        "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
+        "?.textContent.includes('未下载')"
+    )
+    context.close()

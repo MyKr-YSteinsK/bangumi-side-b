@@ -1340,11 +1340,26 @@ def _archive_html(revisions: Mapping[str, str]) -> bytes:
 def _settings_html(revisions: Mapping[str, str]) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "SETTINGS")
-        + '<main class="reference-page"><section class="archive-intro">'
+        + '<main class="reference-page settings-page" data-pwa-settings '
+        'data-archive-index-url="../data/archive-index.json"><section class="archive-intro">'
         '<p class="archive-intro__code">SETTINGS / LOCAL</p><div><h1>设置</h1>'
-        '<p class="archive-intro__summary">当前页面只统一站点导航与排版；浏览运行时不连接 SQLite、Bangumi API 或第三方服务。</p>'
-        '</div></section></main>'
-        '<footer class="site-footer"><p>档案页面保持同源静态资源与可复现构建边界。</p></footer>'
+        '<p class="archive-intro__summary">管理应用状态、浏览器存储与按季度离线档案。</p>'
+        '</div></section><div class="settings-sections">'
+        '<section class="settings-section" aria-labelledby="settings-app-title">'
+        '<header><p>01 / APP</p><h2 id="settings-app-title">应用</h2></header>'
+        '<div data-settings-app><p class="loading-state">正在读取应用状态…</p></div></section>'
+        '<section class="settings-section" aria-labelledby="settings-storage-title">'
+        '<header><p>02 / STORAGE</p><h2 id="settings-storage-title">存储</h2></header>'
+        '<div data-settings-storage><p class="loading-state">正在读取浏览器存储…</p></div></section>'
+        '<section class="settings-section" aria-labelledby="settings-offline-title">'
+        '<header><p>03 / OFFLINE ARCHIVE</p><h2 id="settings-offline-title">离线档案</h2></header>'
+        '<div data-settings-selector></div><div data-settings-quarters>'
+        '<p class="loading-state">正在读取季度状态…</p></div></section>'
+        '<section class="settings-section" aria-labelledby="settings-queue-title">'
+        '<header><p>04 / DOWNLOAD QUEUE</p><h2 id="settings-queue-title">下载队列</h2></header>'
+        '<div data-settings-queue><p class="loading-state">队列空闲</p></div></section>'
+        '</div></main>'
+        '<footer class="site-footer"><p>离线下载仅使用当前站点的同源、逐文件校验资源。</p></footer>'
     )
     return _page(
         "Settings · Bangumi Side B",
@@ -1552,7 +1567,10 @@ def _page(
         f'<link rel="manifest" href="{manifest_href}">'
         f'<link rel="icon" href="{favicon_href}" type="image/svg+xml">'
         f'<link rel="stylesheet" href="{_revision_href(css_href, revisions["assets/app.css"])}"></head>'
-        f"<body{class_attr}{attributes}>{body}"
+        f"<body{class_attr}{attributes}>"
+        '<aside class="pwa-update-notice" data-pwa-update-notice hidden>'
+        '<span>应用更新可用</span><button type="button" data-pwa-refresh>刷新</button></aside>'
+        f"{body}"
         f'<script src="{_revision_href(js_href, revisions["assets/app.js"])}" defer></script>'
         f'<script src="{_revision_href(pwa_href, revisions["assets/pwa.js"])}" defer></script>'
         "</body></html>"

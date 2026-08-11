@@ -98,15 +98,12 @@ async function sha256(buffer) {
 
 async function verifiedResponse(response, resource) {
   if (!response || !response.ok) throw new Error(`resource unavailable: ${resource.url}`);
-  const buffer = await response.arrayBuffer();
+  const body = response.clone();
+  const buffer = await body.arrayBuffer();
   if (buffer.byteLength !== resource.size_bytes || await sha256(buffer) !== resource.content_hash) {
     throw new Error(`resource verification failed: ${resource.url}`);
   }
-  return new Response(buffer, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
+  return response.clone();
 }
 
 async function ensureContent(resource) {
@@ -226,8 +223,29 @@ async function contentFor(resource) {
   return cache.match(contentRequest(resource.content_hash));
 }
 
+async function authorizedResource(path, hash) {
+  if (!HEX_64.test(hash || "")) return null;
+  const shell = await readMeta(SHELL_META);
+  const shellResource = resourceForPath(shell, path);
+  if (shellResource?.content_hash === hash) return shellResource;
+  for (const quarter of await activeQuarterMetadata()) {
+    const resource = resourceForPath(quarter?.active, path);
+    if (resource?.content_hash === hash) return resource;
+  }
+  return null;
+}
+
+async function authorizedContentHash(path, hash) {
+  return Boolean(await authorizedResource(path, hash));
+}
+
 async function guaranteedResponse(request) {
   const path = physicalPath(request.url);
+  const version = new URL(request.url).searchParams.get("v");
+  if (
+    new URL(request.url).searchParams.has("v")
+    && !(await authorizedContentHash(path, version))
+  ) return null;
   const shell = await readMeta(SHELL_META);
   const shellResponse = await contentFor(resourceForPath(shell, path));
   if (shellResponse) return shellResponse;
@@ -265,7 +283,17 @@ async function versionedResponse(request) {
   const expected = url.searchParams.get("v");
   const path = physicalPath(url.href);
   if (!HEX_64.test(expected || "") || !path.match(/^(assets\/|covers\/)/)) return null;
-  const cached = await contentFor({ content_hash: expected });
+  const authorized = await authorizedResource(path, expected);
+  if (!authorized) {
+    try {
+      const response = await fetch(request);
+      if (response.ok) await rememberRuntime(request, response);
+      return response;
+    } catch {
+      return (await caches.open(RUNTIME_CACHE)).match(request) || null;
+    }
+  }
+  const cached = await contentFor(authorized);
   if (cached) return cached;
   try {
     const response = await fetch(request);
@@ -274,7 +302,7 @@ async function versionedResponse(request) {
   } catch {
     const runtime = await (await caches.open(RUNTIME_CACHE)).match(request);
     if (runtime) return runtime;
-    throw new Error("versioned resource unavailable");
+    return null;
   }
 }
 
@@ -291,7 +319,12 @@ async function settingsFallback() {
 async function networkFirst(request) {
   try {
     const response = await fetch(request);
-    if (response.ok) await rememberRuntime(request, response);
+    if (response.ok) {
+      await rememberRuntime(request, response);
+      return response;
+    }
+    const guaranteed = await guaranteedResponse(request);
+    if (guaranteed) return guaranteed;
     return response;
   } catch {
     const guaranteed = await guaranteedResponse(request);

@@ -160,14 +160,11 @@
 
   async function verifiedResponse(response, resource) {
     if (!response || !response.ok) throw new Error("资源请求失败");
-    const buffer = await response.arrayBuffer();
+    const body = response.clone();
+    const buffer = await body.arrayBuffer();
     if (buffer.byteLength !== resource.size_bytes) throw new Error("资源大小校验失败");
     if (await sha256(buffer) !== resource.content_hash) throw new Error("资源哈希校验失败");
-    return new Response(buffer, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
+    return response.clone();
   }
 
   async function existingContent(resource) {

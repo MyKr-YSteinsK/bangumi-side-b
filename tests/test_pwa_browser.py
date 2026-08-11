@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import gzip
 import hashlib
 import http.server
 import json
@@ -54,6 +55,34 @@ def pwa_server(pwa_site: Path) -> Iterator[str]:
         http.server.SimpleHTTPRequestHandler,
         directory=str(pwa_site.parent),
     )
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.fixture
+def gzip_pwa_server(pwa_site: Path) -> Iterator[str]:
+    class GzipHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path.split("?", 1)[0].endswith("/data/quarters/2026-07.json"):
+                target = pwa_site / "data" / "quarters" / "2026-07.json"
+                body = gzip.compress(target.read_bytes())
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Encoding", "gzip")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            super().do_GET()
+
+    handler = functools.partial(GzipHandler, directory=str(pwa_site.parent))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -207,6 +236,12 @@ def test_active_quarter_uses_content_identity_for_offline_navigation_and_cover(
     cover = next(
         item for item in manifest["resources"] if item["url"] == "covers/101.webp"
     )
+    app_script = next(
+        item for item in manifest["resources"] if item["url"] == "assets/app.js"
+    )
+    quarter_page = next(
+        item for item in manifest["resources"] if item["url"] == "2026-07/index.html"
+    )
     context.set_offline(True)
     page.goto(f"{pwa_server}/2026-07/index.html")
     assert page.locator('[data-subject-id="101"] img').is_visible()
@@ -219,6 +254,24 @@ def test_active_quarter_uses_content_identity_for_offline_navigation_and_cover(
         {"url": f"{pwa_server}/{cover['url']}", "hash": cover["content_hash"]},
     )
     assert response_size == cover["size_bytes"]
+    old_app_status = page.evaluate(
+        "({ url, hash }) => fetch(`${url}?v=${hash}`)"
+        ".then((response) => response.status)",
+        {
+            "url": f"{pwa_server}/{app_script['url']}",
+            "hash": app_script["content_hash"],
+        },
+    )
+    assert old_app_status == 200
+    mismatched_status = page.evaluate(
+        "({ url, hash }) => fetch(`${url}?v=${hash}`)"
+        ".then((response) => response.status)",
+        {
+            "url": f"{pwa_server}/{cover['url']}",
+            "hash": quarter_page["content_hash"],
+        },
+    )
+    assert mismatched_status != 200
     context.close()
 
 
@@ -690,6 +743,21 @@ def test_runtime_resource_is_promoted_and_hash_mismatch_is_refetched(
     context.close()
 
 
+def test_gzip_response_is_verified_and_cached_without_rebuilding_headers(
+    chromium: Browser,
+    gzip_pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.goto(f"{gzip_pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert state["status"] == "COMPLETE"
+    context.close()
+
+
 def test_settings_reports_storage_and_controls_quarter_downloads(
     chromium: Browser,
     pwa_server: str,
@@ -816,6 +884,31 @@ def test_downloaded_quarter_is_complete_offline_and_undownloaded_redirects(
     page.goto(f"{pwa_server}/2026-04/index.html")
     page.wait_for_url(f"{pwa_server}/settings/index.html")
     assert page.get_by_role("heading", name="设置").is_visible()
+    context.close()
+
+
+def test_network_error_prefers_guaranteed_active_content_without_faking_unknown_404(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    (pwa_site / "2026-07" / "index.html").unlink()
+    fallback = page.evaluate(
+        "fetch('../2026-07/index.html').then(async (response) => ({"
+        "status: response.status, text: await response.text()}))"
+    )
+    assert fallback["status"] == 200
+    assert "data-page=\"quarter\"" in fallback["text"]
+    unknown = page.evaluate(
+        "fetch('../not-downloaded.html').then((response) => response.status)"
+    )
+    assert unknown == 404
     context.close()
 
 

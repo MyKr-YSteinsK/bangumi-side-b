@@ -67,6 +67,51 @@ def pwa_server(pwa_site: Path) -> Iterator[str]:
 
 
 @pytest.fixture
+def slow_pwa_server(pwa_site: Path) -> Iterator[str]:
+    class SlowHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path.split("?", 1)[0].endswith("/sw.js"):
+                time.sleep(7)
+            super().do_GET()
+
+    handler = functools.partial(SlowHandler, directory=str(pwa_site.parent))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.fixture
+def retry_pwa_server(pwa_site: Path) -> Iterator[tuple[str, list[int]]]:
+    attempts = [0]
+
+    class RetryHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path.split("?", 1)[0].endswith("/sw.js"):
+                attempts[0] += 1
+                if attempts[0] == 1:
+                    self.send_error(503, "registration fixture failure")
+                    return
+            super().do_GET()
+
+    handler = functools.partial(RetryHandler, directory=str(pwa_site.parent))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/bangumi-side-b", attempts
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.fixture
 def gzip_pwa_server(pwa_site: Path) -> Iterator[str]:
     class GzipHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -266,6 +311,119 @@ def test_persisted_queue_waits_for_service_worker_after_registration_failure(
     assert page.evaluate(
         "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
     ) == "NONE"
+    context.close()
+
+
+def test_slow_service_worker_activation_stays_registering_and_then_downloads(
+    chromium: Browser,
+    slow_pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{slow_pwa_server}/settings/index.html")
+    page.wait_for_function(
+        "window.BsbPwa?.capabilityState() === 'registering'"
+    )
+    page.wait_for_timeout(5200)
+    assert page.evaluate("window.BsbPwa.capabilityState()") == "registering"
+    page.wait_for_function(
+        "window.BsbPwa.capabilityState() === 'ready'",
+        timeout=15000,
+    )
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    assert page.evaluate("window.BsbPwa.capabilityState()") == "ready"
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
+    ) == "COMPLETE"
+    context.close()
+
+
+def test_page_load_and_first_enqueue_share_one_registration_attempt(
+    chromium: Browser,
+    slow_pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    context.add_init_script(
+        """
+        const nativeRegister = navigator.serviceWorker.register.bind(navigator.serviceWorker);
+        window.__registerCalls = 0;
+        Object.defineProperty(navigator.serviceWorker, "register", {
+          configurable: true,
+          value: (...args) => {
+            window.__registerCalls += 1;
+            return nativeRegister(...args);
+          },
+        });
+        """
+    )
+    page = context.new_page()
+    page.goto(f"{slow_pwa_server}/settings/index.html")
+    page.wait_for_function("window.__registerCalls === 1")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    assert page.evaluate("window.__registerCalls") == 1
+    context.close()
+
+
+def test_failed_registration_can_retry_and_resume_queue(
+    chromium: Browser,
+    retry_pwa_server: tuple[str, list[int]],
+) -> None:
+    pwa_server, attempts = retry_pwa_server
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function(
+        "window.BsbPwa?.capabilityState() === 'registration-failed'"
+    )
+    assert attempts == [1]
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    assert attempts == [2]
+    assert page.evaluate("window.BsbPwa.capabilityState()") == "ready"
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
+    ) == "COMPLETE"
+    context.close()
+
+
+def test_paused_persisted_queue_is_not_auto_resumed(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate(
+        """
+        async () => {
+          const meta = await caches.open("bsb-meta-v1");
+          await meta.put(
+            new Request(new URL("../__bsb_meta__/queue.json", location.href)),
+            new Response(JSON.stringify({
+              schema: 2,
+              generation: "paused-generation",
+              state: "paused",
+              labels: ["2026-07"],
+              current: null,
+              succeeded: [],
+              failed: [],
+              errors: [],
+            })),
+          );
+        }
+        """
+    )
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    page.reload()
+    page.wait_for_function(
+        "window.BsbPwa.currentQueue().then((queue) => queue.state === 'paused')"
+    )
+    page.wait_for_timeout(250)
+    assert not any("data/offline/2026-07.json" in url for url in requests)
     context.close()
 
 

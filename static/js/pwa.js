@@ -27,6 +27,7 @@
   let capabilityState = "unsupported";
   let registrationPromise = null;
   let serviceWorkerRegistration = null;
+  const watchedRegistrations = new WeakSet();
   try {
     if (typeof BroadcastChannel === "function") stateChannel = new BroadcastChannel(STATE_CHANNEL_NAME);
   } catch {
@@ -539,8 +540,7 @@
 
   async function ensureServiceWorkerReady() {
     if (!supported()) throw new Error("浏览器不支持离线下载");
-    if (!registrationPromise) registrationPromise = registerServiceWorker();
-    const registration = await registrationPromise;
+    const registration = await getOrStartServiceWorkerRegistration();
     if (!registration || capabilityState !== "ready") {
       throw new Error("Service Worker 尚未就绪，无法保证离线下载");
     }
@@ -878,6 +878,8 @@
   }
 
   function watchRegistration(registration) {
+    if (!registration || watchedRegistrations.has(registration)) return;
+    watchedRegistrations.add(registration);
     const inspect = () => {
       if (registration.waiting && navigator.serviceWorker.controller) {
         updateRegistration = registration;
@@ -891,7 +893,45 @@
     });
   }
 
-  async function registerServiceWorker() {
+  function waitForActiveRegistration(registration) {
+    if (registration?.active) return Promise.resolve(registration);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const workers = new Map();
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        registration.removeEventListener("updatefound", inspect);
+        for (const [worker, handler] of workers) {
+          worker.removeEventListener("statechange", handler);
+        }
+        callback(value);
+      };
+      const inspect = () => {
+        if (registration.active) {
+          finish(resolve, registration);
+          return;
+        }
+        const installing = registration.installing;
+        if (installing && !workers.has(installing)) {
+          const handler = inspect;
+          workers.set(installing, handler);
+          installing.addEventListener("statechange", handler);
+        }
+        if (installing?.state === "redundant" || registration.waiting?.state === "redundant") {
+          finish(reject, new Error("Service Worker became redundant before activation"));
+        }
+      };
+      registration.addEventListener("updatefound", inspect);
+      navigator.serviceWorker.ready.then((ready) => {
+        if (ready?.active) finish(resolve, ready);
+        else inspect();
+      }).catch((error) => finish(reject, error));
+      inspect();
+    });
+  }
+
+  async function startServiceWorkerRegistration() {
     if (!supported()) {
       capabilityState = "unsupported";
       notify();
@@ -905,21 +945,44 @@
       const registration = await navigator.serviceWorker.register(workerUrl, {
         scope: scopeUrl.pathname,
       });
-      serviceWorkerRegistration = await Promise.race([
-        navigator.serviceWorker.ready,
-        new Promise((resolve) => window.setTimeout(() => resolve(null), 5000)),
-      ]);
-      if (!serviceWorkerRegistration.active) throw new Error("Service Worker inactive");
+      serviceWorkerRegistration = registration;
       watchRegistration(registration);
+      serviceWorkerRegistration = await waitForActiveRegistration(registration);
+      if (!serviceWorkerRegistration.active) throw new Error("Service Worker inactive");
       capabilityState = "ready";
       notify();
+      await restoreQueue();
       return serviceWorkerRegistration;
-    } catch {
+    } catch (error) {
       serviceWorkerRegistration = null;
       capabilityState = "registration-failed";
       notify();
-      return null;
+      try {
+        await parkQueueForServiceWorker();
+      } catch {
+        // Queue recovery must not mask the registration failure.
+      }
+      throw error;
     }
+  }
+
+  function getOrStartServiceWorkerRegistration() {
+    if (!supported()) {
+      capabilityState = "unsupported";
+      return Promise.resolve(null);
+    }
+    if (capabilityState === "ready" && serviceWorkerRegistration?.active) {
+      return Promise.resolve(serviceWorkerRegistration);
+    }
+    if (registrationPromise && capabilityState !== "registration-failed") {
+      return registrationPromise;
+    }
+    const attempt = startServiceWorkerRegistration();
+    registrationPromise = attempt;
+    attempt.catch(() => {
+      if (registrationPromise === attempt) registrationPromise = null;
+    });
+    return attempt;
   }
 
   async function refreshApp() {
@@ -1347,7 +1410,7 @@
       else notify();
     });
     window.addEventListener("load", async () => {
-      await registerServiceWorker();
+      await getOrStartServiceWorkerRegistration().catch(() => null);
       await restoreQueue();
     });
   }

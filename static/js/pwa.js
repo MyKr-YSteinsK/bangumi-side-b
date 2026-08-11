@@ -29,6 +29,7 @@
   let capabilityState = "unsupported";
   let registrationPromise = null;
   let serviceWorkerRegistration = null;
+  let registrationError = null;
   const quarterMutations = new Map();
   const watchedRegistrations = new WeakSet();
   try {
@@ -1111,6 +1112,7 @@
       return null;
     }
     capabilityState = "registering";
+    registrationError = null;
     notify();
     try {
       const workerUrl = new URL("../sw.js", scriptUrl);
@@ -1123,12 +1125,14 @@
       serviceWorkerRegistration = await waitForActiveRegistration(registration);
       if (!serviceWorkerRegistration.active) throw new Error("Service Worker inactive");
       capabilityState = "ready";
+      registrationError = null;
       notify();
       await restoreQueue();
       return serviceWorkerRegistration;
     } catch (error) {
       serviceWorkerRegistration = null;
       capabilityState = "registration-failed";
+      registrationError = shortError(error);
       notify();
       try {
         await parkQueueForServiceWorker();
@@ -1156,6 +1160,18 @@
       if (registrationPromise === attempt) registrationPromise = null;
     });
     return attempt;
+  }
+
+  async function retryServiceWorkerRegistration() {
+    if (!supported() || capabilityState === "registering") return false;
+    if (capabilityState === "ready" && serviceWorkerRegistration?.active) return true;
+    registrationPromise = null;
+    try {
+      await getOrStartServiceWorkerRegistration();
+      return capabilityState === "ready" && Boolean(serviceWorkerRegistration?.active);
+    } catch {
+      return false;
+    }
   }
 
   async function refreshApp() {
@@ -1250,17 +1266,27 @@
     const hasSupport = supported();
     const controlled = Boolean(navigator.serviceWorker?.controller);
     const canInstall = Boolean(installPrompt);
+    const retryHtml = capabilityState === "registration-failed"
+      ? `<p class="settings-note">${escapeHtml(registrationError || "Service Worker registration failed")}</p><button type="button" class="button button--ink" data-retry-service-worker>重试离线能力</button>`
+      : "";
     container.innerHTML = `
       <dl class="settings-facts">
         <div><dt>PWA</dt><dd>${hasSupport ? "supported" : "unavailable"}</dd></div>
         <div><dt>Service Worker</dt><dd>${capabilityLabel()}${controlled ? " · controlling" : ""}</dd></div>
         <div><dt>App update</dt><dd>${updateRegistration?.waiting ? "available" : "current"}</dd></div>
       </dl>
+      ${retryHtml}
       ${canInstall ? '<button type="button" class="button button--ink" data-install-app>安装应用</button>' : '<p class="settings-note">如浏览器支持，可从浏览器菜单选择“安装”或“添加到主屏幕”。</p>'}
     `;
     container.querySelector("[data-install-app]")?.addEventListener("click", async () => {
       await promptInstall();
       renderSettings();
+    });
+    container.querySelector("[data-retry-service-worker]")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      await retryServiceWorkerRegistration();
+      await renderSettings();
     });
   }
 
@@ -1500,11 +1526,19 @@
     if (!supported()) {
       status.textContent = "当前浏览器不支持离线下载；在线浏览仍可正常使用。";
       actions.replaceChildren();
+      const link = document.createElement("a");
+      link.href = "../settings/index.html";
+      link.textContent = "离线能力不可用 · 打开 Settings";
+      actions.append(link);
       return;
     }
     if (capabilityState === "registration-failed") {
       status.textContent = "Service Worker 注册失败；在线浏览仍可正常使用。";
       actions.replaceChildren();
+      const link = document.createElement("a");
+      link.href = "../settings/index.html";
+      link.textContent = "离线能力不可用 · 打开 Settings";
+      actions.append(link);
       return;
     }
     if (capabilityState !== "ready") {
@@ -1617,6 +1651,7 @@
     resumeQueue,
     cancelQueue,
     removeQuarter,
+    retryServiceWorkerRegistration,
     detectUpdates,
     garbageCollect,
     subscribe,

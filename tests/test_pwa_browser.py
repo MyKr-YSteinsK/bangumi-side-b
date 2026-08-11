@@ -255,6 +255,15 @@ def test_service_worker_registration_failure_keeps_online_page_and_blocks_downlo
     assert rejected
     state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
     assert state["status"] == "NONE"
+    quarter = context.new_page()
+    quarter.goto(f"{pwa_server}/2026-07/index.html")
+    quarter.wait_for_function(
+        "document.querySelector('[data-quarter-offline-actions] a') !== null"
+    )
+    assert (
+        quarter.locator('[data-quarter-offline-actions] a').get_attribute("href")
+        == "../settings/index.html"
+    )
     context.close()
 
 
@@ -328,6 +337,7 @@ def test_slow_service_worker_activation_stays_registering_and_then_downloads(
     )
     page.wait_for_timeout(5200)
     assert page.evaluate("window.BsbPwa.capabilityState()") == "registering"
+    assert page.locator("[data-retry-service-worker]").count() == 0
     page.wait_for_function(
         "window.BsbPwa.capabilityState() === 'ready'",
         timeout=15000,
@@ -381,6 +391,11 @@ def test_failed_registration_can_retry_and_resume_queue(
         "window.BsbPwa?.capabilityState() === 'registration-failed'"
     )
     assert attempts == [1]
+    retry = page.locator("[data-retry-service-worker]")
+    retry.wait_for()
+    retry.click()
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    assert attempts == [2]
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
     _wait_for_queue(page, 1)
     assert attempts == [2]

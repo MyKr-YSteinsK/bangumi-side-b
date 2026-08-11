@@ -12,6 +12,7 @@
   const QUEUE_META = "queue.json";
   const QUEUE_LOCK_NAME = "bsb-offline-queue-runner";
   const QUEUE_MUTATION_LOCK_NAME = "bsb-offline-queue-mutation";
+  const QUARTER_MUTATION_LOCK_PREFIX = "bsb-offline-quarter-";
   const STATE_CHANNEL_NAME = "bsb-pwa-state";
   const HEX_64 = /^[a-f0-9]{64}$/;
   const QUARTER = /^\d{4}-(?:01|04|07|10)$/;
@@ -28,6 +29,7 @@
   let capabilityState = "unsupported";
   let registrationPromise = null;
   let serviceWorkerRegistration = null;
+  const quarterMutations = new Map();
   const watchedRegistrations = new WeakSet();
   try {
     if (typeof BroadcastChannel === "function") stateChannel = new BroadcastChannel(STATE_CHANNEL_NAME);
@@ -389,6 +391,10 @@
     ));
   }
 
+  function quarterMutationLockName(quarter) {
+    return `${QUARTER_MUTATION_LOCK_PREFIX}${quarter}-mutation`;
+  }
+
   function mergeQueueLabels(queue, labels) {
     const additions = queueList([...(queue.labels || []), ...labels]);
     const current = queue.current && additions.includes(queue.current) ? queue.current : null;
@@ -447,6 +453,71 @@
     }
   }
 
+  function updateQuarterDownloadState(quarter, generation, mutator) {
+    const previous = quarterMutations.get(quarter) || Promise.resolve();
+    const operation = previous.then(async () => {
+      const mutate = async () => {
+        const queue = await readQueue();
+        if (queue.generation !== generation || queue.state === "cancelled") {
+          throw new StaleQueueError();
+        }
+        const current = await getQuarterState(quarter);
+        const progress = await readMeta(progressMetaName(quarter));
+        const result = await mutator(current, progress);
+        if (!result) return { state: current, progress };
+        const latestQueue = await readQueue();
+        if (latestQueue.generation !== generation || latestQueue.state === "cancelled") {
+          throw new StaleQueueError();
+        }
+        const nextState = result.state || current;
+        if (result.state) await saveQuarterState(nextState);
+        if (Object.prototype.hasOwnProperty.call(result, "progress")) {
+          if (result.progress === null) await deleteMeta(progressMetaName(quarter));
+          else await writeMeta(progressMetaName(quarter), result.progress);
+        }
+        return {
+          state: nextState,
+          progress: Object.prototype.hasOwnProperty.call(result, "progress")
+            ? result.progress
+            : progress,
+        };
+      };
+      if (typeof navigator.locks?.request !== "function") return mutate();
+      let quarterEntered = false;
+      try {
+        return await navigator.locks.request(
+          quarterMutationLockName(quarter),
+          { mode: "exclusive" },
+          async () => {
+            quarterEntered = true;
+            let queueEntered = false;
+            try {
+              return await navigator.locks.request(
+                QUEUE_MUTATION_LOCK_NAME,
+                { mode: "exclusive" },
+                async () => {
+                  queueEntered = true;
+                  return mutate();
+                },
+              );
+            } catch (error) {
+              if (queueEntered) throw error;
+              return mutate();
+            }
+          },
+        );
+      } catch (error) {
+        if (quarterEntered) throw error;
+        return mutate();
+      }
+    });
+    const tracked = operation.catch(() => {});
+    quarterMutations.set(quarter, tracked);
+    return operation.finally(() => {
+      if (quarterMutations.get(quarter) === tracked) quarterMutations.delete(quarter);
+    });
+  }
+
   async function assertQueueGeneration(generation) {
     const queue = await readQueue();
     if (queue.generation !== generation || queue.state === "cancelled") {
@@ -455,9 +526,21 @@
     return queue;
   }
 
-  async function downloadResources(quarter, state, generation) {
-    const resources = state.staging.resources;
-    const verified = new Set(state.staging.verified_hashes || []);
+  function quarterProgress(quarter, resources, verified) {
+    return {
+      quarter,
+      verified_resources: verified.size,
+      total_resources: resources.length,
+      verified_bytes: resources
+        .filter((item) => verified.has(item.content_hash))
+        .reduce((total, item) => total + item.size_bytes, 0),
+      total_bytes: resources.reduce((total, item) => total + item.size_bytes, 0),
+    };
+  }
+
+  async function downloadResources(quarter, manifest, state, generation) {
+    const resources = manifest.resources;
+    const verified = new Set(state.staging?.verified_hashes || []);
     let cursor = 0;
     let failure = null;
 
@@ -474,21 +557,33 @@
         try {
           await ensureResource(resource);
           await assertQueueGeneration(generation);
-          verified.add(resource.content_hash);
-          state = {
-            ...state,
-            staging: { ...state.staging, verified_hashes: [...verified].sort() },
-          };
-          await saveQuarterState(state);
-          await writeMeta(progressMetaName(quarter), {
+          const result = await updateQuarterDownloadState(
             quarter,
-            verified_resources: verified.size,
-            total_resources: resources.length,
-            verified_bytes: resources
-              .filter((item) => verified.has(item.content_hash))
-              .reduce((total, item) => total + item.size_bytes, 0),
-            total_bytes: resources.reduce((total, item) => total + item.size_bytes, 0),
-          });
+            generation,
+            (current) => {
+              if (!current.staging || current.staging.revision !== manifest.revision) {
+                throw new StaleQueueError();
+              }
+              const nextVerified = new Set(current.staging.verified_hashes || []);
+              nextVerified.add(resource.content_hash);
+              return {
+                state: {
+                  ...current,
+                  status: "INCOMPLETE",
+                  staging: {
+                    ...current.staging,
+                    verified_hashes: [...nextVerified].sort(),
+                  },
+                  error: null,
+                },
+                progress: quarterProgress(quarter, resources, nextVerified),
+              };
+            },
+          );
+          verified.clear();
+          for (const hash of result.state.staging?.verified_hashes || []) {
+            verified.add(hash);
+          }
         } catch (error) {
           failure = error;
         }
@@ -503,63 +598,92 @@
     );
     await assertQueueGeneration(generation);
     if (failure) throw failure;
-    if (verified.size !== new Set(resources.map((item) => item.content_hash)).size) {
+    if (!resources.every((item) => verified.has(item.content_hash))) {
       throw new Error("季度资源尚未完整校验");
     }
-    return state;
+    return await getQuarterState(quarter);
   }
 
   async function downloadQuarter(quarter, generation) {
-    let state = await getQuarterState(quarter);
     let manifest;
     try {
       await assertQueueGeneration(generation);
       manifest = await fetchQuarterManifest(quarter);
     } catch (error) {
       if (error instanceof StaleQueueError) throw error;
-      await assertQueueGeneration(generation);
-      state = { ...state, status: state.active ? "UPDATE_AVAILABLE" : "INCOMPLETE", error: shortError(error) };
-      await saveQuarterState(state);
+      await updateQuarterDownloadState(quarter, generation, (current) => ({
+        state: {
+          ...current,
+          status: current.active ? "UPDATE_AVAILABLE" : "INCOMPLETE",
+          error: shortError(error),
+        },
+      }));
       throw error;
     }
-    if (state.active?.revision === manifest.revision && !state.staging) {
-      await assertQueueGeneration(generation);
-      state = { ...state, status: "COMPLETE", error: null };
-      await saveQuarterState(state);
-      return state;
-    }
-    if (state.staging?.revision !== manifest.revision) {
-      await assertQueueGeneration(generation);
-      state = {
-        ...state,
-        status: "INCOMPLETE",
-        staging: { ...manifest, verified_hashes: [] },
-        error: null,
-      };
-      await saveQuarterState(state);
-    }
+    const prepared = await updateQuarterDownloadState(
+      quarter,
+      generation,
+      (current) => {
+        if (current.active?.revision === manifest.revision && !current.staging) {
+          return {
+            state: { ...current, status: "COMPLETE", error: null },
+            progress: null,
+          };
+        }
+        const verified = current.staging?.revision === manifest.revision
+          ? new Set(current.staging.verified_hashes || [])
+          : new Set();
+        return {
+          state: {
+            ...current,
+            status: "INCOMPLETE",
+            staging: { ...manifest, verified_hashes: [...verified].sort() },
+            error: null,
+          },
+          progress: quarterProgress(quarter, manifest.resources, verified),
+        };
+      },
+    );
+    let state = prepared.state;
+    if (state.active?.revision === manifest.revision && !state.staging) return state;
     try {
-      state = await downloadResources(quarter, state, generation);
+      state = await downloadResources(quarter, manifest, state, generation);
       await assertQueueGeneration(generation);
-      state = {
-        ...state,
-        status: "COMPLETE",
-        active: manifest,
-        staging: null,
-        error: null,
-      };
-      await saveQuarterState(state);
+      const promoted = await updateQuarterDownloadState(
+        quarter,
+        generation,
+        (current) => {
+          if (!current.staging || current.staging.revision !== manifest.revision) {
+            throw new Error("季度下载状态已变更");
+          }
+          const verified = new Set(current.staging.verified_hashes || []);
+          if (!manifest.resources.every((item) => verified.has(item.content_hash))) {
+            throw new Error("季度资源尚未完整校验");
+          }
+          return {
+            state: {
+              ...current,
+              status: "COMPLETE",
+              active: manifest,
+              staging: null,
+              error: null,
+            },
+            progress: null,
+          };
+        },
+      );
+      state = promoted.state;
       await garbageCollect();
       return state;
     } catch (error) {
       if (error instanceof StaleQueueError) throw error;
-      await assertQueueGeneration(generation);
-      state = {
-        ...state,
-        status: "INCOMPLETE",
-        error: shortError(error),
-      };
-      await saveQuarterState(state);
+      await updateQuarterDownloadState(quarter, generation, (current) => ({
+        state: {
+          ...current,
+          status: "INCOMPLETE",
+          error: shortError(error),
+        },
+      }));
       throw error;
     }
   }
@@ -1474,6 +1598,7 @@
     validateQuarterManifest,
     fetchQuarterManifest,
     getQuarterState,
+    __updateQuarterDownloadState: updateQuarterDownloadState,
     listQuarterStates,
     currentQueue,
     enqueue,

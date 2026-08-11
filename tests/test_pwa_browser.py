@@ -730,6 +730,169 @@ def test_simultaneous_cross_tab_enqueue_serializes_queue_metadata(
     context.close()
 
 
+def test_quarter_metadata_writes_merge_monotonically_when_older_write_is_delayed(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.add_init_script(
+        """
+        (() => {
+          const nativePut = Cache.prototype.put;
+          let held = false;
+          window.__holdQuarterWrites = false;
+          window.__releaseQuarterPut = null;
+          window.__quarterPutHeld = false;
+          Cache.prototype.put = function(request, response) {
+            if (window.__holdQuarterWrites && !held && request.url.includes(
+              "/__bsb_meta__/quarters/2026-07.json")) {
+              held = true;
+              window.__quarterPutHeld = true;
+              const copy = response.clone();
+              return new Promise((resolve, reject) => {
+                window.__releaseQuarterPut = () =>
+                  nativePut.call(this, request, copy).then(resolve, reject);
+              });
+            }
+            return nativePut.call(this, request, response);
+          };
+        })();
+        """
+    )
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate(
+        """
+        async () => {
+          const meta = await caches.open("bsb-meta-v1");
+          const put = (path, value) => meta.put(
+            new Request(new URL(`../__bsb_meta__/${path}`, location.href)),
+            new Response(JSON.stringify(value)),
+          );
+          await put("queue.json", {
+            schema: 2,
+            generation: "generation-ab",
+            state: "downloading",
+            labels: ["2026-07"],
+            current: "2026-07",
+            succeeded: [],
+            failed: [],
+            errors: [],
+          });
+          await put("quarters/2026-07.json", {
+            schema: 1,
+            quarter: "2026-07",
+            status: "INCOMPLETE",
+            active: null,
+            staging: {
+              quarter: "2026-07",
+              revision: "staging-revision",
+              resources: [],
+              verified_hashes: [],
+            },
+            error: null,
+          });
+          window.__holdQuarterWrites = true;
+          const addHash = (hash) => window.BsbPwa.__updateQuarterDownloadState(
+            "2026-07",
+            "generation-ab",
+            (current) => ({
+              state: {
+                ...current,
+                staging: {
+                  ...current.staging,
+                  verified_hashes: [...new Set([
+                    ...(current.staging?.verified_hashes || []), hash,
+                  ])].sort(),
+                },
+              },
+            }),
+          );
+          const first = addHash("a");
+          for (let attempt = 0; attempt < 100; attempt += 1) {
+            if (window.__quarterPutHeld) break;
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+          const second = addHash("b");
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          window.__releaseQuarterPut();
+          await Promise.all([first, second]);
+        }
+        """
+    )
+    state = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert state["staging"]["verified_hashes"] == ["a", "b"]
+    context.close()
+
+
+def test_stale_quarter_generation_cannot_overwrite_new_staging(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate(
+        """
+        async () => {
+          const meta = await caches.open("bsb-meta-v1");
+          const put = (path, value) => meta.put(
+            new Request(new URL(`../__bsb_meta__/${path}`, location.href)),
+            new Response(JSON.stringify(value)),
+          );
+          await put("queue.json", {
+            schema: 2,
+            generation: "generation-new",
+            state: "downloading",
+            labels: ["2026-07"],
+            current: "2026-07",
+            succeeded: [],
+            failed: [],
+            errors: [],
+          });
+          await put("quarters/2026-07.json", {
+            schema: 1,
+            quarter: "2026-07",
+            status: "INCOMPLETE",
+            active: null,
+            staging: {
+              quarter: "2026-07",
+              revision: "generation-new-revision",
+              resources: [],
+              verified_hashes: ["new"],
+            },
+            error: null,
+          });
+          try {
+            await window.BsbPwa.__updateQuarterDownloadState(
+              "2026-07",
+              "generation-old",
+              () => ({
+                state: {
+                  status: "INCOMPLETE",
+                  staging: { verified_hashes: ["old"] },
+                },
+              }),
+            );
+            throw new Error("stale generation unexpectedly wrote");
+          } catch (error) {
+            if (error.message === "stale generation unexpectedly wrote") throw error;
+          }
+        }
+        """
+    )
+    state = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert state["staging"]["revision"] == "generation-new-revision"
+    assert state["staging"]["verified_hashes"] == ["new"]
+    context.close()
+
+
 def test_cancelled_runner_cannot_modify_new_queue_generation(
     chromium: Browser,
     pwa_server: str,

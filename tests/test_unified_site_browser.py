@@ -373,6 +373,95 @@ def test_archive_filters_are_media_local_and_normalized(
     assert page.get_by_label("tv-only-source").count() == 0
 
 
+def test_large_archive_renders_only_the_current_page_and_restores_deep_link(
+    chromium: Browser,
+    site_server: str,
+    unified_site: Path,
+) -> None:
+    catalog = json.loads(
+        (unified_site / "data" / "catalog" / "2026.json").read_text("utf-8")
+    )
+    tv_base = next(record for record in catalog["records"] if record["media"] == "TV")
+    movie_base = next(
+        record for record in catalog["records"] if record["media"] == "MOVIE"
+    )
+    tv_records = []
+    for index in range(160):
+        record = _facet_record(tv_base, 1000 + index, "original", "奇幻")
+        record["preferred_title"] = f"Scale {1000 + index}"
+        record["quarter"] = "2026-04" if index % 4 < 2 else "2026-07"
+        record["appearance"] = "premiere" if index % 2 == 0 else "continuing"
+        record["score"] = 8.0
+        record["rating_count"] = 100
+        record["air_date"] = "2026-04-01"
+        tv_records.append(record)
+    movie_records = []
+    for index in range(20):
+        record = _facet_record(movie_base, 2000 + index, "original", "奇幻")
+        record["preferred_title"] = f"Scale Movie {2000 + index}"
+        record["quarter"] = "2026-04" if index % 2 == 0 else "2026-07"
+        record["appearance"] = "premiere"
+        record["score"] = 8.0
+        record["rating_count"] = 100
+        record["air_date"] = "2026-04-01"
+        movie_records.append(record)
+    catalog["records"] = [*tv_records, *movie_records]
+
+    detail = json.loads(
+        (unified_site / "data" / "quarters" / "2026-07.json").read_text("utf-8")
+    )
+    target = _facet_record(
+        detail["tv"]["continuing"][0], 1150, "original", "奇幻"
+    )
+    target["preferred_title"] = "Scale 1150"
+    target["premiere_quarter"] = "2026-07"
+    detail["tv"]["premiere"] = [target]
+    detail["tv"]["continuing"] = []
+    detail["movie"]["premiere"] = []
+
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    page.set_default_timeout(8000)
+    page.add_init_script("localStorage.setItem('bsb-archive-page-size', '20')")
+    page.route(
+        "**/data/catalog/2026.json",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(catalog)
+        ),
+    )
+    page.route(
+        "**/data/quarters/2026-07.json",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(detail)
+        ),
+    )
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')"
+        "?.textContent.includes('160 / 160')"
+    )
+    assert page.locator(".subject-row").count() == 20
+
+    page.locator("[data-page-size]").select_option("100")
+    assert page.locator(".subject-row").count() == 100
+    page.locator("[data-page-size]").select_option("20")
+    page.locator("[data-pager] button", has_text="02").click()
+    assert page.locator(".subject-row").count() == 20
+    assert "021" in page.locator(".subject-row__sequence").all_inner_texts()
+    page.locator("[data-search]").fill("Scale 1150")
+    assert page.locator(".subject-row").count() == 1
+
+    page.goto(f"{site_server}/settings/index.html")
+    page.goto(f"{site_server}/archive/index.html?year=2026#bgm-1150")
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    page.wait_for_function(
+        "document.querySelector('[data-detail-panel]')"
+        "?.textContent.includes('Scale 1150')"
+    )
+    assert page.locator(".subject-row").count() <= 20
+    assert "8 / 8" in page.locator("[data-results-summary]").inner_text()
+    assert "151" in page.locator(".subject-row__sequence").all_inner_texts()
+
+
 def test_archive_lazy_loads_and_reuses_selected_quarter_details(
     chromium: Browser,
     site_server: str,

@@ -980,16 +980,19 @@
     return article;
   }
 
-  function buildLists() {
+  function buildLists(result) {
     if (!selectors.list) return;
     selectors.list.replaceChildren();
+    const positions = new Map(result.all.map((record, index) => [record.key, index + 1]));
     const groups = [
       ["tv", "premiere", "本季度新番"],
       ["tv", "continuing", "跨季度续播"],
       ["movie", "premiere", "剧场版"],
     ];
     groups.forEach(([media, appearance, title]) => {
-      const values = records.filter((record) =>
+      const allValues = result.all.filter((record) =>
+        record.media === (media === "movie" ? "MOVIE" : "TV") && record.appearance === appearance);
+      const pageValues = result.pageRecords.filter((record) =>
         record.media === (media === "movie" ? "MOVIE" : "TV") && record.appearance === appearance);
       const section = document.createElement("section");
       section.className = "result-section";
@@ -1004,15 +1007,16 @@
       heading.textContent = title;
       const counter = document.createElement("span");
       counter.dataset.sectionCount = "true";
-      counter.textContent = String(values.length).padStart(2, "0");
+      counter.textContent = String(allValues.length).padStart(2, "0");
       header.append(code, heading, counter);
       const list = document.createElement("div");
       list.className = "result-list";
-      values.forEach((record, position) => {
-        const row = createRow(record, position + 1);
+      pageValues.forEach((record) => {
+        const row = createRow(record, positions.get(record.key) || 0);
         list.append(row);
       });
       section.append(header, list);
+      section.hidden = state.media !== media || pageValues.length === 0;
       selectors.list.append(section);
     });
     rows = [...selectors.list.querySelectorAll(".subject-row")];
@@ -1058,23 +1062,12 @@
   }
 
   function renderRows(result) {
-    const visible = new Set(result.pageRecords.map((record) => record.key));
-    const position = new Map(result.all.map((record, item) => [record.key, item + 1]));
+    buildLists(result);
     rows.forEach((row) => {
       const record = recordByKey.get(row.dataset.recordKey);
-      row.hidden = !record || !visible.has(record.key);
       row.classList.toggle("is-selected", Boolean(record && record.key === state.selectedOccurrence));
-      const number = row.querySelector(".subject-row__sequence");
-      if (number && record) number.textContent = String(position.get(record.key) || 0).padStart(3, "0");
       const button = row.querySelector("[data-open-subject]");
       if (button) button.setAttribute("aria-expanded", String(record && record.key === state.selectedOccurrence));
-    });
-    selectors.list?.querySelectorAll("[data-list-section]").forEach((section) => {
-      const media = section.dataset.listSection === "movie" ? "MOVIE" : "TV";
-      const count = result.all.filter((record) => record.media === media && record.appearance === section.dataset.appearanceSection).length;
-      section.hidden = state.media !== section.dataset.listSection || count === 0;
-      const counter = section.querySelector("[data-section-count]");
-      if (counter) counter.textContent = String(count).padStart(2, "0");
     });
     if (selectors.summary) selectors.summary.textContent = `${result.total} / ${records.filter((record) => record.media === (state.media === "movie" ? "MOVIE" : "TV")).length} 部 appearance · 第 ${result.page} / ${result.pageCount} 页`;
     if (selectors.noResults) selectors.noResults.hidden = result.total !== 0;
@@ -1402,7 +1395,6 @@
     try {
       records = await loadCatalogs(yearsForScope(kind, normalized));
       recordByKey = new Map(records.map((record) => [record.key, record]));
-      buildLists();
       renderFilterPanel();
       if (selectors.scopeLabel) selectors.scopeLabel.textContent = kind === "range" ? `RANGE / ${normalized.from}—${normalized.to}` : `YEAR / ${normalized}`;
       render();

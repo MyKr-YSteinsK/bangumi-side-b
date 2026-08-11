@@ -6,14 +6,17 @@ import functools
 import hashlib
 import http.server
 import json
+import os
 import shutil
 import threading
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from playwright.sync_api import Browser, Page, sync_playwright
 
+from bgm_side_b.repository import SubjectRepository
 from tests.test_site_builder import _build_fixture
 
 
@@ -47,6 +50,36 @@ def pwa_server(pwa_site: Path) -> Iterator[str]:
     handler = functools.partial(
         http.server.SimpleHTTPRequestHandler,
         directory=str(pwa_site.parent),
+    )
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.fixture
+def update_site(tmp_path: Path) -> tuple[object, object, Path, Path]:
+    builder, database = _build_fixture(tmp_path)
+    isolated_root = tmp_path / "project"
+    shutil.copytree(Path(__file__).parents[1] / "static", isolated_root / "static")
+    served = tmp_path / "served" / "bangumi-side-b"
+    builder.root = isolated_root.resolve()
+    builder.site_directory = served.resolve()
+    builder.build()
+    return builder, database, isolated_root, served
+
+
+@pytest.fixture
+def update_server(update_site: tuple[object, object, Path, Path]) -> Iterator[str]:
+    served = update_site[3]
+    handler = functools.partial(
+        http.server.SimpleHTTPRequestHandler,
+        directory=str(served.parent),
     )
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -657,4 +690,109 @@ def test_downloaded_quarter_is_complete_offline_and_undownloaded_redirects(
     page.goto(f"{pwa_server}/2026-04/index.html")
     page.wait_for_url(f"{pwa_server}/settings/index.html")
     assert page.get_by_role("heading", name="设置").is_visible()
+    context.close()
+
+
+def test_app_update_waits_for_user_and_data_only_build_does_not_update_shell(
+    chromium: Browser,
+    update_server: str,
+    update_site: tuple[object, object, Path, Path],
+) -> None:
+    builder, database, isolated_root, served = update_site
+    context = chromium.new_context()
+    context.add_init_script(
+        """
+        window.addEventListener("DOMContentLoaded", () => {
+          const count = Number(sessionStorage.getItem("load-count") || "0") + 1;
+          sessionStorage.setItem("load-count", String(count));
+        });
+        """
+    )
+    page = context.new_page()
+    page.goto(f"{update_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    shell_before = (served / "data" / "pwa-shell.json").read_bytes()
+    worker_before = (served / "sw.js").read_bytes()
+
+    repository = SubjectRepository(database)
+    subject = repository.get_subject_facts(202)
+    assert subject is not None
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection,
+            replace(subject, subject=replace(subject.subject, rating_score=9.4)),
+        )
+    builder.build()
+    assert (served / "data" / "pwa-shell.json").read_bytes() == shell_before
+    assert (served / "sw.js").read_bytes() == worker_before
+    page.evaluate(
+        "navigator.serviceWorker.ready.then((registration) => registration.update())"
+    )
+    page.wait_for_timeout(300)
+    assert page.locator("[data-pwa-update-notice]").is_hidden()
+
+    pwa_source = isolated_root / "static" / "js" / "pwa.js"
+    pwa_source.write_text(
+        pwa_source.read_text("utf-8") + "\n/* browser update fixture */\n",
+        encoding="utf-8",
+    )
+    builder.build()
+    assert (served / "data" / "pwa-shell.json").read_bytes() != shell_before
+    assert (served / "sw.js").read_bytes() != worker_before
+    worker_stat = (served / "sw.js").stat()
+    os.utime(
+        served / "sw.js",
+        (worker_stat.st_atime + 2, worker_stat.st_mtime + 2),
+    )
+    page.evaluate(
+        "navigator.serviceWorker.ready.then((registration) => registration.update())"
+    )
+    page.evaluate(
+        """
+        async () => {
+          const registration = await navigator.serviceWorker.ready;
+          for (let attempt = 0; attempt < 200; attempt += 1) {
+            if (registration.waiting) return;
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+          throw new Error("updated worker did not enter waiting");
+        }
+        """
+    )
+    page.wait_for_function(
+        "document.querySelector('[data-pwa-update-notice]')?.hidden === false"
+    )
+    page.evaluate("window.__pageSentinel = 'still-here'")
+    page.wait_for_timeout(300)
+    assert page.evaluate("window.__pageSentinel") == "still-here"
+    assert page.evaluate("sessionStorage.getItem('load-count')") == "1"
+
+    page.locator("[data-pwa-refresh]").click()
+    page.wait_for_function("sessionStorage.getItem('load-count') === '2'")
+    page.wait_for_timeout(300)
+    assert page.evaluate("sessionStorage.getItem('load-count')") == "2"
+    context.close()
+
+
+def test_service_worker_controlled_online_archive_keeps_same_origin_behavior(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    page.goto(f"{pwa_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')"
+        "?.textContent.includes('appearance')"
+    )
+    page.locator('[data-subject-id="101"] [data-open-subject]').first.click()
+    assert page.locator("[data-detail-panel]").is_visible()
+    page.locator('[data-media-mode="movie"]').click()
+    assert "1 / 1" in page.locator("[data-results-summary]").inner_text()
+    assert all(url.startswith(pwa_server) for url in requests)
+    assert not any("api.bgm.tv" in url for url in requests)
     context.close()

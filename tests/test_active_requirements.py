@@ -126,6 +126,8 @@ def test_formal_unified_runtime_does_not_reference_legacy_pwa() -> None:
     formal_sources = (
         ROOT / "src" / "bgm_side_b" / "build" / "site_builder.py",
         ROOT / "static" / "js" / "app.js",
+        ROOT / "static" / "js" / "pwa.js",
+        ROOT / "static" / "pwa" / "sw.js",
         ROOT / "static" / "css" / "site.css",
     )
     forbidden = (
@@ -134,6 +136,9 @@ def test_formal_unified_runtime_does_not_reference_legacy_pwa() -> None:
         "static/sw.js",
         "snapshot-manifest.json",
         "active snapshot",
+        "dist/pages",
+        "LocalProfile",
+        "PagesProfile",
     )
     for path in formal_sources:
         source = path.read_text(encoding="utf-8")

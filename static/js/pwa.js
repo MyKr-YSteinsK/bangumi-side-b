@@ -19,6 +19,7 @@
   let installPrompt = null;
   let updateRegistration = null;
   let refreshRequested = false;
+  let queueMutation = Promise.resolve();
 
   function supported() {
     return "serviceWorker" in navigator && "caches" in window && Boolean(crypto?.subtle);
@@ -38,6 +39,10 @@
 
   function quarterMetaName(quarter) {
     return `quarters/${quarter}.json`;
+  }
+
+  function progressMetaName(quarter) {
+    return `progress/${quarter}.json`;
   }
 
   async function readMeta(name) {
@@ -259,7 +264,16 @@
   }
 
   async function currentQueue() {
-    return await readMeta(QUEUE_META) || {
+    const queue = await readMeta(QUEUE_META) || emptyQueue();
+    if (!queue.current) return queue;
+    return {
+      ...queue,
+      progress: await readMeta(progressMetaName(queue.current)),
+    };
+  }
+
+  function emptyQueue() {
+    return {
       schema: 1,
       state: "idle",
       labels: [],
@@ -270,8 +284,15 @@
     };
   }
 
-  async function saveQueue(queue) {
-    await writeMeta(QUEUE_META, queue);
+  function updateQueue(mutator) {
+    const operation = queueMutation.then(async () => {
+      const current = await readMeta(QUEUE_META) || emptyQueue();
+      const next = mutator(current);
+      await writeMeta(QUEUE_META, next);
+      return next;
+    });
+    queueMutation = operation.catch(() => {});
+    return operation;
   }
 
   function shortError(error) {
@@ -312,18 +333,14 @@
             staging: { ...state.staging, verified_hashes: [...verified].sort() },
           };
           await saveQuarterState(state);
-          const queue = await currentQueue();
-          await saveQueue({
-            ...queue,
-            progress: {
-              quarter,
-              verified_resources: verified.size,
-              total_resources: resources.length,
-              verified_bytes: resources
-                .filter((item) => verified.has(item.content_hash))
-                .reduce((total, item) => total + item.size_bytes, 0),
-              total_bytes: resources.reduce((total, item) => total + item.size_bytes, 0),
-            },
+          await writeMeta(progressMetaName(quarter), {
+            quarter,
+            verified_resources: verified.size,
+            total_resources: resources.length,
+            verified_bytes: resources
+              .filter((item) => verified.has(item.content_hash))
+              .reduce((total, item) => total + item.size_bytes, 0),
+            total_bytes: resources.reduce((total, item) => total + item.size_bytes, 0),
           });
         } catch (error) {
           failure = error;
@@ -407,7 +424,7 @@
       progress: null,
       errors: [],
     };
-    await saveQueue(queue);
+    await updateQueue(() => queue);
     runQueue();
     return queue;
   }
@@ -418,43 +435,68 @@
       if (["idle", "paused", "cancelled"].includes(queue.state)) return;
       if (!navigator.onLine) {
         if (queue.state !== "waiting-network") {
-          queue = { ...queue, state: "waiting-network" };
-          await saveQueue(queue);
+          queue = await updateQueue((current) => (
+            current.state === "downloading"
+              ? { ...current, state: "waiting-network" }
+              : current
+          ));
         }
         if (!await waitUntilRunnable()) return;
         continue;
       }
       if (queue.state === "waiting-network") {
-        queue = { ...queue, state: "downloading" };
-        await saveQueue(queue);
+        queue = await updateQueue((current) => (
+          current.state === "waiting-network" && navigator.onLine
+            ? { ...current, state: "downloading" }
+            : current
+        ));
       }
       const remaining = queue.labels.filter((label) => !queue.completed.includes(label));
       if (!remaining.length) {
-        await saveQueue({ ...queue, state: "idle", current: null, progress: null });
+        await updateQueue((current) => ({
+          ...current,
+          state: "idle",
+          current: null,
+          progress: null,
+        }));
         return;
       }
       const quarter = remaining[0];
-      await saveQueue({ ...queue, current: quarter });
+      await deleteMeta(progressMetaName(quarter));
+      queue = await updateQueue((current) => (
+        current.state === "downloading"
+        && current.labels.includes(quarter)
+        && !current.completed.includes(quarter)
+          ? { ...current, current: quarter }
+          : current
+      ));
+      if (queue.state !== "downloading" || queue.current !== quarter) continue;
       try {
         await downloadQuarter(quarter);
-        queue = await currentQueue();
+        queue = await updateQueue((current) => {
+          if (current.state === "cancelled") return current;
+          return {
+            ...current,
+            completed: [...new Set([...current.completed, quarter])],
+            current: null,
+            progress: null,
+          };
+        });
         if (queue.state === "cancelled") return;
-        await saveQueue({
-          ...queue,
-          completed: [...new Set([...queue.completed, quarter])],
-          current: null,
-          progress: null,
-        });
       } catch (error) {
-        queue = await currentQueue();
-        if (["paused", "cancelled", "waiting-network"].includes(queue.state)) return;
-        await saveQueue({
-          ...queue,
-          completed: [...new Set([...queue.completed, quarter])],
-          current: null,
-          progress: null,
-          errors: [...queue.errors, { quarter, stage: "resource", summary: shortError(error) }],
+        queue = await updateQueue((current) => {
+          if (["paused", "cancelled", "waiting-network"].includes(current.state)) {
+            return current;
+          }
+          return {
+            ...current,
+            completed: [...new Set([...current.completed, quarter])],
+            current: null,
+            progress: null,
+            errors: [...current.errors, { quarter, stage: "resource", summary: shortError(error) }],
+          };
         });
+        if (["paused", "cancelled", "waiting-network"].includes(queue.state)) return;
       }
     }
   }
@@ -471,26 +513,34 @@
   }
 
   async function pauseQueue() {
-    const queue = await currentQueue();
-    if (["downloading", "waiting-network"].includes(queue.state)) {
-      await saveQueue({ ...queue, state: "paused" });
-    }
+    await updateQueue((queue) => (
+      ["downloading", "waiting-network"].includes(queue.state)
+        ? { ...queue, state: "paused" }
+        : queue
+    ));
   }
 
   async function resumeQueue() {
-    const queue = await currentQueue();
-    if (["paused", "waiting-network", "cancelled"].includes(queue.state)) {
-      await saveQueue({
-        ...queue,
-        state: navigator.onLine ? "downloading" : "waiting-network",
-      });
+    const queue = await updateQueue((current) => (
+      ["paused", "waiting-network", "cancelled"].includes(current.state)
+        ? {
+            ...current,
+            state: navigator.onLine ? "downloading" : "waiting-network",
+          }
+        : current
+    ));
+    if (["downloading", "waiting-network"].includes(queue.state)) {
       runQueue();
     }
   }
 
   async function cancelQueue() {
-    const queue = await currentQueue();
-    await saveQueue({ ...queue, state: "cancelled", labels: [], current: null });
+    await updateQueue((queue) => ({
+      ...queue,
+      state: "cancelled",
+      labels: [],
+      current: null,
+    }));
   }
 
   async function referencedHashes() {
@@ -516,6 +566,7 @@
 
   async function removeQuarter(quarter) {
     await deleteMeta(quarterMetaName(quarter));
+    await deleteMeta(progressMetaName(quarter));
     await garbageCollect();
   }
 
@@ -540,12 +591,15 @@
 
   async function restoreQueue() {
     if (!supported()) return;
-    const queue = await currentQueue();
+    const queue = await updateQueue((current) => (
+      current.state === "downloading" || current.state === "waiting-network"
+        ? {
+            ...current,
+            state: navigator.onLine ? "downloading" : "waiting-network",
+          }
+        : current
+    ));
     if (queue.state === "downloading" || queue.state === "waiting-network") {
-      await saveQueue({
-        ...queue,
-        state: navigator.onLine ? "downloading" : "waiting-network",
-      });
       if (navigator.onLine) runQueue();
     }
   }
@@ -937,10 +991,11 @@
     notify();
   });
   window.addEventListener("offline", async () => {
-    const queue = await currentQueue();
-    if (queue.state === "downloading") {
-      await saveQueue({ ...queue, state: "waiting-network" });
-    }
+    await updateQueue((queue) => (
+      queue.state === "downloading"
+        ? { ...queue, state: "waiting-network" }
+        : queue
+    ));
     notify();
   });
 

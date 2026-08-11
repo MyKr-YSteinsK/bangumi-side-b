@@ -2384,6 +2384,45 @@ def test_app_update_waits_for_user_and_data_only_build_does_not_update_shell(
     context.close()
 
 
+def test_settings_rechecks_offline_updates_after_reconnect(
+    chromium: Browser,
+    update_server: str,
+    update_site: tuple[object, object, Path, Path],
+) -> None:
+    _builder, _database, _isolated_root, served = update_site
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{update_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    before = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    manifest_path = served / "data" / "offline" / "2026-07.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    manifest["revision"] = "reconnect-update-revision"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    context.set_offline(True)
+    page.reload()
+    page.wait_for_function("document.querySelector('[data-page=\"settings\"]')")
+    context.set_offline(False)
+    page.wait_for_function(
+        "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
+        "?.textContent.includes('有更新')"
+    )
+    after = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert after["status"] == "UPDATE_AVAILABLE"
+    assert after["active"]["revision"] == before["active"]["revision"]
+    assert after["staging"] is None
+    assert queue["state"] == "idle"
+    assert queue["current"] is None
+    context.close()
+
+
 def test_waiting_shell_survives_page_gc_and_activation_cleans_pending_metadata(
     chromium: Browser,
     update_server: str,

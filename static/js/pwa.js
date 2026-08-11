@@ -1679,6 +1679,7 @@
   window.addEventListener("online", async () => {
     const settings = document.querySelector("[data-pwa-settings]");
     await loadArchiveIndex(settings?.dataset.archiveIndexUrl);
+    if (settings) await detectUpdates();
     const queue = await currentQueue();
     if (queue.state === "waiting-network") await resumeQueue();
     notify();

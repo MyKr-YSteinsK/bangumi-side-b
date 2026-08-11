@@ -841,6 +841,22 @@
   }
 
   async function removeQuarter(quarter) {
+    await updateQueue((current) => {
+      if (current.current === quarter) {
+        throw new Error("请先取消当前下载或更新，再移除季度");
+      }
+      const labels = current.labels.filter((label) => label !== quarter);
+      if (!current.labels.includes(quarter)) return current;
+      return {
+        ...current,
+        labels,
+        succeeded: current.succeeded.filter((label) => label !== quarter),
+        failed: current.failed.filter((label) => label !== quarter),
+        errors: current.errors.filter((item) => item?.quarter !== quarter),
+        state: labels.length ? current.state : "idle",
+        current: labels.length ? current.current : null,
+      };
+    });
     await deleteMeta(quarterMetaName(quarter));
     await deleteMeta(progressMetaName(quarter));
     await garbageCollect();
@@ -1201,11 +1217,15 @@
       const state = stateByQuarter.get(quarter) || initialQuarterState(quarter);
       const view = quarterView(state);
       row.querySelector("[data-quarter-action]")?.addEventListener("click", async () => {
-        if (view.status === "COMPLETE") {
-          if (!window.confirm(`移除 ${quarter} 的离线缓存？`)) return;
-          await removeQuarter(quarter);
-        } else {
-          await enqueue([quarter]);
+        try {
+          if (view.status === "COMPLETE") {
+            if (!window.confirm(`移除 ${quarter} 的离线缓存？`)) return;
+            await removeQuarter(quarter);
+          } else {
+            await enqueue([quarter]);
+          }
+        } catch (error) {
+          window.alert(shortError(error));
         }
         renderSettings();
       });
@@ -1394,11 +1414,15 @@
           : "移除离线缓存";
     button.disabled = !navigator.onLine && view.status !== "COMPLETE";
     button.addEventListener("click", async () => {
-      if (view.status === "COMPLETE") {
-        if (!window.confirm(`移除 ${quarter} 的离线缓存？`)) return;
-        await removeQuarter(quarter);
-      } else {
-        await enqueue([quarter]);
+      try {
+        if (view.status === "COMPLETE") {
+          if (!window.confirm(`移除 ${quarter} 的离线缓存？`)) return;
+          await removeQuarter(quarter);
+        } else {
+          await enqueue([quarter]);
+        }
+      } catch (error) {
+        window.alert(shortError(error));
       }
       renderQuarterOfflineControl();
     });

@@ -785,6 +785,76 @@ def test_requeued_failed_quarter_clears_error_before_success(
     context.close()
 
 
+def test_remove_current_queue_quarter_requires_cancel_first(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+
+    def delay_manifest(route) -> None:
+        time.sleep(0.5)
+        route.continue_()
+
+    page.route("**/data/offline/2026-07.json", delay_manifest)
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    page.wait_for_function(
+        "window.BsbPwa.currentQueue().then((queue) => queue.current === '2026-07')"
+    )
+    result = page.evaluate(
+        """
+        async () => {
+          try {
+            await window.BsbPwa.removeQuarter("2026-07");
+            return null;
+          } catch (error) {
+            return error.message;
+          }
+        }
+        """
+    )
+    assert "取消当前下载或更新" in result
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.currentQueue()).current"
+    ) == "2026-07"
+    page.evaluate("async () => window.BsbPwa.cancelQueue()")
+    context.close()
+
+
+def test_remove_pending_queue_quarter_scrubs_it_before_runner_reaches_it(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+
+    def delay_current_manifest(route) -> None:
+        time.sleep(0.5)
+        route.continue_()
+
+    page.route("**/data/offline/2026-07.json", delay_current_manifest)
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07', '2026-04'])")
+    page.wait_for_function(
+        "window.BsbPwa.currentQueue().then((queue) => queue.current === '2026-07')"
+    )
+    page.evaluate("async () => window.BsbPwa.removeQuarter('2026-04')")
+    _wait_for_queue(page, 1)
+    queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert queue["labels"] == ["2026-07"]
+    assert queue["succeeded"] == ["2026-07"]
+    assert not any("data/offline/2026-04.json" in url for url in requests)
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.getQuarterState('2026-04')).status"
+    ) == "NONE"
+    context.close()
+
+
 def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_bytes(
     chromium: Browser,
     pwa_server: str,

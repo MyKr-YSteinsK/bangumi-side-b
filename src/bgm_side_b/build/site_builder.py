@@ -1691,7 +1691,16 @@ def _offline_manifest_bytes(
     return json_bytes(
         {
             "quarter": label,
-            "revision": quarter.fingerprint,
+            "revision": fingerprint(
+                {
+                    "quarter": label,
+                    "data_revision": quarter.fingerprint,
+                    "resources": [
+                        (item["url"], item["content_hash"], item["size_bytes"])
+                        for item in resources
+                    ],
+                }
+            ),
             "resources": resources,
         }
     )

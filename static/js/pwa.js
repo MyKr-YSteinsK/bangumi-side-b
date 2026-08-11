@@ -547,6 +547,20 @@
     const keep = new Set();
     const shell = await readMeta("shell.json");
     for (const item of shell?.resources || []) keep.add(item.content_hash);
+    const meta = await caches.open(META_CACHE);
+    for (const request of await meta.keys()) {
+      if (!request.url.includes(`${META_PATH}shell-pending-`)) continue;
+      const response = await meta.match(request);
+      if (!response) continue;
+      try {
+        const pending = await response.json();
+        for (const item of pending?.resources || []) {
+          if (HEX_64.test(item?.content_hash)) keep.add(item.content_hash);
+        }
+      } catch {
+        // Invalid pending metadata cannot establish an offline guarantee.
+      }
+    }
     for (const state of await listQuarterStates()) {
       for (const manifest of [state.active, state.staging]) {
         for (const item of manifest?.resources || []) keep.add(item.content_hash);

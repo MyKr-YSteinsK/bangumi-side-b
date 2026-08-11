@@ -311,6 +311,49 @@ def test_pwa_shell_revision_changes_only_with_shell_inputs(tmp_path: Path) -> No
     assert shell_state()[0] != after_manifest[0]
 
 
+def test_offline_package_revision_covers_resources_but_not_sw_or_icons(
+    tmp_path: Path,
+) -> None:
+    builder, _ = _build_fixture(tmp_path)
+    isolated_root = tmp_path / "project"
+    shutil.copytree(ROOT / "static", isolated_root / "static")
+    builder.root = isolated_root.resolve()
+    builder.build()
+    site = tmp_path / "dist" / "site"
+
+    def package_state() -> tuple[str, str, bytes]:
+        package = json.loads(
+            (site / "data" / "offline" / "2026-07.json").read_text("utf-8")
+        )
+        shell = json.loads((site / "data" / "pwa-shell.json").read_text("utf-8"))
+        return package["revision"], shell["revision"], (site / "sw.js").read_bytes()
+
+    initial = package_state()
+    css = isolated_root / "static" / "css" / "site.css"
+    css.write_text(
+        css.read_text("utf-8") + "\n/* package revision */\n", encoding="utf-8"
+    )
+    builder.build()
+    after_css = package_state()
+    assert after_css[0] != initial[0]
+
+    sw = isolated_root / "static" / "pwa" / "sw.js"
+    sw.write_text(
+        sw.read_text("utf-8") + "\n// worker-only revision\n", encoding="utf-8"
+    )
+    builder.build()
+    after_sw = package_state()
+    assert after_sw[0] == after_css[0]
+    assert after_sw[1] == after_css[1]
+    assert after_sw[2] != after_css[2]
+
+    icon = isolated_root / "static" / "icons" / "pwa-192.png"
+    icon.write_bytes(icon.read_bytes() + b"icon-only")
+    builder.build()
+    after_icon = package_state()
+    assert after_icon[0] == after_sw[0]
+
+
 def test_quarter_output_uses_master_detail_shell_and_static_rows(
     tmp_path: Path,
 ) -> None:

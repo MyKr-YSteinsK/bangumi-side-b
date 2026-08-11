@@ -782,6 +782,94 @@ def test_app_update_waits_for_user_and_data_only_build_does_not_update_shell(
     context.close()
 
 
+def test_waiting_shell_survives_page_gc_and_activation_cleans_pending_metadata(
+    chromium: Browser,
+    update_server: str,
+    update_site: tuple[object, object, Path, Path],
+) -> None:
+    builder, _database, isolated_root, served = update_site
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{update_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    shell_before = json.loads(
+        (served / "data" / "pwa-shell.json").read_text("utf-8")
+    )
+
+    pwa_source = isolated_root / "static" / "js" / "pwa.js"
+    pwa_source.write_text(
+        pwa_source.read_text("utf-8") + "\n/* pending shell fixture */\n",
+        encoding="utf-8",
+    )
+    builder.build()
+    worker_stat = (served / "sw.js").stat()
+    os.utime(served / "sw.js", (worker_stat.st_atime + 2, worker_stat.st_mtime + 2))
+    page.evaluate(
+        "navigator.serviceWorker.ready.then((registration) => registration.update())"
+    )
+    pending = page.evaluate(
+        """
+        async () => {
+          const registration = await navigator.serviceWorker.ready;
+          for (let attempt = 0; attempt < 200; attempt += 1) {
+            if (registration.waiting) {
+              const meta = await caches.open("bsb-meta-v1");
+              const keys = await meta.keys();
+              const key = keys.find((request) =>
+                request.url.includes("shell-pending-"));
+              if (!key) throw new Error("pending shell metadata missing");
+              return meta.match(key).then((response) => response.json());
+            }
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+          throw new Error("updated worker did not enter waiting");
+        }
+        """
+    )
+    page.evaluate("window.BsbPwa.garbageCollect()")
+    assert page.evaluate(
+        """
+        async (manifest) => {
+          const cache = await caches.open("bsb-content-v1");
+          for (const resource of manifest.resources) {
+            const key = new URL(
+              `../__bsb_content__/${resource.content_hash}`,
+              location.href,
+            );
+            if (!await cache.match(key)) {
+              return false;
+            }
+          }
+          return true;
+        }
+        """,
+        pending,
+    )
+
+    page.evaluate("window.BsbPwa.refreshApp()")
+    page.wait_for_function(
+        """
+        async (revision) => {
+          const response = await caches.open("bsb-meta-v1").then((cache) =>
+            cache.match(new URL("../__bsb_meta__/shell.json", location.href)));
+          const value = response ? await response.json() : null;
+          return value && value.revision !== revision;
+        }
+        """,
+        arg=shell_before["revision"],
+    )
+    pending_count = page.evaluate(
+        "caches.open('bsb-meta-v1').then((cache) => cache.keys())"
+        ".then((keys) => keys.filter((key) => "
+        "key.url.includes('shell-pending-')).length)"
+    )
+    assert pending_count == 0
+    context.set_offline(True)
+    page.goto(f"{update_server}/settings/index.html")
+    assert page.get_by_role("heading", name="设置").is_visible()
+    context.close()
+
+
 def test_service_worker_controlled_online_archive_keeps_same_origin_behavior(
     chromium: Browser,
     pwa_server: str,

@@ -200,9 +200,12 @@ async function activateShell() {
   const pending = await readMeta(PENDING_SHELL_META);
   if (!pending) throw new Error("pending shell metadata unavailable");
   const manifest = validateManifest(pending);
+  await Promise.all(manifest.resources.map(ensureContent));
   await writeMeta(SHELL_META, manifest);
   const meta = await caches.open(META_CACHE);
-  await meta.delete(metaRequest(PENDING_SHELL_META));
+  for (const request of await meta.keys()) {
+    if (request.url.includes(`${META_PATH}shell-pending-`)) await meta.delete(request);
+  }
   await garbageCollect(manifest);
   await self.clients.claim();
 }

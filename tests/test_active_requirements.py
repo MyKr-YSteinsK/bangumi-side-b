@@ -101,6 +101,27 @@ def test_pwa_contract_replaces_the_legacy_snapshot_product() -> None:
     assert "explicit complete quarter downloads" in agent_contract
 
 
+def test_readme_describes_current_admission_and_quarter_pwa() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    for stale in (
+        "初始化本地资料库",
+        "下载并校验完整快照",
+        "allow_tv_default_without_country",
+        "季度 TV 默认",
+    ):
+        assert stale not in readme
+    for required in (
+        "public `meta_tags`",
+        "严格回退",
+        "进入 REVIEW",
+        "直接在线浏览",
+        "runtime cache",
+        "主动下载单个",
+        "未下载季度",
+    ):
+        assert required in readme
+
+
 def test_formal_unified_runtime_does_not_reference_legacy_pwa() -> None:
     formal_sources = (
         ROOT / "src" / "bgm_side_b" / "build" / "site_builder.py",

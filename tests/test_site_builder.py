@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import shutil
 from dataclasses import replace
@@ -36,6 +37,12 @@ from bgm_side_b.repository import (
 )
 
 ROOT = Path(__file__).parents[1]
+
+
+def _valid_cover_bytes() -> bytes:
+    stream = io.BytesIO()
+    Image.new("RGB", (8, 12), "#8a3147").save(stream, format="WEBP", lossless=True)
+    return stream.getvalue()
 
 
 def _subject(
@@ -96,7 +103,7 @@ def _build_fixture(tmp_path: Path) -> tuple[UnifiedSiteBuilder, Database]:
     database.initialize()
     covers = workspace / "covers"
     covers.mkdir(parents=True)
-    cover_bytes = b"cover-101"
+    cover_bytes = _valid_cover_bytes()
     (covers / "101.webp").write_bytes(cover_bytes)
     cover = CoverRecord(
         "https://example.invalid/101",
@@ -184,7 +191,9 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
         item for item in offline["resources"] if item["url"] == "covers/101.webp"
     )
     assert "?" not in cover_resource["url"]
-    assert cover_resource["content_hash"] == hashlib.sha256(b"cover-101").hexdigest()
+    assert cover_resource["content_hash"] == hashlib.sha256(
+        _valid_cover_bytes()
+    ).hexdigest()
     second = builder.build()
     assert second.patch.written == ()
     assert second.dirty.skipped_quarters == ("2026-04", "2026-07")

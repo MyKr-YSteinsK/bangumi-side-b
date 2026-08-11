@@ -676,6 +676,14 @@ def test_downloaded_quarter_is_complete_offline_and_undownloaded_redirects(
     context.set_offline(True)
     page.goto(f"{pwa_server}/2026-07/index.html")
     page.wait_for_selector('[data-subject-id="101"]')
+    page.wait_for_function(
+        """
+        () => {
+          const image = document.querySelector('[data-subject-id="101"] img');
+          return image?.complete && image.naturalWidth > 0;
+        }
+        """
+    )
     assert page.locator('[data-subject-id="101"] img').is_visible()
     page.locator('[data-subject-id="101"] [data-open-subject]').click()
     assert page.locator("[data-detail-panel]").is_visible()

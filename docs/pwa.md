@@ -1,28 +1,82 @@
-# Pages PWA
+# Pages PWA contract
 
-## Current release scope
+This document defines the product contract that Plan 20 will implement. It does
+not describe the legacy Pages release implementation that remains temporarily in
+the repository.
 
-The PWA candidate contains only the configured `2026-04` Japan-TV archive,
-its subject detail pages, subject covers, shell, settings, updates, and offline
-pages. It contains no historical or future quarter, movie, continuation,
-role, person, or character media. A normal startup reads the active verified
-snapshot and never checks for a new release automatically.
+## One online site
 
-## Snapshot reuse during manual updates
+GitHub Pages is the directly browsable production site. PWA support adds
+installation, caching, and offline capability to the same generated `dist/site`
+tree; it does not create a second site or a monolithic history snapshot.
 
-Only an explicit settings-page update may create a new staging snapshot. For
-each manifest entry, the worker first validates an existing staging file, then
-checks the active snapshot by size and SHA-256. A verified unchanged active
-file is copied into staging; only missing, changed, or corrupt files are fetched
-from the network. The final activation still verifies every manifest entry and
-keeps the previous active snapshot until the replacement is fully verified.
+Runtime pages use only same-origin generated HTML, CSS, JavaScript, JSON, covers,
+icons, and manifests. They do not read SQLite, call the Bangumi API, or request a
+third-party data API. TV premiere, TV continuing, and Movie premiere appearances
+use the same quarter payloads as the online site.
 
-Update progress reports verified bytes and separates reused files/bytes from
-newly downloaded files/bytes. Reuse never accepts an active file whose hash or
-size differs from the release manifest.
+## Shell and runtime cache
 
-Pages 使用完整静态快照，不使用业务 IndexedDB、SQLite、运行时 Bangumi API 或在线阅读回退。业务 HTML、CSS、JavaScript、封面、图标、设置、更新日志和离线页都进入 Cache Storage；角色图片永远不进入 Pages。
+The default precache is the minimum application shell:
 
-首次启动没有 active snapshot 时，Gate 会阻止资料浏览。用户点击初始化后，Service Worker 读取 `release.json` 与 `snapshot-manifest.json`，检查 schema、scope、大小、SHA-256 和完整 content hash，再以最多三个并发请求下载 staging cache。暂停、关闭后重开会保留已校验内容；取消会删除 staging。只有完整校验成功后才原子写入 active pointer，之后才删除旧 cache。
+- root, Archive, and Settings shells;
+- shared CSS and JavaScript;
+- the web app manifest and required icons;
+- only the minimum navigation data required to enter the site.
 
-正常启动只读取 active snapshot，不自动请求 release 或下载。设置页的“检查资料库更新”是唯一常规更新入口；失败更新保留旧 active，重下当前版本也先写新 attempt cache。清除资料只删除 active/staging，保留最小应用 Shell 与设置界面。详情页离线匹配忽略 `?from=YYYY-MM` 等导航 query；静态资源必须精确匹配。下载命令会立即确认，暂停或关闭保留 staging，恢复时重新校验缓存文件。
+It must not precache every year catalog, quarter JSON file, cover, or historical
+quarter. While browsing online, the runtime cache may retain visited quarter
+pages, quarter JSON, year catalogs, covers, and the archive index. Online use is
+available immediately and is never gated on downloading a complete archive.
+
+## Quarter offline unit
+
+`data/offline/YYYY-MM.json` is the only formal resource manifest for one offline
+quarter. A quarter download contains the quarter page, quarter detail JSON,
+quarter-owned covers, shared shell dependencies, and the manifest itself. Movie
+and continuing records are included whenever they are present in that quarter's
+payload.
+
+Settings may create queues for the current quarter, one year, a year range, or
+all available quarters. These choices only expand to a newest-to-oldest quarter
+queue; one quarter remains the indivisible download and removal unit.
+
+Resume and retry use the manifest's per-resource hash and size metadata. The
+runtime supports pause, continue, cancel, reopen resume, and online resume, with
+retry intervals of 1, 3, and 10 seconds. Completed resources survive a partial
+failure and the quarter is visibly marked `INCOMPLETE`. Background Fetch is not
+used, and the application does not promise downloads will continue after the
+operating system terminates it. Cancel stops the current operation; it is not the
+same action as remove quarter.
+
+## Cover cache identity
+
+The offline manifest identifies one physical cover as:
+
+```text
+covers/<ID>.webp
+```
+
+Browser HTML and JSON use the revision-bearing URL:
+
+```text
+covers/<ID>.webp?v=<content-hash>
+```
+
+The Service Worker must deterministically normalize the browser URL to the same
+content-addressed cache entry described by the manifest. It must not cache a
+second duplicate copy of the cover as a workaround.
+
+## Updates
+
+A new Service Worker or application shell produces a thin, nonblocking notice.
+The user explicitly refreshes when ready; the application never performs a
+surprise reload. Updates do not switch a complete archive snapshot or block
+ordinary online startup.
+
+## Legacy boundary
+
+`static/js/pwa-controller.js`, `static/js/pwa-ui.js`, and `static/sw.js` belong to
+the legacy snapshot implementation. Plan 20 must not inherit their product
+semantics. They remain isolated from the formal unified-site runtime until the
+legacy release path is removed in Plan 21.

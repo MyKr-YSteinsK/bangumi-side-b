@@ -68,3 +68,49 @@ def test_clean_paths_do_not_read_legacy_release_configuration() -> None:
 
     config = (ROOT / "config" / "bangumi.toml").read_text(encoding="utf-8")
     assert "LEGACY-ONLY" in config
+
+
+def test_pwa_contract_replaces_the_legacy_snapshot_product() -> None:
+    contract = (ROOT / "docs" / "pwa.md").read_text(encoding="utf-8")
+    baseline = (ROOT / "docs" / "project-requirements-baseline.md").read_text(
+        encoding="utf-8"
+    )
+    for stale in (
+        "only the configured `2026-04`",
+        "Subject detail pages",
+        "active snapshot",
+        "active pointer",
+        "snapshot-manifest.json",
+        "PWA 不提供在线浏览模式",
+    ):
+        assert stale not in contract
+    for required in (
+        "data/offline/YYYY-MM.json",
+        "quarter",
+        "runtime cache",
+        "Background Fetch",
+        "covers/<ID>.webp?v=<content-hash>",
+    ):
+        assert required in contract
+    assert "当前季度 scope 内定位该 appearance" in baseline
+    assert "不自动跳转到 premiere quarter" in baseline
+    assert "优先定位 premiere appearance" in baseline
+
+
+def test_formal_unified_runtime_does_not_reference_legacy_pwa() -> None:
+    formal_sources = (
+        ROOT / "src" / "bgm_side_b" / "build" / "site_builder.py",
+        ROOT / "static" / "js" / "app.js",
+        ROOT / "static" / "css" / "site.css",
+    )
+    forbidden = (
+        "pwa-controller.js",
+        "pwa-ui.js",
+        "static/sw.js",
+        "snapshot-manifest.json",
+        "active snapshot",
+    )
+    for path in formal_sources:
+        source = path.read_text(encoding="utf-8")
+        for value in forbidden:
+            assert value not in source, f"{path.name} references legacy PWA {value}"

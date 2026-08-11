@@ -274,8 +274,10 @@ Subject 独立详情页。Archive 支持季度、年度和年份范围浏览；�
 STAFF 或角色图片。
 
 详情展示封面、首播/当前季度、日期、集数、评分、来源、标签、别名和简介等已验证事实；缺失
-字段省略，不补造占位。continuing 详情保留 premiere quarter 证据；返回进入时季度，直接
-打开时回到永久归属季度。
+字段省略，不补造占位。continuing 详情保留 premiere quarter 证据。季度页的 `#bgm-ID`
+始终在当前季度 scope 内定位该 appearance，不自动跳转到 premiere quarter。Archive hash
+在当前 scope 内优先定位 premiere appearance；若 scope 不含 premiere，才定位合适的
+continuing appearance。
 
 ## 16. PWA、版本与发布
 

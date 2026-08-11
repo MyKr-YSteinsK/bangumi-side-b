@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -349,6 +350,47 @@ def test_orphan_offline_quarter_stays_visible_without_entering_public_queue(
     page.wait_for_function(
         "document.querySelector('.queue-preview')?.textContent.includes('1 个季度')"
     )
+    context.close()
+
+
+def test_two_pages_share_one_queue_runner_and_persist_merge(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    first = context.new_page()
+    second = context.new_page()
+    first_requests: list[str] = []
+    second_requests: list[str] = []
+    first.on("request", lambda request: first_requests.append(request.url))
+    second.on("request", lambda request: second_requests.append(request.url))
+
+    def delay_manifest(route) -> None:
+        time.sleep(0.25)
+        route.continue_()
+
+    first.route("**/data/offline/2026-07.json", delay_manifest)
+    first.goto(f"{pwa_server}/settings/index.html")
+    second.goto(f"{pwa_server}/settings/index.html")
+    first.wait_for_function("Boolean(window.BsbPwa)")
+    second.wait_for_function("Boolean(window.BsbPwa)")
+    generation = first.evaluate(
+        "async () => (await window.BsbPwa.enqueue(['2026-07'])).generation"
+    )
+    merged = second.evaluate(
+        "async () => window.BsbPwa.enqueue(['2026-04'])"
+    )
+    assert merged["generation"] == generation
+    assert merged["current"] in (None, "2026-07")
+    first.unroute("**/data/offline/2026-07.json")
+    _wait_for_queue(second, 2)
+    queue = second.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert queue["succeeded"] == ["2026-07", "2026-04"]
+    manifest_requests = [
+        url for url in [*first_requests, *second_requests] if "data/offline/" in url
+    ]
+    assert manifest_requests.count(f"{pwa_server}/data/offline/2026-07.json") == 1
+    assert manifest_requests.count(f"{pwa_server}/data/offline/2026-04.json") == 1
     context.close()
 
 

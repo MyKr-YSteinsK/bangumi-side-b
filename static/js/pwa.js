@@ -10,6 +10,8 @@
   const CONTENT_PATH = "__bsb_content__/";
   const META_PATH = "__bsb_meta__/";
   const QUEUE_META = "queue.json";
+  const QUEUE_LOCK_NAME = "bsb-offline-queue-runner";
+  const STATE_CHANNEL_NAME = "bsb-pwa-state";
   const HEX_64 = /^[a-f0-9]{64}$/;
   const QUARTER = /^\d{4}-(?:01|04|07|10)$/;
   const RETRY_DELAYS = Object.freeze([1000, 3000, 10000]);
@@ -20,6 +22,13 @@
   let updateRegistration = null;
   let refreshRequested = false;
   let queueMutation = Promise.resolve();
+  let queueRetryTimer = null;
+  let stateChannel = null;
+  try {
+    if (typeof BroadcastChannel === "function") stateChannel = new BroadcastChannel(STATE_CHANNEL_NAME);
+  } catch {
+    stateChannel = null;
+  }
 
   function supported() {
     return "serviceWorker" in navigator && "caches" in window && Boolean(crypto?.subtle);
@@ -73,10 +82,11 @@
     notify();
   }
 
-  function notify() {
+  function notify(broadcast = true) {
     renderUpdateNotice();
     window.dispatchEvent(new CustomEvent("bsb:pwa-state"));
     for (const listener of listeners) listener();
+    if (broadcast) stateChannel?.postMessage({ type: "state-changed" });
   }
 
   function subscribe(listener) {
@@ -605,16 +615,57 @@
     }
   }
 
+  function retryQueueLater() {
+    if (queueRetryTimer !== null) return;
+    queueRetryTimer = window.setTimeout(() => {
+      queueRetryTimer = null;
+      runQueue();
+    }, 1000);
+  }
+
+  async function runQueueWithOwnership() {
+    if (typeof navigator.locks?.request !== "function") {
+      await processQueue();
+      return;
+    }
+    let acquired = false;
+    try {
+      await navigator.locks.request(
+        QUEUE_LOCK_NAME,
+        { mode: "exclusive", ifAvailable: true },
+        async (lock) => {
+          if (!lock) return;
+          acquired = true;
+          await processQueue();
+        },
+      );
+    } catch {
+      // A browser with a partial Web Locks implementation remains safe via generations.
+      await processQueue();
+      return;
+    }
+    if (!acquired) retryQueueLater();
+  }
+
   function runQueue() {
     if (!queueRunner) {
-      queueRunner = processQueue().finally(async () => {
+      queueRunner = runQueueWithOwnership().finally(async () => {
         queueRunner = null;
-        const queue = await currentQueue();
-        if (queue.state === "downloading" && navigator.onLine) runQueue();
+        const queue = await readQueue();
+        if (["downloading", "waiting-network"].includes(queue.state) && navigator.onLine) {
+          retryQueueLater();
+        }
       });
     }
     return queueRunner;
   }
+
+  stateChannel?.addEventListener("message", async (event) => {
+    if (event.data?.type !== "state-changed") return;
+    notify(false);
+    const queue = await readQueue();
+    if (["downloading", "waiting-network"].includes(queue.state)) runQueue();
+  });
 
   async function pauseQueue() {
     await updateQueue((queue) => (

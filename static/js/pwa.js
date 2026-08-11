@@ -868,6 +868,63 @@
     if (refresh) refresh.onclick = refreshApp;
   }
 
+  async function renderQuarterOfflineControl() {
+    const root = document.querySelector("[data-quarter-offline]");
+    if (!root) return;
+    const status = root.querySelector("[data-quarter-offline-status]");
+    const actions = root.querySelector("[data-quarter-offline-actions]");
+    const quarter = root.dataset.quarter;
+    if (!supported()) {
+      status.textContent = "当前浏览器不支持离线下载；在线浏览仍可正常使用。";
+      actions.replaceChildren();
+      return;
+    }
+    const [state, queue] = await Promise.all([
+      getQuarterState(quarter),
+      currentQueue(),
+    ]);
+    const progress = queue.current === quarter ? queue.progress : null;
+    if (progress) {
+      const total = progress.total_bytes || progress.total_resources;
+      const completed = progress.total_bytes
+        ? progress.verified_bytes
+        : progress.verified_resources;
+      const percent = total ? Math.floor((completed / total) * 100) : 0;
+      status.textContent = `${statusLabel(state.status)} · ${percent}%`;
+    } else {
+      status.textContent = statusLabel(state.status);
+    }
+    actions.replaceChildren();
+    if (queue.current === quarter && ["downloading", "waiting-network"].includes(queue.state)) {
+      const link = document.createElement("a");
+      link.href = "../settings/index.html";
+      link.textContent = queue.state === "waiting-network" ? "等待网络 · 打开 Settings" : "查看下载队列";
+      actions.append(link);
+      return;
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `button${state.status === "NONE" ? " button--ink" : ""}`;
+    button.textContent = state.status === "NONE"
+      ? "下载当前季度供离线使用"
+      : state.status === "INCOMPLETE"
+        ? "继续离线下载"
+        : state.status === "UPDATE_AVAILABLE"
+          ? "更新离线资料"
+          : "移除离线缓存";
+    button.disabled = !navigator.onLine && state.status !== "COMPLETE";
+    button.addEventListener("click", async () => {
+      if (state.status === "COMPLETE") {
+        if (!window.confirm(`移除 ${quarter} 的离线缓存？`)) return;
+        await removeQuarter(quarter);
+      } else {
+        await enqueue([quarter]);
+      }
+      renderQuarterOfflineControl();
+    });
+    actions.append(button);
+  }
+
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     installPrompt = event;
@@ -935,5 +992,7 @@
 
   renderUpdateNotice();
   initializeSettings();
+  subscribe(renderQuarterOfflineControl);
+  renderQuarterOfflineControl();
   openLatestQuarter();
 })();

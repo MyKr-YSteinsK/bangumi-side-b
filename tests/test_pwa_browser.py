@@ -599,3 +599,28 @@ def test_settings_reports_storage_and_controls_quarter_downloads(
         "?.textContent.includes('未下载')"
     )
     context.close()
+
+
+def test_quarter_page_offline_action_tracks_download_and_confirmed_remove(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.goto(f"{pwa_server}/2026-07/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    control = page.locator("[data-quarter-offline]")
+    control.get_by_role("button", name="下载当前季度供离线使用").click()
+    _wait_for_queue(page, 1)
+    page.wait_for_function(
+        "document.querySelector('[data-quarter-offline-status]')"
+        "?.textContent.includes('已离线')"
+    )
+    assert control.get_by_role("button", name="移除离线缓存").is_visible()
+    page.on("dialog", lambda dialog: dialog.accept())
+    control.get_by_role("button", name="移除离线缓存").click()
+    page.wait_for_function(
+        "document.querySelector('[data-quarter-offline-status]')"
+        "?.textContent.includes('未下载')"
+    )
+    context.close()

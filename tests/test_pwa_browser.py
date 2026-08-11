@@ -3,16 +3,34 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import http.server
+import json
 import shutil
 import threading
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Browser, sync_playwright
+from playwright.sync_api import Browser, Page, sync_playwright
 
 from tests.test_site_builder import _build_fixture
+
+
+def _wait_for_queue(page: Page, completed: int) -> None:
+    page.evaluate(
+        """
+        async (completed) => {
+          for (let attempt = 0; attempt < 400; attempt += 1) {
+            const queue = await window.BsbPwa.currentQueue();
+            if (queue.state === "idle" && queue.completed.length === completed) return;
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+          throw new Error("queue did not finish");
+        }
+        """,
+        completed,
+    )
 
 
 @pytest.fixture
@@ -165,4 +183,357 @@ def test_active_quarter_uses_content_identity_for_offline_navigation_and_cover(
         {"url": f"{pwa_server}/{cover['url']}", "hash": cover["content_hash"]},
     )
     assert response_size == cover["size_bytes"]
+    context.close()
+
+
+def test_quarter_downloader_deduplicates_shared_cover_and_garbage_collects(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-04', '2026-07'])")
+    _wait_for_queue(page, 2)
+    states = page.evaluate("async () => window.BsbPwa.listQuarterStates()")
+    queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert [state["quarter"] for state in states] == [
+        "2026-07",
+        "2026-04",
+    ], queue
+    assert all(state["status"] == "COMPLETE" for state in states), states
+    assert all(state["staging"] is None for state in states)
+
+    repeated_requests: list[str] = []
+    page.on("request", lambda request: repeated_requests.append(request.url))
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    assert repeated_requests == [
+        f"{pwa_server}/data/offline/2026-07.json"
+    ]
+
+    april = next(state for state in states if state["quarter"] == "2026-04")
+    cover = next(
+        item
+        for item in april["active"]["resources"]
+        if item["url"] == "covers/101.webp"
+    )
+    matching = page.evaluate(
+        """
+        (hash) => caches.open("bsb-content-v1")
+          .then((cache) => cache.keys())
+          .then((keys) => keys.filter((key) => key.url.endsWith(hash)).length)
+        """,
+        cover["content_hash"],
+    )
+    assert matching == 1
+
+    page.evaluate("window.BsbPwa.removeQuarter('2026-04')")
+    assert page.evaluate(
+        """
+        (hash) => caches.open("bsb-content-v1")
+          .then((cache) => cache.keys())
+          .then((keys) => keys.some((key) => key.url.endsWith(hash)))
+        """,
+        cover["content_hash"],
+    )
+    page.evaluate("window.BsbPwa.removeQuarter('2026-07')")
+    assert not page.evaluate(
+        """
+        (hash) => caches.open("bsb-content-v1")
+          .then((cache) => cache.keys())
+          .then((keys) => keys.some((key) => key.url.endsWith(hash)))
+        """,
+        cover["content_hash"],
+    )
+    context.close()
+
+
+def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_bytes(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    context.add_init_script(
+        """
+        const nativeSetTimeout = window.setTimeout.bind(window);
+        window.setTimeout = (callback, delay, ...args) =>
+          nativeSetTimeout(callback, Math.min(delay, 5), ...args);
+        """
+    )
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    original = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert original["status"] == "COMPLETE"
+
+    quarter_path = pwa_site / "data" / "quarters" / "2026-07.json"
+    changed_bytes = quarter_path.read_bytes() + b" "
+    quarter_path.write_bytes(changed_bytes)
+    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    manifest["revision"] = "updated-quarter-revision"
+    resource = next(
+        item
+        for item in manifest["resources"]
+        if item["url"] == "data/quarters/2026-07.json"
+    )
+    resource["content_hash"] = hashlib.sha256(changed_bytes).hexdigest()
+    resource["size_bytes"] = len(changed_bytes)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    page.route("**/data/quarters/2026-07.json", lambda route: route.abort())
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    failed = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert failed["status"] == "INCOMPLETE"
+    assert failed["active"]["revision"] == original["active"]["revision"]
+    assert failed["staging"]["revision"] == "updated-quarter-revision"
+    old_hash = next(
+        item["content_hash"]
+        for item in original["active"]["resources"]
+        if item["url"] == "data/quarters/2026-07.json"
+    )
+    assert page.evaluate(
+        """
+        (hash) => caches.open("bsb-content-v1")
+          .then((cache) => cache.match(new URL(
+            `../__bsb_content__/${hash}`,
+            location.href,
+          )))
+          .then(Boolean)
+        """,
+        old_hash,
+    )
+
+    page.unroute("**/data/quarters/2026-07.json")
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    complete = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert complete["status"] == "COMPLETE"
+    assert complete["active"]["revision"] == "updated-quarter-revision"
+    assert complete["staging"] is None
+    resource_requests = [
+        url
+        for url in requests
+        if not url.endswith("data/offline/2026-07.json")
+    ]
+    assert resource_requests == [
+        f"{pwa_server}/data/quarters/2026-07.json"
+    ]
+    context.close()
+
+
+def test_quarter_manifest_validation_rejects_unsafe_and_duplicate_resources(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    valid = {
+        "quarter": "2026-07",
+        "revision": "revision",
+        "resources": [
+            {"url": "index.html", "content_hash": "a" * 64, "size_bytes": 1}
+        ],
+    }
+    assert page.evaluate(
+        "([value]) => window.BsbPwa.validateQuarterManifest(value, '2026-07')",
+        [valid],
+    )["quarter"] == "2026-07"
+    for bad_url in ("/absolute", "../escape", "https://example.invalid/x"):
+        invalid = {**valid, "resources": [{**valid["resources"][0], "url": bad_url}]}
+        assert page.evaluate(
+            """
+            ([value]) => {
+              try {
+                window.BsbPwa.validateQuarterManifest(value, "2026-07");
+                return false;
+              } catch { return true; }
+            }
+            """,
+            [invalid],
+        )
+    duplicate = {**valid, "resources": valid["resources"] * 2}
+    assert page.evaluate(
+        """
+        ([value]) => {
+          try {
+            window.BsbPwa.validateQuarterManifest(value, "2026-07");
+            return false;
+          } catch { return true; }
+        }
+        """,
+        [duplicate],
+    )
+    context.close()
+
+
+def test_pause_resume_and_network_recovery_keep_queue_state(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate(
+        """
+        async () => {
+          await window.BsbPwa.enqueue(["2026-07"]);
+          await window.BsbPwa.pauseQueue();
+        }
+        """
+    )
+    page.wait_for_timeout(100)
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.currentQueue()).state"
+    ) == "paused"
+    page.evaluate("async () => window.BsbPwa.resumeQueue()")
+    _wait_for_queue(page, 1)
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
+    ) == "COMPLETE"
+
+    page.evaluate("async () => window.BsbPwa.removeQuarter('2026-07')")
+    context.set_offline(True)
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.currentQueue()).state"
+    ) == "waiting-network"
+    context.set_offline(False)
+    _wait_for_queue(page, 1)
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
+    ) == "COMPLETE"
+    context.close()
+
+
+def test_cancelled_queue_keeps_partial_staging_and_does_not_resume_on_reopen(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.route("**/covers/101.webp", lambda route: route.abort())
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    page.evaluate(
+        """
+        async () => {
+          for (let attempt = 0; attempt < 200; attempt += 1) {
+            const state = await window.BsbPwa.getQuarterState("2026-07");
+            if ((state.staging?.verified_hashes || []).length > 0) return;
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          throw new Error("partial staging was not retained");
+        }
+        """
+    )
+    page.evaluate("async () => window.BsbPwa.cancelQueue()")
+    state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert state["staging"]["verified_hashes"]
+    page.close()
+
+    reopened = context.new_page()
+    requests: list[str] = []
+    reopened.on("request", lambda request: requests.append(request.url))
+    reopened.goto(f"{pwa_server}/settings/index.html")
+    reopened.wait_for_function("Boolean(window.BsbPwa)")
+    reopened.wait_for_timeout(200)
+    queue = reopened.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert queue["state"] == "cancelled"
+    assert not any("data/offline/2026-07.json" in url for url in requests)
+    context.close()
+
+
+def test_downloading_queue_resumes_after_page_reopen(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.route("**/data/quarters/2026-07.json", lambda route: route.abort())
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    with page.expect_request("**/data/quarters/2026-07.json"):
+        page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.currentQueue()).state"
+    ) == "downloading"
+    page.close()
+
+    reopened = context.new_page()
+    reopened.goto(f"{pwa_server}/settings/index.html")
+    reopened.wait_for_function("Boolean(window.BsbPwa)")
+    _wait_for_queue(reopened, 1)
+    state = reopened.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert state["status"] == "COMPLETE"
+    assert state["staging"] is None
+    context.close()
+
+
+def test_runtime_resource_is_promoted_and_hash_mismatch_is_refetched(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    manifest = page.evaluate(
+        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+    )
+    cover = next(
+        item for item in manifest["resources"] if item["url"] == "covers/101.webp"
+    )
+    quarter_page = next(
+        item for item in manifest["resources"] if item["url"] == "2026-07/index.html"
+    )
+    page.evaluate(
+        """
+        async ({ cover, quarterPage }) => {
+          const runtime = await caches.open("bsb-runtime-v1");
+          const coverResponse = await fetch(new URL(`../${cover.url}`, location.href));
+          await runtime.put(
+            new Request(new URL(
+              `../${cover.url}?v=${cover.content_hash}`,
+              location.href,
+            )),
+            coverResponse,
+          );
+          await runtime.put(
+            new Request(new URL(`../${quarterPage.url}`, location.href)),
+            new Response(new Uint8Array(quarterPage.size_bytes)),
+          );
+        }
+        """,
+        {"cover": cover, "quarterPage": quarter_page},
+    )
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    assert not any("covers/101.webp" in url for url in requests)
+    assert requests.count(f"{pwa_server}/2026-07/index.html") == 1
+    runtime_entries = page.evaluate(
+        "caches.open('bsb-runtime-v1').then((cache) => cache.keys())"
+        ".then((keys) => keys.map((key) => key.url))"
+    )
+    assert not any("covers/101.webp" in url for url in runtime_entries)
+    assert f"{pwa_server}/2026-07/index.html" not in runtime_entries
     context.close()

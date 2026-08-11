@@ -170,6 +170,20 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     )
     assert [item["subject_id"] for item in july["tv"]["continuing"]] == [101]
     assert [item["subject_id"] for item in july["movie"]["premiere"]] == [202]
+    assert 'src="../covers/101.webp?v=' in (
+        site / "2026-07" / "index.html"
+    ).read_text("utf-8")
+    assert [path.name for path in (site / "covers").glob("*.webp")] == [
+        "101.webp"
+    ]
+    offline = json.loads(
+        (site / "data" / "offline" / "2026-07.json").read_text("utf-8")
+    )
+    cover_resource = next(
+        item for item in offline["resources"] if item["url"] == "covers/101.webp"
+    )
+    assert "?" not in cover_resource["url"]
+    assert cover_resource["content_hash"] == hashlib.sha256(b"cover-101").hexdigest()
     second = builder.build()
     assert second.patch.written == ()
     assert second.dirty.skipped_quarters == ("2026-04", "2026-07")

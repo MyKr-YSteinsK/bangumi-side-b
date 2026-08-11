@@ -1326,7 +1326,7 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
 def _cover_markup(cover: object, sequence: int, subject_id: int) -> str:
     if not cover:
         return '<span class="subject-row__cover subject-row__cover--missing" aria-label="缺少封面"><span>ARCHIVE</span></span>'
-    path = str(cover).split("?", 1)[0]
+    path = str(cover)
     loading = "eager" if sequence <= 10 else "lazy"
     return (
         '<span class="subject-row__cover"><img width="52" height="74" '

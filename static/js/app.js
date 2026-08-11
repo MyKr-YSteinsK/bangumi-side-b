@@ -450,7 +450,7 @@
     const moreAliases = Math.max(0, aliases.length - shownAliases.length);
     const cover = record.cover || record.cover_url;
     const coverHtml = cover
-      ? `<button type="button" class="detail-cover-button" data-lightbox aria-label="查看封面"><img src="../${esc(String(cover).split("?", 1)[0])}" alt="${esc(record.preferred_title)}" width="180" height="270"></button>`
+      ? `<button type="button" class="detail-cover-button" data-lightbox aria-label="查看封面"><img src="../${esc(String(cover))}" alt="${esc(record.preferred_title)}" width="180" height="270"></button>`
       : `<div class="detail-cover detail-cover--missing"><span>ARCHIVE</span></div>`;
     const tags = (record.allowed_tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
     const summaryText = record.display_summary || record.summary;
@@ -503,7 +503,7 @@
     if (!cover) return;
     const dialog = document.createElement("dialog");
     dialog.className = "cover-lightbox";
-    dialog.innerHTML = `<button type="button" class="lightbox-close" aria-label="关闭封面">×</button><img src="../${esc(String(cover).split("?", 1)[0])}" alt="${esc(record.preferred_title)}">`;
+    dialog.innerHTML = `<button type="button" class="lightbox-close" aria-label="关闭封面">×</button><img src="../${esc(String(cover))}" alt="${esc(record.preferred_title)}">`;
     document.body.append(dialog);
     const close = () => { dialog.close(); dialog.remove(); };
     dialog.querySelector("button").addEventListener("click", close);
@@ -908,7 +908,7 @@
     button.append(number);
     const cover = document.createElement("span");
     cover.className = "subject-row__cover";
-    const coverPath = record.cover ? String(record.cover).split("?", 1)[0] : "";
+    const coverPath = record.cover ? String(record.cover) : "";
     if (coverPath) {
       const image = document.createElement("img");
       image.width = 52;
@@ -1150,7 +1150,7 @@
     const aliases = record.aliases || [];
     const cover = record.cover || record.cover_url;
     const coverHtml = cover
-      ? `<button type="button" class="detail-cover-button" data-lightbox aria-label="查看封面"><img src="../${esc(String(cover).split("?", 1)[0])}" alt="${esc(record.preferred_title)}" width="180" height="270"></button>`
+      ? `<button type="button" class="detail-cover-button" data-lightbox aria-label="查看封面"><img src="../${esc(String(cover))}" alt="${esc(record.preferred_title)}" width="180" height="270"></button>`
       : `<div class="detail-cover detail-cover--missing"><span>ARCHIVE</span></div>`;
     const tags = (record.allowed_tags || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("");
     const summary = record.display_summary || "";
@@ -1179,7 +1179,7 @@
     if (!cover) return;
     const dialog = document.createElement("dialog");
     dialog.className = "cover-lightbox";
-    dialog.innerHTML = `<button type="button" class="lightbox-close" aria-label="关闭封面">×</button><img src="../${esc(String(cover).split("?", 1)[0])}" alt="${esc(record.preferred_title)}">`;
+    dialog.innerHTML = `<button type="button" class="lightbox-close" aria-label="关闭封面">×</button><img src="../${esc(String(cover))}" alt="${esc(record.preferred_title)}">`;
     document.body.append(dialog);
     const close = () => { dialog.close(); dialog.remove(); };
     dialog.querySelector("button").addEventListener("click", close);

@@ -63,7 +63,10 @@ def test_quarter_detail_movie_history_and_lightbox(
 ) -> None:
     page = chromium.new_page(viewport={"width": 1440, "height": 900})
     page.set_default_timeout(8000)
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
     _open_quarter(page, site_server, (1440, 900))
+    assert any("/covers/101.webp?v=" in url for url in requests)
 
     page.goto(f"{site_server}/2026-07/index.html#bgm-101")
     page.wait_for_selector('[data-detail-panel]:not([hidden])')
@@ -84,8 +87,12 @@ def test_quarter_detail_movie_history_and_lightbox(
 
     page.locator('[data-media-mode="tv"]').click()
     page.locator('[data-subject-id="101"] [data-open-subject]').click()
+    assert "?v=" in page.locator(
+        "[data-detail-panel] [data-lightbox] img"
+    ).get_attribute("src")
     page.locator("[data-detail-panel] [data-lightbox]").click()
     page.wait_for_selector(".cover-lightbox", state="attached")
+    assert "?v=" in page.locator(".cover-lightbox img").get_attribute("src")
     page.locator(".cover-lightbox .lightbox-close").click()
     assert page.locator(".cover-lightbox").count() == 0
 
@@ -270,6 +277,7 @@ def test_archive_lazy_loads_and_reuses_selected_quarter_details(
         return [url for url in requests if "/data/quarters/" in url]
 
     assert detail_requests() == []
+    assert any("/covers/101.webp?v=" in url for url in requests)
 
     occurrences = page.locator('[data-subject-id="101"] [data-open-subject]')
     occurrences.nth(0).click()

@@ -297,10 +297,6 @@
     await deleteMeta(progressMetaName(quarter));
   }
 
-  async function saveQuarterState(state) {
-    await writeQuarterStateUnlocked(state);
-  }
-
   function newGeneration() {
     if (typeof crypto?.randomUUID === "function") return crypto.randomUUID();
     return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1014,15 +1010,24 @@
   async function detectUpdates() {
     if (!navigator.onLine) return [];
     const changed = [];
-    for (let state of await listQuarterStates()) {
-      if (!state.active) continue;
+    for (const snapshot of await listQuarterStates()) {
+      if (!snapshot.active) continue;
       try {
-        const current = await fetchQuarterManifest(state.quarter);
-        if (current.revision !== state.active.revision) {
-          state = { ...state, status: "UPDATE_AVAILABLE" };
-          await saveQuarterState(state);
-          changed.push(state.quarter);
-        }
+        // Network I/O stays outside the quarter transaction. The snapshot is
+        // only a compare-and-set guard for the short metadata write below.
+        const current = await fetchQuarterManifest(snapshot.quarter);
+        const marked = await withQuarterMutation(snapshot.quarter, async () => {
+          const latest = await getQuarterState(snapshot.quarter);
+          if (
+            !latest.active
+            || latest.active.revision !== snapshot.active.revision
+            || latest.staging
+            || current.revision === latest.active.revision
+          ) return false;
+          await writeQuarterStateUnlocked({ ...latest, status: "UPDATE_AVAILABLE" });
+          return true;
+        });
+        if (marked) changed.push(snapshot.quarter);
       } catch {
         // Update detection is best effort and never damages active metadata.
       }

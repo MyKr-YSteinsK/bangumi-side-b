@@ -67,6 +67,33 @@ def pwa_server(pwa_site: Path) -> Iterator[str]:
 
 
 @pytest.fixture
+def delayed_manifest_server(pwa_site: Path) -> Iterator[str]:
+    requests = [0]
+
+    class DelayedManifestHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path.split("?", 1)[0].endswith("/data/offline/2026-07.json"):
+                requests[0] += 1
+                if requests[0] == 2:
+                    time.sleep(0.75)
+            super().do_GET()
+
+    handler = functools.partial(
+        DelayedManifestHandler,
+        directory=str(pwa_site.parent),
+    )
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.fixture
 def slow_pwa_server(pwa_site: Path) -> Iterator[str]:
     class SlowHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -1091,6 +1118,199 @@ def test_remove_pending_queue_quarter_scrubs_it_before_runner_reaches_it(
     assert page.evaluate(
         "async () => (await window.BsbPwa.getQuarterState('2026-04')).status"
     ) == "NONE"
+    context.close()
+
+
+def test_update_detection_does_not_resurrect_removed_quarter_during_fetch(
+    chromium: Browser,
+    delayed_manifest_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{delayed_manifest_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    manifest = page.evaluate(
+        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+    )
+    page.evaluate(
+        """
+        async (manifest) => {
+          const meta = await caches.open("bsb-meta-v1");
+          await meta.put(
+            new Request(new URL(
+              "../__bsb_meta__/quarters/2026-07.json", location.href)),
+            new Response(JSON.stringify({
+              schema: 1,
+              quarter: "2026-07",
+              status: "COMPLETE",
+              active: { ...manifest, revision: "old-revision" },
+              staging: null,
+              error: null,
+            })),
+          );
+        }
+        """,
+        manifest,
+    )
+
+    changed = page.evaluate(
+        """
+        async () => {
+          const detection = window.BsbPwa.detectUpdates();
+          const removal = new Promise((resolve, reject) => {
+            setTimeout(() => window.BsbPwa.removeQuarter("2026-07")
+              .then(resolve, reject), 25);
+          });
+          const result = await detection;
+          await removal;
+          return result;
+        }
+        """
+    )
+    assert changed == []
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
+    ) == "NONE"
+    context.close()
+
+
+def test_update_detection_does_not_overwrite_completed_update(
+    chromium: Browser,
+    delayed_manifest_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{delayed_manifest_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    manifest = page.evaluate(
+        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+    )
+    page.evaluate(
+        """
+        async (manifest) => {
+          const meta = await caches.open("bsb-meta-v1");
+          await meta.put(
+            new Request(new URL(
+              "../__bsb_meta__/quarters/2026-07.json", location.href)),
+            new Response(JSON.stringify({
+              schema: 1,
+              quarter: "2026-07",
+              status: "COMPLETE",
+              active: { ...manifest, revision: "old-revision" },
+              staging: null,
+              error: null,
+            })),
+          );
+        }
+        """,
+        manifest,
+    )
+
+    result = page.evaluate(
+        """
+        async () => {
+          const detection = window.BsbPwa.detectUpdates();
+          const update = new Promise((resolve, reject) => {
+            setTimeout(async () => {
+              try {
+                await window.BsbPwa.enqueue(["2026-07"]);
+                for (let attempt = 0; attempt < 400; attempt += 1) {
+                  const queue = await window.BsbPwa.currentQueue();
+                  if (queue.state === "idle" && queue.succeeded.includes("2026-07")) {
+                    resolve();
+                    return;
+                  }
+                  await new Promise((wait) => setTimeout(wait, 25));
+                }
+                reject(new Error("update did not finish"));
+              } catch (error) {
+                reject(error);
+              }
+            }, 25);
+          });
+          const changed = await detection;
+          await update;
+          return {
+            changed,
+            state: await window.BsbPwa.getQuarterState("2026-07"),
+          };
+        }
+        """
+    )
+    assert result["changed"] == []
+    assert result["state"]["active"]["revision"] == manifest["revision"]
+    assert result["state"]["staging"] is None
+    context.close()
+
+
+def test_update_detection_preserves_partial_staging_during_fetch(
+    chromium: Browser,
+    delayed_manifest_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{delayed_manifest_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    manifest = page.evaluate(
+        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+    )
+    page.evaluate(
+        """
+        async (manifest) => {
+          const meta = await caches.open("bsb-meta-v1");
+          await meta.put(
+            new Request(new URL(
+              "../__bsb_meta__/quarters/2026-07.json", location.href)),
+            new Response(JSON.stringify({
+              schema: 1,
+              quarter: "2026-07",
+              status: "COMPLETE",
+              active: { ...manifest, revision: "old-revision" },
+              staging: null,
+              error: null,
+            })),
+          );
+        }
+        """,
+        manifest,
+    )
+    staged_hash = manifest["resources"][0]["content_hash"]
+
+    result = page.evaluate(
+        """
+        async ({ manifest, stagedHash }) => {
+          const detection = window.BsbPwa.detectUpdates();
+          const staging = new Promise((resolve) => {
+            setTimeout(async () => {
+              const meta = await caches.open("bsb-meta-v1");
+              await meta.put(
+                new Request(new URL(
+                  "../__bsb_meta__/quarters/2026-07.json", location.href)),
+                new Response(JSON.stringify({
+                  schema: 1,
+                  quarter: "2026-07",
+                  status: "INCOMPLETE",
+                  active: { ...manifest, revision: "old-revision" },
+                  staging: { ...manifest, verified_hashes: [stagedHash] },
+                  error: null,
+                })),
+              );
+              resolve();
+            }, 25);
+          });
+          const changed = await detection;
+          await staging;
+          return {
+            changed,
+            state: await window.BsbPwa.getQuarterState("2026-07"),
+          };
+        }
+        """,
+        {"manifest": manifest, "stagedHash": staged_hash},
+    )
+    assert result["changed"] == []
+    assert result["state"]["status"] == "INCOMPLETE"
+    assert result["state"]["staging"]["verified_hashes"] == [staged_hash]
     context.close()
 
 

@@ -131,7 +131,7 @@ def test_projection_separates_tv_movie_and_continuing_and_is_deterministic(
     assert card.allowed_tags[:2] == ("喜剧", "奇幻")
     assert "搞笑" not in card.allowed_tags
     assert card.display_summary == "第一行\n\n第二行"
-    assert card.cover_url == f"covers/101.webp?v={cover_hash[:12]}"
+    assert card.cover_url == f"covers/101.webp?v={cover_hash}"
     assert card.premiere_quarter == "2026-04"
     assert json_bytes(april.to_dict()) == json_bytes(
         project_quarter(facts, Quarter(2026, 4), _rules(), workspace).to_dict()

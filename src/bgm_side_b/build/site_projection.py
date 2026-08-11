@@ -598,7 +598,7 @@ def _verified_cover(
         warnings.append(f"subject {subject.subject_id} has an invalid cover")
         return None, None
     return (
-        f"covers/{subject.subject_id}.webp?v={cover.content_hash[:12]}",
+        f"covers/{subject.subject_id}.webp?v={cover.content_hash}",
         cover.content_hash,
     )
 

@@ -1,7 +1,327 @@
 /* Unified Bangumi Side B service worker. */
-const BSB_SHELL_REVISION = "__BSB_SHELL_REVISION__";
+"use strict";
 
-self.addEventListener("install", () => {
-  // The verified shell install is implemented by the unified cache core.
-  void BSB_SHELL_REVISION;
+const BSB_SHELL_REVISION = "__BSB_SHELL_REVISION__";
+const CONTENT_CACHE = "bsb-content-v1";
+const RUNTIME_CACHE = "bsb-runtime-v1";
+const META_CACHE = "bsb-meta-v1";
+const CONTENT_PATH = "__bsb_content__/";
+const META_PATH = "__bsb_meta__/";
+const SHELL_META = "shell.json";
+const PENDING_SHELL_META = `shell-pending-${BSB_SHELL_REVISION}.json`;
+const HEX_64 = /^[a-f0-9]{64}$/;
+
+function scopeUrl(relative = "") {
+  return new URL(relative, self.registration.scope);
+}
+
+function contentRequest(hash) {
+  return new Request(scopeUrl(`${CONTENT_PATH}${hash}`));
+}
+
+function metaRequest(name) {
+  return new Request(scopeUrl(`${META_PATH}${name}`));
+}
+
+async function readMeta(name) {
+  const cache = await caches.open(META_CACHE);
+  const response = await cache.match(metaRequest(name));
+  if (!response) return null;
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+async function writeMeta(name, value) {
+  const cache = await caches.open(META_CACHE);
+  await cache.put(
+    metaRequest(name),
+    new Response(JSON.stringify(value), {
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    }),
+  );
+}
+
+function safeResource(value) {
+  if (!value || typeof value !== "object") throw new Error("invalid resource");
+  const relative = value.url;
+  if (
+    typeof relative !== "string"
+    || relative.startsWith("/")
+    || relative.includes("\\")
+    || relative.includes("?")
+    || relative.includes("#")
+    || relative.split("/").some((part) => part === ".." || part === ".")
+  ) {
+    throw new Error("unsafe resource URL");
+  }
+  const url = scopeUrl(relative);
+  if (url.origin !== self.location.origin || !url.href.startsWith(self.registration.scope)) {
+    throw new Error("out-of-scope resource URL");
+  }
+  if (!HEX_64.test(value.content_hash)) throw new Error("invalid resource hash");
+  if (!Number.isInteger(value.size_bytes) || value.size_bytes < 0) {
+    throw new Error("invalid resource size");
+  }
+  return { url: relative, content_hash: value.content_hash, size_bytes: value.size_bytes };
+}
+
+function validateManifest(value, expectedQuarter = null) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.resources)) {
+    throw new Error("invalid manifest");
+  }
+  if (expectedQuarter === null) {
+    if (value.schema !== 1 || value.revision !== BSB_SHELL_REVISION) {
+      throw new Error("shell revision mismatch");
+    }
+  } else if (value.quarter !== expectedQuarter || typeof value.revision !== "string" || !value.revision) {
+    throw new Error("quarter manifest mismatch");
+  }
+  const seen = new Set();
+  const resources = value.resources.map((item) => {
+    const resource = safeResource(item);
+    if (seen.has(resource.url)) throw new Error("duplicate resource URL");
+    seen.add(resource.url);
+    return resource;
+  });
+  return { ...value, resources };
+}
+
+async function sha256(buffer) {
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return [...new Uint8Array(digest)]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function verifiedResponse(response, resource) {
+  if (!response || !response.ok) throw new Error(`resource unavailable: ${resource.url}`);
+  const buffer = await response.arrayBuffer();
+  if (buffer.byteLength !== resource.size_bytes || await sha256(buffer) !== resource.content_hash) {
+    throw new Error(`resource verification failed: ${resource.url}`);
+  }
+  return new Response(buffer, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+async function ensureContent(resource) {
+  const cache = await caches.open(CONTENT_CACHE);
+  const key = contentRequest(resource.content_hash);
+  const existing = await cache.match(key);
+  if (existing) {
+    try {
+      await verifiedResponse(existing.clone(), resource);
+      return;
+    } catch {
+      await cache.delete(key);
+    }
+  }
+  const response = await fetch(scopeUrl(resource.url), {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  await cache.put(key, await verifiedResponse(response, resource));
+}
+
+async function fetchJson(relative) {
+  const response = await fetch(scopeUrl(relative), {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  if (!response.ok) throw new Error(`metadata unavailable: ${relative}`);
+  return response.json();
+}
+
+async function installShell() {
+  const manifest = validateManifest(await fetchJson("data/pwa-shell.json"));
+  await Promise.all(manifest.resources.map(ensureContent));
+  await writeMeta(PENDING_SHELL_META, manifest);
+}
+
+async function activeQuarterMetadata() {
+  const cache = await caches.open(META_CACHE);
+  const keys = await cache.keys();
+  const values = [];
+  for (const key of keys) {
+    const marker = `${META_PATH}quarters/`;
+    if (!key.url.includes(marker)) continue;
+    const response = await cache.match(key);
+    if (!response) continue;
+    try {
+      values.push(await response.json());
+    } catch {
+      // Invalid metadata is ignored and cannot create an offline guarantee.
+    }
+  }
+  return values;
+}
+
+async function referencedHashes(shell) {
+  const hashes = new Set((shell?.resources || []).map((item) => item.content_hash));
+  const meta = await caches.open(META_CACHE);
+  for (const request of await meta.keys()) {
+    if (!request.url.includes(`${META_PATH}shell-pending-`)) continue;
+    const response = await meta.match(request);
+    if (!response) continue;
+    try {
+      const pending = await response.json();
+      for (const item of pending?.resources || []) {
+        if (HEX_64.test(item?.content_hash)) hashes.add(item.content_hash);
+      }
+    } catch {
+      // Invalid pending metadata does not retain unverifiable content.
+    }
+  }
+  for (const quarter of await activeQuarterMetadata()) {
+    for (const manifest of [quarter?.active, quarter?.staging]) {
+      for (const item of manifest?.resources || []) {
+        if (HEX_64.test(item?.content_hash)) hashes.add(item.content_hash);
+      }
+    }
+  }
+  return hashes;
+}
+
+async function garbageCollect(shell) {
+  const keep = await referencedHashes(shell);
+  const cache = await caches.open(CONTENT_CACHE);
+  for (const request of await cache.keys()) {
+    const hash = request.url.slice(request.url.lastIndexOf("/") + 1);
+    if (!keep.has(hash)) await cache.delete(request);
+  }
+}
+
+async function activateShell() {
+  const pending = await readMeta(PENDING_SHELL_META);
+  if (!pending) throw new Error("pending shell metadata unavailable");
+  const manifest = validateManifest(pending);
+  await writeMeta(SHELL_META, manifest);
+  const meta = await caches.open(META_CACHE);
+  await meta.delete(metaRequest(PENDING_SHELL_META));
+  await garbageCollect(manifest);
+  await self.clients.claim();
+}
+
+function physicalPath(requestUrl) {
+  const url = new URL(requestUrl);
+  const scope = new URL(self.registration.scope);
+  return decodeURIComponent(url.pathname.slice(scope.pathname.length));
+}
+
+function resourceForPath(manifest, path) {
+  return manifest?.resources?.find((item) => item.url === path) || null;
+}
+
+async function contentFor(resource) {
+  if (!resource || !HEX_64.test(resource.content_hash)) return null;
+  const cache = await caches.open(CONTENT_CACHE);
+  return cache.match(contentRequest(resource.content_hash));
+}
+
+async function guaranteedResponse(request) {
+  const path = physicalPath(request.url);
+  const shell = await readMeta(SHELL_META);
+  const shellResponse = await contentFor(resourceForPath(shell, path));
+  if (shellResponse) return shellResponse;
+  for (const quarter of await activeQuarterMetadata()) {
+    const response = await contentFor(resourceForPath(quarter?.active, path));
+    if (response) return response;
+  }
+  return null;
+}
+
+function runtimeCategory(request) {
+  const path = physicalPath(request.url);
+  if (request.mode === "navigate") return ["navigation", 40];
+  if (path.endsWith(".json")) return ["json", 80];
+  if (path.startsWith("covers/")) return ["cover", 160];
+  return ["other", 40];
+}
+
+async function trimRuntime(category, limit) {
+  const cache = await caches.open(RUNTIME_CACHE);
+  const keys = (await cache.keys()).filter((request) => runtimeCategory(request)[0] === category);
+  while (keys.length > limit) await cache.delete(keys.shift());
+}
+
+async function rememberRuntime(request, response) {
+  if (!response || !response.ok) return;
+  const [category, limit] = runtimeCategory(request);
+  const cache = await caches.open(RUNTIME_CACHE);
+  await cache.put(request, response.clone());
+  await trimRuntime(category, limit);
+}
+
+async function versionedResponse(request) {
+  const url = new URL(request.url);
+  const expected = url.searchParams.get("v");
+  const path = physicalPath(url.href);
+  if (!HEX_64.test(expected || "") || !path.match(/^(assets\/|covers\/)/)) return null;
+  const cached = await contentFor({ content_hash: expected });
+  if (cached) return cached;
+  try {
+    const response = await fetch(request);
+    if (response.ok) await rememberRuntime(request, response);
+    return response;
+  } catch {
+    const runtime = await (await caches.open(RUNTIME_CACHE)).match(request);
+    if (runtime) return runtime;
+    throw new Error("versioned resource unavailable");
+  }
+}
+
+async function settingsFallback() {
+  const resource = resourceForPath(await readMeta(SHELL_META), "settings/index.html");
+  const response = await contentFor(resource);
+  if (response) return Response.redirect(scopeUrl("settings/index.html"), 302);
+  return new Response("Offline archive unavailable", {
+    status: 503,
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
+}
+
+async function networkFirst(request) {
+  try {
+    const response = await fetch(request);
+    if (response.ok) await rememberRuntime(request, response);
+    return response;
+  } catch {
+    const guaranteed = await guaranteedResponse(request);
+    if (guaranteed) return guaranteed;
+    const runtime = await (await caches.open(RUNTIME_CACHE)).match(request);
+    if (runtime) return runtime;
+    if (request.mode === "navigate") return settingsFallback();
+    return new Response("Offline resource unavailable", { status: 503 });
+  }
+}
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(installShell());
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(activateShell());
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "SKIP_WAITING" || event.data === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
+});
+
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  const url = new URL(request.url);
+  if (
+    request.method !== "GET"
+    || url.origin !== self.location.origin
+    || !url.href.startsWith(self.registration.scope)
+  ) return;
+  const versioned = versionedResponse(request);
+  event.respondWith(versioned.then((response) => response || networkFirst(request)));
 });

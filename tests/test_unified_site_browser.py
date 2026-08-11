@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Browser, Page, sync_playwright
+from playwright.sync_api import BrowserContext, Page, sync_playwright
 
 from tests.test_site_builder import _build_fixture
 
@@ -22,13 +22,26 @@ def unified_site(tmp_path: Path) -> Iterator[Path]:
     yield tmp_path / "dist" / "site"
 
 
+class BrowserHarness:
+    def __init__(self, context: BrowserContext) -> None:
+        self.context = context
+
+    def new_page(self, *, viewport: dict[str, int] | None = None) -> Page:
+        page = self.context.new_page()
+        if viewport is not None:
+            page.set_viewport_size(viewport)
+        return page
+
+
 @pytest.fixture
-def chromium() -> Iterator[Browser]:
+def chromium() -> Iterator[BrowserHarness]:
     with sync_playwright() as runner:
         browser = runner.chromium.launch()
+        context = browser.new_context(service_workers="block")
         try:
-            yield browser
+            yield BrowserHarness(context)
         finally:
+            context.close()
             browser.close()
 
 
@@ -59,7 +72,7 @@ def _open_quarter(page: Page, root: str, viewport: tuple[int, int]) -> None:
 
 
 def test_quarter_detail_movie_history_and_lightbox(
-    chromium: Browser,
+    chromium: BrowserContext,
     site_server: str,
 ) -> None:
     page = chromium.new_page(viewport={"width": 1440, "height": 900})
@@ -112,7 +125,7 @@ def test_quarter_detail_movie_history_and_lightbox(
     ],
 )
 def test_quarter_shell_is_usable_across_plan16_viewports(
-    chromium: Browser,
+    chromium: BrowserContext,
     site_server: str,
     viewport: tuple[int, int],
 ) -> None:
@@ -133,7 +146,7 @@ def test_quarter_shell_is_usable_across_plan16_viewports(
 
 
 def test_archive_year_range_hash_and_same_origin_network(
-    chromium: Browser,
+    chromium: BrowserContext,
     site_server: str,
 ) -> None:
     page = chromium.new_page(viewport={"width": 1440, "height": 900})
@@ -175,7 +188,7 @@ def test_archive_year_range_hash_and_same_origin_network(
 
 @pytest.mark.parametrize("viewport", [(390, 844), (360, 800)])
 def test_mobile_scope_detail_and_filter_keep_the_context_rail(
-    chromium: Browser,
+    chromium: BrowserContext,
     site_server: str,
     viewport: tuple[int, int],
 ) -> None:
@@ -215,7 +228,7 @@ def test_mobile_scope_detail_and_filter_keep_the_context_rail(
 
 
 def test_filter_media_switch_and_archive_detail_history(
-    chromium: Browser,
+    chromium: BrowserContext,
     site_server: str,
 ) -> None:
     page = chromium.new_page(viewport={"width": 1440, "height": 900})
@@ -277,7 +290,7 @@ def _facet_record(
 
 
 def test_section_facets_only_include_active_media_appearances(
-    chromium: Browser,
+    chromium: BrowserContext,
     site_server: str,
 ) -> None:
     page = chromium.new_page()
@@ -314,7 +327,7 @@ def test_section_facets_only_include_active_media_appearances(
 
 
 def test_quarter_filters_are_media_local_and_normalized(
-    chromium: Browser,
+    chromium: BrowserContext,
     site_server: str,
     unified_site: Path,
 ) -> None:
@@ -366,7 +379,7 @@ def test_quarter_filters_are_media_local_and_normalized(
 
 
 def test_archive_filters_are_media_local_and_normalized(
-    chromium: Browser,
+    chromium: BrowserContext,
     site_server: str,
     unified_site: Path,
 ) -> None:
@@ -413,7 +426,7 @@ def test_archive_filters_are_media_local_and_normalized(
 
 
 def test_large_archive_renders_only_the_current_page_and_restores_deep_link(
-    chromium: Browser,
+    chromium: BrowserContext,
     site_server: str,
     unified_site: Path,
 ) -> None:
@@ -502,7 +515,7 @@ def test_large_archive_renders_only_the_current_page_and_restores_deep_link(
 
 
 def test_archive_lazy_loads_and_reuses_selected_quarter_details(
-    chromium: Browser,
+    chromium: BrowserContext,
     site_server: str,
 ) -> None:
     page = chromium.new_page(viewport={"width": 1440, "height": 900})
@@ -551,7 +564,7 @@ def test_archive_lazy_loads_and_reuses_selected_quarter_details(
 
 
 def test_archive_detail_failure_stays_same_origin_and_reports_rebuild(
-    chromium: Browser,
+    chromium: BrowserContext,
     site_server: str,
 ) -> None:
     page = chromium.new_page(viewport={"width": 1440, "height": 900})

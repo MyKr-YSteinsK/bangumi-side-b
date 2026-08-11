@@ -319,8 +319,14 @@
       generation: typeof value.generation === "string" && value.generation
         ? value.generation
         : null,
-      state: ["idle", "downloading", "waiting-network", "paused", "cancelled"]
-        .includes(value.state) ? value.state : "idle",
+      state: [
+        "idle",
+        "downloading",
+        "waiting-network",
+        "waiting-service-worker",
+        "paused",
+        "cancelled",
+      ].includes(value.state) ? value.state : "idle",
       labels,
       current: QUARTER.test(value.current || "") && labels.includes(value.current)
         ? value.current
@@ -372,6 +378,18 @@
     };
   }
 
+  function canRunGuaranteedQueue() {
+    return capabilityState === "ready" && Boolean(serviceWorkerRegistration?.active);
+  }
+
+  async function parkQueueForServiceWorker() {
+    return updateQueue((current) => (
+      ["downloading", "waiting-network"].includes(current.state)
+        ? { ...current, state: "waiting-service-worker" }
+        : current
+    ));
+  }
+
   function shortError(error) {
     const text = error instanceof Error ? error.message : String(error || "下载失败");
     return text
@@ -384,6 +402,10 @@
     while (true) {
       const queue = await readQueue();
       if (queue.generation !== generation || ["cancelled", "idle"].includes(queue.state)) {
+        return false;
+      }
+      if (!canRunGuaranteedQueue()) {
+        await parkQueueForServiceWorker();
         return false;
       }
       if (queue.state === "downloading" && navigator.onLine) return true;
@@ -536,9 +558,20 @@
     const queue = await updateQueue((current) => {
       if (
         current.generation
-        && ["downloading", "waiting-network", "paused"].includes(current.state)
+        && [
+          "downloading",
+          "waiting-network",
+          "waiting-service-worker",
+          "paused",
+        ].includes(current.state)
       ) {
-        return mergeQueueLabels(current, normalized);
+        const merged = mergeQueueLabels(current, normalized);
+        return current.state === "waiting-service-worker"
+          ? {
+              ...merged,
+              state: navigator.onLine ? "downloading" : "waiting-network",
+            }
+          : merged;
       }
       return {
         ...emptyQueue(),
@@ -556,8 +589,23 @@
     const generation = initial.generation;
     if (!generation) return;
     while (true) {
+      if (!canRunGuaranteedQueue()) {
+        await parkQueueForServiceWorker();
+        return;
+      }
       let queue = await readQueue();
       if (queue.generation !== generation || ["idle", "paused", "cancelled"].includes(queue.state)) return;
+      if (queue.state === "waiting-service-worker") {
+        queue = await updateQueue((current) => (
+          current.generation === generation && current.state === "waiting-service-worker"
+            ? {
+                ...current,
+                state: navigator.onLine ? "downloading" : "waiting-network",
+              }
+            : current
+        ));
+        if (queue.state !== "downloading" && queue.state !== "waiting-network") return;
+      }
       if (!navigator.onLine) {
         if (queue.state !== "waiting-network") {
           queue = await updateQueue((current) => (
@@ -669,6 +717,7 @@
   }
 
   function runQueue() {
+    if (!canRunGuaranteedQueue()) return parkQueueForServiceWorker();
     if (!queueRunner) {
       queueRunner = runQueueWithOwnership().finally(async () => {
         queueRunner = null;
@@ -697,6 +746,13 @@
   }
 
   async function resumeQueue() {
+    if (!canRunGuaranteedQueue()) {
+      return updateQueue((current) => (
+        ["downloading", "waiting-network", "paused"].includes(current.state)
+          ? { ...current, state: "waiting-service-worker" }
+          : current
+      ));
+    }
     const queue = await updateQueue((current) => (
       ["paused", "waiting-network"].includes(current.state)
         ? {
@@ -788,15 +844,18 @@
 
   async function restoreQueue() {
     if (!supported()) return;
+    const ready = canRunGuaranteedQueue();
     const queue = await updateQueue((current) => (
-      current.state === "downloading" || current.state === "waiting-network"
+      ["downloading", "waiting-network", "waiting-service-worker"].includes(current.state)
         ? {
             ...current,
-            state: navigator.onLine ? "downloading" : "waiting-network",
+            state: ready
+              ? navigator.onLine ? "downloading" : "waiting-network"
+              : "waiting-service-worker",
           }
         : current
     ));
-    if (queue.state === "downloading" || queue.state === "waiting-network") {
+    if (ready && (queue.state === "downloading" || queue.state === "waiting-network")) {
       if (navigator.onLine) runQueue();
     }
   }
@@ -1133,6 +1192,7 @@
       downloading: "正在下载",
       paused: "已暂停",
       "waiting-network": "等待网络",
+      "waiting-service-worker": "等待离线能力",
       cancelled: "已取消",
     }[queue.state] || queue.state;
     container.innerHTML = `<div class="queue-status">
@@ -1142,7 +1202,7 @@
       <div class="queue-actions">
         ${["downloading", "waiting-network"].includes(queue.state) ? '<button type="button" class="button" data-queue-pause>暂停</button>' : ""}
         ${queue.state === "paused" ? '<button type="button" class="button button--ink" data-queue-resume>继续</button>' : ""}
-        ${["downloading", "waiting-network", "paused"].includes(queue.state) ? '<button type="button" class="button" data-queue-cancel>取消</button>' : ""}
+        ${["downloading", "waiting-network", "waiting-service-worker", "paused"].includes(queue.state) ? '<button type="button" class="button" data-queue-cancel>取消</button>' : ""}
       </div></div>`;
     container.querySelector("[data-queue-pause]")?.addEventListener("click", pauseQueue);
     container.querySelector("[data-queue-resume]")?.addEventListener("click", resumeQueue);

@@ -213,6 +213,62 @@ def test_service_worker_registration_failure_keeps_online_page_and_blocks_downlo
     context.close()
 
 
+def test_persisted_queue_waits_for_service_worker_after_registration_failure(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate(
+        """
+        async () => {
+          const meta = await caches.open("bsb-meta-v1");
+          await meta.put(
+            new Request(new URL("../__bsb_meta__/queue.json", location.href)),
+            new Response(JSON.stringify({
+              schema: 2,
+              generation: "persisted-generation",
+              state: "downloading",
+              labels: ["2026-07"],
+              current: null,
+              succeeded: [],
+              failed: [],
+              errors: [],
+            })),
+          );
+          await meta.put(
+            new Request(new URL("../__bsb_meta__/quarters/2026-07.json", location.href)),
+            new Response(JSON.stringify({
+              schema: 1,
+              quarter: "2026-07",
+              status: "NONE",
+              active: null,
+              staging: null,
+              error: null,
+            })),
+          );
+        }
+        """
+    )
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    page.reload()
+    page.wait_for_function(
+        "window.BsbPwa?.capabilityState() === 'registration-failed'"
+    )
+    page.wait_for_function(
+        "window.BsbPwa.currentQueue().then((queue) => queue.state === 'waiting-service-worker')"
+    )
+    page.wait_for_timeout(250)
+    assert not any("data/offline/2026-07.json" in url for url in requests)
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
+    ) == "NONE"
+    context.close()
+
+
 def test_active_quarter_uses_content_identity_for_offline_navigation_and_cover(
     chromium: Browser,
     pwa_server: str,

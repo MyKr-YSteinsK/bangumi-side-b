@@ -486,9 +486,15 @@ def test_noop_build_does_not_read_cover_bytes_or_scan_site(
     assert run.patch.written == ()
     assert run.patch.deleted == ()
     report = json.loads(run.report_path.read_text("utf-8"))
+    assert report["written_artifacts_count"] == 0
+    assert report["written_files_sample"] == []
+    assert report["deleted_artifacts_count"] == 0
+    assert report["deleted_files_sample"] == []
     assert report["reused_artifacts_count"] == len(run.patch.reused)
     assert report["reused_files_sample"] == list(run.patch.reused[:20])
     assert len(report["reused_files_sample"]) <= 20
+    assert "written_files" not in report
+    assert "deleted_files" not in report
     assert "reused_files" not in report
     assert report["generated_small_files"] == 0
     assert report["cover_files_read"] == 0

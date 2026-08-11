@@ -61,8 +61,13 @@ Do not create empty future services, fake interfaces, or unusable UI.
 
 ## PWA and release invariants
 
-- Pages PWA uses only complete, verified snapshots; normal startup never checks for updates.
-- Keep the previous active snapshot until a replacement has completely verified and activated.
+- Pages PWA extends the same online `dist/site` with a minimal precached shell,
+  runtime caching for visited resources, and explicit complete quarter downloads.
+- Normal online startup is never gated on downloading archive data. Offline
+  quarter replacement uses its manifest's hash/size metadata and keeps verified
+  completed resources until the replacement is complete.
+- Application updates use a thin nonblocking notice and require an explicit user
+  refresh; never surprise-reload the page.
 - Pages never publishes character images; `publish` never calls `sync` or `build`.
 - A successful Plan push only pushes the current development branch source; it never publishes `gh-pages`. Pages publishing remains restricted to an explicit release/publish workflow.
 

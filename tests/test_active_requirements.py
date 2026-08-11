@@ -72,6 +72,7 @@ def test_clean_paths_do_not_read_legacy_release_configuration() -> None:
 
 def test_pwa_contract_replaces_the_legacy_snapshot_product() -> None:
     contract = (ROOT / "docs" / "pwa.md").read_text(encoding="utf-8")
+    agent_contract = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     baseline = (ROOT / "docs" / "project-requirements-baseline.md").read_text(
         encoding="utf-8"
     )
@@ -84,6 +85,7 @@ def test_pwa_contract_replaces_the_legacy_snapshot_product() -> None:
         "PWA 不提供在线浏览模式",
     ):
         assert stale not in contract
+        assert stale not in agent_contract
     for required in (
         "data/offline/YYYY-MM.json",
         "quarter",
@@ -95,6 +97,8 @@ def test_pwa_contract_replaces_the_legacy_snapshot_product() -> None:
     assert "当前季度 scope 内定位该 appearance" in baseline
     assert "不自动跳转到 premiere quarter" in baseline
     assert "优先定位 premiere appearance" in baseline
+    assert "same online `dist/site`" in agent_contract
+    assert "explicit complete quarter downloads" in agent_contract
 
 
 def test_formal_unified_runtime_does_not_reference_legacy_pwa() -> None:

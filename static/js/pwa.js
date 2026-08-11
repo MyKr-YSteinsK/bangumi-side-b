@@ -151,9 +151,15 @@
       || value.resources.length === 0
     ) throw new Error("季度清单无效");
     const seen = new Set();
+    const sizesByHash = new Map();
     const resources = value.resources.map((item) => {
       const resource = safeResource(item);
       if (seen.has(resource.url)) throw new Error("季度清单含重复资源");
+      const knownSize = sizesByHash.get(resource.content_hash);
+      if (knownSize !== undefined && knownSize !== resource.size_bytes) {
+        throw new Error("季度清单含冲突资源大小");
+      }
+      sizesByHash.set(resource.content_hash, resource.size_bytes);
       seen.add(resource.url);
       return resource;
     });

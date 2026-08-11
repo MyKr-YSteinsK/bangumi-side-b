@@ -80,9 +80,15 @@ function validateManifest(value, expectedQuarter = null) {
     throw new Error("quarter manifest mismatch");
   }
   const seen = new Set();
+  const sizesByHash = new Map();
   const resources = value.resources.map((item) => {
     const resource = safeResource(item);
     if (seen.has(resource.url)) throw new Error("duplicate resource URL");
+    const knownSize = sizesByHash.get(resource.content_hash);
+    if (knownSize !== undefined && knownSize !== resource.size_bytes) {
+      throw new Error("conflicting resource size");
+    }
+    sizesByHash.set(resource.content_hash, resource.size_bytes);
     seen.add(resource.url);
     return resource;
   });

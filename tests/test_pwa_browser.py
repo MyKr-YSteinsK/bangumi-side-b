@@ -286,6 +286,69 @@ def test_shell_hash_failure_never_activates_or_writes_active_metadata(
     context.close()
 
 
+def test_shell_manifest_rejects_conflicting_content_identity(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    shell_before = page.evaluate(
+        """
+        async () => {
+          const cache = await caches.open("bsb-meta-v1");
+          const response = await cache.match(new Request(new URL(
+            "../__bsb_meta__/shell.json", location.href)));
+          return response.json();
+        }
+        """
+    )
+    shell_path = pwa_site / "data" / "pwa-shell.json"
+    shell = json.loads(shell_path.read_text("utf-8"))
+    first = shell["resources"][0]
+    shell["resources"].append(
+        {
+            **first,
+            "url": "identity-conflict.html",
+            "size_bytes": first["size_bytes"] + 1,
+        }
+    )
+    shell_path.write_text(
+        json.dumps(shell, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    sw_path = pwa_site / "sw.js"
+    sw_path.write_bytes(sw_path.read_bytes() + b"\n// identity conflict fixture\n")
+    page.evaluate(
+        "navigator.serviceWorker.ready.then((registration) => registration.update())"
+    )
+    page.wait_for_timeout(1000)
+    shell_after = page.evaluate(
+        """
+        async () => {
+          const cache = await caches.open("bsb-meta-v1");
+          const response = await cache.match(new Request(new URL(
+            "../__bsb_meta__/shell.json", location.href)));
+          return response.json();
+        }
+        """
+    )
+    pending = page.evaluate(
+        """
+        async () => {
+          const cache = await caches.open("bsb-meta-v1");
+          return (await cache.keys()).some((request) =>
+            request.url.includes("shell-pending-"));
+        }
+        """
+    )
+    assert shell_after == shell_before
+    assert pending is False
+    context.close()
+
+
 def test_service_worker_registration_failure_keeps_online_page_and_blocks_download(
     chromium: Browser,
     pwa_server: str,
@@ -1541,6 +1604,29 @@ def test_quarter_manifest_validation_rejects_unsafe_and_duplicate_resources(
         }
         """,
         [duplicate],
+    )
+    alias = {**valid, "resources": [
+        valid["resources"][0],
+        {**valid["resources"][0], "url": "alias.html"},
+    ]}
+    assert page.evaluate(
+        "([value]) => window.BsbPwa.validateQuarterManifest(value, '2026-07')",
+        [alias],
+    )["resources"][1]["content_hash"] == "a" * 64
+    conflicting_size = {**valid, "resources": [
+        valid["resources"][0],
+        {**valid["resources"][0], "url": "conflict.html", "size_bytes": 2},
+    ]}
+    assert page.evaluate(
+        """
+        ([value]) => {
+          try {
+            window.BsbPwa.validateQuarterManifest(value, "2026-07");
+            return false;
+          } catch { return true; }
+        }
+        """,
+        [conflicting_size],
     )
     context.close()
 

@@ -600,6 +600,7 @@
   }
 
   let archiveIndex = null;
+  let knownOfflineQuarters = [];
   let persistenceResult = null;
   const settingsSelection = { kind: "current", year: "", from: "", to: "" };
 
@@ -621,12 +622,11 @@
   }
 
   function quarterLabels() {
-    if (!Array.isArray(archiveIndex?.quarters)) return [];
-    return archiveIndex.quarters
+    const publicLabels = Array.isArray(archiveIndex?.quarters) ? archiveIndex.quarters
       .map((item) => item?.quarter)
       .filter((label) => QUARTER.test(label || ""))
-      .sort()
-      .reverse();
+      : [];
+    return [...new Set([...publicLabels, ...knownOfflineQuarters])].sort().reverse();
   }
 
   function years() {
@@ -722,9 +722,9 @@
 
   async function renderQuarterSettings(container) {
     if (!container) return;
-    const stateByQuarter = new Map(
-      (await listQuarterStates()).map((state) => [state.quarter, state]),
-    );
+    const states = await listQuarterStates();
+    knownOfflineQuarters = states.map((state) => state.quarter);
+    const stateByQuarter = new Map(states.map((state) => [state.quarter, state]));
     const labels = quarterLabels();
     if (!labels.length) {
       container.innerHTML = '<p class="settings-note">当前没有可公开季度。</p>';

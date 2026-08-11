@@ -624,3 +624,37 @@ def test_quarter_page_offline_action_tracks_download_and_confirmed_remove(
         "?.textContent.includes('未下载')"
     )
     context.close()
+
+
+def test_downloaded_quarter_is_complete_offline_and_undownloaded_redirects(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
+    ) == "COMPLETE"
+
+    context.set_offline(True)
+    page.goto(f"{pwa_server}/2026-07/index.html")
+    page.wait_for_selector('[data-subject-id="101"]')
+    assert page.locator('[data-subject-id="101"] img').is_visible()
+    page.locator('[data-subject-id="101"] [data-open-subject]').click()
+    assert page.locator("[data-detail-panel]").is_visible()
+    page.locator("[data-search]").fill("Original 101")
+    assert "1 / 1" in page.locator("[data-results-summary]").inner_text()
+    page.goto(f"{pwa_server}/settings/index.html")
+    assert page.get_by_role("heading", name="设置").is_visible()
+    assert page.locator('[data-offline-quarter="2026-07"]').get_by_text(
+        "已离线"
+    ).is_visible()
+
+    page.goto(f"{pwa_server}/2026-04/index.html")
+    page.wait_for_url(f"{pwa_server}/settings/index.html")
+    assert page.get_by_role("heading", name="设置").is_visible()
+    context.close()

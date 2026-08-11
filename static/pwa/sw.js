@@ -220,7 +220,15 @@ function resourceForPath(manifest, path) {
 async function contentFor(resource) {
   if (!resource || !HEX_64.test(resource.content_hash)) return null;
   const cache = await caches.open(CONTENT_CACHE);
-  return cache.match(contentRequest(resource.content_hash));
+  const key = contentRequest(resource.content_hash);
+  const response = await cache.match(key);
+  if (!response) return null;
+  try {
+    return await verifiedResponse(response, resource);
+  } catch {
+    await cache.delete(key);
+    return null;
+  }
 }
 
 async function authorizedResource(path, hash) {
@@ -235,17 +243,13 @@ async function authorizedResource(path, hash) {
   return null;
 }
 
-async function authorizedContentHash(path, hash) {
-  return Boolean(await authorizedResource(path, hash));
-}
-
 async function guaranteedResponse(request) {
   const path = physicalPath(request.url);
-  const version = new URL(request.url).searchParams.get("v");
-  if (
-    new URL(request.url).searchParams.has("v")
-    && !(await authorizedContentHash(path, version))
-  ) return null;
+  const url = new URL(request.url);
+  if (url.searchParams.has("v")) {
+    const resource = await authorizedResource(path, url.searchParams.get("v"));
+    return resource ? contentFor(resource) : null;
+  }
   const shell = await readMeta(SHELL_META);
   const shellResponse = await contentFor(resourceForPath(shell, path));
   if (shellResponse) return shellResponse;
@@ -297,12 +301,28 @@ async function versionedResponse(request) {
   if (cached) return cached;
   try {
     const response = await fetch(request);
-    if (response.ok) await rememberRuntime(request, response);
-    return response;
+    const verified = await verifiedResponse(response, authorized);
+    const content = await caches.open(CONTENT_CACHE);
+    await content.put(contentRequest(authorized.content_hash), verified.clone());
+    return verified;
   } catch {
-    const runtime = await (await caches.open(RUNTIME_CACHE)).match(request);
-    if (runtime) return runtime;
-    return null;
+    const runtime = await caches.open(RUNTIME_CACHE);
+    const candidate = await runtime.match(request);
+    if (candidate) {
+      try {
+        const verified = await verifiedResponse(candidate, authorized);
+        const content = await caches.open(CONTENT_CACHE);
+        await content.put(contentRequest(authorized.content_hash), verified.clone());
+        await runtime.delete(request);
+        return verified;
+      } catch {
+        await runtime.delete(request);
+      }
+    }
+    return new Response("Versioned resource unavailable", {
+      status: 503,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
   }
 }
 

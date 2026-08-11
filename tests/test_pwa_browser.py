@@ -1079,6 +1079,72 @@ def test_runtime_resource_is_promoted_and_hash_mismatch_is_refetched(
     context.close()
 
 
+def test_missing_old_versioned_blob_never_returns_current_physical_bytes(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    manifest = page.evaluate(
+        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+    )
+    old_hash = hashlib.sha256(b"old app revision").hexdigest()
+    result = page.evaluate(
+        """
+        async ({ manifest, oldHash }) => {
+          const app = manifest.resources.find((item) => item.url === "assets/app.js");
+          if (!app) throw new Error("app.js resource missing");
+          const oldResource = { ...app, content_hash: oldHash, size_bytes: 16 };
+          const activeManifest = {
+            ...manifest,
+            resources: manifest.resources.map((item) => (
+              item.url === app.url ? oldResource : item
+            )),
+          };
+          const meta = await caches.open("bsb-meta-v1");
+          await meta.put(
+            new Request(new URL("../__bsb_meta__/quarters/2026-07.json", location.href)),
+            new Response(JSON.stringify({
+              schema: 1,
+              quarter: "2026-07",
+              status: "COMPLETE",
+              active: activeManifest,
+              staging: null,
+              error: null,
+            })),
+          );
+          const content = await caches.open("bsb-content-v1");
+          await content.delete(new Request(new URL(
+            `../__bsb_content__/${oldHash}`, location.href,
+          )));
+          const runtime = await caches.open("bsb-runtime-v1");
+          const currentBytes = await fetch(new URL(`../${app.url}`, location.href));
+          await runtime.put(
+            new Request(new URL(`../${app.url}?v=${oldHash}`, location.href)),
+            currentBytes,
+          );
+          const response = await fetch(new URL(
+            `../${app.url}?v=${oldHash}`, location.href,
+          ));
+          return {
+            status: response.status,
+            body: await response.text(),
+            runtime: (await runtime.keys()).map((key) => key.url),
+            content: (await content.keys()).map((key) => key.url),
+          };
+        }
+        """,
+        {"manifest": manifest, "oldHash": old_hash},
+    )
+    assert result["status"] == 503
+    assert "Versioned resource unavailable" in result["body"]
+    assert not any(f"?v={old_hash}" in url for url in result["runtime"])
+    assert not any(url.endswith(old_hash) for url in result["content"])
+    context.close()
+
+
 def test_gzip_response_is_verified_and_cached_without_rebuilding_headers(
     chromium: Browser,
     gzip_pwa_server: str,

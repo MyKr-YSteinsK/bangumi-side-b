@@ -94,6 +94,30 @@ def delayed_manifest_server(pwa_site: Path) -> Iterator[str]:
 
 
 @pytest.fixture
+def failing_manifest_server(pwa_site: Path) -> Iterator[str]:
+    class FailingManifestHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path.split("?", 1)[0].endswith("/data/offline/2026-07.json"):
+                self.send_error(503, "manifest unavailable")
+                return
+            super().do_GET()
+
+    handler = functools.partial(
+        FailingManifestHandler,
+        directory=str(pwa_site.parent),
+    )
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.fixture
 def slow_pwa_server(pwa_site: Path) -> Iterator[str]:
     class SlowHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -862,6 +886,7 @@ def test_quarter_metadata_writes_merge_monotonically_when_older_write_is_delayed
     )
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
+    page.wait_for_function("window.BsbPwa.capabilityState() === 'ready'")
     page.evaluate(
         """
         async () => {
@@ -990,6 +1015,76 @@ def test_stale_quarter_generation_cannot_overwrite_new_staging(
     )
     assert state["staging"]["revision"] == "generation-new-revision"
     assert state["staging"]["verified_hashes"] == ["new"]
+    context.close()
+
+
+def test_new_generation_clears_stale_progress_before_manifest_failure(
+    chromium: Browser,
+    failing_manifest_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{failing_manifest_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.evaluate(
+        """
+        async () => {
+          const meta = await caches.open("bsb-meta-v1");
+          const put = (path, value) => meta.put(
+            new Request(new URL(`../__bsb_meta__/${path}`, location.href)),
+            new Response(JSON.stringify(value)),
+          );
+          await put("queue.json", {
+            schema: 2,
+            generation: "old-generation",
+            state: "cancelled",
+            labels: [],
+            current: null,
+            succeeded: [],
+            failed: [],
+            errors: [],
+          });
+          await put("quarters/2026-07.json", {
+            schema: 1,
+            quarter: "2026-07",
+            status: "INCOMPLETE",
+            active: null,
+            staging: null,
+            error: null,
+          });
+          await put("progress/2026-07.json", {
+            quarter: "2026-07",
+            verified_resources: 7,
+            total_resources: 9,
+            verified_bytes: 70,
+            total_bytes: 90,
+          });
+        }
+        """
+    )
+    generation = page.evaluate(
+        "async () => (await window.BsbPwa.enqueue(['2026-07'])).generation"
+    )
+    page.wait_for_function(
+        """
+        async (expectedGeneration) => {
+          const queue = await window.BsbPwa.currentQueue();
+          return queue.generation === expectedGeneration
+            && queue.state === "idle"
+            && queue.failed.includes("2026-07");
+        }
+        """,
+        arg=generation,
+    )
+    page.wait_for_function(
+        """
+        async () => {
+          const cache = await caches.open("bsb-meta-v1");
+          return !await cache.match(new Request(new URL(
+            "../__bsb_meta__/progress/2026-07.json", location.href)));
+        }
+        """
+    )
     context.close()
 
 

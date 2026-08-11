@@ -638,6 +638,7 @@
           status: current.active ? "UPDATE_AVAILABLE" : "INCOMPLETE",
           error: shortError(error),
         },
+        progress: null,
       }));
       throw error;
     }
@@ -805,7 +806,6 @@
         return;
       }
       const quarter = remaining[0];
-      await deleteMeta(progressMetaName(quarter));
       queue = await updateOwnedQueue(generation, (current) => (
         current.state === "downloading"
         && current.labels.includes(quarter)
@@ -816,6 +816,14 @@
       ));
       if (queue.generation !== generation) return;
       if (queue.state !== "downloading" || queue.current !== quarter) continue;
+      try {
+        await updateOwnedQuarterDownloadState(quarter, generation, () => ({
+          progress: null,
+        }));
+      } catch (error) {
+        if (error instanceof StaleQueueError) return;
+        throw error;
+      }
       try {
         await downloadQuarter(quarter, generation);
         queue = await updateOwnedQueue(generation, (current) => {
@@ -986,24 +994,26 @@
   }
 
   async function removeQuarter(quarter) {
-    await updateQueue((current) => {
+    await withQuarterMutation(quarter, async () => {
+      const current = await readQueue();
       if (current.current === quarter) {
         throw new Error("请先取消当前下载或更新，再移除季度");
       }
       const labels = current.labels.filter((label) => label !== quarter);
-      if (!current.labels.includes(quarter)) return current;
-      return {
-        ...current,
-        labels,
-        succeeded: current.succeeded.filter((label) => label !== quarter),
-        failed: current.failed.filter((label) => label !== quarter),
-        errors: current.errors.filter((item) => item?.quarter !== quarter),
-        state: labels.length ? current.state : "idle",
-        current: labels.length ? current.current : null,
-      };
+      if (current.labels.includes(quarter)) {
+        await writeMeta(QUEUE_META, {
+          ...current,
+          labels,
+          succeeded: current.succeeded.filter((label) => label !== quarter),
+          failed: current.failed.filter((label) => label !== quarter),
+          errors: current.errors.filter((item) => item?.quarter !== quarter),
+          state: labels.length ? current.state : "idle",
+          current: labels.length ? current.current : null,
+        });
+      }
+      await deleteQuarterStateUnlocked(quarter);
+      await deleteQuarterProgressUnlocked(quarter);
     });
-    await deleteMeta(quarterMetaName(quarter));
-    await deleteMeta(progressMetaName(quarter));
     await garbageCollect();
   }
 

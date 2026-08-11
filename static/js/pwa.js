@@ -800,21 +800,35 @@
     return `${(value / 1024 ** 3).toFixed(1)} GiB`;
   }
 
-  function quarterLabels() {
-    const publicLabels = Array.isArray(archiveIndex?.quarters) ? archiveIndex.quarters
+  function publicQuarterLabels() {
+    const labels = Array.isArray(archiveIndex?.quarters) ? archiveIndex.quarters
       .map((item) => item?.quarter)
       .filter((label) => QUARTER.test(label || ""))
       : [];
-    return [...new Set([...publicLabels, ...knownOfflineQuarters])].sort().reverse();
+    return [...new Set(labels)].sort().reverse();
+  }
+
+  function displayOfflineQuarterLabels() {
+    return [...new Set([...publicQuarterLabels(), ...knownOfflineQuarters])]
+      .sort()
+      .reverse();
   }
 
   function years() {
-    return [...new Set(quarterLabels().map((label) => label.slice(0, 4)))].sort().reverse();
+    return [...new Set(publicQuarterLabels().map((label) => label.slice(0, 4)))]
+      .sort()
+      .reverse();
   }
 
   function selectedQueueLabels() {
-    const labels = quarterLabels();
-    if (settingsSelection.kind === "current") return labels.slice(0, 1);
+    const labels = publicQuarterLabels();
+    if (settingsSelection.kind === "current") {
+      const latest = QUARTER.test(archiveIndex?.latest_quarter || "")
+        && labels.includes(archiveIndex.latest_quarter)
+        ? archiveIndex.latest_quarter
+        : labels[0];
+      return latest ? [latest] : [];
+    }
     if (settingsSelection.kind === "year") {
       return labels.filter((label) => label.startsWith(`${settingsSelection.year}-`));
     }
@@ -904,7 +918,7 @@
     const states = await listQuarterStates();
     knownOfflineQuarters = states.map((state) => state.quarter);
     const stateByQuarter = new Map(states.map((state) => [state.quarter, state]));
-    const labels = quarterLabels();
+    const labels = displayOfflineQuarterLabels();
     if (!labels.length) {
       container.innerHTML = '<p class="settings-note">当前没有可公开季度。</p>';
       return;
@@ -1026,17 +1040,23 @@
   async function initializeSettings() {
     const root = document.querySelector("[data-pwa-settings]");
     if (!root) return;
-    try {
-      const response = await fetch(root.dataset.archiveIndexUrl, {
-        credentials: "same-origin",
-      });
-      if (response.ok) archiveIndex = await response.json();
-    } catch {
-      archiveIndex = null;
-    }
+    await loadArchiveIndex(root.dataset.archiveIndexUrl);
     subscribe(renderSettings);
     await renderSettings();
     await detectUpdates();
+  }
+
+  async function loadArchiveIndex(url) {
+    if (!url || !navigator.onLine) return false;
+    try {
+      const response = await fetch(url, { credentials: "same-origin" });
+      if (!response.ok) return false;
+      archiveIndex = await response.json();
+      return true;
+    } catch {
+      archiveIndex = null;
+      return false;
+    }
   }
 
   function renderUpdateNotice() {
@@ -1111,6 +1131,8 @@
   });
 
   window.addEventListener("online", async () => {
+    const settings = document.querySelector("[data-pwa-settings]");
+    await loadArchiveIndex(settings?.dataset.archiveIndexUrl);
     const queue = await currentQueue();
     if (queue.state === "waiting-network") await resumeQueue();
     notify();

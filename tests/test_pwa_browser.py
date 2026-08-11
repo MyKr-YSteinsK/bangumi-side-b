@@ -304,6 +304,54 @@ def test_running_queue_merges_new_labels_without_replacing_generation(
     context.close()
 
 
+def test_orphan_offline_quarter_stays_visible_without_entering_public_queue(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function(
+        "document.querySelectorAll('[data-offline-quarter]').length === 2"
+    )
+    manifest = page.evaluate(
+        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+    )
+    page.evaluate(
+        """
+        async (manifest) => {
+          const meta = await caches.open("bsb-meta-v1");
+          await meta.put(
+            new Request(new URL(
+              "../__bsb_meta__/quarters/2027-01.json", location.href)),
+            new Response(JSON.stringify({
+              schema: 1,
+              quarter: "2027-01",
+              status: "COMPLETE",
+              active: { ...manifest, quarter: "2027-01" },
+              staging: null,
+            })),
+          );
+          window.dispatchEvent(new CustomEvent("bsb:pwa-state"));
+        }
+        """,
+        manifest,
+    )
+    page.reload()
+    page.wait_for_function(
+        "document.querySelector('[data-offline-quarter=\"2027-01\"]') !== null"
+    )
+    page.locator("[data-queue-kind]").select_option("all")
+    page.wait_for_function(
+        "document.querySelector('.queue-preview')?.textContent.includes('2 个季度')"
+    )
+    page.locator("[data-queue-kind]").select_option("current")
+    page.wait_for_function(
+        "document.querySelector('.queue-preview')?.textContent.includes('1 个季度')"
+    )
+    context.close()
+
+
 def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_bytes(
     chromium: Browser,
     pwa_server: str,

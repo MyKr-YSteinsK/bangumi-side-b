@@ -24,6 +24,9 @@
   let queueMutation = Promise.resolve();
   let queueRetryTimer = null;
   let stateChannel = null;
+  let capabilityState = "unsupported";
+  let registrationPromise = null;
+  let serviceWorkerRegistration = null;
   try {
     if (typeof BroadcastChannel === "function") stateChannel = new BroadcastChannel(STATE_CHANNEL_NAME);
   } catch {
@@ -32,6 +35,17 @@
 
   function supported() {
     return "serviceWorker" in navigator && "caches" in window && Boolean(crypto?.subtle);
+  }
+
+  if (supported()) capabilityState = "registering";
+
+  function capabilityLabel() {
+    return {
+      unsupported: "unavailable",
+      registering: "registering",
+      ready: "ready",
+      "registration-failed": "registration failed",
+    }[capabilityState] || capabilityState;
   }
 
   function absolute(relative = "") {
@@ -501,12 +515,22 @@
     }
   }
 
+  async function ensureServiceWorkerReady() {
+    if (!supported()) throw new Error("浏览器不支持离线下载");
+    if (!registrationPromise) registrationPromise = registerServiceWorker();
+    const registration = await registrationPromise;
+    if (!registration || capabilityState !== "ready") {
+      throw new Error("Service Worker 尚未就绪，无法保证离线下载");
+    }
+    return registration;
+  }
+
   function normalizeQuarterLabels(labels) {
     return [...new Set(labels.filter((label) => QUARTER.test(label)))].sort().reverse();
   }
 
   async function enqueue(labels) {
-    if (!supported()) throw new Error("浏览器不支持离线下载");
+    await ensureServiceWorkerReady();
     const normalized = normalizeQuarterLabels(labels);
     if (!normalized.length) return currentQueue();
     const queue = await updateQueue((current) => {
@@ -808,8 +832,40 @@
     });
   }
 
+  async function registerServiceWorker() {
+    if (!supported()) {
+      capabilityState = "unsupported";
+      notify();
+      return null;
+    }
+    capabilityState = "registering";
+    notify();
+    try {
+      const workerUrl = new URL("../sw.js", scriptUrl);
+      const scopeUrl = new URL("../", scriptUrl);
+      const registration = await navigator.serviceWorker.register(workerUrl, {
+        scope: scopeUrl.pathname,
+      });
+      serviceWorkerRegistration = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise((resolve) => window.setTimeout(() => resolve(null), 5000)),
+      ]);
+      if (!serviceWorkerRegistration.active) throw new Error("Service Worker inactive");
+      watchRegistration(registration);
+      capabilityState = "ready";
+      notify();
+      return serviceWorkerRegistration;
+    } catch {
+      serviceWorkerRegistration = null;
+      capabilityState = "registration-failed";
+      notify();
+      return null;
+    }
+  }
+
   async function refreshApp() {
-    const registration = updateRegistration || await navigator.serviceWorker.ready;
+    const registration = updateRegistration || serviceWorkerRegistration
+      || await navigator.serviceWorker.ready;
     if (!registration.waiting) return false;
     refreshRequested = true;
     registration.waiting.postMessage({ type: "SKIP_WAITING" });
@@ -902,7 +958,7 @@
     container.innerHTML = `
       <dl class="settings-facts">
         <div><dt>PWA</dt><dd>${hasSupport ? "supported" : "unavailable"}</dd></div>
-        <div><dt>Service Worker</dt><dd>${controlled ? "controlling" : "not controlling"}</dd></div>
+        <div><dt>Service Worker</dt><dd>${capabilityLabel()}${controlled ? " · controlling" : ""}</dd></div>
         <div><dt>App update</dt><dd>${updateRegistration?.waiting ? "available" : "current"}</dd></div>
       </dl>
       ${canInstall ? '<button type="button" class="button button--ink" data-install-app>安装应用</button>' : '<p class="settings-note">如浏览器支持，可从浏览器菜单选择“安装”或“添加到主屏幕”。</p>'}
@@ -986,9 +1042,13 @@
     container.innerHTML = `<div class="offline-quarter-list">${labels.map((quarter) => {
       const state = stateByQuarter.get(quarter) || initialQuarterState(quarter);
       const view = quarterView(state);
+      const canDownload = capabilityState === "ready";
+      const action = view.status === "COMPLETE"
+        ? actionLabel(view.status)
+        : canDownload ? actionLabel(view.status) : "离线不可用";
       return `<article class="offline-quarter" data-offline-quarter="${quarter}">
         <div><strong>${quarter}</strong><span>${statusLabel(view.status)}</span>${state.error ? `<small>${escapeHtml(state.error)}</small>` : ""}</div>
-        <button type="button" class="button" data-quarter-action="${actionLabel(view.status)}">${actionLabel(view.status)}</button>
+        <button type="button" class="button" data-quarter-action="${action}" ${view.status !== "COMPLETE" && !canDownload ? "disabled" : ""}>${action}</button>
       </article>`;
     }).join("")}</div>`;
     container.querySelectorAll("[data-offline-quarter]").forEach((row) => {
@@ -1027,7 +1087,7 @@
         <label>从<select>${yearOptions}</select></label><label>到<select>${yearOptions}</select></label>
       </div>
       <p class="queue-preview"><strong>${labels.length}</strong> 个季度 · newest → oldest</p>
-      <button type="button" class="button button--ink" data-start-queue ${!labels.length || !navigator.onLine ? "disabled" : ""}>加入下载队列</button>
+      <button type="button" class="button button--ink" data-start-queue ${!labels.length || !navigator.onLine || capabilityState !== "ready" ? "disabled" : ""}>加入下载队列</button>
     </div>`;
     const kind = container.querySelector("[data-queue-kind]");
     kind.value = settingsSelection.kind;
@@ -1142,6 +1202,16 @@
       actions.replaceChildren();
       return;
     }
+    if (capabilityState === "registration-failed") {
+      status.textContent = "Service Worker 注册失败；在线浏览仍可正常使用。";
+      actions.replaceChildren();
+      return;
+    }
+    if (capabilityState !== "ready") {
+      status.textContent = "正在准备离线下载能力…";
+      actions.replaceChildren();
+      return;
+    }
     const [state, queue] = await Promise.all([
       getQuarterState(quarter),
       currentQueue(),
@@ -1217,16 +1287,7 @@
       else notify();
     });
     window.addEventListener("load", async () => {
-      try {
-        const workerUrl = new URL("../sw.js", scriptUrl);
-        const scopeUrl = new URL("../", scriptUrl);
-        const registration = await navigator.serviceWorker.register(workerUrl, {
-          scope: scopeUrl.pathname,
-        });
-        watchRegistration(registration);
-      } catch {
-        // PWA enhancement failure must not block the online archive.
-      }
+      await registerServiceWorker();
       await restoreQueue();
     });
   }
@@ -1238,6 +1299,8 @@
     RETRY_DELAYS,
     MAX_CONCURRENT_RESOURCES,
     supported,
+    capabilityState: () => capabilityState,
+    capabilityLabel,
     validateQuarterManifest,
     fetchQuarterManifest,
     getQuarterState,

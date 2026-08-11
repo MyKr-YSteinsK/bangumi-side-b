@@ -190,6 +190,29 @@ def test_shell_hash_failure_never_activates_or_writes_active_metadata(
     context.close()
 
 
+def test_service_worker_registration_failure_keeps_online_page_and_blocks_download(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function(
+        "window.BsbPwa?.capabilityState() === 'registration-failed'"
+    )
+    assert page.get_by_role("heading", name="设置").is_visible()
+    assert page.get_by_text("registration failed").is_visible()
+    rejected = page.evaluate(
+        "async () => {"
+        "try { await window.BsbPwa.enqueue(['2026-07']); return false; }"
+        "catch { return true; }}"
+    )
+    assert rejected
+    state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert state["status"] == "NONE"
+    context.close()
+
+
 def test_active_quarter_uses_content_identity_for_offline_navigation_and_cover(
     chromium: Browser,
     pwa_server: str,
@@ -279,7 +302,7 @@ def test_quarter_downloader_deduplicates_shared_cover_and_garbage_collects(
     chromium: Browser,
     pwa_server: str,
 ) -> None:
-    context = chromium.new_context(service_workers="block")
+    context = chromium.new_context()
     page = context.new_page()
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
@@ -343,7 +366,7 @@ def test_running_queue_merges_new_labels_without_replacing_generation(
     chromium: Browser,
     pwa_server: str,
 ) -> None:
-    context = chromium.new_context(service_workers="block")
+    context = chromium.new_context()
     page = context.new_page()
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
@@ -410,7 +433,7 @@ def test_two_pages_share_one_queue_runner_and_persist_merge(
     chromium: Browser,
     pwa_server: str,
 ) -> None:
-    context = chromium.new_context(service_workers="block")
+    context = chromium.new_context()
     first = context.new_page()
     second = context.new_page()
     first_requests: list[str] = []
@@ -452,7 +475,7 @@ def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_byte
     pwa_server: str,
     pwa_site: Path,
 ) -> None:
-    context = chromium.new_context(service_workers="block")
+    context = chromium.new_context()
     context.add_init_script(
         """
         const nativeSetTimeout = window.setTimeout.bind(window);
@@ -470,7 +493,7 @@ def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_byte
 
     quarter_path = pwa_site / "data" / "quarters" / "2026-07.json"
     changed_bytes = quarter_path.read_bytes() + b" "
-    quarter_path.write_bytes(changed_bytes)
+    quarter_path.write_bytes(b"incorrect quarter bytes")
     manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
     manifest["revision"] = "updated-quarter-revision"
@@ -486,7 +509,6 @@ def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_byte
         encoding="utf-8",
     )
 
-    page.route("**/data/quarters/2026-07.json", lambda route: route.abort())
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
     _wait_for_queue(page, 1)
     failed = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
@@ -517,7 +539,7 @@ def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_byte
         old_hash,
     )
 
-    page.unroute("**/data/quarters/2026-07.json")
+    quarter_path.write_bytes(changed_bytes)
     requests: list[str] = []
     page.on("request", lambda request: requests.append(request.url))
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
@@ -588,7 +610,7 @@ def test_pause_resume_and_network_recovery_keep_queue_state(
     chromium: Browser,
     pwa_server: str,
 ) -> None:
-    context = chromium.new_context(service_workers="block")
+    context = chromium.new_context()
     page = context.new_page()
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
@@ -628,7 +650,7 @@ def test_cancelled_queue_keeps_partial_staging_and_does_not_resume_on_reopen(
     chromium: Browser,
     pwa_server: str,
 ) -> None:
-    context = chromium.new_context(service_workers="block")
+    context = chromium.new_context()
     page = context.new_page()
     page.route("**/covers/101.webp", lambda route: route.abort())
     page.goto(f"{pwa_server}/settings/index.html")
@@ -667,7 +689,7 @@ def test_downloading_queue_resumes_after_page_reopen(
     chromium: Browser,
     pwa_server: str,
 ) -> None:
-    context = chromium.new_context(service_workers="block")
+    context = chromium.new_context()
     page = context.new_page()
     page.route("**/data/quarters/2026-07.json", lambda route: route.abort())
     page.goto(f"{pwa_server}/settings/index.html")
@@ -695,7 +717,7 @@ def test_runtime_resource_is_promoted_and_hash_mismatch_is_refetched(
     chromium: Browser,
     pwa_server: str,
 ) -> None:
-    context = chromium.new_context(service_workers="block")
+    context = chromium.new_context()
     page = context.new_page()
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
@@ -739,7 +761,6 @@ def test_runtime_resource_is_promoted_and_hash_mismatch_is_refetched(
         ".then((keys) => keys.map((key) => key.url))"
     )
     assert not any("covers/101.webp" in url for url in runtime_entries)
-    assert f"{pwa_server}/2026-07/index.html" not in runtime_entries
     context.close()
 
 
@@ -747,7 +768,7 @@ def test_gzip_response_is_verified_and_cached_without_rebuilding_headers(
     chromium: Browser,
     gzip_pwa_server: str,
 ) -> None:
-    context = chromium.new_context(service_workers="block")
+    context = chromium.new_context()
     page = context.new_page()
     page.goto(f"{gzip_pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
@@ -762,7 +783,7 @@ def test_settings_reports_storage_and_controls_quarter_downloads(
     chromium: Browser,
     pwa_server: str,
 ) -> None:
-    context = chromium.new_context(service_workers="block")
+    context = chromium.new_context()
     context.add_init_script(
         """
         window.__persistCalls = 0;
@@ -824,7 +845,7 @@ def test_quarter_page_offline_action_tracks_download_and_confirmed_remove(
     chromium: Browser,
     pwa_server: str,
 ) -> None:
-    context = chromium.new_context(service_workers="block")
+    context = chromium.new_context()
     page = context.new_page()
     page.goto(f"{pwa_server}/2026-07/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")

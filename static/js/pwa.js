@@ -285,8 +285,20 @@
     return values.sort((left, right) => right.quarter.localeCompare(left.quarter));
   }
 
-  async function saveQuarterState(state) {
+  async function writeQuarterStateUnlocked(state) {
     await writeMeta(quarterMetaName(state.quarter), state);
+  }
+
+  async function deleteQuarterStateUnlocked(quarter) {
+    await deleteMeta(quarterMetaName(quarter));
+  }
+
+  async function deleteQuarterProgressUnlocked(quarter) {
+    await deleteMeta(progressMetaName(quarter));
+  }
+
+  async function saveQuarterState(state) {
+    await writeQuarterStateUnlocked(state);
   }
 
   function newGeneration() {
@@ -358,14 +370,9 @@
     };
   }
 
-  function updateQueue(mutator) {
+  function enqueueQueueMutation(operationCallback) {
     const operation = queueMutation.then(async () => {
-      const mutate = async () => {
-        const current = await readQueue();
-        const next = normalizeQueue(mutator(current));
-        await writeMeta(QUEUE_META, next);
-        return next;
-      };
+      const mutate = async () => operationCallback();
       if (typeof navigator.locks?.request !== "function") return mutate();
       let entered = false;
       try {
@@ -384,6 +391,15 @@
     });
     queueMutation = operation.catch(() => {});
     return operation;
+  }
+
+  function updateQueue(mutator) {
+    return enqueueQueueMutation(async () => {
+      const current = await readQueue();
+      const next = normalizeQueue(mutator(current));
+      await writeMeta(QUEUE_META, next);
+      return next;
+    });
   }
 
   function updateOwnedQueue(generation, mutator) {
@@ -454,69 +470,67 @@
     }
   }
 
-  function updateQuarterDownloadState(quarter, generation, mutator) {
+  function withQuarterMutation(quarter, callback) {
+    // Every quarter transaction enters the quarter lock before the shared
+    // queue lock. Callers must keep network and verification work outside it.
     const previous = quarterMutations.get(quarter) || Promise.resolve();
     const operation = previous.then(async () => {
-      const mutate = async () => {
-        const queue = await readQueue();
-        if (queue.generation !== generation || queue.state === "cancelled") {
-          throw new StaleQueueError();
-        }
-        const current = await getQuarterState(quarter);
-        const progress = await readMeta(progressMetaName(quarter));
-        const result = await mutator(current, progress);
-        if (!result) return { state: current, progress };
-        const latestQueue = await readQueue();
-        if (latestQueue.generation !== generation || latestQueue.state === "cancelled") {
-          throw new StaleQueueError();
-        }
-        const nextState = result.state || current;
-        if (result.state) await saveQuarterState(nextState);
-        if (Object.prototype.hasOwnProperty.call(result, "progress")) {
-          if (result.progress === null) await deleteMeta(progressMetaName(quarter));
-          else await writeMeta(progressMetaName(quarter), result.progress);
-        }
-        return {
-          state: nextState,
-          progress: Object.prototype.hasOwnProperty.call(result, "progress")
-            ? result.progress
-            : progress,
-        };
-      };
-      if (typeof navigator.locks?.request !== "function") return mutate();
-      let quarterEntered = false;
-      try {
-        return await navigator.locks.request(
+      const runWithQueueLock = () => enqueueQueueMutation(callback);
+      const runWithQuarterLock = () => {
+        if (typeof navigator.locks?.request !== "function") return runWithQueueLock();
+        let quarterEntered = false;
+        return navigator.locks.request(
           quarterMutationLockName(quarter),
           { mode: "exclusive" },
           async () => {
             quarterEntered = true;
-            let queueEntered = false;
-            try {
-              return await navigator.locks.request(
-                QUEUE_MUTATION_LOCK_NAME,
-                { mode: "exclusive" },
-                async () => {
-                  queueEntered = true;
-                  return mutate();
-                },
-              );
-            } catch (error) {
-              if (queueEntered) throw error;
-              return mutate();
-            }
+            return runWithQueueLock();
           },
-        );
-      } catch (error) {
-        if (quarterEntered) throw error;
-        return mutate();
-      }
+        ).catch((error) => {
+          if (quarterEntered) throw error;
+          return runWithQueueLock();
+        });
+      };
+      return runWithQuarterLock();
     });
     const tracked = operation.catch(() => {});
     quarterMutations.set(quarter, tracked);
     return operation.finally(() => {
       if (quarterMutations.get(quarter) === tracked) quarterMutations.delete(quarter);
     });
+  }
+
+  function updateOwnedQuarterDownloadState(quarter, generation, mutator) {
+    return withQuarterMutation(quarter, async () => {
+      const queue = await readQueue();
+      if (queue.generation !== generation || queue.state === "cancelled") {
+        throw new StaleQueueError();
+      }
+      const current = await getQuarterState(quarter);
+      const progress = await readMeta(progressMetaName(quarter));
+      const result = await mutator(current, progress);
+      if (!result) return { state: current, progress };
+      const latestQueue = await readQueue();
+      if (latestQueue.generation !== generation || latestQueue.state === "cancelled") {
+        throw new StaleQueueError();
+      }
+      const nextState = result.state || current;
+      if (result.state) await writeQuarterStateUnlocked(nextState);
+      if (Object.prototype.hasOwnProperty.call(result, "progress")) {
+        if (result.progress === null) await deleteQuarterProgressUnlocked(quarter);
+        else await writeMeta(progressMetaName(quarter), result.progress);
+      }
+      return {
+        state: nextState,
+        progress: Object.prototype.hasOwnProperty.call(result, "progress")
+          ? result.progress
+          : progress,
+      };
+    });
+  }
+
+  function updateQuarterDownloadState(quarter, generation, mutator) {
+    return updateOwnedQuarterDownloadState(quarter, generation, mutator);
   }
 
   async function assertQueueGeneration(generation) {

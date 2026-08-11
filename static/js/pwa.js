@@ -1350,6 +1350,22 @@
     }[status] || "下载";
   }
 
+  function removeLabel(status) {
+    return {
+      INCOMPLETE: "移除未完成数据",
+      UPDATE_AVAILABLE: "移除离线数据",
+      UPDATE_INCOMPLETE: "移除离线数据",
+    }[status] || "移除";
+  }
+
+  function removeConfirmation(quarter, status) {
+    if (status === "INCOMPLETE") return `移除 ${quarter} 已下载但未完成的离线数据？`;
+    if (status === "UPDATE_INCOMPLETE") {
+      return `移除 ${quarter} 的离线数据？当前可用旧版本与未完成更新都会删除。`;
+    }
+    return `移除 ${quarter} 的离线缓存？`;
+  }
+
   async function renderQuarterSettings(container) {
     if (!container) return;
     const states = await listQuarterStates();
@@ -1367,9 +1383,11 @@
       const action = view.status === "COMPLETE"
         ? actionLabel(view.status)
         : canDownload ? actionLabel(view.status) : "离线不可用";
+      const removable = ["INCOMPLETE", "UPDATE_AVAILABLE", "UPDATE_INCOMPLETE"]
+        .includes(view.status);
       return `<article class="offline-quarter" data-offline-quarter="${quarter}">
         <div><strong>${quarter}</strong><span>${statusLabel(view.status)}</span>${state.error ? `<small>${escapeHtml(state.error)}</small>` : ""}</div>
-        <button type="button" class="button" data-quarter-action="${action}" ${view.status !== "COMPLETE" && !canDownload ? "disabled" : ""}>${action}</button>
+        <div class="offline-quarter__actions"><button type="button" class="button" data-quarter-action="${action}" ${view.status !== "COMPLETE" && !canDownload ? "disabled" : ""}>${action}</button>${removable ? `<button type="button" class="button" data-quarter-remove>${removeLabel(view.status)}</button>` : ""}</div>
       </article>`;
     }).join("")}</div>`;
     container.querySelectorAll("[data-offline-quarter]").forEach((row) => {
@@ -1384,6 +1402,15 @@
           } else {
             await enqueue([quarter]);
           }
+        } catch (error) {
+          window.alert(shortError(error));
+        }
+        renderSettings();
+      });
+      row.querySelector("[data-quarter-remove]")?.addEventListener("click", async () => {
+        if (!window.confirm(removeConfirmation(quarter, view.status))) return;
+        try {
+          await removeQuarter(quarter);
         } catch (error) {
           window.alert(shortError(error));
         }
@@ -1595,6 +1622,12 @@
       renderQuarterOfflineControl();
     });
     actions.append(button);
+    if (["INCOMPLETE", "UPDATE_AVAILABLE", "UPDATE_INCOMPLETE"].includes(view.status)) {
+      const link = document.createElement("a");
+      link.href = "../settings/index.html";
+      link.textContent = "管理离线数据 · Settings";
+      actions.append(link);
+    }
   }
 
   window.addEventListener("beforeinstallprompt", (event) => {

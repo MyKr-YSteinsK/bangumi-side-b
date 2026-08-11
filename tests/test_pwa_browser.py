@@ -1532,6 +1532,179 @@ def test_settings_reports_storage_and_controls_quarter_downloads(
     context.close()
 
 
+def test_settings_can_remove_incomplete_download_and_partial_content(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    context = chromium.new_context()
+    context.add_init_script(
+        """
+        const nativeSetTimeout = window.setTimeout.bind(window);
+        window.setTimeout = (callback, delay, ...args) =>
+          nativeSetTimeout(callback, Math.min(delay, 5), ...args);
+        """
+    )
+    page = context.new_page()
+    (pwa_site / "data" / "quarters" / "2026-07.json").write_bytes(b"corrupt")
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert state["status"] == "INCOMPLETE"
+    assert state["staging"]["verified_hashes"]
+    quarter_page_hash = next(
+        item["content_hash"]
+        for item in state["staging"]["resources"]
+        if item["url"] == "2026-07/index.html"
+    )
+    row = page.locator('[data-offline-quarter="2026-07"]')
+    assert row.get_by_role("button", name="继续").is_visible()
+    assert row.locator("[data-quarter-remove]").is_visible()
+    page.on("dialog", lambda dialog: dialog.accept())
+    row.locator("[data-quarter-remove]").click()
+    page.wait_for_function(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status === 'NONE'"
+    )
+    page.wait_for_function(
+        """async (hash) => {
+          const cache = await caches.open("bsb-content-v1");
+          const response = await cache.match(new URL(
+            `../__bsb_content__/${hash}`, location.href));
+          return !response;
+        }""",
+        arg=quarter_page_hash,
+    )
+    assert page.evaluate(
+        """
+        (hash) => caches.open("bsb-content-v1")
+          .then((cache) => cache.match(new URL(
+            `../__bsb_content__/${hash}`, location.href)))
+          .then(Boolean)
+        """,
+        quarter_page_hash,
+    ) is False
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.currentQueue()).progress"
+    ) is None
+    context.close()
+
+
+def test_settings_can_remove_update_incomplete_and_keep_shared_content(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    manifests = page.evaluate(
+        """
+        async () => Promise.all([
+          fetch('../data/offline/2026-04.json').then((response) => response.json()),
+          fetch('../data/offline/2026-07.json').then((response) => response.json()),
+        ])
+        """
+    )
+    shared_hash = next(
+        item["content_hash"]
+        for item in manifests[0]["resources"]
+        if item["url"] == "covers/101.webp"
+    )
+    unique_hash = next(
+        item["content_hash"]
+        for item in manifests[1]["resources"]
+        if item["url"] == "2026-07/index.html"
+    )
+    page.evaluate(
+        """
+        async ({ april, july, sharedHash, uniqueHash }) => {
+          const meta = await caches.open("bsb-meta-v1");
+          const put = (path, value) => meta.put(
+            new Request(new URL(`../__bsb_meta__/${path}`, location.href)),
+            new Response(JSON.stringify(value)),
+          );
+          await put("queue.json", {
+            schema: 2,
+            generation: null,
+            state: "idle",
+            labels: [],
+            current: null,
+            succeeded: [],
+            failed: [],
+            errors: [],
+          });
+          await put("quarters/2026-04.json", {
+            schema: 1,
+            quarter: "2026-04",
+            status: "COMPLETE",
+            active: april,
+            staging: null,
+            error: null,
+          });
+          await put("quarters/2026-07.json", {
+            schema: 1,
+            quarter: "2026-07",
+            status: "INCOMPLETE",
+            active: july,
+            staging: {
+              ...july,
+              revision: "update-revision",
+              verified_hashes: [sharedHash, uniqueHash],
+            },
+            error: "update paused",
+          });
+          const content = await caches.open("bsb-content-v1");
+          for (const hash of [sharedHash, uniqueHash]) {
+            await content.put(
+              new Request(new URL(`../__bsb_content__/${hash}`, location.href)),
+              new Response(hash),
+            );
+          }
+        }
+        """,
+        {
+            "april": manifests[0],
+            "july": manifests[1],
+            "sharedHash": shared_hash,
+            "uniqueHash": unique_hash,
+        },
+    )
+    page.reload()
+    page.wait_for_function(
+        "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
+        "?.textContent.includes('更新未完成')"
+    )
+    row = page.locator('[data-offline-quarter="2026-07"]')
+    assert row.get_by_role("button", name="继续更新").is_visible()
+    assert row.get_by_role("button", name="移除离线数据").is_visible()
+    page.on("dialog", lambda dialog: dialog.accept())
+    row.get_by_role("button", name="移除离线数据").click()
+    page.wait_for_function(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status === 'NONE'"
+    )
+    assert page.evaluate(
+        """
+        (hash) => caches.open("bsb-content-v1")
+          .then((cache) => cache.match(new URL(
+            `../__bsb_content__/${hash}`, location.href)))
+          .then(Boolean)
+        """,
+        shared_hash,
+    ) is True
+    assert page.evaluate(
+        """
+        (hash) => caches.open("bsb-content-v1")
+          .then((cache) => cache.match(new URL(
+            `../__bsb_content__/${hash}`, location.href)))
+          .then(Boolean)
+        """,
+        unique_hash,
+    ) is False
+    context.close()
+
+
 def test_quarter_page_offline_action_tracks_download_and_confirmed_remove(
     chromium: Browser,
     pwa_server: str,

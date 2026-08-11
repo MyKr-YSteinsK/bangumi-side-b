@@ -284,7 +284,8 @@ def test_persisted_queue_waits_for_service_worker_after_registration_failure(
             })),
           );
           await meta.put(
-            new Request(new URL("../__bsb_meta__/quarters/2026-07.json", location.href)),
+            new Request(new URL(
+              "../__bsb_meta__/quarters/2026-07.json", location.href)),
             new Response(JSON.stringify({
               schema: 1,
               quarter: "2026-07",
@@ -304,7 +305,8 @@ def test_persisted_queue_waits_for_service_worker_after_registration_failure(
         "window.BsbPwa?.capabilityState() === 'registration-failed'"
     )
     page.wait_for_function(
-        "window.BsbPwa.currentQueue().then((queue) => queue.state === 'waiting-service-worker')"
+        "window.BsbPwa.currentQueue().then((queue) => "
+        "queue.state === 'waiting-service-worker')"
     )
     page.wait_for_timeout(250)
     assert not any("data/offline/2026-07.json" in url for url in requests)
@@ -346,7 +348,8 @@ def test_page_load_and_first_enqueue_share_one_registration_attempt(
     context = chromium.new_context()
     context.add_init_script(
         """
-        const nativeRegister = navigator.serviceWorker.register.bind(navigator.serviceWorker);
+        const nativeRegister = navigator.serviceWorker.register
+          .bind(navigator.serviceWorker);
         window.__registerCalls = 0;
         Object.defineProperty(navigator.serviceWorker, "register", {
           configurable: true,
@@ -1175,7 +1178,8 @@ def test_missing_old_versioned_blob_never_returns_current_physical_bytes(
           };
           const meta = await caches.open("bsb-meta-v1");
           await meta.put(
-            new Request(new URL("../__bsb_meta__/quarters/2026-07.json", location.href)),
+            new Request(new URL(
+              "../__bsb_meta__/quarters/2026-07.json", location.href)),
             new Response(JSON.stringify({
               schema: 1,
               quarter: "2026-07",

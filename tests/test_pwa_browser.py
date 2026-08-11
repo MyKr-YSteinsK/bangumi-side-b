@@ -26,7 +26,9 @@ def _wait_for_queue(page: Page, completed: int) -> None:
         async (completed) => {
           for (let attempt = 0; attempt < 400; attempt += 1) {
             const queue = await window.BsbPwa.currentQueue();
-            if (queue.state === "idle" && queue.completed.length === completed) return;
+            const finished = (queue.succeeded || queue.completed || []).length
+              + (queue.failed || []).length;
+            if (queue.state === "idle" && finished === completed) return;
             await new Promise((resolve) => setTimeout(resolve, 25));
           }
           throw new Error("queue did not finish");
@@ -280,6 +282,25 @@ def test_quarter_downloader_deduplicates_shared_cover_and_garbage_collects(
         """,
         cover["content_hash"],
     )
+    context.close()
+
+
+def test_running_queue_merges_new_labels_without_replacing_generation(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    first = page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    second = page.evaluate("async () => window.BsbPwa.enqueue(['2026-04'])")
+    assert second["generation"] == first["generation"]
+    assert second["labels"] == ["2026-07", "2026-04"]
+    _wait_for_queue(page, 2)
+    queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert queue["succeeded"] == ["2026-07", "2026-04"]
+    assert queue["failed"] == []
     context.close()
 
 

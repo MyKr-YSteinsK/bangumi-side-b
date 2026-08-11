@@ -263,36 +263,92 @@
     await writeMeta(quarterMetaName(state.quarter), state);
   }
 
-  async function currentQueue() {
-    const queue = await readMeta(QUEUE_META) || emptyQueue();
-    if (!queue.current) return queue;
-    return {
-      ...queue,
-      progress: await readMeta(progressMetaName(queue.current)),
-    };
+  function newGeneration() {
+    if (typeof crypto?.randomUUID === "function") return crypto.randomUUID();
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
 
   function emptyQueue() {
     return {
-      schema: 1,
+      schema: 2,
+      generation: null,
       state: "idle",
       labels: [],
       current: null,
-      completed: [],
-      progress: null,
+      succeeded: [],
+      failed: [],
       errors: [],
+    };
+  }
+
+  function queueList(values) {
+    return normalizeQuarterLabels(Array.isArray(values) ? values : []);
+  }
+
+  function normalizeQueue(value) {
+    if (!value || typeof value !== "object" || value.schema !== 2) {
+      return emptyQueue();
+    }
+    const queue = emptyQueue();
+    const labels = queueList(value.labels);
+    const succeeded = queueList(value.succeeded);
+    const failed = queueList(value.failed).filter((label) => !succeeded.includes(label));
+    return {
+      ...queue,
+      generation: typeof value.generation === "string" && value.generation
+        ? value.generation
+        : null,
+      state: ["idle", "downloading", "waiting-network", "paused", "cancelled"]
+        .includes(value.state) ? value.state : "idle",
+      labels,
+      current: QUARTER.test(value.current || "") && labels.includes(value.current)
+        ? value.current
+        : null,
+      succeeded: succeeded.filter((label) => labels.includes(label)),
+      failed: failed.filter((label) => labels.includes(label)),
+      errors: Array.isArray(value.errors)
+        ? value.errors.filter((item) => item && typeof item === "object").slice(-50)
+        : [],
+    };
+  }
+
+  async function readQueue() {
+    return normalizeQueue(await readMeta(QUEUE_META));
+  }
+
+  async function currentQueue() {
+    const queue = await readQueue();
+    if (!queue.current) return { ...queue, completed: [...queue.succeeded], progress: null };
+    return {
+      ...queue,
+      completed: [...queue.succeeded],
+      progress: await readMeta(progressMetaName(queue.current)),
     };
   }
 
   function updateQueue(mutator) {
     const operation = queueMutation.then(async () => {
-      const current = await readMeta(QUEUE_META) || emptyQueue();
-      const next = mutator(current);
+      const current = await readQueue();
+      const next = normalizeQueue(mutator(current));
       await writeMeta(QUEUE_META, next);
       return next;
     });
     queueMutation = operation.catch(() => {});
     return operation;
+  }
+
+  function mergeQueueLabels(queue, labels) {
+    const additions = queueList([...(queue.labels || []), ...labels]);
+    const current = queue.current && additions.includes(queue.current) ? queue.current : null;
+    const ordered = current
+      ? [current, ...additions.filter((label) => label !== current)]
+      : additions;
+    const requeued = queueList(labels);
+    return {
+      ...queue,
+      labels: ordered,
+      failed: queue.failed.filter((label) => !requeued.includes(label)),
+    };
   }
 
   function shortError(error) {
@@ -303,16 +359,33 @@
       .slice(0, 160);
   }
 
-  async function waitUntilRunnable() {
+  async function waitUntilRunnable(generation) {
     while (true) {
-      const queue = await currentQueue();
-      if (queue.state === "cancelled" || queue.state === "idle") return false;
+      const queue = await readQueue();
+      if (queue.generation !== generation || ["cancelled", "idle"].includes(queue.state)) {
+        return false;
+      }
       if (queue.state === "downloading" && navigator.onLine) return true;
       await delay(150);
     }
   }
 
-  async function downloadResources(quarter, state) {
+  class StaleQueueError extends Error {
+    constructor() {
+      super("queue generation is no longer owned");
+      this.name = "StaleQueueError";
+    }
+  }
+
+  async function assertQueueGeneration(generation) {
+    const queue = await readQueue();
+    if (queue.generation !== generation || queue.state === "cancelled") {
+      throw new StaleQueueError();
+    }
+    return queue;
+  }
+
+  async function downloadResources(quarter, state, generation) {
     const resources = state.staging.resources;
     const verified = new Set(state.staging.verified_hashes || []);
     let cursor = 0;
@@ -320,13 +393,17 @@
 
     async function worker() {
       while (cursor < resources.length && !failure) {
-        if (!await waitUntilRunnable()) return;
+        if (!await waitUntilRunnable(generation)) return;
         if (cursor >= resources.length || failure) return;
-        const resource = resources[cursor];
+        const resourceIndex = cursor;
         cursor += 1;
+        await assertQueueGeneration(generation);
+        const resource = resources[resourceIndex];
+        if (!resource) throw new Error("季度资源索引无效");
         if (verified.has(resource.content_hash)) continue;
         try {
           await ensureResource(resource);
+          await assertQueueGeneration(generation);
           verified.add(resource.content_hash);
           state = {
             ...state,
@@ -354,6 +431,7 @@
         () => worker(),
       ),
     );
+    await assertQueueGeneration(generation);
     if (failure) throw failure;
     if (verified.size !== new Set(resources.map((item) => item.content_hash)).size) {
       throw new Error("季度资源尚未完整校验");
@@ -361,22 +439,27 @@
     return state;
   }
 
-  async function downloadQuarter(quarter) {
+  async function downloadQuarter(quarter, generation) {
     let state = await getQuarterState(quarter);
     let manifest;
     try {
+      await assertQueueGeneration(generation);
       manifest = await fetchQuarterManifest(quarter);
     } catch (error) {
+      if (error instanceof StaleQueueError) throw error;
+      await assertQueueGeneration(generation);
       state = { ...state, status: state.active ? "UPDATE_AVAILABLE" : "INCOMPLETE", error: shortError(error) };
       await saveQuarterState(state);
       throw error;
     }
     if (state.active?.revision === manifest.revision && !state.staging) {
+      await assertQueueGeneration(generation);
       state = { ...state, status: "COMPLETE", error: null };
       await saveQuarterState(state);
       return state;
     }
     if (state.staging?.revision !== manifest.revision) {
+      await assertQueueGeneration(generation);
       state = {
         ...state,
         status: "INCOMPLETE",
@@ -386,7 +469,8 @@
       await saveQuarterState(state);
     }
     try {
-      state = await downloadResources(quarter, state);
+      state = await downloadResources(quarter, state, generation);
+      await assertQueueGeneration(generation);
       state = {
         ...state,
         status: "COMPLETE",
@@ -398,6 +482,8 @@
       await garbageCollect();
       return state;
     } catch (error) {
+      if (error instanceof StaleQueueError) throw error;
+      await assertQueueGeneration(generation);
       state = {
         ...state,
         status: "INCOMPLETE",
@@ -415,24 +501,32 @@
   async function enqueue(labels) {
     if (!supported()) throw new Error("浏览器不支持离线下载");
     const normalized = normalizeQuarterLabels(labels);
-    const queue = {
-      schema: 1,
-      state: navigator.onLine ? "downloading" : "waiting-network",
-      labels: normalized,
-      current: null,
-      completed: [],
-      progress: null,
-      errors: [],
-    };
-    await updateQueue(() => queue);
+    if (!normalized.length) return currentQueue();
+    const queue = await updateQueue((current) => {
+      if (
+        current.generation
+        && ["downloading", "waiting-network", "paused"].includes(current.state)
+      ) {
+        return mergeQueueLabels(current, normalized);
+      }
+      return {
+        ...emptyQueue(),
+        generation: newGeneration(),
+        state: navigator.onLine ? "downloading" : "waiting-network",
+        labels: normalized,
+      };
+    });
     runQueue();
     return queue;
   }
 
   async function processQueue() {
+    const initial = await readQueue();
+    const generation = initial.generation;
+    if (!generation) return;
     while (true) {
-      let queue = await currentQueue();
-      if (["idle", "paused", "cancelled"].includes(queue.state)) return;
+      let queue = await readQueue();
+      if (queue.generation !== generation || ["idle", "paused", "cancelled"].includes(queue.state)) return;
       if (!navigator.onLine) {
         if (queue.state !== "waiting-network") {
           queue = await updateQueue((current) => (
@@ -441,7 +535,7 @@
               : current
           ));
         }
-        if (!await waitUntilRunnable()) return;
+        if (!await waitUntilRunnable(generation)) return;
         continue;
       }
       if (queue.state === "waiting-network") {
@@ -451,52 +545,62 @@
             : current
         ));
       }
-      const remaining = queue.labels.filter((label) => !queue.completed.includes(label));
+      const remaining = queue.labels.filter(
+        (label) => !queue.succeeded.includes(label) && !queue.failed.includes(label),
+      );
       if (!remaining.length) {
-        await updateQueue((current) => ({
-          ...current,
-          state: "idle",
-          current: null,
-          progress: null,
-        }));
+        queue = await updateQueue((current) => current.generation === generation
+          ? { ...current, state: "idle", current: null }
+          : current);
         return;
       }
       const quarter = remaining[0];
       await deleteMeta(progressMetaName(quarter));
       queue = await updateQueue((current) => (
-        current.state === "downloading"
+        current.generation === generation
+        && current.state === "downloading"
         && current.labels.includes(quarter)
-        && !current.completed.includes(quarter)
+        && !current.succeeded.includes(quarter)
+        && !current.failed.includes(quarter)
           ? { ...current, current: quarter }
           : current
       ));
+      if (queue.generation !== generation) return;
       if (queue.state !== "downloading" || queue.current !== quarter) continue;
       try {
-        await downloadQuarter(quarter);
+        await downloadQuarter(quarter, generation);
         queue = await updateQueue((current) => {
-          if (current.state === "cancelled") return current;
+          if (current.generation !== generation || current.state === "cancelled") return current;
           return {
             ...current,
-            completed: [...new Set([...current.completed, quarter])],
+            succeeded: [...new Set([...current.succeeded, quarter])],
             current: null,
-            progress: null,
           };
         });
-        if (queue.state === "cancelled") return;
+        if (queue.generation !== generation || queue.state === "cancelled") return;
       } catch (error) {
+        if (error instanceof StaleQueueError) return;
         queue = await updateQueue((current) => {
-          if (["paused", "cancelled", "waiting-network"].includes(current.state)) {
+          if (
+            current.generation !== generation
+            || ["paused", "cancelled", "waiting-network"].includes(current.state)
+          ) {
             return current;
           }
           return {
             ...current,
-            completed: [...new Set([...current.completed, quarter])],
+            failed: [...new Set([...current.failed, quarter])],
             current: null,
-            progress: null,
-            errors: [...current.errors, { quarter, stage: "resource", summary: shortError(error) }],
+            errors: [
+              ...current.errors,
+              { quarter, stage: "resource", summary: shortError(error) },
+            ].slice(-50),
           };
         });
-        if (["paused", "cancelled", "waiting-network"].includes(queue.state)) return;
+        if (
+          queue.generation !== generation
+          || ["paused", "cancelled", "waiting-network"].includes(queue.state)
+        ) return;
       }
     }
   }
@@ -522,11 +626,19 @@
 
   async function resumeQueue() {
     const queue = await updateQueue((current) => (
-      ["paused", "waiting-network", "cancelled"].includes(current.state)
+      ["paused", "waiting-network"].includes(current.state)
         ? {
             ...current,
             state: navigator.onLine ? "downloading" : "waiting-network",
           }
+        : current.state === "cancelled"
+          ? {
+              ...current,
+              generation: newGeneration(),
+              state: navigator.onLine ? "downloading" : "waiting-network",
+              failed: [],
+              errors: [],
+            }
         : current
     ));
     if (["downloading", "waiting-network"].includes(queue.state)) {
@@ -538,7 +650,6 @@
     await updateQueue((queue) => ({
       ...queue,
       state: "cancelled",
-      labels: [],
       current: null,
     }));
   }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -87,6 +88,12 @@ def test_prepare_publish_replaces_exact_tree_and_increments_serial(
 
     prepared = workflow.prepare_release(root)
     assert prepared.release_version.endswith(".1")
+    assert json.loads(prepared.state_path.read_text("utf-8"))["app_version"] == (
+        workflow.__version__
+    )
+    assert json.loads(prepared.report_path.read_text("utf-8"))["app_version"] == (
+        workflow.__version__
+    )
     assert not _remote_branch_exists(root, remote, "gh-pages")
 
     first = workflow.publish_prepared_release(root)

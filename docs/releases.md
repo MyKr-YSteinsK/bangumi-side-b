@@ -1,7 +1,17 @@
-# Release metadata
+# Release 元数据
 
-程序版本来自包的语义化版本。资料版本使用 UTC `YYYY.MM.DD.N`：同一 UTC 日期的成功发布依次递增，未成功 push 的 tentative version 不会被登记或消耗。
+正式候选是当前经过校验的 `dist/site` 文件树。候选 identity 的 schema、source commit、
+artifact count、total bytes 和 content hash 都来自实际文件；content hash 排除 workspace、
+报告、时间戳和绝对路径，只使用排序后的相对路径、文件 SHA-256 与大小。
 
-`snapshot-manifest.json` 是完整离线文件清单。每项保存同源 URL、SHA-256、字节数、MIME 类型和类别；manifest 自身、`release.json` 与 release history 不参与自己的 content hash，避免循环依赖。`release.json` 保存 manifest SHA-256、版本、数量、大小、变更摘要与候选内容 hash。`release-history.json` 仅保留精简历史，更新日志页面在发布 staging 中渲染，不在运行时请求历史。
+`workspace/build-state.json` 是增量构建的派生状态。`release prepare` 会验证它与
+`dist/site` 一致，但发布绑定始终以实际站点树为准。`workspace/state/prepared-release.json`
+使用 schema 2，发布前会检查 source commit、程序版本、候选 hash、文件统计、公开季度和
+准备时的远端 `gh-pages` commit；状态变化后必须重新 prepare。
 
-本地 `workspace/releases/` 只在远程 push 成功后登记快照事实索引和发布历史。它们、报告和候选 staging 都不进入 Git。每次成功 Pages build 会同时写入 marker 与紧凑事实快照；publish 只读取这些 build-bound 文件。sync 成功后必须重新 build 才能发布。
+发布版本 `YYYY.MM.DD.N` 仅用于本地发布报告和提交元数据，不参与运行时 PWA 或 build identity。
+dry-run 不写远端；真实发布通过临时 worktree 对 `gh-pages` 做一次普通 push，发布内容与
+validated `dist/site` 相同，不生成额外的运行时快照、历史页或详情产品。
+
+数据库、下载媒体、报告、build state、prepared state、候选 staging 和发布树都不进入源码
+提交；正式站点发布只能由明确的 `bgmb release publish` 流程执行。

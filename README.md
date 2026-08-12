@@ -27,7 +27,8 @@ Bangumi 数据或依赖业务后端。
 - 季度页提供稳定的 TV/Movie/continuing DOM hooks，同源 JSON 承载详情 payload；
 - `build` 完全离线，使用确定性投影、指纹和增量 patch，不复制完整站点快照；
 - `sync` 事实提交成功后自动增量构建，失败或未完成事实不会覆盖 last-known-good；
-- `publish` 仍是后续明确的 release 动作，不会调用 sync 或 build。
+- `release publish` 是明确的 release 动作，不会调用 sync 或 build；正式发布源始终是
+  已验证的 `dist/site/`。
 
 ## 使用方式
 
@@ -68,16 +69,21 @@ bgmb audit
 `sync` 事实和封面提交成功后会自动触发增量 `build`；同步失败或中断时不会把不完整资料
 标记为可公开季度，也不会覆盖既有 last-known-good 站点。
 
-## 发布流程（legacy，Plan 21 收口）
+## 发布流程
 
 ```powershell
-bgmb build --progress plain --all
-bgmb publish --progress plain --dry-run
+bgmb sync 2026 7
+bgmb build --all                 # 可选；prepare 会再次离线收敛
+bgmb release prepare
+git push origin main
+bgmb release publish
 ```
 
-以下命令仍属于现有 legacy release 链路，Plan 21 将统一收口。dry-run 会组装并验证候选
-发布物但不会发布；真实 `publish` 始终是单独的人工操作，不由日常 build、sync 或源码 push
-自动触发。
+`release prepare` 会检查当前分支、工作树、SQLite、资料审计，运行等价于 `build --all` 的
+离线收敛，验证 `dist/site` 的实际文件树并写入 schema 2 的 prepared state。它不 sync、
+不 push，也不修改远端。`release publish` 只发布仍与 prepared state 完全一致的
+`dist/site`，要求 `HEAD == origin/main`，通过临时 worktree 对 `gh-pages` 执行一次普通
+push；任一绑定事实变化都要求重新 prepare。
 
 ## 开发与测试
 
@@ -104,11 +110,9 @@ git push origin main
 bgmb release publish
 ```
 
-`release prepare` 只会审计、构建 Pages 和执行发布 dry-run，随后把当前
-HEAD、源码程序版本、资料代次、Pages candidate 与远端 `gh-pages` 绑定到
-prepared state。真实 `release publish` 是明确动作，且会再次确认这些事实、
-干净工作树、没有 pending promotion，以及 `HEAD == origin/main`。任一项变化
-都会要求重新 prepare。旧的 `build`、`publish --dry-run` 和 `publish` 命令继续保留。
+`status` 和 `doctor --local` 只报告统一站点状态、候选哈希、公开季度与 prepared state；
+`doctor` 额外读取 `origin/main` 和 `gh-pages`。真实 Pages 发布仍只能通过明确的
+`release publish` 流程执行。
 
 更多开发与验收说明见 [开发文档](docs/development.md)。
 

@@ -46,8 +46,8 @@ git push origin main
 bgmb release publish
 ```
 
-真实发布会重新确认 prepared state、`HEAD == origin/main`、候选内容、远端 `gh-pages`
-和 pending promotion。任一事实改变后都必须重新运行 `bgmb release prepare`。
+真实发布会重新确认 prepared state、`HEAD == origin/main`、候选内容和远端 `gh-pages`。
+任一事实改变后都必须重新运行 `bgmb release prepare`。
 
 ## CI
 

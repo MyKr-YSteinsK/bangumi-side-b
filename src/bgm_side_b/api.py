@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from bgm_side_b import __version__
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 
 API_BASE_URL = "https://api.bgm.tv/v0"
@@ -20,9 +21,7 @@ ANIME_SUBJECT_TYPE = 2
 TV_CATEGORY = 1
 MOVIE_CATEGORY = 3
 BROWSE_CATEGORIES = frozenset({TV_CATEGORY, MOVIE_CATEGORY})
-DEFAULT_USER_AGENT = (
-    "Bangumi-Side-B/0.1.2 (+https://github.com/MyKr-YSteinsK/bangumi-side-b)"
-)
+DEFAULT_USER_AGENT = f"Bangumi-Side-B/{__version__}"
 IMAGE_SIZE_ORDER = ("large", "medium", "common", "grid", "small")
 DEFAULT_IMAGE_FILENAME = "no_icon_subject.png"
 
@@ -311,13 +310,56 @@ class BangumiApiClient:
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise BangumiApiError("image_url", "image URL is not a valid HTTP URL")
-        response = self._request("GET", url, None, None, image=True)
-        content = response.content
-        if len(content) > max_bytes:
-            raise BangumiApiError("image_too_large", "image body exceeds size limit")
-        return ImageResponse(
-            content, response.headers.get("content-type"), str(response.url)
-        )
+        if max_bytes < 1:
+            raise ValueError("image size limit must be positive")
+        for attempt in range(self.max_retries + 1):
+            response: httpx.Response | None = None
+            self.metrics.image_requests += 1
+            try:
+                with self.reporter.activity(
+                    stage="api", message="等待 Bangumi API", current=None
+                ):
+                    with self._client.stream("GET", url) as response:
+                        if response.status_code < 400:
+                            declared = _content_length(response)
+                            if declared is not None and declared > max_bytes:
+                                raise _image_too_large()
+                            content = bytearray()
+                            for chunk in response.iter_bytes():
+                                content.extend(chunk)
+                                if len(content) > max_bytes:
+                                    raise _image_too_large()
+                            return ImageResponse(
+                                bytes(content),
+                                response.headers.get("content-type"),
+                                str(response.url),
+                            )
+                        code = f"image_http_{response.status_code}"
+                        failure = BangumiApiError(
+                            code, f"HTTP {response.status_code}"
+                        )
+                        if (
+                            response.status_code not in {408, 429}
+                            and response.status_code < 500
+                        ):
+                            raise failure
+            except httpx.TimeoutException:
+                failure = BangumiApiError("timeout", "request timed out")
+            except httpx.HTTPError:
+                failure = BangumiApiError("network", "network request failed")
+            if attempt == self.max_retries:
+                raise failure
+            self.metrics.image_retries += 1
+            delay = _retry_delay(response, attempt, self._jitter)
+            self.reporter.retry(
+                stage="api",
+                message=failure.summary,
+                attempt=attempt + 1,
+                max_attempts=self.max_retries + 1,
+                retry_delay_seconds=delay,
+            )
+            self._sleeper(delay)
+        raise AssertionError("unreachable")
 
     def _paged_json(
         self,
@@ -435,6 +477,17 @@ class BangumiApiClient:
             )
             self._sleeper(delay)
         raise AssertionError("unreachable")
+
+
+def _content_length(response: httpx.Response) -> int | None:
+    value = response.headers.get("content-length")
+    if value is None or not value.isascii() or not value.isdecimal():
+        return None
+    return int(value)
+
+
+def _image_too_large() -> BangumiApiError:
+    return BangumiApiError("image_too_large", "image body exceeds size limit")
 
 
 def _tags_from_payload(value: Any) -> tuple[ApiTag, ...]:

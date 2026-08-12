@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+import warnings
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -16,6 +17,8 @@ from bgm_side_b.api import BangumiApiError, ImageResponse
 from bgm_side_b.repository import CoverRecord, SubjectSnapshot
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_PIXELS = 36_000_000
+MAX_IMAGE_DIMENSION = 12_000
 MAX_COVER_EDGE = 1200
 WEBP_QUALITY = 82
 MAX_COVER_CONCURRENCY = 4
@@ -134,17 +137,29 @@ def _webp_bytes(content: bytes) -> tuple[bytes, int, int]:
     if not content:
         raise CoverValidationError("cover_empty", "cover body is empty")
     try:
-        with Image.open(BytesIO(content)) as source:
-            source.load()
-            image = source.convert("RGBA" if "A" in source.getbands() else "RGB")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(content)) as source:
+                _validate_decoded_dimensions(source)
+                source.load()
+                _validate_decoded_dimensions(source)
+                image = source.convert(
+                    "RGBA" if "A" in source.getbands() else "RGB"
+                )
+                _validate_decoded_dimensions(image)
+    except CoverValidationError:
+        raise
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
+        raise CoverValidationError(
+            "cover_dimensions", "cover decoded dimensions exceed safety limit"
+        ) from error
     except (UnidentifiedImageError, OSError) as error:
         raise CoverValidationError(
             "cover_decode", "cover image cannot be decoded"
         ) from error
-    if image.width <= 0 or image.height <= 0:
-        raise CoverValidationError("cover_dimensions", "cover dimensions are invalid")
     if max(image.size) > MAX_COVER_EDGE:
         image.thumbnail((MAX_COVER_EDGE, MAX_COVER_EDGE), Image.Resampling.LANCZOS)
+        _validate_decoded_dimensions(image)
     output = BytesIO()
     try:
         image.save(output, format="WEBP", quality=WEBP_QUALITY, method=6)
@@ -161,17 +176,39 @@ def _webp_bytes(content: bytes) -> tuple[bytes, int, int]:
 
 def _validated_webp_dimensions(content: bytes) -> tuple[int, int]:
     try:
-        with Image.open(BytesIO(content)) as image:
-            if image.format != "WEBP":
-                raise CoverValidationError("cover_format", "cover is not WebP")
-            image.load()
-            return image.size
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(content)) as image:
+                if image.format != "WEBP":
+                    raise CoverValidationError("cover_format", "cover is not WebP")
+                _validate_decoded_dimensions(image)
+                image.load()
+                _validate_decoded_dimensions(image)
+                return image.size
     except CoverValidationError:
         raise
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
+        raise CoverValidationError(
+            "cover_dimensions", "cover decoded dimensions exceed safety limit"
+        ) from error
     except (UnidentifiedImageError, OSError) as error:
         raise CoverValidationError(
             "cover_decode", "cover image cannot be decoded"
         ) from error
+
+
+def _validate_decoded_dimensions(image: Image.Image) -> None:
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        raise CoverValidationError("cover_dimensions", "cover dimensions are invalid")
+    if (
+        width > MAX_IMAGE_DIMENSION
+        or height > MAX_IMAGE_DIMENSION
+        or width * height > MAX_IMAGE_PIXELS
+    ):
+        raise CoverValidationError(
+            "cover_dimensions", "cover decoded dimensions exceed safety limit"
+        )
 
 
 def _cover_error(error: BaseException) -> tuple[str, str]:

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from bgm_side_b.release.site_publish import SitePublishError, UnifiedPublisher
+from bgm_side_b.release.workflow import WorkflowError, _read_prepared
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -202,3 +203,39 @@ def test_publish_fails_closed_when_bound_remote_or_tree_changes(
     with pytest.raises(SitePublishError, match="gh-pages changed"):
         publisher.publish(expected_remote_commit="1" * 40)
     assert candidate.identity.content_hash
+
+
+def test_prepared_state_rejects_invalid_identity_and_scope_fields(
+    isolated_release: tuple[Path, Path],
+) -> None:
+    root, _ = isolated_release
+    state = root / "workspace" / "state" / "prepared-release.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    valid = {
+        "schema": 2,
+        "source_commit": "a" * 40,
+        "app_version": "0.1.0",
+        "candidate_content_hash": "b" * 64,
+        "artifact_count": 1,
+        "total_bytes": 1,
+        "remote_gh_pages_commit": None,
+        "prepared_at": "2026-08-12T00:00:00Z",
+        "dry_run_report": "workspace/reports/release-publish.json",
+        "public_quarters": ["2026-07"],
+        "build_state_schema": 1,
+    }
+    invalid_values = (
+        ("schema", 3),
+        ("source_commit", "G" * 40),
+        ("candidate_content_hash", "B" * 64),
+        ("remote_gh_pages_commit", "G" * 40),
+        ("dry_run_report", "C:/outside/report.json"),
+        ("public_quarters", ["2026-02"]),
+        ("public_quarters", ["2026-07", "2026-07"]),
+        ("build_state_schema", 2),
+    )
+    for key, value in invalid_values:
+        payload = {**valid, key: value}
+        state.write_text(json.dumps(payload), "utf-8")
+        with pytest.raises(WorkflowError, match="prepared release"):
+            _read_prepared(root)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,12 @@ from bgm_side_b.release.unified_audit import (
 
 class WorkflowError(RuntimeError):
     """Raised for a refused release operation with an actionable remedy."""
+
+
+_GIT_SHA = re.compile(r"[0-9a-f]{40}")
+_CONTENT_SHA = re.compile(r"[0-9a-f]{64}")
+_PUBLIC_QUARTER = re.compile(r"\d{4}-(?:01|04|07|10)")
+_BUILD_STATE_SCHEMA = 1
 
 
 @dataclass(frozen=True)
@@ -363,7 +370,7 @@ def _prepared_local_status(
         candidate.identity.content_hash != payload["candidate_content_hash"]
         or candidate.identity.artifact_count != payload["artifact_count"]
         or candidate.identity.total_bytes != payload["total_bytes"]
-        or tuple(payload.get("public_quarters", ())) != candidate.public_quarters
+        or tuple(payload["public_quarters"]) != candidate.public_quarters
     ):
         return "stale", source
     return "valid_local", source
@@ -382,6 +389,7 @@ def _validate_prepared_local(root: Path, prepared: dict[str, object]) -> None:
         candidate.identity.content_hash != prepared["candidate_content_hash"]
         or candidate.identity.artifact_count != prepared["artifact_count"]
         or candidate.identity.total_bytes != prepared["total_bytes"]
+        or list(candidate.public_quarters) != prepared["public_quarters"]
         or __version__ != prepared["app_version"]
     ):
         raise _invalid_prepared()
@@ -403,6 +411,8 @@ def _read_prepared(root: Path) -> dict[str, object]:
         "remote_gh_pages_commit",
         "prepared_at",
         "dry_run_report",
+        "public_quarters",
+        "build_state_schema",
     }
     if (
         not isinstance(value, dict)
@@ -410,24 +420,64 @@ def _read_prepared(root: Path) -> dict[str, object]:
         or not required.issubset(value)
     ):
         raise _invalid_prepared()
-    if not isinstance(value["source_commit"], str) or len(value["source_commit"]) != 40:
+    if not isinstance(value["source_commit"], str) or not _GIT_SHA.fullmatch(
+        value["source_commit"]
+    ):
         raise _invalid_prepared()
     if not isinstance(value["app_version"], str) or not value["app_version"]:
         raise _invalid_prepared()
-    if not isinstance(value["candidate_content_hash"], str) or len(
-        value["candidate_content_hash"]
-    ) != 64:
-        raise _invalid_prepared()
-    if not isinstance(value["artifact_count"], int) or value["artifact_count"] <= 0:
-        raise _invalid_prepared()
-    if not isinstance(value["total_bytes"], int) or value["total_bytes"] <= 0:
-        raise _invalid_prepared()
-    if value["remote_gh_pages_commit"] is not None and not isinstance(
-        value["remote_gh_pages_commit"], str
+    if not isinstance(value["candidate_content_hash"], str) or not (
+        _CONTENT_SHA.fullmatch(value["candidate_content_hash"])
     ):
         raise _invalid_prepared()
-    report = PurePosixPath(str(value["dry_run_report"]))
-    if report.is_absolute() or ".." in report.parts or not report.parts:
+    if (
+        not isinstance(value["artifact_count"], int)
+        or isinstance(value["artifact_count"], bool)
+        or value["artifact_count"] <= 0
+    ):
+        raise _invalid_prepared()
+    if (
+        not isinstance(value["total_bytes"], int)
+        or isinstance(value["total_bytes"], bool)
+        or value["total_bytes"] <= 0
+    ):
+        raise _invalid_prepared()
+    remote_commit = value["remote_gh_pages_commit"]
+    if remote_commit is not None and (
+        not isinstance(remote_commit, str) or not _GIT_SHA.fullmatch(remote_commit)
+    ):
+        raise _invalid_prepared()
+    if not isinstance(value["prepared_at"], str) or not value["prepared_at"]:
+        raise _invalid_prepared()
+    report_value = value["dry_run_report"]
+    if not isinstance(report_value, str) or not report_value:
+        raise _invalid_prepared()
+    report = PurePosixPath(report_value)
+    if (
+        report.is_absolute()
+        or ".." in report.parts
+        or not report.parts
+        or "\\" in report_value
+        or ":" in report.parts[0]
+    ):
+        raise _invalid_prepared()
+    quarters = value["public_quarters"]
+    if (
+        not isinstance(quarters, list)
+        or any(
+            not isinstance(quarter, str) or _PUBLIC_QUARTER.fullmatch(quarter) is None
+            for quarter in quarters
+        )
+        or len(quarters) != len(set(quarters))
+        or quarters != sorted(quarters)
+    ):
+        raise _invalid_prepared()
+    build_state_schema = value["build_state_schema"]
+    if (
+        not isinstance(build_state_schema, int)
+        or isinstance(build_state_schema, bool)
+        or build_state_schema != _BUILD_STATE_SCHEMA
+    ):
         raise _invalid_prepared()
     return value
 

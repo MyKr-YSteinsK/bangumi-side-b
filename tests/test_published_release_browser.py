@@ -15,6 +15,8 @@ from playwright.sync_api import Browser, sync_playwright
 from bgm_side_b.release import workflow
 from tests.release_fixture import create_release_project, git
 
+pytestmark = pytest.mark.browser
+
 _NEXT_SAFE_PORT = 18180
 
 

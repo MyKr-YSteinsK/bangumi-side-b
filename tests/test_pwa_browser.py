@@ -21,6 +21,8 @@ from playwright.sync_api import Browser, Page, sync_playwright
 from bgm_side_b.repository import SubjectRepository
 from tests.test_site_builder import _build_fixture
 
+pytestmark = pytest.mark.browser
+
 _NEXT_SAFE_PORT = 18080
 
 
@@ -1422,11 +1424,11 @@ def test_quarter_metadata_writes_merge_monotonically_when_older_write_is_delayed
             if (window.__holdQuarterWrites && !held && request.url.includes(
               "/__bsb_meta__/quarters/2026-07.json")) {
               held = true;
-              window.__quarterPutHeld = true;
               const copy = response.clone();
               return new Promise((resolve, reject) => {
                 window.__releaseQuarterPut = () =>
                   nativePut.call(this, request, copy).then(resolve, reject);
+                window.__quarterPutHeld = true;
               });
             }
             return nativePut.call(this, request, response);
@@ -1486,7 +1488,10 @@ def test_quarter_metadata_writes_merge_monotonically_when_older_write_is_delayed
           );
           const first = addHash("a");
           for (let attempt = 0; attempt < 100; attempt += 1) {
-            if (window.__quarterPutHeld) break;
+            if (
+              window.__quarterPutHeld
+              && typeof window.__releaseQuarterPut === "function"
+            ) break;
             await new Promise((resolve) => setTimeout(resolve, 5));
           }
           const second = addHash("b");

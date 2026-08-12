@@ -24,6 +24,7 @@ version = { attr = "bgm_side_b._version.__version__" }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = ["browser: requires an installed Playwright Chromium browser"]
 
 [tool.ruff]
 target-version = "py311"

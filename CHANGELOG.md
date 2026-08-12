@@ -14,6 +14,7 @@
 
 ### 修复
 
+- Quarter 与 Archive 统一使用紧凑分页；筛选选项搜索在重渲染与媒体切换后保持，详情完整展示全部结构化别名。
 - Windows 构建预检在输出恢复失败时保留完整 recovery tree，避免丢失唯一旧输出。
 - `bgmb status` 与 `bgmb doctor` 识别 prepared release 的有效、过期、无效与可发布状态。
 - `bgmb release publish` 对 push 前后远端竞争 fail closed；远端确认成功后的本地 report 或 prepared state 清理问题诚实报告为 warning。

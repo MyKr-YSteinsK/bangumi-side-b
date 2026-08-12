@@ -1050,6 +1050,7 @@ def test_no_web_locks_defers_destructive_content_gc(
     page = context.new_page()
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
     assert page.evaluate("navigator.locks === undefined")
     page.evaluate(
         """
@@ -1414,7 +1415,10 @@ def test_quarter_metadata_writes_merge_monotonically_when_older_write_is_delayed
 ) -> None:
     context = chromium.new_context()
     page = context.new_page()
-    page.add_init_script(
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    page.wait_for_function("window.BsbPwa.capabilityState() === 'ready'")
+    page.evaluate(
         """
         (() => {
           const nativePut = Cache.prototype.put;
@@ -1438,9 +1442,6 @@ def test_quarter_metadata_writes_merge_monotonically_when_older_write_is_delayed
         })();
         """
     )
-    page.goto(f"{pwa_server}/settings/index.html")
-    page.wait_for_function("Boolean(window.BsbPwa)")
-    page.wait_for_function("window.BsbPwa.capabilityState() === 'ready'")
     page.evaluate(
         """
         async () => {
@@ -2781,6 +2782,7 @@ def test_settings_can_remove_update_incomplete_and_keep_shared_content(
     page = context.new_page()
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
     manifests = page.evaluate(
         """
         async () => Promise.all([
@@ -2863,6 +2865,10 @@ def test_settings_can_remove_update_incomplete_and_keep_shared_content(
     assert row.get_by_role("button", name="移除离线数据").is_visible()
     page.on("dialog", lambda dialog: dialog.accept())
     row.get_by_role("button", name="移除离线数据").click()
+    page.wait_for_function(
+        "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
+        "?.textContent.includes('未下载')"
+    )
     page.wait_for_function(
         "async () => (await window.BsbPwa.getQuarterState('2026-07')).status === 'NONE'"
     )
@@ -3097,6 +3103,7 @@ def test_settings_rechecks_offline_updates_after_reconnect(
         "&& Boolean(window.BsbPwa)"
     )
     context.set_offline(False)
+    page.evaluate("window.dispatchEvent(new Event('online'))")
     page.wait_for_function(
         "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
         "?.textContent.includes('有更新')"

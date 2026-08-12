@@ -216,6 +216,17 @@
     }
   }
 
+  function paginationTokens(page, pageCount) {
+    const count = Math.max(1, Math.floor(Number(pageCount) || 1));
+    const current = Math.min(Math.max(1, Math.floor(Number(page) || 1)), count);
+    if (count <= 7) return Array.from({ length: count }, (_, index) => index + 1);
+    if (current <= 4) return [1, 2, 3, 4, "ellipsis", count];
+    if (current >= count - 3) {
+      return [1, "ellipsis", count - 3, count - 2, count - 1, count];
+    }
+    return [1, "ellipsis", current - 1, current, current + 1, "ellipsis", count];
+  }
+
   const api = Object.freeze({
     PAGE_SIZES,
     SORTS,
@@ -238,6 +249,7 @@
     recordsForMedia,
     availableFilterValues,
     normalizeFiltersForMedia,
+    paginationTokens,
   });
   window.BsbArchive = api;
 })();
@@ -372,17 +384,16 @@
       pager.append(button);
     };
     add("上一页", result.page - 1, result.page <= 1);
-    for (let page = 1; page <= result.pageCount; page += 1) {
-      if (result.pageCount > 7 && page > 2 && page < result.pageCount - 1 && Math.abs(page - result.page) > 1) {
-        if (!pager.querySelector("[data-ellipsis]")) {
-          const ellipsis = document.createElement("span");
-          ellipsis.textContent = "…";
-          ellipsis.dataset.ellipsis = "true";
-          pager.append(ellipsis);
-        }
-        continue;
+    for (const token of archive.paginationTokens(result.page, result.pageCount)) {
+      if (token === "ellipsis") {
+        const ellipsis = document.createElement("span");
+        ellipsis.textContent = "…";
+        ellipsis.dataset.ellipsis = "true";
+        ellipsis.setAttribute("aria-hidden", "true");
+        pager.append(ellipsis);
+      } else {
+        add(String(token).padStart(2, "0"), token, false, token === result.page);
       }
-      add(String(page).padStart(2, "0"), page, false, page === result.page);
     }
     add("下一页", result.page + 1, result.page >= result.pageCount);
   }
@@ -1084,6 +1095,7 @@
       button.type = "button";
       button.textContent = label;
       button.disabled = disabled;
+      button.setAttribute("aria-label", `第 ${page} 页`);
       if (current) button.setAttribute("aria-current", "page");
       button.addEventListener("click", () => {
         state.page = page;
@@ -1094,7 +1106,17 @@
       selectors.pager.append(button);
     };
     add("上一页", result.page - 1, result.page <= 1);
-    for (let page = 1; page <= result.pageCount; page += 1) add(String(page).padStart(2, "0"), page, false, page === result.page);
+    for (const token of archive.paginationTokens(result.page, result.pageCount)) {
+      if (token === "ellipsis") {
+        const ellipsis = document.createElement("span");
+        ellipsis.textContent = "…";
+        ellipsis.dataset.ellipsis = "true";
+        ellipsis.setAttribute("aria-hidden", "true");
+        selectors.pager.append(ellipsis);
+      } else {
+        add(String(token).padStart(2, "0"), token, false, token === result.page);
+      }
+    }
     add("下一页", result.page + 1, result.page >= result.pageCount);
   }
 

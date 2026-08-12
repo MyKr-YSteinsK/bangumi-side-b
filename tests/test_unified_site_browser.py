@@ -342,6 +342,86 @@ def test_section_facets_only_include_active_media_appearances(
     }
 
 
+def test_shared_pagination_tokens_are_compact_and_deterministic(
+    chromium: BrowserContext,
+    site_server: str,
+    unified_site: Path,
+) -> None:
+    page = chromium.new_page()
+    page.goto(f"{site_server}/archive/index.html")
+    cases = page.evaluate(
+        """
+        () => [[1, 1], [1, 2], [4, 7], [1, 20], [2, 20], [10, 20],
+          [19, 20], [20, 20], [50, 100], [501, 1001]].map(([current, count]) => ({
+            current,
+            count,
+            tokens: window.BsbArchive.paginationTokens(current, count),
+          }))
+        """
+    )
+    for case in cases:
+        pages = [token for token in case["tokens"] if token != "ellipsis"]
+        assert pages == sorted(set(pages))
+        assert pages.count(1) == 1
+        assert pages.count(case["count"]) == 1
+        assert pages.count(case["current"]) == 1
+        assert all(1 <= value <= case["count"] for value in pages)
+        assert len(case["tokens"]) <= 7
+    assert cases[3]["tokens"] == [1, 2, 3, 4, "ellipsis", 20]
+    assert cases[5]["tokens"] == [1, "ellipsis", 9, 10, 11, "ellipsis", 20]
+    assert cases[7]["tokens"] == [1, "ellipsis", 17, 18, 19, 20]
+
+    quarter = json.loads(
+        (unified_site / "data" / "quarters" / "2026-07.json").read_text("utf-8")
+    )
+    quarter_base = quarter["tv"]["continuing"][0]
+    quarter["tv"]["continuing"] = [
+        {**quarter_base, "subject_id": 3000 + index}
+        for index in range(160)
+    ]
+    page.route(
+        "**/data/quarters/2026-07.json",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(quarter)
+        ),
+    )
+    page.goto(f"{site_server}/2026-07/index.html")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')"
+        "?.textContent.includes('160 / 160')"
+    )
+    quarter_tokens = page.locator("[data-pager] > *").all_inner_texts()
+    assert quarter_tokens == ["上一页", "01", "02", "03", "04", "…", "08", "下一页"]
+
+    catalog = json.loads(
+        (unified_site / "data" / "catalog" / "2026.json").read_text("utf-8")
+    )
+    catalog_base = next(
+        record for record in catalog["records"] if record["media"] == "TV"
+    )
+    catalog["records"] = [
+        {**catalog_base, "id": 4000 + index, "subject_id": 4000 + index}
+        for index in range(160)
+    ]
+    page.route(
+        "**/data/catalog/2026.json",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(catalog)
+        ),
+    )
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')"
+        "?.textContent.includes('160 / 160')"
+    )
+    archive_tokens = page.locator("[data-pager] > *").all_inner_texts()
+    assert archive_tokens == quarter_tokens
+    assert page.locator("[data-pager] [data-ellipsis]").evaluate_all(
+        "nodes => nodes.every((node) => node.getAttribute('aria-hidden') === 'true' "
+        "&& node.tabIndex === -1)"
+    )
+
+
 def test_quarter_filters_are_media_local_and_normalized(
     chromium: BrowserContext,
     site_server: str,

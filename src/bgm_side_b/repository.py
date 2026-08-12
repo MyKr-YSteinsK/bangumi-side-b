@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -518,6 +518,21 @@ class SubjectRepository:
         connection = self.database.connect()
         try:
             return self._subject_facts(connection, subject_id)
+        finally:
+            connection.close()
+
+    def get_subject_facts_many(
+        self, subject_ids: Iterable[int]
+    ) -> dict[int, SubjectSnapshot]:
+        """Read existing snapshots through one validated database connection."""
+        connection = self.database.connect()
+        try:
+            snapshots: dict[int, SubjectSnapshot] = {}
+            for subject_id in sorted(set(subject_ids)):
+                snapshot = self._subject_facts(connection, subject_id)
+                if snapshot is not None:
+                    snapshots[subject_id] = snapshot
+            return snapshots
         finally:
             connection.close()
 

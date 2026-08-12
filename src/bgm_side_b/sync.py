@@ -320,6 +320,9 @@ class ArchiveSynchronizer:
         if batch.failures:
             errors = tuple(_discovery_error(item) for item in batch.failures)
             return self._write_incomplete(quarter, prior, len(batch.candidates), errors)
+        existing_by_subject = self.repository.get_subject_facts_many(
+            candidate.subject_id for candidate in batch.candidates
+        )
 
         prepared: list[_PreparedSubject] = []
         reviews: list[ReviewIssue] = []
@@ -370,7 +373,7 @@ class ArchiveSynchronizer:
                     )
                     continue
                 try:
-                    existing = self.repository.get_subject_facts(candidate.subject_id)
+                    existing = existing_by_subject.get(candidate.subject_id)
                     if (
                         existing is not None
                         and existing.premiere is not None

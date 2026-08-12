@@ -134,6 +134,31 @@ def test_subject_snapshot_round_trip_and_child_replacement(
     assert repository.get_subject_facts(101) == updated
 
 
+def test_subject_snapshot_batch_uses_one_connection(
+    repository: SubjectRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = _snapshot(101)
+    second = _snapshot(202)
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(connection, first)
+        repository.replace_subject_snapshot(connection, second)
+
+    connect_calls = 0
+    native_connect = repository.database.connect
+
+    def counted_connect() -> sqlite3.Connection:
+        nonlocal connect_calls
+        connect_calls += 1
+        return native_connect()
+
+    monkeypatch.setattr(repository.database, "connect", counted_connect)
+    assert repository.get_subject_facts_many([202, 999, 101, 202]) == {
+        101: first,
+        202: second,
+    }
+    assert connect_calls == 1
+
+
 def test_failed_snapshot_replacement_rolls_back_every_child(
     repository: SubjectRepository,
 ) -> None:

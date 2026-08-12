@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import date
 from io import BytesIO
@@ -228,6 +229,36 @@ def _store_existing(
     )
     with repository.transaction() as connection:
         repository.replace_subject_snapshot(connection, snapshot)
+
+
+def test_quarter_sync_preloads_existing_facts_with_bounded_connections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subject_ids = range(1000, 1101)
+    api = FakeApi(
+        {subject_id: _detail(subject_id, cover=None) for subject_id in subject_ids}
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch(
+            tuple(_candidate(subject_id, MediaFormat.TV) for subject_id in subject_ids)
+        ),
+    )
+    connect_calls = 0
+    native_connect = repository.database.connect
+
+    def counted_connect() -> sqlite3.Connection:
+        nonlocal connect_calls
+        connect_calls += 1
+        return native_connect()
+
+    monkeypatch.setattr(repository.database, "connect", counted_connect)
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 0
+    assert run.quarters[0].accepted_tv == 101
+    assert connect_calls < 20
 
 
 def _continuing(quarter: Quarter, evidence_value: str) -> QuarterAppearance:

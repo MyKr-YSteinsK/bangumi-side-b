@@ -153,6 +153,7 @@ class UnifiedPublisher:
                     stage="summary", message="仅 dry-run：未修改远端 gh-pages"
                 )
                 return SitePublishRun(True, release_version, report, False, None)
+            self._preflight_report()
             self.reporter.stage(
                 stage="publish-worktree", message="正在创建临时发布 worktree"
             )
@@ -164,16 +165,25 @@ class UnifiedPublisher:
                 release_version,
                 candidate.identity.source_commit,
             )
-            report = self._write_report(
-                candidate.identity,
-                release_version,
-                remote,
-                branch,
-                dry_run=False,
-                remote_commit=pushed,
-            )
+            warnings: tuple[str, ...] = ()
+            try:
+                report = self._write_report(
+                    candidate.identity,
+                    release_version,
+                    remote,
+                    branch,
+                    dry_run=False,
+                    remote_commit=pushed,
+                )
+            except OSError:
+                report = self._report_path()
+                warning = "remote published but local report finalization failed"
+                warnings = (warning,)
+                self.reporter.warning(stage="publish-report", message=warning)
             self.reporter.complete(stage="summary", message="发布成功｜远端已更新")
-            return SitePublishRun(False, release_version, report, True, pushed)
+            return SitePublishRun(
+                False, release_version, report, True, pushed, warnings
+            )
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
@@ -331,7 +341,7 @@ class UnifiedPublisher:
         dry_run: bool,
         remote_commit: str | None,
     ) -> Path:
-        destination = self.workspace / "reports" / "release-publish.json"
+        destination = self._report_path()
         destination.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema": 1,
@@ -357,6 +367,28 @@ class UnifiedPublisher:
         )
         os.replace(temporary, destination)
         return destination
+
+    def _preflight_report(self) -> None:
+        directory = self._report_path().parent
+        temporary: Path | None = None
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", dir=directory, delete=False
+            ) as stream:
+                stream.write("report preflight\n")
+                temporary = Path(stream.name)
+            temporary.unlink()
+        except OSError as error:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise SitePublishError("local release report is not writable") from error
+
+    def _report_path(self) -> Path:
+        return self.workspace / "reports" / "release-publish.json"
 
     def _head(self) -> str:
         result = self._git("rev-parse", "HEAD")

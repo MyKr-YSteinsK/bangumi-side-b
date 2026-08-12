@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
@@ -310,8 +310,10 @@ def publish_prepared_release(
     if run.published:
         try:
             (root / "workspace" / "state" / "prepared-release.json").unlink()
-        except OSError as error:
-            raise WorkflowError("发布成功但 prepared state 未能清理") from error
+        except OSError:
+            warning = "remote published but local prepared state cleanup failed"
+            active.warning(stage="prepared-cleanup", message=warning)
+            run = replace(run, warnings=(*run.warnings, warning))
     return run
 
 

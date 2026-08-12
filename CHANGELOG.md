@@ -4,25 +4,29 @@
 
 ## 尚未发布
 
+## 0.2.0 - 2026-08-13
+
 ### 新增
 
 - 统一生成唯一正式站点 `dist/site`，覆盖当前 SQLite 中已验证的 TV 首播、TV continuing 与剧场版首播季度。
 - 新增季度与 Archive 共用的 master-detail 浏览体验，支持搜索、筛选、排序、分页、Hash 直达和移动端 context rail。
-- PWA 改为最小 shell、访问资源 runtime cache 与显式季度离线包，Settings 支持 current/year/range/all 队列和人工控制更新。
+- PWA 改为最小 shell、访问资源 runtime cache 与显式季度离线包，Settings 支持 current/year/range/all 队列，以及暂停、继续、取消、重开与联网恢复。
 - 季度离线资源使用 active/staging 状态与 content-addressed verified cache，支持差分续传、更新保留和引用安全清理。
 - 统一 `bgmb release prepare/publish`：prepared state 绑定候选与远端状态，仅允许官方 origin，并确认精确 release commit。
 
 ### 修复
 
 - Quarter 与 Archive 统一使用紧凑分页；筛选选项搜索在重渲染与媒体切换后保持，详情完整展示全部结构化别名。
-- Windows 构建预检在输出恢复失败时保留完整 recovery tree，避免丢失唯一旧输出。
+- 增量构建使用 staging 与原子 patch，失败时恢复旧输出并按季度保留 last-good；Windows 预检在极端恢复失败时保留唯一 recovery tree。
 - `bgmb status` 与 `bgmb doctor` 识别 prepared release 的有效、过期、无效与可发布状态。
 - `bgmb release publish` 对 push 前后远端竞争 fail closed；远端确认成功后的本地 report 或 prepared state 清理问题诚实报告为 warning。
 - 更新日志归档已发布内容，并兼容历史 release 中的 `both` 变更类型显示。
 
 ### 调整
 
-- 移除旧 Pages profile、快照初始化、角色媒体与多输出发布基础设施；本地预览、Pages 与 PWA 统一使用 `dist/site`。
+- Repository、sync 与站点投影改为批量事实读取，并对大型 ID 集合使用有界分块查询，避免 N+1 与 SQLite 参数上限。
+- CI 明确区分 Linux Chromium 浏览器回归与 Windows 非浏览器套件，并收紧浏览器端口和并发完成信号的确定性。
+- 移除旧 Pages profile、旧的全库快照初始化、角色媒体与多输出发布基础设施；本地预览、Pages 与 PWA 统一使用 `dist/site`。
 - 发布不再创建纯 metadata 空版本，也不把本地报告写入正式运行时站点树。
 
 ## 0.1.3

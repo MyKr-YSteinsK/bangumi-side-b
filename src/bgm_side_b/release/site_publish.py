@@ -251,11 +251,17 @@ class UnifiedPublisher:
                 f"release: {release_version} [source {source_commit[:12]}]",
                 cwd=worktree,
             )
+            release_commit = self._git("rev-parse", "HEAD", cwd=worktree).stdout.strip()
+            if not re.fullmatch(r"[0-9a-f]{40}", release_commit):
+                raise SitePublishError("release commit could not be identified")
             self._git("push", remote, f"HEAD:{branch}", cwd=worktree)
-            pushed = self.remote_commit(remote, branch)
-            if pushed is None:
-                raise SitePublishError("remote gh-pages update could not be confirmed")
-            return pushed
+            remote_after = self.remote_commit(remote, branch)
+            if remote_after != release_commit:
+                raise SitePublishError(
+                    "release commit was pushed but gh-pages advanced "
+                    "before confirmation"
+                )
+            return release_commit
         except subprocess.CalledProcessError as error:
             detail = (error.stderr or error.stdout or "git publication failed").strip()
             raise SitePublishError(detail) from error

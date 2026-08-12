@@ -138,6 +138,9 @@ def test_publish_dry_run_and_exact_tree_update(
     before_main = _git(root, "rev-parse", "HEAD")
     run = publisher.publish()
     assert run.published and run.remote_commit
+    assert run.remote_commit == _git(
+        root, "--git-dir", str(remote), "rev-parse", "gh-pages"
+    )
     assert _git(root, "rev-parse", "HEAD") == before_main
     tree = _git(
         root, "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "gh-pages"

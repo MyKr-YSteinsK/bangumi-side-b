@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from dataclasses import replace
 from datetime import date
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -34,6 +36,7 @@ from bgm_side_b.domain import (
     QuarterAppearanceKind,
     QuarterAssignmentSource,
 )
+from bgm_side_b.media import MAX_COVER_CONCURRENCY, CoverResult
 from bgm_side_b.repository import (
     QuarterAppearance,
     QuarterSyncState,
@@ -642,6 +645,35 @@ def test_cover_failure_does_not_rollback_complete_facts(tmp_path: Path) -> None:
     assert run.exit_code == 0
     assert run.quarters[0].covers_status == "incomplete"
     assert repository.get_subject_facts(101) is not None
+
+
+def test_cover_interrupt_does_not_start_unbounded_pending_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sync, _ = _sync(tmp_path, FakeApi({}), DiscoveryBatch(()))
+    started: list[int] = []
+    lock = threading.Lock()
+
+    prepared = tuple(
+        SimpleNamespace(
+            snapshot=SimpleNamespace(subject=SimpleNamespace(subject_id=subject_id))
+        )
+        for subject_id in range(MAX_COVER_CONCURRENCY * 2)
+    )
+
+    def interrupting_cover(item: object) -> CoverResult:
+        subject_id = item.snapshot.subject.subject_id  # type: ignore[attr-defined]
+        with lock:
+            started.append(subject_id)
+        if subject_id == 0:
+            raise KeyboardInterrupt
+        return CoverResult("missing", None)
+
+    monkeypatch.setattr(sync, "_sync_cover", interrupting_cover)
+    with pytest.raises(KeyboardInterrupt):
+        sync._sync_covers(prepared)  # type: ignore[arg-type]
+
+    assert len(started) <= MAX_COVER_CONCURRENCY
 
 
 def test_manual_missing_subject_import_refuses_non_japanese_then_stores_manual_fact(

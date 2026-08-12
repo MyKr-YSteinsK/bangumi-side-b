@@ -7,7 +7,7 @@ import os
 import sqlite3
 import tempfile
 from collections.abc import Iterable, Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -981,15 +981,38 @@ class ArchiveSynchronizer:
     ) -> tuple[int, int, int, list[dict[str, str]]]:
         subjects = tuple(prepared)
         results: dict[int, CoverResult] = {}
-        with ThreadPoolExecutor(max_workers=MAX_COVER_CONCURRENCY) as executor:
-            futures = {
-                executor.submit(
-                    self._sync_cover, item
-                ): item.snapshot.subject.subject_id
-                for item in subjects
-            }
-            for future in as_completed(futures):
-                results[futures[future]] = future.result()
+        executor = ThreadPoolExecutor(max_workers=MAX_COVER_CONCURRENCY)
+        futures = {}
+        subject_iter = iter(subjects)
+        try:
+            while len(futures) < MAX_COVER_CONCURRENCY:
+                item = next(subject_iter, None)
+                if item is None:
+                    break
+                futures[executor.submit(self._sync_cover, item)] = (
+                    item.snapshot.subject.subject_id
+                )
+            while futures:
+                done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                completed = []
+                for future in done:
+                    subject_id = futures.pop(future)
+                    completed.append((subject_id, future.result()))
+                for subject_id, result in completed:
+                    results[subject_id] = result
+                for _ in completed:
+                    item = next(subject_iter, None)
+                    if item is not None:
+                        futures[executor.submit(self._sync_cover, item)] = (
+                            item.snapshot.subject.subject_id
+                        )
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            executor.shutdown(wait=True)
         successful = [
             item
             for item in subjects

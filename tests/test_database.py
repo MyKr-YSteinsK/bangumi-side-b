@@ -86,6 +86,43 @@ def test_fresh_database_has_exact_schema_metadata_and_foreign_keys(
         connection.close()
 
 
+def test_normal_connections_skip_full_integrity_until_explicit_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "archive.sqlite3"
+    archive = Database(path)
+    archive.initialize()
+    statements: list[str] = []
+    native_connect = sqlite3.connect
+
+    class TracedConnection(sqlite3.Connection):
+        def execute(  # type: ignore[override]
+            self, sql: str, parameters: tuple[object, ...] = ()
+        ) -> sqlite3.Cursor:
+            statements.append(" ".join(sql.lower().split()))
+            return super().execute(sql, parameters)
+
+    def traced_connect(database_path: Path) -> sqlite3.Connection:
+        return native_connect(database_path, factory=TracedConnection)
+
+    monkeypatch.setattr(database.sqlite3, "connect", traced_connect)
+
+    for _ in range(3):
+        connection = archive.connect()
+        connection.close()
+    assert statements.count("pragma integrity_check") == 0
+    assert statements.count("pragma foreign_key_check") == 0
+
+    archive.verify_integrity()
+    assert statements.count("pragma integrity_check") == 1
+    assert statements.count("pragma foreign_key_check") == 1
+
+    statements.clear()
+    archive.initialize()
+    assert statements.count("pragma integrity_check") == 1
+    assert statements.count("pragma foreign_key_check") == 1
+
+
 def test_subject_and_quarter_constraints_reject_invalid_facts(tmp_path: Path) -> None:
     database = Database(tmp_path / "archive.sqlite3")
     database.initialize()

@@ -242,11 +242,19 @@ class Database:
         connection = self._raw_connect()
         try:
             _validate_schema(connection)
-            _verify_integrity(connection)
         except BaseException:
             connection.close()
             raise
         return connection
+
+    def verify_integrity(self) -> None:
+        """Run the full schema, storage, and foreign-key verification boundary."""
+        connection = self._raw_connect()
+        try:
+            _validate_schema(connection)
+            _verify_integrity(connection)
+        finally:
+            connection.close()
 
     def _raw_connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
@@ -270,7 +278,7 @@ def _user_tables(connection: sqlite3.Connection) -> frozenset[str]:
 def _validate_schema(connection: sqlite3.Connection) -> None:
     tables = _user_tables(connection)
     if tables != _EXPECTED_TABLES:
-        raise UnknownSchemaError("database tables do not match archive schema v1")
+        raise UnknownSchemaError("database tables do not match archive schema v2")
     metadata = {
         row["key"]: row["value"]
         for row in connection.execute("SELECT key, value FROM database_metadata")

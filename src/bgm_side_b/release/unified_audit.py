@@ -59,6 +59,7 @@ class UnifiedReleaseAuditor:
             return _failed("workspace", "workspace database is missing")
         database = Database(self.database_path)
         try:
+            database.verify_integrity()
             facts = ArchiveFactsReader(database, self.root / "workspace").read(
                 self.settings.excluded_subject_ids
             )

@@ -197,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
                 settings.excluded_subject_ids,
             )
             existing = repository.get_subject_facts(args.subject_id)
+            report_warning = None
             if existing is not None:
                 snapshot = (
                     adjudicator.clear(args.subject_id)
@@ -243,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
                     client.close()
                 snapshot = imported.snapshot
                 report_path = imported.report_path
+                report_warning = imported.report_warning
         except (AssignmentError, SyncError, ValueError) as error:
             parser.error(str(error))
         quarter = snapshot.premiere.quarter if snapshot.premiere else None
@@ -256,6 +258,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         if report_path is not None:
             print(f"manual import report: {_relative_output_path(root, report_path)}")
+        if report_warning is not None:
+            print(f"warning: {report_warning}")
         return 0
     if getattr(args, "verbose", False) and getattr(args, "progress", "auto") == "off":
         parser.error("--progress off cannot be combined with --verbose")

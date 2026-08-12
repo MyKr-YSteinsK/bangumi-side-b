@@ -336,6 +336,59 @@ def test_assign_missing_subject_uses_one_fake_official_detail_fetch(
     ).read_text(encoding="utf-8")
 
 
+def test_assign_missing_subject_keeps_override_when_report_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "project"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "config", root / "config")
+    (root / "pyproject.toml").write_text("[project]\nname = 'test'\n", "utf-8")
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def get_subject(self, subject_id: int) -> SubjectDetail:
+            return SubjectDetail.from_payload(
+                {
+                    "id": subject_id,
+                    "type": 2,
+                    "name": "Original",
+                    "platform": "TV",
+                    "date": "2026-04-02",
+                    "infobox": [{"key": "国家/地区", "value": "日本"}],
+                }
+            )
+
+        def fetch_image(self, url: str, *, max_bytes: int) -> ImageResponse:
+            return ImageResponse(_PNG, "image/png", url)
+
+        def close(self) -> None:
+            pass
+
+    def fail_report(*_: object, **__: object) -> Path:
+        raise OSError("report volume unavailable")
+
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(cli, "BangumiApiClient", FakeClient)
+    monkeypatch.setattr(
+        "bgm_side_b.sync.ArchiveSynchronizer._write_single_import_report",
+        fail_report,
+    )
+
+    assert main(["assign", "101", "2026", "4"]) == 0
+
+    output = capsys.readouterr().out
+    assert "assignment saved: 101 -> 2026-04" in output
+    assert "manual import report unavailable" in output
+    facts = SubjectRepository(
+        Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
+    ).get_subject_facts(101)
+    assert facts is not None
+    assert "subject_id = 101" in (
+        root / "config" / "quarter-overrides.toml"
+    ).read_text(encoding="utf-8")
+
+
 def test_build_cli_rejects_missing_database_before_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

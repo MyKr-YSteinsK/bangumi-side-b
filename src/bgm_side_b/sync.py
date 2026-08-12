@@ -152,8 +152,9 @@ class SingleSubjectImport:
     """Result of the low-frequency manual discovery recovery path."""
 
     snapshot: SubjectSnapshot
-    report_path: Path
+    report_path: Path | None
     cover: CoverResult
+    report_warning: str | None = None
 
 
 @dataclass(frozen=True)
@@ -303,8 +304,14 @@ class ArchiveSynchronizer:
         if cover.cover is not None:
             with self.repository.transaction() as connection:
                 self.repository.replace_subject_snapshot(connection, snapshot)
-        report_path = self._write_single_import_report(subject_id, snapshot, cover)
-        return SingleSubjectImport(snapshot, report_path, cover)
+        try:
+            report_path = self._write_single_import_report(subject_id, snapshot, cover)
+        except OSError as error:
+            report_path = None
+            report_warning = f"manual import report unavailable: {error}"
+        else:
+            report_warning = None
+        return SingleSubjectImport(snapshot, report_path, cover, report_warning)
 
     def _sync_quarter(
         self,

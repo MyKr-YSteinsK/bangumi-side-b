@@ -57,6 +57,20 @@ def _wait_for_queue(page: Page, completed: int) -> None:
     )
 
 
+def _wait_for_pwa_startup_queue_quiescent(page: Page) -> None:
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    assert page.evaluate("typeof navigator.locks?.request === 'function'")
+    page.evaluate(
+        """
+        async () => navigator.locks.request(
+          "bsb-offline-queue-mutation",
+          { mode: "exclusive" },
+          async () => {},
+        )
+        """
+    )
+
+
 @pytest.fixture
 def pwa_site(tmp_path: Path) -> Path:
     builder, _ = _build_fixture(tmp_path)
@@ -1417,7 +1431,7 @@ def test_quarter_metadata_writes_merge_monotonically_when_older_write_is_delayed
     page = context.new_page()
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
-    page.wait_for_function("window.BsbPwa.capabilityState() === 'ready'")
+    _wait_for_pwa_startup_queue_quiescent(page)
     page.evaluate(
         """
         (() => {

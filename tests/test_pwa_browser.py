@@ -1504,23 +1504,44 @@ def test_quarter_metadata_writes_merge_monotonically_when_older_write_is_delayed
             }),
           );
           window.__addQuarterHash = addHash;
+          window.__firstQuarterPutOutcome = null;
           window.__firstQuarterPut = addHash("a");
+          void window.__firstQuarterPut.then(
+            () => { window.__firstQuarterPutOutcome = { rejected: false }; },
+            (error) => {
+              window.__firstQuarterPutOutcome = {
+                rejected: true,
+                message: String(error?.message || error),
+              };
+            },
+          );
         }
         """
     )
     page.wait_for_function(
         "window.__quarterPutHeld === true "
-        "&& typeof window.__releaseQuarterPut === 'function'"
+        "|| window.__firstQuarterPutOutcome !== null"
     )
+    first_outcome = page.evaluate("window.__firstQuarterPutOutcome")
+    assert page.evaluate("window.__quarterPutHeld === true"), (
+        "delayed quarter Cache.put was not reached; "
+        f"first mutation outcome: {first_outcome}"
+    )
+    assert page.evaluate("typeof window.__releaseQuarterPut === 'function'")
     page.evaluate(
         """
         async () => {
           const second = window.__addQuarterHash("b");
+          if (!window.__quarterPutHeld) {
+            throw new Error("second mutation started after delayed write was released");
+          }
+          window.__secondMutationStartedWhileFirstHeld = true;
           window.__releaseQuarterPut();
           await Promise.all([window.__firstQuarterPut, second]);
         }
         """
     )
+    assert page.evaluate("window.__secondMutationStartedWhileFirstHeld === true")
     state = page.evaluate(
         "async () => window.BsbPwa.getQuarterState('2026-07')"
     )
@@ -1536,6 +1557,7 @@ def test_stale_quarter_generation_cannot_overwrite_new_staging(
     page = context.new_page()
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
+    _wait_for_pwa_startup_queue_quiescent(page)
     page.evaluate(
         """
         async () => {
@@ -1600,7 +1622,7 @@ def test_new_generation_clears_stale_progress_before_manifest_failure(
     context = chromium.new_context()
     page = context.new_page()
     page.goto(f"{failing_manifest_server}/settings/index.html")
-    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    _wait_for_pwa_startup_queue_quiescent(page)
     page.evaluate(
         """
         async () => {

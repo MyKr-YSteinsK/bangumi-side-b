@@ -186,6 +186,53 @@ def test_release_publish_prints_an_existing_report_path(
     )
 
 
+def test_active_documentation_matches_the_final_cli_contract() -> None:
+    root = Path(__file__).resolve().parents[1]
+    documents = (
+        root / "README.md",
+        root / "docs" / "USER_GUIDE.md",
+        root / "docs" / "project-requirements-baseline.md",
+        root / "docs" / "development.md",
+        root / "docs" / "static-build.md",
+        root / "docs" / "pwa.md",
+        root / "docs" / "publish.md",
+        root / "docs" / "releases.md",
+    )
+    active = "\n".join(path.read_text("utf-8") for path in documents)
+    for removed in (
+        "bgmb publish",
+        "bgmb promote",
+        "build --target",
+        "build --discard-pending",
+        "dist/pages",
+        "snapshot-manifest",
+    ):
+        assert removed not in active
+    for current in (
+        "bgmb sync 2026 7",
+        "bgmb build --all",
+        "bgmb serve --port 8000",
+        "bgmb release prepare",
+        "bgmb release publish",
+        "dist/site",
+    ):
+        assert current in active
+
+    parser = build_parser()
+    assert parser.parse_args(["sync", "2026", "7"]).command == "sync"
+    assert parser.parse_args(
+        ["sync", "--from", "2026", "4", "--to", "2026", "7"]
+    ).range_start == ["2026", "4"]
+    assert parser.parse_args(["build", "--all"]).all
+    assert parser.parse_args(["serve", "--port", "8000"]).port == 8000
+    assert parser.parse_args(
+        ["release", "prepare"]
+    ).release_command == "prepare"
+    assert parser.parse_args(
+        ["release", "publish"]
+    ).release_command == "publish"
+
+
 def test_sync_summary_is_compact_and_lists_early_premiere_evidence() -> None:
     result = QuarterSyncResult(
         Quarter(2026, 4),

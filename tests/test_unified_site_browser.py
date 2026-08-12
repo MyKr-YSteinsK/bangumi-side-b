@@ -792,3 +792,57 @@ def test_archive_detail_failure_stays_same_origin_and_reports_rebuild(
     detail = page.locator("[data-detail-panel]").inner_text()
     assert "当前资料详情未完整生成" in detail
     assert "重新 build" in detail
+
+
+def test_quarter_and_archive_close_restore_keyboard_focus(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+
+    _open_quarter(page, site_server, (390, 844))
+    quarter_subject = page.locator(
+        '[data-subject-id="101"] [data-open-subject]'
+    )
+    quarter_subject.focus()
+    quarter_subject.press("Enter")
+    quarter_close = page.locator("[data-detail-panel] [data-detail-close]")
+    quarter_close.focus()
+    quarter_close.press("Enter")
+    assert quarter_subject.evaluate("node => node === document.activeElement")
+
+    quarter_filter = page.locator("[data-filter-toggle]")
+    quarter_filter.focus()
+    quarter_filter.press("Enter")
+    quarter_filter_close = page.locator(
+        "[data-filter-panel] .filter-panel__head [data-filter-close]"
+    )
+    quarter_filter_close.focus()
+    quarter_filter_close.press("Enter")
+    assert quarter_filter.evaluate("node => node === document.activeElement")
+
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')"
+        "?.textContent.includes('appearance')"
+    )
+    archive_subject = page.locator(
+        '[data-subject-id="101"] [data-open-subject]'
+    ).first
+    archive_subject.focus()
+    archive_subject.press("Enter")
+    archive_close = page.locator("[data-detail-panel] [data-detail-close]")
+    archive_close.focus()
+    archive_close.press("Enter")
+    assert archive_subject.evaluate("node => node === document.activeElement")
+
+    archive_filter = page.locator("[data-filter-toggle]")
+    archive_filter.focus()
+    archive_filter.press("Enter")
+    archive_filter_close = page.locator(
+        "[data-filter-panel] .filter-panel__head [data-filter-close]"
+    )
+    archive_filter_close.focus()
+    archive_filter_close.press("Enter")
+    assert archive_filter.evaluate("node => node === document.activeElement")

@@ -475,6 +475,17 @@
     }
   }
 
+  function focusRecordTrigger(recordKey) {
+    rows.find((row) => row.dataset.recordKey === recordKey)
+      ?.querySelector("[data-open-subject]")?.focus();
+  }
+
+  function closeFilterAndRestoreFocus() {
+    closeFilter();
+    render();
+    quarterRoot.querySelector("[data-filter-toggle]")?.focus();
+  }
+
   function detailHtml(record) {
     const aliases = Array.isArray(record.aliases) ? record.aliases : [];
     const cover = record.cover || record.cover_url;
@@ -520,6 +531,7 @@
       detailPanel.querySelector("[data-detail-close]")?.addEventListener("click", () => {
         clearSelection(true);
         render();
+        focusRecordTrigger(record.key);
       });
       detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(record));
       detailPanel.scrollTop = 0;
@@ -692,15 +704,12 @@
     applyButton.className = "filter-apply-mobile button button--ink";
     applyButton.dataset.filterClose = "true";
     applyButton.textContent = `显示 ${archive.applyPipeline(records, state).total} 部`;
-    applyButton.addEventListener("click", () => {
-      closeFilter();
-      render();
-    });
+    applyButton.addEventListener("click", closeFilterAndRestoreFocus);
     filterPanel.append(applyButton);
-    filterPanel.querySelector("[data-filter-close]")?.addEventListener("click", () => {
-      closeFilter();
-      render();
-    });
+    filterPanel.querySelector("[data-filter-close]")?.addEventListener(
+      "click",
+      closeFilterAndRestoreFocus,
+    );
   }
 
   async function load() {
@@ -1084,6 +1093,17 @@
     }
   }
 
+  function focusRecordTrigger(recordKey) {
+    rows.find((row) => row.dataset.recordKey === recordKey)
+      ?.querySelector("[data-open-subject]")?.focus();
+  }
+
+  function closeFilterAndRestoreFocus() {
+    closeFilter();
+    render();
+    root.querySelector("[data-filter-toggle]")?.focus();
+  }
+
   function renderRows(result) {
     buildLists(result);
     rows.forEach((row) => {
@@ -1252,7 +1272,11 @@
       if (request !== detailRequest || state.selectedOccurrence !== record.key) return;
       if (selectors.detailPanel) {
         selectors.detailPanel.innerHTML = detailHtml(detail);
-        selectors.detailPanel.querySelector("[data-detail-close]")?.addEventListener("click", () => { clearSelection(true); render(); });
+        selectors.detailPanel.querySelector("[data-detail-close]")?.addEventListener("click", () => {
+          clearSelection(true);
+          render();
+          focusRecordTrigger(record.key);
+        });
         selectors.detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(detail));
       }
     } catch {
@@ -1345,9 +1369,12 @@
     apply.type = "button";
     apply.className = "filter-apply-mobile button button--ink";
     apply.textContent = `显示 ${archive.applyPipeline(records, state).total} 部`;
-    apply.addEventListener("click", () => { closeFilter(); render(); });
+    apply.addEventListener("click", closeFilterAndRestoreFocus);
     selectors.filterPanel.append(apply);
-    selectors.filterPanel.querySelector("[data-filter-close]")?.addEventListener("click", () => { closeFilter(); render(); });
+    selectors.filterPanel.querySelector("[data-filter-close]")?.addEventListener(
+      "click",
+      closeFilterAndRestoreFocus,
+    );
   }
 
   function bindControls() {

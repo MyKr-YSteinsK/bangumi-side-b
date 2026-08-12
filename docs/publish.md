@@ -39,6 +39,11 @@ hex，公开季度必须是排序唯一的合法季度列表，报告路径必�
 push、不修改 main、不发布 `gh-pages` 以外的内容。高层真实发布要求官方项目 origin；dry-run
 和测试使用隔离目录或 bare remote，禁止操作用户真实站点。
 
+普通 push 前会记录本地 release commit SHA；push 返回后，只有远端 `gh-pages` HEAD 与该 SHA
+完全一致才确认本次发布。如果远端在确认前再次推进，不会把另一个 actor 的 commit 归因为本次
+release。远端已确认成功后，本地 report 定稿或 prepared state 清理失败会由 CLI 输出 warning，
+退出结果仍表示远端发布已经发生；残留 prepared state 会因远端绑定失效而阻止重复发布。
+
 ## 状态与报告
 
 ```powershell

@@ -296,6 +296,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"dry-run report: {_relative_output_path(root, run.report_path)}")
         else:
             print(f"publish report: {_relative_output_path(root, run.report_path)}")
+            for warning in run.warnings:
+                print(f"warning: {warning}")
         return 0
     if args.command == "sync":
         try:

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import shutil
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -126,6 +128,37 @@ def test_final_report_path_is_project_relative() -> None:
     report = root / "workspace" / "reports" / "sync.json"
 
     assert _relative_output_path(root, report) == "workspace/reports/sync.json"
+
+
+def test_release_publish_prints_post_publish_warnings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "project"
+    report = root / "workspace" / "reports" / "release-publish.json"
+    monkeypatch.setattr(cli, "find_project_root", lambda: root)
+    monkeypatch.setattr(
+        cli, "create_progress_reporter", lambda *args: nullcontext(object())
+    )
+    monkeypatch.setattr(
+        cli,
+        "publish_prepared_release",
+        lambda *args: SimpleNamespace(
+            report_path=report,
+            warnings=(
+                "remote published but local report finalization failed",
+                "remote published but local prepared state cleanup failed",
+            ),
+        ),
+    )
+
+    assert main(["release", "publish", "--progress", "off"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "publish report: workspace/reports/release-publish.json",
+        "warning: remote published but local report finalization failed",
+        "warning: remote published but local prepared state cleanup failed",
+    ]
 
 
 def test_sync_summary_is_compact_and_lists_early_premiere_evidence() -> None:

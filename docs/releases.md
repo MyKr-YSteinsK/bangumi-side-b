@@ -17,6 +17,9 @@ identity；dry-run 报告的版本只是候选值，正式发布会重新读取�
 真实发布通过临时 worktree 对 `gh-pages` 做一次普通 push，发布内容与 validated `dist/site`
 逐字节相同，不生成 `release-report.json` 或额外的运行时快照、历史页或详情产品。
 若候选树与当前 `gh-pages` 完全相同，则拒绝创建纯 metadata 的空 release commit。
+普通 push 后必须确认远端 HEAD 精确等于 push 前记录的本地 release commit SHA。远端确认成功后
+发生的本地 report 定稿或 prepared state 清理问题只作为安全 warning 报告，不会把已经发生的
+远端 publication 描述成未发布，也不会自动重试或 force push。
 
 高层 `bgmb release publish` 只接受当前项目的官方 origin
 (`github.com/MyKr-YSteinsK/bangumi-side-b` 的 HTTPS/SSH 形式)；本地 bare remote 仅可用于

@@ -3,7 +3,7 @@
 ## Project
 
 - Repository: `MyKr-YSteinsK/bangumi-side-b`
-- Local root: `D:\CS\bangumi-side-b`
+- Local root: repository root
 - Package: `bgm_side_b`
 - CLI: `bgmb`
 

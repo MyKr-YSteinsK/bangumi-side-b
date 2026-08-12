@@ -36,4 +36,4 @@ Quarter 与 Archive 的长分页共用紧凑窗口：始终保留首尾页与当
 
 普通交互使用 180ms 自然减速过渡：卡片 hover 最多上移 2px，边线变色而非厚阴影。抽屉仅在需要时使用轻阴影。无持续动画、3D 翻转或视差。`prefers-reduced-motion: reduce` 把位移、缩放和非必要过渡压缩到近乎即时。
 
-CSS 不加载远程字体或 CDN。运行时 JavaScript 只做页面内交互，不能读取 SQLite、调用 API、请求 JSON、载入远程图片或埋点。
+CSS 不加载远程字体或 CDN。运行时 JavaScript 只处理页面交互、PWA 缓存与下载，并请求构建生成的同源 JSON 和静态资源；不能读取 SQLite、访问 Bangumi 或其它远程业务 API、载入远程图片或埋点。

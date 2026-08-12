@@ -16,6 +16,10 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
+test-results/
+playwright-report/
+browser-profile/
+.playwright/
 
 # Local environment and secrets
 .env

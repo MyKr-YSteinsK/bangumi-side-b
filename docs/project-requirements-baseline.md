@@ -6,7 +6,7 @@
 
 - 展示名称：`Bangumi Side B by MyKr`
 - 仓库：`https://github.com/MyKr-YSteinsK/bangumi-side-b`
-- 本地目录：`D:\CS\bangumi-side-b`
+- 本地目录：仓库根目录
 - Python 包：`bgm_side_b`
 - CLI：`bgmb`
 - 网站标题：`Bangumi Side B｜MyKr`

@@ -37,6 +37,7 @@ from bgm_side_b.domain import (
 from bgm_side_b.repository import (
     QuarterAppearance,
     QuarterSyncState,
+    ReviewIssue,
     SubjectRecord,
     SubjectRepository,
     SubjectSnapshot,
@@ -197,6 +198,7 @@ def _store_existing(
     premiere_quarter: Quarter = QUARTER,
     continuing: tuple[QuarterAppearance, ...] = (),
     tags: tuple[str, ...] = (),
+    review_issues: tuple[ReviewIssue, ...] = (),
 ) -> None:
     repository.database.initialize()
     snapshot = SubjectSnapshot(
@@ -226,6 +228,7 @@ def _store_existing(
             air_date.isoformat(),
         ),
         continuing=continuing,
+        review_issues=review_issues,
     )
     with repository.transaction() as connection:
         repository.replace_subject_snapshot(connection, snapshot)
@@ -648,6 +651,74 @@ def test_interrupt_marks_current_quarter_incomplete_without_partial_facts(
     assert repository.get_sync_state(QUARTER).facts_status == FACTS_INCOMPLETE  # type: ignore[union-attr]
 
 
+def test_discovery_interrupt_invalidates_prior_complete_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sync, repository = _sync(tmp_path, FakeApi({}), DiscoveryBatch(()))
+    repository.database.initialize()
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection,
+            QuarterSyncState(
+                QUARTER,
+                FACTS_COMPLETE,
+                FACTS_COMPLETE,
+                0,
+                0,
+                "attempt-1",
+                "success-1",
+            ),
+        )
+
+    def interrupt_discovery(_quarter: Quarter) -> DiscoveryBatch:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(sync.browse, "discover", interrupt_discovery)
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 130
+    state = repository.get_sync_state(QUARTER)
+    assert state is not None
+    assert state.facts_status == FACTS_INCOMPLETE
+    assert state.last_success_at == "success-1"
+
+
+def test_continuing_reconciliation_interrupt_invalidates_target_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = Quarter(2026, 7)
+    api = FakeApi({})
+    sync, repository = _sync(tmp_path, api, DiscoveryBatch(()))
+    _store_existing(repository, 101)
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection,
+            QuarterSyncState(
+                target,
+                FACTS_COMPLETE,
+                FACTS_COMPLETE,
+                0,
+                0,
+                "attempt-1",
+                "success-1",
+            ),
+        )
+
+    def interrupt_episode(_subject_id: int) -> tuple[date, ...]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(api, "get_main_episode_airdates", interrupt_episode)
+
+    run = sync.run(SyncScope(target, target))
+
+    assert run.exit_code == 130
+    state = repository.get_sync_state(target)
+    assert state is not None
+    assert state.facts_status == FACTS_INCOMPLETE
+    assert state.last_success_at == "success-1"
+
+
 def test_end_date_crossing_target_creates_continuing_without_episode_probe(
     tmp_path: Path,
 ) -> None:
@@ -780,6 +851,61 @@ def test_target_season_tag_without_main_episode_does_not_auto_continue(
     assert facts.review_issues[0].issue_code == "CONTINUING_EVIDENCE_UNRESOLVED"
 
 
+def test_refresh_preserves_continuing_review_for_another_quarter(
+    tmp_path: Path,
+) -> None:
+    future = Quarter(2026, 7)
+    review = ReviewIssue(
+        "CONTINUING_EVIDENCE_UNRESOLVED",
+        future,
+        "2026-07",
+        {"season_tag": "2026-07"},
+        "detected-1",
+    )
+    detail = _detail(101, cover=None)
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi({101: detail}),
+        DiscoveryBatch((_candidate(101, MediaFormat.TV),)),
+    )
+    _store_existing(repository, 101, review_issues=(review,))
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 0
+    facts = repository.get_subject_facts(101)
+    assert facts is not None
+    assert facts.review_issues == (review,)
+
+
+def test_refresh_clears_stale_target_continuing_review_outside_examined_set(
+    tmp_path: Path,
+) -> None:
+    target = Quarter(2026, 7)
+    review = ReviewIssue(
+        "CONTINUING_EVIDENCE_UNRESOLVED",
+        target,
+        "2026-07",
+        {"season_tag": "2026-07"},
+        "detected-1",
+    )
+    sync, repository = _sync(tmp_path, FakeApi({}), DiscoveryBatch(()))
+    _store_existing(
+        repository,
+        101,
+        air_date=date(2026, 1, 2),
+        premiere_quarter=Quarter(2026, 1),
+        review_issues=(review,),
+    )
+
+    run = sync.run(SyncScope(target, target))
+
+    assert run.exit_code == 0
+    facts = repository.get_subject_facts(101)
+    assert facts is not None
+    assert facts.review_issues == ()
+
+
 def test_previous_continuing_is_carried_forward_for_arbitrarily_long_runs(
     tmp_path: Path,
 ) -> None:
@@ -865,3 +991,41 @@ def test_syncing_prior_quarter_backfills_an_already_managed_next_quarter(
     assert facts.continuing == (_continuing(target, "2026-07-05"),)
     state = repository.get_sync_state(target)
     assert state is not None and state.subject_count == 1
+
+
+def test_failed_next_quarter_backfill_invalidates_stale_complete_state(
+    tmp_path: Path,
+) -> None:
+    target = Quarter(2026, 7)
+    detail = _detail(101, cover=None)
+    api = FakeApi({101: detail}, episode_failures=frozenset({101}))
+    sync, repository = _sync(
+        tmp_path, api, DiscoveryBatch((_candidate(101, MediaFormat.TV),))
+    )
+    repository.database.initialize()
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection,
+            QuarterSyncState(
+                target,
+                FACTS_COMPLETE,
+                FACTS_COMPLETE,
+                0,
+                0,
+                "attempt-1",
+                "success-1",
+            ),
+        )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 0
+    assert run.quarters[0].facts_status == FACTS_COMPLETE
+    assert any(
+        warning["code"] == "continuing_backfill_failed"
+        for warning in run.quarters[0].warnings
+    )
+    target_state = repository.get_sync_state(target)
+    assert target_state is not None
+    assert target_state.facts_status == FACTS_INCOMPLETE
+    assert target_state.last_success_at == "success-1"

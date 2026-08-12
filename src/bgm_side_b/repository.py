@@ -516,6 +516,26 @@ class SubjectRepository:
             ),
         )
 
+    def delete_review_issues_for_quarter(
+        self,
+        connection: sqlite3.Connection,
+        quarter: Quarter,
+        issue_codes: Iterable[str],
+    ) -> None:
+        """Delete selected issue families only within one candidate quarter."""
+        codes = tuple(sorted(set(issue_codes)))
+        if not codes:
+            return
+        placeholders = ", ".join("?" for _ in codes)
+        connection.execute(
+            f"""
+            DELETE FROM subject_review_issues
+            WHERE candidate_year = ? AND candidate_quarter = ?
+              AND issue_code IN ({placeholders})
+            """,
+            (quarter.year, quarter.month, *codes),
+        )
+
     def get_subject_facts(self, subject_id: int) -> SubjectSnapshot | None:
         connection = self.database.connect()
         try:

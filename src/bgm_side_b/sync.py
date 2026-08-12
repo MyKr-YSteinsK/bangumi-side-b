@@ -291,7 +291,7 @@ class ArchiveSynchronizer:
             raise SyncError(
                 "manual import requires confirmed Anime, TV/MOVIE, and Japanese facts"
             )
-        prepared = self._prepare_subject(detail, decision, None)
+        prepared = self._prepare_subject(detail, decision, None, target)
         with self.repository.transaction() as connection:
             self.repository.replace_subject_snapshot(connection, prepared.snapshot)
         cover = self._sync_cover(prepared)
@@ -317,7 +317,11 @@ class ArchiveSynchronizer:
             message="发现 TV/MOVIE 候选",
             current=_quarter_label(quarter),
         )
-        batch = self.browse.discover(quarter)
+        try:
+            batch = self.browse.discover(quarter)
+        except KeyboardInterrupt:
+            self._write_incomplete(quarter, prior, 0, ())
+            raise
         if batch.failures:
             errors = tuple(_discovery_error(item) for item in batch.failures)
             return self._write_incomplete(quarter, prior, len(batch.candidates), errors)
@@ -401,7 +405,9 @@ class ArchiveSynchronizer:
                             }
                         )
                         continue
-                    prepared_subject = self._prepare_subject(detail, decision, existing)
+                    prepared_subject = self._prepare_subject(
+                        detail, decision, existing, quarter
+                    )
                 except ValueError:
                     errors.append(
                         {
@@ -411,7 +417,11 @@ class ArchiveSynchronizer:
                     )
                     continue
                 prepared.append(prepared_subject)
-                reviews.extend(prepared_subject.snapshot.review_issues)
+                reviews.extend(
+                    issue
+                    for issue in prepared_subject.snapshot.review_issues
+                    if issue.candidate_quarter in {None, quarter}
+                )
                 if decision.status is AdmissionStatus.ACCEPTED:
                     if decision.media_format.value == "TV":
                         accepted_tv += 1
@@ -476,9 +486,13 @@ class ArchiveSynchronizer:
             if item.snapshot.premiere is not None
             and item.snapshot.premiere.quarter == quarter
         }
-        reconciliation = self._reconcile_continuing(
-            quarter, excluded_subject_ids=frozenset(premiere_subject_ids)
-        )
+        try:
+            reconciliation = self._reconcile_continuing(
+                quarter, excluded_subject_ids=frozenset(premiere_subject_ids)
+            )
+        except KeyboardInterrupt:
+            self._write_incomplete(quarter, prior, len(batch.candidates), ())
+            raise
         if reconciliation.errors:
             return self._write_incomplete(
                 quarter,
@@ -619,6 +633,7 @@ class ArchiveSynchronizer:
         detail: SubjectDetail,
         decision: object,
         existing: SubjectSnapshot | None,
+        review_scope: Quarter,
     ) -> _PreparedSubject:
         assert isinstance(decision, AdmissionDecision)
         assert decision.media_format is not None
@@ -629,9 +644,15 @@ class ArchiveSynchronizer:
         aliases = normalize_aliases(
             (value for value in (detail.name_cn,) if value), excluded=(name,)
         )
-        reviews = tuple(
+        current_reviews = tuple(
             _review_issue(finding, detail.subject_id) for finding in decision.reviews
         )
+        preserved_reviews = tuple(
+            issue
+            for issue in (() if existing is None else existing.review_issues)
+            if issue.candidate_quarter not in {None, review_scope}
+        )
+        reviews = preserved_reviews + current_reviews
         snapshot = SubjectSnapshot(
             SubjectRecord(
                 detail.subject_id,
@@ -803,10 +824,15 @@ class ArchiveSynchronizer:
                 target, appearance_kind=QuarterAppearanceKind.PREMIERE
             )
         }
-        reconciliation = self._reconcile_continuing(
-            target, excluded_subject_ids=frozenset(premiere_subject_ids)
-        )
+        try:
+            reconciliation = self._reconcile_continuing(
+                target, excluded_subject_ids=frozenset(premiere_subject_ids)
+            )
+        except KeyboardInterrupt:
+            self._write_incomplete(target, state, 0, ())
+            raise
         if reconciliation.errors:
+            self._write_incomplete(target, state, 0, reconciliation.errors)
             return tuple(
                 {
                     "code": "continuing_backfill_failed",
@@ -841,16 +867,19 @@ class ArchiveSynchronizer:
         replacements: Mapping[int, SubjectSnapshot],
     ) -> None:
         """Replace only this target's continuing review findings."""
+        continuing_codes = {
+            CONTINUING_EVIDENCE_UNRESOLVED,
+            CONTINUING_EVIDENCE_CONFLICT,
+        }
+        self.repository.delete_review_issues_for_quarter(
+            connection, reconciliation.quarter, continuing_codes
+        )
         issues_by_subject: dict[int, list[ReviewIssue]] = {
             subject_id: [
                 issue
                 for issue in replacements.get(subject_id, snapshot).review_issues
                 if not (
-                    issue.issue_code
-                    in {
-                        CONTINUING_EVIDENCE_UNRESOLVED,
-                        CONTINUING_EVIDENCE_CONFLICT,
-                    }
+                    issue.issue_code in continuing_codes
                     and issue.candidate_quarter == reconciliation.quarter
                 )
             ]

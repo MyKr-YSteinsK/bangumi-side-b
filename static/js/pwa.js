@@ -688,6 +688,21 @@
     return await getQuarterState(quarter);
   }
 
+  async function verifyManifestContentClosure(manifest, generation) {
+    const unique = new Map();
+    for (const resource of manifest.resources) unique.set(resource.content_hash, resource);
+    for (const resource of unique.values()) {
+      await assertQueueGeneration(generation);
+      if (!await existingContent(resource)) {
+        await ensureResource(resource, generation);
+        await assertQueueGeneration(generation);
+      }
+      if (!await existingContent(resource)) {
+        throw new Error("季度内容缓存未完整校验");
+      }
+    }
+  }
+
   async function downloadQuarter(quarter, generation) {
     let manifest;
     try {
@@ -734,6 +749,7 @@
     try {
       state = await downloadResources(quarter, manifest, state, generation);
       await assertQueueGeneration(generation);
+      await verifyManifestContentClosure(manifest, generation);
       const promoted = await updateQuarterDownloadState(
         quarter,
         generation,

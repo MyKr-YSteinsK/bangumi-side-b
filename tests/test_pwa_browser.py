@@ -1718,6 +1718,180 @@ def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_byte
     context.close()
 
 
+def test_final_promotion_repairs_missing_verified_content_blob(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    manifest = json.loads(
+        (pwa_site / "data" / "offline" / "2026-07.json").read_text("utf-8")
+    )
+    target = next(
+        item for item in manifest["resources"]
+        if item["url"] == "data/quarters/2026-07.json"
+    )
+    unique_count = len({item["content_hash"] for item in manifest["resources"]})
+    context = chromium.new_context()
+    context.add_init_script(
+        f"""
+        (() => {{
+          const nativePut = Cache.prototype.put;
+          const targetHash = {json.dumps(target['content_hash'])};
+          const uniqueCount = {unique_count};
+          let deleted = false;
+          window.__closureDeleted = false;
+          Cache.prototype.put = async function(request, response) {{
+            const copy = response.clone();
+            const result = await nativePut.call(this, request, response);
+            if (!deleted && request.url.includes(
+              "/__bsb_meta__/quarters/2026-07.json")) {{
+              try {{
+                const value = await copy.json();
+                const hashes = new Set(value.staging?.verified_hashes || []);
+                if (hashes.size >= uniqueCount) {{
+                  deleted = true;
+                  window.__closureDeleted = true;
+                  const content = await caches.open("bsb-content-v1");
+                  await content.delete(new Request(new URL(
+                    `../__bsb_content__/${{targetHash}}`, location.href)));
+                }}
+              }} catch {{}}
+            }}
+            return result;
+          }};
+        }})();
+        """
+    )
+    page = context.new_page()
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.evaluate(
+        """
+        async (resource) => {
+          const runtime = await caches.open("bsb-runtime-v1");
+          const candidates = [
+            resource.url,
+            `${resource.url}?v=${resource.content_hash}`,
+          ];
+          for (const url of candidates) {
+            await runtime.delete(new Request(new URL(`../${url}`, location.href)));
+          }
+        }
+        """,
+        target,
+    )
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert page.evaluate("window.__closureDeleted")
+    assert state["status"] == "COMPLETE"
+    assert state["staging"] is None
+    target_requests = [url for url in requests if url.endswith(target["url"])]
+    assert target_requests
+    assert page.evaluate(
+        """
+        async (hash) => {
+          const content = await caches.open("bsb-content-v1");
+          return Boolean(await content.match(new Request(new URL(
+            `../__bsb_content__/${hash}`, location.href))));
+        }
+        """,
+        target["content_hash"],
+    )
+    context.close()
+
+
+def test_missing_verified_blob_repair_failure_keeps_old_active_incomplete(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    context = chromium.new_context()
+    context.add_init_script(
+        """
+        const nativeSetTimeout = window.setTimeout.bind(window);
+        window.setTimeout = (callback, delay, ...args) =>
+          nativeSetTimeout(callback, Math.min(delay, 5), ...args);
+        """
+    )
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    original = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    target = next(
+        item for item in original["active"]["resources"]
+        if item["url"] == "data/quarters/2026-07.json"
+    )
+    unique_count = len({
+        item["content_hash"] for item in original["active"]["resources"]
+    })
+    page.evaluate(
+        """
+        ({ targetHash, uniqueCount }) => {
+          const nativePut = Cache.prototype.put;
+          let deleted = false;
+          window.__closureDeleted = false;
+          Cache.prototype.put = async function(request, response) {
+            const copy = response.clone();
+            const result = await nativePut.call(this, request, response);
+            if (!deleted && request.url.includes(
+              "/__bsb_meta__/quarters/2026-07.json")) {
+              try {
+                const value = await copy.json();
+                const hashes = new Set(value.staging?.verified_hashes || []);
+                if (hashes.size >= uniqueCount) {
+                  deleted = true;
+                  window.__closureDeleted = true;
+                  const content = await caches.open("bsb-content-v1");
+                  await content.delete(new Request(new URL(
+                    `../__bsb_content__/${targetHash}`, location.href)));
+                }
+              } catch {}
+            }
+            return result;
+          };
+        }
+        """,
+        {"targetHash": target["content_hash"], "uniqueCount": unique_count},
+    )
+    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    manifest["revision"] = "closure-repair-failure-revision"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    (pwa_site / target["url"]).write_bytes(b"closure repair must fail")
+    page.evaluate(
+        """
+        async (resource) => {
+          const runtime = await caches.open("bsb-runtime-v1");
+          const candidates = [
+            resource.url,
+            `${resource.url}?v=${resource.content_hash}`,
+          ];
+          for (const url of candidates) {
+            await runtime.delete(new Request(new URL(`../${url}`, location.href)));
+          }
+        }
+        """,
+        target,
+    )
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    failed = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert page.evaluate("window.__closureDeleted")
+    assert failed["status"] == "INCOMPLETE"
+    assert failed["active"]["revision"] == original["active"]["revision"]
+    assert failed["staging"]["revision"] == "closure-repair-failure-revision"
+    assert failed["staging"]["verified_hashes"]
+    context.close()
+
+
 def test_quarter_manifest_validation_rejects_unsafe_and_duplicate_resources(
     chromium: Browser,
     pwa_server: str,

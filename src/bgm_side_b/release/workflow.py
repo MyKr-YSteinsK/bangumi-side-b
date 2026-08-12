@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -17,9 +19,10 @@ from pathlib import Path, PurePosixPath
 from bgm_side_b import __version__
 from bgm_side_b.archive_config import load_archive_sync_settings
 from bgm_side_b.config import load_tag_rules
-from bgm_side_b.database import Database
+from bgm_side_b.database import Database, DatabaseError
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.release.site_candidate import (
+    CandidateIdentity,
     SiteCandidate,
     SiteCandidateError,
     validate_build_state,
@@ -45,6 +48,18 @@ _GIT_SHA = re.compile(r"[0-9a-f]{40}")
 _CONTENT_SHA = re.compile(r"[0-9a-f]{64}")
 _PUBLIC_QUARTER = re.compile(r"\d{4}-(?:01|04|07|10)")
 _BUILD_STATE_SCHEMA = 1
+_STATUS_REQUIRED_FILES = (
+    "index.html",
+    "archive/index.html",
+    "settings/index.html",
+    "assets/app.css",
+    "assets/app.js",
+    "assets/pwa.js",
+    "manifest.webmanifest",
+    "sw.js",
+    "data/archive-index.json",
+    "data/pwa-shell.json",
+)
 
 
 @dataclass(frozen=True)
@@ -160,22 +175,25 @@ class PreparedRelease:
 
 def local_status(project_root: Path) -> LocalStatus:
     """Compute status from local Git, SQLite, site, and prepared state only."""
-    root = project_root.resolve()
+    return _compute_local_status(project_root.resolve())
+
+
+def _compute_local_status(
+    root: Path, *, audit: UnifiedAuditResult | None = None
+) -> LocalStatus:
     branch = _git_value(root, "rev-parse", "--abbrev-ref", "HEAD") or "unknown"
     head = _git_value(root, "rev-parse", "HEAD")
     clean = not _worktree_changes(root)
-    try:
-        settings = load_archive_sync_settings(root / "config" / "bangumi.toml")
-        audit = UnifiedReleaseAuditor(root, settings).audit()
+    if audit is not None:
         blocking = {"workspace", "schema"}
         sqlite_status = (
             "错误"
             if any(failure.check in blocking for failure in audit.failures)
             else "OK"
         )
-    except (OSError, ValueError):
-        sqlite_status = "错误"
-    candidate, site_status = _site_status(root, head)
+    else:
+        sqlite_status = _quick_sqlite_status(root)
+    candidate, site_status = _quick_site_status(root, head)
     prepared_status, prepared_source = _prepared_local_status(root, head, candidate)
     try:
         package = distribution_version("bgm-side-b")
@@ -204,8 +222,8 @@ def doctor(project_root: Path, *, local_only: bool = False) -> DoctorResult:
     """Inspect local facts and, unless local-only, refresh the two remote refs."""
     root = project_root.resolve()
     settings = load_archive_sync_settings(root / "config" / "bangumi.toml")
-    local = local_status(root)
     audit = UnifiedReleaseAuditor(root, settings).audit()
+    local = _compute_local_status(root, audit=audit)
     if local_only:
         return DoctorResult(
             local, audit, "未检查", "未检查", None, True, local.prepared_release_status
@@ -351,6 +369,105 @@ def _site_status(root: Path, head: str | None) -> tuple[SiteCandidate | None, st
         validate_build_state(root / "dist" / "site", root / "workspace")
         candidate = validate_site(root / "dist" / "site", source_commit=head)
     except SiteCandidateError:
+        return None, "stale"
+    return candidate, "valid"
+
+
+def _quick_sqlite_status(root: Path) -> str:
+    database = Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
+    if not database.path.is_file():
+        return "错误"
+    try:
+        connection = database.connect()
+    except (DatabaseError, OSError, sqlite3.Error, ValueError):
+        return "错误"
+    connection.close()
+    return "OK"
+
+
+def _quick_site_status(
+    root: Path, head: str | None
+) -> tuple[SiteCandidate | None, str]:
+    site = root / "dist" / "site"
+    if head is None or not site.is_dir():
+        return None, "missing"
+    try:
+        payload = json.loads(
+            (root / "workspace" / "build-state.json").read_text("utf-8")
+        )
+        if not isinstance(payload, dict):
+            raise ValueError
+        artifacts = payload["artifacts"]
+        sizes = payload["artifact_sizes"]
+        if payload.get("schema") != _BUILD_STATE_SCHEMA:
+            raise ValueError
+        if not isinstance(artifacts, dict) or not isinstance(sizes, dict):
+            raise ValueError
+        normalized = {
+            str(relative): (str(digest), int(sizes[relative]))
+            for relative, digest in artifacts.items()
+            if (
+                isinstance(relative, str)
+                and isinstance(digest, str)
+                and re.fullmatch(r"[0-9a-f]{64}", digest)
+                and isinstance(sizes.get(relative), int)
+                and sizes[relative] >= 0
+            )
+        }
+        if len(normalized) != len(artifacts) or any(
+            relative not in normalized
+            or not (site / PurePosixPath(relative)).is_file()
+            or (site / PurePosixPath(relative)).stat().st_size
+            != normalized[relative][1]
+            for relative in _STATUS_REQUIRED_FILES
+        ):
+            raise ValueError
+        archive = json.loads(
+            (site / "data" / "archive-index.json").read_text("utf-8")
+        )
+        quarter_rows = archive.get("quarters") if isinstance(archive, dict) else None
+        if not isinstance(quarter_rows, list):
+            raise ValueError
+        quarters = tuple(
+            sorted(
+                {
+                    str(item["quarter"])
+                    for item in quarter_rows
+                    if isinstance(item, dict)
+                    and re.fullmatch(_PUBLIC_QUARTER, str(item.get("quarter", "")))
+                    and all(
+                        relative in normalized
+                        for relative in (
+                            f"{item['quarter']}/index.html",
+                            f"data/quarters/{item['quarter']}.json",
+                            f"data/offline/{item['quarter']}.json",
+                        )
+                    )
+                }
+            )
+        )
+        if not quarters:
+            raise ValueError
+        identity_hash = hashlib.sha256()
+        for relative, (digest, size) in sorted(normalized.items()):
+            identity_hash.update(relative.encode("utf-8"))
+            identity_hash.update(b"\0")
+            identity_hash.update(digest.encode("ascii"))
+            identity_hash.update(b"\0")
+            identity_hash.update(str(size).encode("ascii"))
+            identity_hash.update(b"\n")
+        candidate = SiteCandidate(
+            CandidateIdentity(
+                1,
+                head,
+                len(normalized),
+                sum(size for _, size in normalized.values()),
+                identity_hash.hexdigest(),
+            ),
+            quarters,
+            tuple(sorted(normalized)),
+        )
+    except (KeyError, OSError, UnicodeError, json.JSONDecodeError, ValueError):
         return None, "stale"
     return candidate, "valid"
 

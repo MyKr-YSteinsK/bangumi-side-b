@@ -6,7 +6,6 @@ import hashlib
 import os
 import shutil
 import tempfile
-import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -121,13 +120,15 @@ class IncrementalSiteWriter:
             tempfile.mkdtemp(prefix="site-", dir=self.staging_directory)
         )
         backup_directory = Path(
-            tempfile.mkdtemp(prefix="backup-", dir=self.staging_directory)
+            tempfile.mkdtemp(prefix="recovery-pending-", dir=self.staging_directory)
         )
         touched = tuple(sorted(set(changed) | set(stale)))
         backups: dict[str, bool] = {}
+        backup_complete = False
         try:
             self._stage_files(run_directory, materialized, changed)
             self._backup_files(backup_directory, touched, backups)
+            backup_complete = True
             self._apply_files(run_directory, materialized, changed, stale)
             if validate_final is not None and touched:
                 validate_final(self.site_directory)
@@ -176,13 +177,17 @@ class IncrementalSiteWriter:
                 sum(plan.specs[path].kind == "cover" for path in changed),
             )
         except PermissionError as error:
-            self._rollback(backup_directory, touched, backups)
+            if backup_complete:
+                self._rollback(backup_directory, touched, backups)
             raise BuildBlockedError(
                 "site patch blocked by a file in use: "
                 f"{_relative_message(error, touched)}"
             ) from error
         except BaseException as error:
-            self._rollback(backup_directory, touched, backups)
+            if isinstance(error, SiteRecoveryError):
+                raise
+            if backup_complete:
+                self._rollback(backup_directory, touched, backups)
             if isinstance(error, SiteWriteError):
                 raise
             raise SiteWriteError(
@@ -190,7 +195,8 @@ class IncrementalSiteWriter:
             ) from error
         finally:
             shutil.rmtree(run_directory, ignore_errors=True)
-            shutil.rmtree(backup_directory, ignore_errors=True)
+            if not backup_complete:
+                shutil.rmtree(backup_directory, ignore_errors=True)
 
     def _rollback(
         self,
@@ -201,12 +207,13 @@ class IncrementalSiteWriter:
         try:
             self._restore(backup_directory, touched, backups)
         except SiteRecoveryError as error:
-            recovery = self._retain_recovery(backup_directory, touched, backups)
+            recovery = self._retain_recovery(backup_directory)
             self._invalidate_state(recovery)
             relative = recovery.relative_to(self.workspace_directory).as_posix()
             raise SiteRecoveryError(
                 f"site recovery incomplete; next build required: {relative}"
             ) from error
+        shutil.rmtree(backup_directory, ignore_errors=True)
 
     def _cleanup_staging(self) -> None:
         self.staging_directory.mkdir(parents=True, exist_ok=True)
@@ -323,21 +330,9 @@ class IncrementalSiteWriter:
     def _retain_recovery(
         self,
         backup_directory: Path,
-        touched: tuple[str, ...],
-        backups: Mapping[str, bool],
     ) -> Path:
-        recovery = self.staging_directory / f"recovery-{uuid.uuid4().hex}"
-        recovery.mkdir(parents=True, exist_ok=False)
-        for relative in touched:
-            if not backups.get(relative, False):
-                continue
-            backup = backup_directory / Path(relative)
-            if not backup.is_file():
-                continue
-            target = recovery / Path(relative)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(backup, target)
-        return recovery
+        """Keep the original backup tree after an incomplete restore."""
+        return backup_directory
 
     def _invalidate_state(self, recovery: Path) -> None:
         if not self.state_path.exists():
@@ -360,6 +355,7 @@ class IncrementalSiteWriter:
     def _commit_state(self, state: BuildState) -> None:
         from bgm_side_b.build.site_projection import json_bytes
 
+        content = json_bytes(state.to_dict())
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix="build-state-", suffix=".tmp", dir=self.state_path.parent
@@ -367,13 +363,25 @@ class IncrementalSiteWriter:
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "wb") as stream:
-                stream.write(json_bytes(state.to_dict()))
+                stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.state_path)
-        except PermissionError:
-            raise
         except OSError as error:
+            try:
+                committed = self.state_path.read_bytes() == content
+            except OSError:
+                committed = False
+            if committed:
+                return
+            try:
+                self.state_path.unlink(missing_ok=True)
+            except OSError as invalidation_error:
+                raise SiteRecoveryError(
+                    "build state commit is ambiguous and could not be invalidated"
+                ) from invalidation_error
+            if isinstance(error, PermissionError):
+                raise
             raise SiteWriteError("cannot commit build state") from error
         finally:
             temporary.unlink(missing_ok=True)

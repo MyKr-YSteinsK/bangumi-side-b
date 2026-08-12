@@ -51,22 +51,17 @@ def test_project_root_is_discovered_from_a_child_directory() -> None:
     assert find_project_root(root / "src" / "bgm_side_b") == root
 
 
-def test_build_parser_accepts_scope_or_all_and_profile_target() -> None:
+def test_build_parser_exposes_only_unified_scope_and_release_commands() -> None:
     parser = build_parser()
-    scoped = parser.parse_args(["build", "2022", "1", "--target", "pages"])
+    scoped = parser.parse_args(["build", "2022", "1"])
     all_quarters = parser.parse_args(["build", "--all"])
-    discarded = parser.parse_args(["build", "--all", "--discard-pending"])
-    promote = parser.parse_args(["promote", "pages"])
     doctor = parser.parse_args(["doctor", "--local"])
     prepare = parser.parse_args(["release", "prepare", "--quiet"])
     release_publish = parser.parse_args(["release", "publish", "--progress", "plain"])
 
     assert scoped.scope == ["2022", "1"]
-    assert scoped.target == "pages"
     assert not scoped.all
     assert all_quarters.all
-    assert discarded.discard_pending
-    assert promote.profile == "pages"
     assert doctor.local
     assert prepare.release_command == "prepare"
     assert prepare.quiet
@@ -105,7 +100,7 @@ def test_shared_progress_arguments_are_available_on_every_long_command() -> None
 
     sync = parser.parse_args(["sync", "2022", "1", "--progress", "plain"])
     build = parser.parse_args(["build", "--all", "--quiet"])
-    publish = parser.parse_args(["publish", "--verbose"])
+    publish = parser.parse_args(["release", "publish", "--verbose"])
 
     assert sync.progress == "plain"
     assert build.quiet
@@ -246,4 +241,4 @@ def test_build_cli_rejects_every_scope_outside_2026_04(
         main(["build", "2026", "1"])
 
     assert error.value.code == 2
-    assert "只允许 2026-04" in capsys.readouterr().err
+    assert "database is missing" in capsys.readouterr().err

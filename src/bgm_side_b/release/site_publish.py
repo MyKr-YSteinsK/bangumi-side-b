@@ -237,7 +237,7 @@ class UnifiedPublisher:
                     shutil.copytree(child, destination)
                 else:
                     shutil.copy2(child, destination)
-            self._git("add", "-A", cwd=worktree)
+            self._git("-c", "core.autocrlf=false", "add", "-A", cwd=worktree)
             status = self._git("status", "--porcelain", cwd=worktree).stdout
             if not status.strip():
                 raise SitePublishError("dist/site has no publishable changes")

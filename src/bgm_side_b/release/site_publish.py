@@ -10,6 +10,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from bgm_side_b import __version__
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
@@ -22,6 +23,68 @@ from bgm_side_b.release.site_candidate import (
 
 class SitePublishError(RuntimeError):
     """Raised when exact-site publication cannot be proven safe."""
+
+
+_OFFICIAL_ORIGIN = "github.com/mykr-ysteinsk/bangumi-side-b"
+
+
+def validate_release_origin(project_root: Path, remote: str = "origin") -> str:
+    """Require a configured remote to be this project's official GitHub origin."""
+    root = project_root.resolve()
+    result = subprocess.run(
+        ["git", "config", "--get", f"remote.{remote}.url"],
+        cwd=root,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise SitePublishError(f"{remote} remote is not configured for this project")
+    value = result.stdout.strip()
+    if _normalise_origin(value) != _OFFICIAL_ORIGIN:
+        raise SitePublishError("release publish requires the official project origin")
+    return value
+
+
+def _normalise_origin(value: str) -> str | None:
+    """Return a canonical official-origin key for the supported GitHub URL forms."""
+    text = value.strip()
+    if not text:
+        return None
+    if text.startswith("git@"):
+        if ":" not in text or "/" not in text:
+            return None
+        user_host, path = text.split(":", 1)
+        if user_host.casefold() != "git@github.com" or path.count("/") != 1:
+            return None
+        owner, repository = path.split("/", 1)
+    else:
+        parsed = urlsplit(text)
+        if parsed.scheme not in {"https", "ssh"}:
+            return None
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        if parsed.hostname is None or parsed.hostname.casefold() != "github.com":
+            return None
+        if parsed.query or parsed.fragment or port is not None:
+            return None
+        if parsed.scheme == "https" and parsed.username is not None:
+            return None
+        if parsed.scheme == "ssh" and parsed.username != "git":
+            return None
+        path = parsed.path.strip("/")
+        if path.count("/") != 1:
+            return None
+        owner, repository = path.split("/", 1)
+    if repository.casefold().endswith(".git"):
+        repository = repository[:-4]
+    if not owner or not repository or "." in repository or "/" in repository:
+        return None
+    return "github.com/" + f"{owner}/{repository}".casefold()
 
 
 @dataclass(frozen=True)

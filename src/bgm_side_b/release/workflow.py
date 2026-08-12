@@ -28,6 +28,7 @@ from bgm_side_b.release.site_publish import (
     SitePublishError,
     SitePublishRun,
     UnifiedPublisher,
+    validate_release_origin,
 )
 from bgm_side_b.release.unified_audit import (
     UnifiedAuditResult,
@@ -279,6 +280,10 @@ def publish_prepared_release(
     root = project_root.resolve()
     active = reporter or NullProgressReporter()
     active.start(stage="release-preflight", message="正在验证 prepared release")
+    try:
+        validate_release_origin(root)
+    except SitePublishError as error:
+        raise WorkflowError(str(error)) from error
     prepared = _read_prepared(root)
     _validate_prepared_local(root, prepared)
     if _origin_main_status(root) != "synchronized":

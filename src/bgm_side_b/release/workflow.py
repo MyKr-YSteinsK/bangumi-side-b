@@ -497,11 +497,7 @@ def _worktree_changes(root: Path) -> list[str]:
     result = _run_git(root, "status", "--porcelain", check=False)
     if result.returncode:
         return ["git-error"]
-    return [line for line in result.stdout.splitlines() if not _temporary_plan(line)]
-
-
-def _temporary_plan(line: str) -> bool:
-    return line[3:].replace("\\", "/").startswith("docs/Bangumi-Side-B-Codex-Plan-")
+    return result.stdout.splitlines()
 
 
 def _git_value(root: Path, *args: str) -> str | None:

@@ -31,6 +31,7 @@ _RELEASE_COMMIT = re.compile(
     r"^release: (?P<date>\d{4}\.\d{2}\.\d{2})\.(?P<serial>[1-9]\d*) "
     r"\[source (?P<source>[0-9a-f]{12})\]$"
 )
+_UNBOUND_REMOTE = object()
 
 
 def validate_release_origin(project_root: Path, remote: str = "origin") -> str:
@@ -119,7 +120,7 @@ class UnifiedPublisher:
         dry_run: bool = False,
         remote: str = "origin",
         branch: str = "gh-pages",
-        expected_remote_commit: str | None = None,
+        expected_remote_commit: str | None | object = _UNBOUND_REMOTE,
         expected_content_hash: str | None = None,
     ) -> SitePublishRun:
         if branch != "gh-pages":
@@ -132,17 +133,27 @@ class UnifiedPublisher:
             raise SitePublishError("dist/site changed; run release prepare again")
         self.reporter.stage(stage="remote-state", message="正在读取远端 gh-pages")
         remote_commit = self.remote_commit(remote, branch)
-        if expected_remote_commit is not None and (
-            remote_commit != expected_remote_commit
+        if (
+            expected_remote_commit is not _UNBOUND_REMOTE
+            and remote_commit != expected_remote_commit
         ):
             raise SitePublishError("gh-pages changed; run release prepare again")
         release_version = self._release_version(remote, branch)
         staging = Path(tempfile.mkdtemp(prefix="bgmb-release-"))
         try:
             shutil.copytree(self.site, staging / "site")
+            try:
+                staged_candidate = validate_site(
+                    staging / "site",
+                    source_commit=candidate.identity.source_commit,
+                )
+            except SiteCandidateError as error:
+                raise SitePublishError("dist/site changed while staging") from error
+            if staged_candidate.identity != candidate.identity:
+                raise SitePublishError("dist/site changed while staging")
             if dry_run:
                 report = self._write_report(
-                    candidate.identity,
+                    staged_candidate.identity,
                     release_version,
                     remote,
                     branch,
@@ -163,12 +174,12 @@ class UnifiedPublisher:
                 branch,
                 remote_commit,
                 release_version,
-                candidate.identity.source_commit,
+                staged_candidate.identity.source_commit,
             )
             warnings: tuple[str, ...] = ()
             try:
                 report = self._write_report(
-                    candidate.identity,
+                    staged_candidate.identity,
                     release_version,
                     remote,
                     branch,
@@ -230,6 +241,11 @@ class UnifiedPublisher:
             self._git("remote", "add", remote, self._remote_url(remote), cwd=worktree)
             if expected_remote_commit is not None:
                 self._git("fetch", "-q", remote, branch, cwd=worktree)
+                fetched_remote = self._git(
+                    "rev-parse", f"{remote}/{branch}", cwd=worktree
+                ).stdout.strip()
+                if fetched_remote != expected_remote_commit:
+                    raise SitePublishError("gh-pages changed during publication")
                 self._git(
                     "checkout", "-q", "-B", branch, f"{remote}/{branch}", cwd=worktree
                 )
@@ -264,8 +280,33 @@ class UnifiedPublisher:
             release_commit = self._git("rev-parse", "HEAD", cwd=worktree).stdout.strip()
             if not re.fullmatch(r"[0-9a-f]{40}", release_commit):
                 raise SitePublishError("release commit could not be identified")
-            self._git("push", remote, f"HEAD:{branch}", cwd=worktree)
-            remote_after = self.remote_commit(remote, branch)
+            try:
+                self._git("push", remote, f"HEAD:{branch}", cwd=worktree)
+            except subprocess.CalledProcessError as error:
+                detail = (
+                    error.stderr or error.stdout or "git publication failed"
+                ).strip()
+                try:
+                    remote_after = self.remote_commit(remote, branch)
+                except SitePublishError as confirmation_error:
+                    raise SitePublishError(
+                        "release push outcome unknown; inspect remote gh-pages "
+                        "before retrying"
+                    ) from confirmation_error
+                if remote_after != release_commit:
+                    if remote_after == expected_remote_commit:
+                        raise SitePublishError(detail) from error
+                    raise SitePublishError(
+                        "release push outcome ambiguous; remote gh-pages changed; "
+                        "inspect it before retrying"
+                    ) from error
+            try:
+                remote_after = self.remote_commit(remote, branch)
+            except SitePublishError as error:
+                raise SitePublishError(
+                    "release push outcome unknown; inspect remote gh-pages "
+                    "before retrying"
+                ) from error
             if remote_after != release_commit:
                 raise SitePublishError(
                     "release commit was pushed but gh-pages advanced "

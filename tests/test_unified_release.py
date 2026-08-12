@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import bgm_side_b.release.site_publish as publish_module
 from bgm_side_b.release.site_publish import SitePublishError, UnifiedPublisher
 from bgm_side_b.release.workflow import WorkflowError, _read_prepared
 
@@ -268,6 +269,127 @@ def test_publish_race_before_push_fails_without_force_or_retry(
     assert raced_commit == _git(racer, "rev-parse", "HEAD")
     assert len(publish_pushes) == 1
     assert all("force" not in argument for argument in publish_pushes[0])
+
+
+def test_publish_rejects_remote_advance_between_precheck_and_fetch(
+    isolated_release: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, remote = isolated_release
+    publisher = UnifiedPublisher(root)
+    first = publisher.publish()
+    index = root / "dist" / "site" / "index.html"
+    index.write_text(index.read_text("utf-8") + "\nrelease change\n", "utf-8")
+
+    racer = root.parent / "fetch-racer"
+    _git(root.parent, "clone", "-q", "--branch", "gh-pages", str(remote), str(racer))
+    (racer / "race.txt").write_text("advance before fetch\n", "utf-8")
+    _git(racer, "add", "race.txt")
+    _git(
+        racer,
+        "-c",
+        "user.name=Racer",
+        "-c",
+        "user.email=racer@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        "advance before release fetch",
+    )
+    raced_commit = _git(racer, "rev-parse", "HEAD")
+    original_git = publisher._git
+    advanced = False
+
+    def race_git(
+        *args: str, cwd: Path | None = None, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal advanced
+        if (
+            not advanced
+            and args[:1] == ("fetch",)
+            and cwd is not None
+            and cwd.name.startswith("bgmb-pages-worktree-")
+        ):
+            advanced = True
+            _git(racer, "push", "-q", "origin", "HEAD:gh-pages")
+        return original_git(*args, cwd=cwd, check=check)
+
+    monkeypatch.setattr(publisher, "_git", race_git)
+    with pytest.raises(SitePublishError, match="changed during publication"):
+        publisher.publish(expected_remote_commit=first.remote_commit)
+    assert advanced
+    assert _git(root, "--git-dir", str(remote), "rev-parse", "gh-pages") == raced_commit
+
+
+def test_publish_rejects_candidate_mutation_while_staging(
+    isolated_release: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, remote = isolated_release
+    publisher = UnifiedPublisher(root)
+    expected = publisher.candidate().identity.content_hash
+    original_copytree = publish_module.shutil.copytree
+    mutated = False
+
+    def mutate_then_copy(
+        source: Path, destination: Path, *args: object, **kwargs: object
+    ):
+        nonlocal mutated
+        if not mutated and Path(source).resolve() == publisher.site.resolve():
+            mutated = True
+            index = publisher.site / "index.html"
+            index.write_text(index.read_text("utf-8") + "\nmutation\n", "utf-8")
+        return original_copytree(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(publish_module.shutil, "copytree", mutate_then_copy)
+    with pytest.raises(SitePublishError, match="changed while staging"):
+        publisher.publish(expected_content_hash=expected)
+    assert mutated
+    missing = subprocess.run(
+        [
+            "git",
+            "--git-dir",
+            str(remote),
+            "show-ref",
+            "--verify",
+            "refs/heads/gh-pages",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert missing.returncode != 0
+
+
+def test_publish_reconciles_push_accepted_before_client_error(
+    isolated_release: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, remote = isolated_release
+    publisher = UnifiedPublisher(root)
+    original_git = publisher._git
+    accepted = False
+
+    def accepted_then_error(
+        *args: str, cwd: Path | None = None, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal accepted
+        if not accepted and args[:1] == ("push",):
+            accepted = True
+            original_git(*args, cwd=cwd, check=check)
+            raise subprocess.CalledProcessError(
+                1,
+                ["git", *args],
+                stderr="connection lost after remote accepted push",
+            )
+        return original_git(*args, cwd=cwd, check=check)
+
+    monkeypatch.setattr(publisher, "_git", accepted_then_error)
+    run = publisher.publish()
+    assert accepted
+    assert run.published
+    assert run.remote_commit == _git(
+        root, "--git-dir", str(remote), "rev-parse", "gh-pages"
+    )
+    assert json.loads(run.report_path.read_text("utf-8"))["remote_commit"] == (
+        run.remote_commit
+    )
 
 
 def test_publish_race_after_push_refuses_to_attribute_the_new_remote_head(

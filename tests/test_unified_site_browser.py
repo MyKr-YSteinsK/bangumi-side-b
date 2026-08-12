@@ -453,25 +453,51 @@ def test_quarter_filters_are_media_local_and_normalized(
     _open_quarter(page, site_server, (1440, 900))
 
     page.locator("[data-filter-toggle]").click()
+    option_search = page.locator("[data-filter-option-search]")
+    option_search.fill("tv-only")
     assert page.get_by_label("tv-only-source").is_visible()
     assert page.get_by_label("tv-only-tag").is_visible()
+    assert page.get_by_label("shared-source").is_hidden()
     assert page.get_by_label("movie-only-source").count() == 0
     assert page.get_by_label("movie-only-tag").count() == 0
     page.get_by_label("tv-only-source").check()
+    assert page.locator("[data-filter-option-search]").input_value() == "tv-only"
+    assert page.get_by_label("shared-source").is_hidden()
+    assert page.get_by_label("tv-only-source").is_checked()
+    assert (
+        page.evaluate("document.activeElement?.dataset.filterValue")
+        == "tv-only-source"
+    )
+    assert "1 / 2" in page.locator("[data-results-summary]").inner_text()
     page.get_by_label("tv-only-tag").check()
     page.locator('[data-media-mode="movie"]').click()
     assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
     assert page.locator("[data-filter-count]").inner_text() == ""
-
     page.locator("[data-filter-toggle]").click()
+    assert page.locator("[data-filter-option-search]").input_value() == "tv-only"
+    page.locator("[data-filter-option-search]").fill("")
     assert page.get_by_label("movie-only-source").is_visible()
     assert page.get_by_label("movie-only-tag").is_visible()
     assert page.get_by_label("tv-only-source").count() == 0
+
+    page.locator("[data-search]").fill("no matching title")
+    page.locator("[data-clear-all]").click()
+    page.locator("[data-filter-toggle]").click()
+    assert page.locator("[data-filter-option-search]").input_value() == ""
+    assert page.locator("[data-search]").input_value() == ""
+    assert page.locator("[data-filter-count]").inner_text() == ""
     assert page.get_by_label("tv-only-tag").count() == 0
     page.get_by_label("shared-source").check()
     page.get_by_label("shared-tag").check()
     page.locator('[data-media-mode="tv"]').click()
     assert page.locator("[data-filter-count]").inner_text() == "(2)"
+
+    page.locator("[data-search]").fill("no matching title")
+    page.locator("[data-clear-all]").click()
+    page.locator("[data-filter-toggle]").click()
+    assert page.locator("[data-filter-option-search]").input_value() == ""
+    assert page.locator("[data-search]").input_value() == ""
+    assert page.locator("[data-filter-count]").inner_text() == ""
 
 
 def test_archive_filters_are_media_local_and_normalized(
@@ -508,14 +534,25 @@ def test_archive_filters_are_media_local_and_normalized(
     )
 
     page.locator("[data-filter-toggle]").click()
+    page.locator("[data-filter-option-search]").fill("tv-only")
     assert page.get_by_label("tv-only-source").is_visible()
+    assert page.get_by_label("shared-source").is_hidden()
     assert page.get_by_label("movie-only-source").count() == 0
     page.get_by_label("tv-only-source").check()
+    assert page.locator("[data-filter-option-search]").input_value() == "tv-only"
+    assert page.get_by_label("shared-source").is_hidden()
+    assert (
+        page.evaluate("document.activeElement?.dataset.filterValue")
+        == "tv-only-source"
+    )
+    assert "1 / 2" in page.locator("[data-results-summary]").inner_text()
     page.get_by_label("tv-only-tag").check()
     page.locator('[data-media-mode="movie"]').click()
     assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
     assert page.locator("[data-filter-count]").inner_text() == ""
     page.locator("[data-filter-toggle]").click()
+    assert page.locator("[data-filter-option-search]").input_value() == "tv-only"
+    page.locator("[data-filter-option-search]").fill("")
     assert page.get_by_label("movie-only-source").is_visible()
     assert page.get_by_label("movie-only-tag").is_visible()
     assert page.get_by_label("tv-only-source").count() == 0

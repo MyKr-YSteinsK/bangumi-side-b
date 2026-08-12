@@ -42,6 +42,7 @@
       media: "tv",
       scope: { kind: "quarter", value: "" },
       query: "",
+      filterOptionQuery: "",
       filters: { sources: [], tags: [], sections: [] },
       sort: "score-desc",
       page: 1,
@@ -618,6 +619,7 @@
     });
     quarterRoot.querySelector("[data-clear-all]")?.addEventListener("click", () => {
       state.query = "";
+      state.filterOptionQuery = "";
       state.filters = { sources: [], tags: [], sections: [] };
       if (search) search.value = "";
       state.page = 1;
@@ -636,12 +638,16 @@
     const options = archive.availableFilterValues(records, state.media);
     filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
     const optionSearch = filterPanel.querySelector("[data-filter-option-search]");
-    let optionQuery = "";
-    optionSearch?.addEventListener("input", () => {
-      optionQuery = archive.normalize(optionSearch.value);
+    if (optionSearch) optionSearch.value = state.filterOptionQuery;
+    const applyOptionQuery = () => {
+      const query = archive.normalize(state.filterOptionQuery);
       filterPanel.querySelectorAll("[data-filter-option]").forEach((option) => {
-        option.hidden = option.dataset.filterOption?.includes(optionQuery) === false;
+        option.hidden = option.dataset.filterOption?.includes(query) === false;
       });
+    };
+    optionSearch?.addEventListener("input", () => {
+      state.filterOptionQuery = optionSearch.value;
+      applyOptionQuery();
     });
     for (const [group, values] of Object.entries(options)) {
       if (values.length <= 1) continue;
@@ -661,6 +667,8 @@
         label.dataset.filterOption = archive.normalize(shown);
         const input = document.createElement("input");
         input.type = "checkbox";
+        input.dataset.filterGroup = group;
+        input.dataset.filterValue = value;
         input.checked = state.filters[group].includes(value);
         input.addEventListener("change", () => {
           state.filters[group] = input.checked
@@ -670,12 +678,17 @@
           state.workspaceMode = "filter";
           render();
           renderFilterPanel();
+          const replacement = [...filterPanel.querySelectorAll("[data-filter-group]")]
+            .find((candidate) => candidate.dataset.filterGroup === group
+              && candidate.dataset.filterValue === value);
+          (replacement || filterPanel.querySelector("[data-filter-option-search]"))?.focus();
         });
         label.append(input, document.createTextNode(shown));
         section.append(label);
       }
       filterPanel.append(section);
     }
+    applyOptionQuery();
     const applyButton = document.createElement("button");
     applyButton.type = "button";
     applyButton.className = "filter-apply-mobile button button--ink";
@@ -1281,11 +1294,16 @@
     const options = archive.availableFilterValues(records, state.media);
     selectors.filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
     const optionSearch = selectors.filterPanel.querySelector("[data-filter-option-search]");
-    optionSearch?.addEventListener("input", () => {
-      const query = archive.normalize(optionSearch.value);
+    if (optionSearch) optionSearch.value = state.filterOptionQuery;
+    const applyOptionQuery = () => {
+      const query = archive.normalize(state.filterOptionQuery);
       selectors.filterPanel.querySelectorAll("[data-filter-option]").forEach((option) => {
         option.hidden = option.dataset.filterOption?.includes(query) === false;
       });
+    };
+    optionSearch?.addEventListener("input", () => {
+      state.filterOptionQuery = optionSearch.value;
+      applyOptionQuery();
     });
     Object.entries(options).forEach(([group, values]) => {
       if (values.length <= 1) return;
@@ -1305,6 +1323,8 @@
         label.dataset.filterOption = archive.normalize(shown);
         const input = document.createElement("input");
         input.type = "checkbox";
+        input.dataset.filterGroup = group;
+        input.dataset.filterValue = value;
         input.checked = state.filters[group].includes(value);
         input.addEventListener("change", () => {
           state.filters[group] = input.checked ? [...state.filters[group], value] : state.filters[group].filter((item) => item !== value);
@@ -1312,12 +1332,17 @@
           state.workspaceMode = "filter";
           render();
           renderFilterPanel();
+          const replacement = [...selectors.filterPanel.querySelectorAll("[data-filter-group]")]
+            .find((candidate) => candidate.dataset.filterGroup === group
+              && candidate.dataset.filterValue === value);
+          (replacement || selectors.filterPanel.querySelector("[data-filter-option-search]"))?.focus();
         });
         label.append(input, document.createTextNode(shown));
         fieldset.append(label);
       });
       selectors.filterPanel.append(fieldset);
     });
+    applyOptionQuery();
     const apply = document.createElement("button");
     apply.type = "button";
     apply.className = "filter-apply-mobile button button--ink";
@@ -1356,7 +1381,7 @@
         }));
       }
     });
-    root.querySelector("[data-clear-all]")?.addEventListener("click", () => { state.query = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); });
+    root.querySelector("[data-clear-all]")?.addEventListener("click", () => { state.query = ""; state.filterOptionQuery = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); });
     root.querySelectorAll("[data-scope-choice]").forEach((button) => button.addEventListener("click", () => {
       const kind = button.dataset.scopeChoice;
       setTab(kind);

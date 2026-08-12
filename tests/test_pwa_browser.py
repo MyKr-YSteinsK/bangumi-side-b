@@ -708,6 +708,67 @@ def test_quarter_downloader_deduplicates_shared_cover_and_garbage_collects(
     context.close()
 
 
+def test_content_gc_waits_for_cross_page_reference_lease(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context(service_workers="block")
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("Boolean(window.BsbPwa)")
+    orphan_hash = "f" * 64
+    page.evaluate(
+        """
+        async (hash) => {
+          const content = await caches.open("bsb-content-v1");
+          await content.put(
+            new Request(new URL(`../__bsb_content__/${hash}`, location.href)),
+            new Response("orphan"),
+          );
+        }
+        """,
+        orphan_hash,
+    )
+    page.evaluate(
+        """
+        () => void navigator.locks.request(
+          "bsb-pwa-content-maintenance",
+          { mode: "shared" },
+          async () => {
+            window.__contentLeaseHeld = true;
+            await new Promise((resolve) => { window.__releaseContentLease = resolve; });
+          },
+        )
+        """
+    )
+    page.wait_for_function("window.__contentLeaseHeld === true")
+    page.evaluate("void (window.__contentGc = window.BsbPwa.garbageCollect())")
+    page.wait_for_timeout(100)
+    assert page.evaluate(
+        """
+        async (hash) => {
+          const content = await caches.open("bsb-content-v1");
+          return Boolean(await content.match(new Request(new URL(
+            `../__bsb_content__/${hash}`, location.href))));
+        }
+        """,
+        orphan_hash,
+    )
+    page.evaluate("window.__releaseContentLease()")
+    page.evaluate("window.__contentGc")
+    assert page.evaluate(
+        """
+        async (hash) => {
+          const content = await caches.open("bsb-content-v1");
+          return Boolean(await content.match(new Request(new URL(
+            `../__bsb_content__/${hash}`, location.href))));
+        }
+        """,
+        orphan_hash,
+    ) is False
+    context.close()
+
+
 def test_quarter_progress_counts_logical_resources_and_shares_inflight_hash(
     chromium: Browser,
     pwa_server: str,

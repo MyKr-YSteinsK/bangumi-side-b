@@ -13,6 +13,7 @@
   const QUEUE_LOCK_NAME = "bsb-offline-queue-runner";
   const QUEUE_MUTATION_LOCK_NAME = "bsb-offline-queue-mutation";
   const QUARTER_MUTATION_LOCK_PREFIX = "bsb-offline-quarter-";
+  const CONTENT_MAINTENANCE_LOCK_NAME = "bsb-pwa-content-maintenance";
   const STATE_CHANNEL_NAME = "bsb-pwa-state";
   const HEX_64 = /^[a-f0-9]{64}$/;
   const QUARTER = /^\d{4}-(?:01|04|07|10)$/;
@@ -113,6 +114,45 @@
     return () => listeners.delete(listener);
   }
 
+  function contentLocksAvailable() {
+    return typeof navigator.locks?.request === "function";
+  }
+
+  function withContentReferenceLease(callback) {
+    if (!contentLocksAvailable()) return callback();
+    let entered = false;
+    return navigator.locks.request(
+      CONTENT_MAINTENANCE_LOCK_NAME,
+      { mode: "shared" },
+      async () => {
+        entered = true;
+        return callback();
+      },
+    ).catch((error) => {
+      if (entered) throw error;
+      return callback();
+    });
+  }
+
+  async function withContentGcLock(callback) {
+    if (!contentLocksAvailable()) return false;
+    let entered = false;
+    try {
+      return await navigator.locks.request(
+        CONTENT_MAINTENANCE_LOCK_NAME,
+        { mode: "exclusive" },
+        async () => {
+          entered = true;
+          await callback();
+          return true;
+        },
+      );
+    } catch (error) {
+      if (entered) throw error;
+      return false;
+    }
+  }
+
   function safeResource(value) {
     if (!value || typeof value !== "object") throw new Error("资源记录无效");
     const relative = value.url;
@@ -201,12 +241,22 @@
       await verifiedResponse(response, resource);
       return true;
     } catch {
-      await cache.delete(key);
+      await withContentGcLock(async () => {
+        await cache.delete(key);
+      });
       return false;
     }
   }
 
-  async function promoteRuntime(resource) {
+  async function putContent(resource, response, generation = null) {
+    return withContentReferenceLease(async () => {
+      if (generation) await assertQueueGeneration(generation);
+      const content = await caches.open(CONTENT_CACHE);
+      await content.put(contentRequest(resource.content_hash), response);
+    });
+  }
+
+  async function promoteRuntime(resource, generation = null) {
     const runtime = await caches.open(RUNTIME_CACHE);
     const candidates = [
       new Request(absolute(resource.url)),
@@ -217,8 +267,7 @@
       if (!response) continue;
       try {
         const verified = await verifiedResponse(response, resource);
-        const content = await caches.open(CONTENT_CACHE);
-        await content.put(contentRequest(resource.content_hash), verified);
+        await putContent(resource, verified, generation);
         for (const candidate of candidates) await runtime.delete(candidate);
         return true;
       } catch {
@@ -232,18 +281,21 @@
     return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
   }
 
-  async function fetchVerified(resource) {
+  async function fetchVerified(resource, generation = null) {
     let lastError = null;
     for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt += 1) {
-      if (attempt > 0) await delay(RETRY_DELAYS[attempt - 1]);
+      if (generation) await assertQueueGeneration(generation);
+      if (attempt > 0) {
+        await delay(RETRY_DELAYS[attempt - 1]);
+        if (generation) await assertQueueGeneration(generation);
+      }
       try {
         const response = await fetch(absolute(resource.url), {
           cache: "no-store",
           credentials: "same-origin",
         });
         const verified = await verifiedResponse(response, resource);
-        const content = await caches.open(CONTENT_CACHE);
-        await content.put(contentRequest(resource.content_hash), verified);
+        await putContent(resource, verified, generation);
         return;
       } catch (error) {
         lastError = error;
@@ -252,10 +304,10 @@
     throw lastError || new Error("资源请求失败");
   }
 
-  async function ensureResource(resource) {
+  async function ensureResource(resource, generation = null) {
     if (await existingContent(resource)) return;
-    if (await promoteRuntime(resource)) return;
-    await fetchVerified(resource);
+    if (await promoteRuntime(resource, generation)) return;
+    await fetchVerified(resource, generation);
   }
 
   function initialQuarterState(quarter) {
@@ -476,7 +528,7 @@
     // Every quarter transaction enters the quarter lock before the shared
     // queue lock. Callers must keep network and verification work outside it.
     const previous = quarterMutations.get(quarter) || Promise.resolve();
-    const operation = previous.then(async () => {
+    const operation = previous.then(async () => withContentReferenceLease(async () => {
       const runWithQueueLock = () => enqueueQueueMutation(callback);
       const runWithQuarterLock = () => {
         if (typeof navigator.locks?.request !== "function") return runWithQueueLock();
@@ -494,7 +546,7 @@
         });
       };
       return runWithQuarterLock();
-    });
+    }));
     const tracked = operation.catch(() => {});
     quarterMutations.set(quarter, tracked);
     return operation.finally(() => {
@@ -565,7 +617,7 @@
     function ensureShared(resource) {
       const hash = resource.content_hash;
       if (!inFlight.has(hash)) {
-        const operation = ensureResource(resource).finally(() => inFlight.delete(hash));
+        const operation = ensureResource(resource, generation).finally(() => inFlight.delete(hash));
         inFlight.set(hash, operation);
       }
       return inFlight.get(hash);
@@ -996,12 +1048,14 @@
   }
 
   async function garbageCollect() {
-    const keep = await referencedHashes();
-    const content = await caches.open(CONTENT_CACHE);
-    for (const request of await content.keys()) {
-      const hash = request.url.slice(request.url.lastIndexOf("/") + 1);
-      if (!keep.has(hash)) await content.delete(request);
-    }
+    return withContentGcLock(async () => {
+      const keep = await referencedHashes();
+      const content = await caches.open(CONTENT_CACHE);
+      for (const request of await content.keys()) {
+        const hash = request.url.slice(request.url.lastIndexOf("/") + 1);
+        if (!keep.has(hash)) await content.delete(request);
+      }
+    });
   }
 
   async function removeQuarter(quarter) {

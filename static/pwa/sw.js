@@ -9,6 +9,7 @@ const CONTENT_PATH = "__bsb_content__/";
 const META_PATH = "__bsb_meta__/";
 const SHELL_META = "shell.json";
 const PENDING_SHELL_META = `shell-pending-${BSB_SHELL_REVISION}.json`;
+const CONTENT_MAINTENANCE_LOCK_NAME = "bsb-pwa-content-maintenance";
 const HEX_64 = /^[a-f0-9]{64}$/;
 
 function scopeUrl(relative = "") {
@@ -42,6 +43,45 @@ async function writeMeta(name, value) {
       headers: { "Content-Type": "application/json; charset=utf-8" },
     }),
   );
+}
+
+function contentLocksAvailable() {
+  return typeof navigator.locks?.request === "function";
+}
+
+function withContentReferenceLease(callback) {
+  if (!contentLocksAvailable()) return callback();
+  let entered = false;
+  return navigator.locks.request(
+    CONTENT_MAINTENANCE_LOCK_NAME,
+    { mode: "shared" },
+    async () => {
+      entered = true;
+      return callback();
+    },
+  ).catch((error) => {
+    if (entered) throw error;
+    return callback();
+  });
+}
+
+async function withContentGcLock(callback) {
+  if (!contentLocksAvailable()) return false;
+  let entered = false;
+  try {
+    return await navigator.locks.request(
+      CONTENT_MAINTENANCE_LOCK_NAME,
+      { mode: "exclusive" },
+      async () => {
+        entered = true;
+        await callback();
+        return true;
+      },
+    );
+  } catch (error) {
+    if (entered) throw error;
+    return false;
+  }
 }
 
 function safeResource(value) {
@@ -112,6 +152,15 @@ async function verifiedResponse(response, resource) {
   return response.clone();
 }
 
+async function fetchJson(relative) {
+  const response = await fetch(scopeUrl(relative), {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  if (!response.ok) throw new Error(`metadata unavailable: ${relative}`);
+  return response.json();
+}
+
 async function ensureContent(resource) {
   const cache = await caches.open(CONTENT_CACHE);
   const key = contentRequest(resource.content_hash);
@@ -131,19 +180,12 @@ async function ensureContent(resource) {
   await cache.put(key, await verifiedResponse(response, resource));
 }
 
-async function fetchJson(relative) {
-  const response = await fetch(scopeUrl(relative), {
-    cache: "no-store",
-    credentials: "same-origin",
-  });
-  if (!response.ok) throw new Error(`metadata unavailable: ${relative}`);
-  return response.json();
-}
-
 async function installShell() {
   const manifest = validateManifest(await fetchJson("data/pwa-shell.json"));
-  await Promise.all(manifest.resources.map(ensureContent));
-  await writeMeta(PENDING_SHELL_META, manifest);
+  await withContentReferenceLease(async () => {
+    await Promise.all(manifest.resources.map(ensureContent));
+    await writeMeta(PENDING_SHELL_META, manifest);
+  });
 }
 
 async function activeQuarterMetadata() {
@@ -190,7 +232,7 @@ async function referencedHashes(shell) {
   return hashes;
 }
 
-async function garbageCollect(shell) {
+async function garbageCollectUnlocked(shell) {
   const keep = await referencedHashes(shell);
   const cache = await caches.open(CONTENT_CACHE);
   for (const request of await cache.keys()) {
@@ -199,17 +241,25 @@ async function garbageCollect(shell) {
   }
 }
 
+async function garbageCollect(shell) {
+  return withContentGcLock(() => garbageCollectUnlocked(shell));
+}
+
 async function activateShell() {
   const pending = await readMeta(PENDING_SHELL_META);
   if (!pending) throw new Error("pending shell metadata unavailable");
   const manifest = validateManifest(pending);
-  await Promise.all(manifest.resources.map(ensureContent));
-  await writeMeta(SHELL_META, manifest);
-  const meta = await caches.open(META_CACHE);
-  for (const request of await meta.keys()) {
-    if (request.url.includes(`${META_PATH}shell-pending-`)) await meta.delete(request);
-  }
-  await garbageCollect(manifest);
+  const activate = async (collect) => {
+    await Promise.all(manifest.resources.map(ensureContent));
+    await writeMeta(SHELL_META, manifest);
+    const meta = await caches.open(META_CACHE);
+    for (const request of await meta.keys()) {
+      if (request.url.includes(`${META_PATH}shell-pending-`)) await meta.delete(request);
+    }
+    if (collect) await garbageCollectUnlocked(manifest);
+  };
+  const collected = await withContentGcLock(() => activate(true));
+  if (!collected) await activate(false);
   await self.clients.claim();
 }
 

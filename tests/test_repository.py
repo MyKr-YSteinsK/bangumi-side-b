@@ -467,3 +467,61 @@ def test_review_queue_reconciles_and_preserves_unresolved_subject_facts(
     with repository.transaction() as connection:
         repository.replace_review_issues(connection, 101, ())
     assert repository.list_review_issues() == ()
+
+
+def test_bulk_snapshot_semantics_match_single_subject_reads(
+    repository: SubjectRepository,
+) -> None:
+    tv = replace(
+        _snapshot(101),
+        aliases=("Alias A", "别名乙", "Alias C"),
+        infobox=(
+            InfoboxItem("放送开始", "2026-04-01"),
+            InfoboxItem("国家/地区", ["日本"]),
+            InfoboxItem("制作", {"studio": "A"}),
+        ),
+        tags=("奇幻", "冒险", "日常"),
+        continuing=(
+            _continuing(Quarter(2026, 7), "2026-07-04"),
+            _continuing(Quarter(2026, 10), "2026-10-03"),
+        ),
+        review_issues=(
+            ReviewIssue("issue_a", Quarter(2026, 4), "a", {"order": 1}, "now"),
+            ReviewIssue("issue_b", Quarter(2026, 4), "b", {"order": 2}, "now"),
+        ),
+    )
+    movie = replace(
+        _snapshot(202),
+        subject=replace(_snapshot(202).subject, media_format=MediaFormat.MOVIE),
+        source=SourceDecision(SourceType.UNKNOWN),
+        premiere=QuarterAppearance(
+            Quarter(2026, 7),
+            QuarterAppearanceKind.PREMIERE,
+            QuarterAssignmentSource.AUTOMATIC,
+            "air_date",
+            "2026-07-01",
+        ),
+        continuing=(),
+        cover=None,
+        review_issues=(),
+    )
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(connection, tv)
+        repository.replace_subject_snapshot(connection, movie)
+        connection.execute("DELETE FROM subject_sources WHERE subject_id = 202")
+
+    bulk = repository.get_subject_facts_many((202, 999999, 101, 202, 101))
+    assert tuple(bulk) == (101, 202)
+    assert bulk[101] == repository.get_subject_facts(101) == tv
+    assert bulk[101].aliases == tv.aliases
+    assert bulk[101].infobox == tv.infobox
+    assert bulk[101].tags == tv.tags
+    assert bulk[101].appearances == tv.appearances
+    assert bulk[202] == repository.get_subject_facts(202)
+    assert bulk[202].source == SourceDecision(SourceType.UNKNOWN)
+    assert bulk[202].cover is None
+    assert bulk[202].continuing == ()
+    assert [item.issue.issue_code for item in repository.list_review_issues()] == [
+        "issue_a",
+        "issue_b",
+    ]

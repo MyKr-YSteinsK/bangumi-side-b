@@ -163,6 +163,34 @@ def retry_pwa_server(pwa_site: Path) -> Iterator[tuple[str, list[int]]]:
 
 
 @pytest.fixture
+def flaky_resource_server(pwa_site: Path) -> Iterator[tuple[str, list[int]]]:
+    attempts = [0]
+
+    class FlakyResourceHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path.split("?", 1)[0].endswith("/data/quarters/2026-07.json"):
+                attempts[0] += 1
+                if attempts[0] == 1:
+                    self.send_error(503, "resource unavailable")
+                    return
+            super().do_GET()
+
+    handler = functools.partial(
+        FlakyResourceHandler,
+        directory=str(pwa_site.parent),
+    )
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/bangumi-side-b", attempts
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.fixture
 def gzip_pwa_server(pwa_site: Path) -> Iterator[str]:
     class GzipHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -1331,6 +1359,33 @@ def test_cancelled_runner_cannot_modify_new_queue_generation(
     assert queue["generation"] == new["generation"]
     assert queue["succeeded"] == ["2026-04"]
     assert queue["failed"] == []
+    context.close()
+
+
+def test_cancelled_generation_stops_resource_retry(
+    chromium: Browser,
+    flaky_resource_server: tuple[str, list[int]],
+) -> None:
+    pwa_server, attempts = flaky_resource_server
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    page.wait_for_function(
+        "window.BsbPwa.currentQueue().then((queue) => queue.current === '2026-07')"
+    )
+    for _ in range(80):
+        if attempts[0] >= 1:
+            break
+        page.wait_for_timeout(25)
+    assert attempts[0] == 1
+    page.evaluate("async () => window.BsbPwa.cancelQueue()")
+    page.wait_for_function(
+        "window.BsbPwa.currentQueue().then((queue) => queue.state === 'cancelled')"
+    )
+    page.wait_for_timeout(1200)
+    assert attempts[0] == 1
     context.close()
 
 

@@ -270,7 +270,8 @@
         await putContent(resource, verified, generation);
         for (const candidate of candidates) await runtime.delete(candidate);
         return true;
-      } catch {
+      } catch (error) {
+        if (error instanceof StaleQueueError) throw error;
         await runtime.delete(request);
       }
     }
@@ -298,6 +299,7 @@
         await putContent(resource, verified, generation);
         return;
       } catch (error) {
+        if (error instanceof StaleQueueError) throw error;
         lastError = error;
       }
     }

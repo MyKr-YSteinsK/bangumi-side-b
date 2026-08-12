@@ -80,7 +80,7 @@ bgmb sync 2026 4
 ```
 
 `sync` 联网获取事实与封面；事实成功提交后触发受影响范围的增量 build。`build` 完全离线，
-`serve` 只服务已有 `dist/site`，`publish` 从不调用 `sync` 或 `build`。
+`serve` 只服务已有 `dist/site`，`bgmb release publish` 从不调用 `sync` 或 `build`。
 
 评分和评分人数每次刷新；稳定详情可增量复用；失败项重试；成功数据保留；局部失败最终
 退出码非零；Ctrl+C 停止新请求并保证当前事务完成或回滚。发现候选但日本 TV 收录为 0 时
@@ -205,17 +205,17 @@ dist/site/
 
 `main` 不提交 SQLite、媒体、报告、临时文件、备份或生成站点。Pages 最终发布到 `gh-pages`。
 
-`config/bangumi.toml` 中的 `[scope]`、`[country_filter]`、`[roles]` 和旧 Infobox 配置只供
-legacy audit/doctor/release 链路读取；clean Sync 只通过 `archive_config.py` 读取 `[filters]`
-与 `[sync]`，clean Build/Frontend 不依赖旧季度范围、国家默认放行或角色配置。旧 loader 与配置
-将在 Plan 20 随 legacy release 链路统一删除。
+`config/bangumi.toml` 的正式活动配置是 `[filters]` 与 `[sync]`；同步通过
+`archive_config.py` 读取这些字段。Build、Frontend 与统一 release workflow 不依赖旧季度范围、
+国家默认放行、角色配置或已移除的旧发布链路。
 
 命令严格解耦：
 
 - `sync`：联网同步并在事实成功后触发受影响范围的增量 build；
 - `build`：完全离线构建唯一 `dist/site`；
 - `serve`：只服务已有 `dist/site`，不读 SQLite、不 build；
-- `publish`：验证并发布已有准备好的站点，不调用 sync/build。
+- `release prepare`：可离线 build 并绑定当前候选，不 sync、不 push；
+- `release publish`：只验证并发布 prepared `dist/site`，不 sync、不 build。
 
 构建按季度与其 archive/year 依赖规划 dirty artifacts，只将脏 artifacts 写入临时 staging，
 校验后增量 patch `dist/site`。`workspace/build-state.json` 是可删除的 derived state；缺失或
@@ -281,24 +281,30 @@ continuing appearance。
 
 ## 16. PWA、版本与发布
 
-GitHub Pages 本身是可联网直接浏览的正式静态站点。PWA precache app shell，并用 runtime cache
-缓存访问过的页面、数据和封面；默认不下载全部历史，也不要求完整离线初始化后才能进入。
+GitHub Pages 本身是可联网直接浏览的正式静态站点。PWA precache minimal app shell，并用
+runtime cache 缓存访问过的页面、数据和封面；默认不下载全部历史，也不要求完整离线初始化后
+才能进入。
 
 用户可以主动下载单个 quarter；Settings 可按 current/year/range/all 排队，但 quarter 始终是完整
-离线单位，并以 `data/offline/YYYY-MM.json` 的逐文件 hash/size 做差分和已完成资源复用。下载只在
-页面保持打开时进行，不使用 Background Fetch，也不承诺关闭应用后的后台下载。支持 pause、
-continue、cancel；重新打开后按 manifest diff resume，网络恢复后继续，重试间隔为 1s、3s、10s。
-失败保留已完成内容并标记 INCOMPLETE；remove quarter 与 cancel 是不同操作。storage estimate 与
-persist 只陈述浏览器真实返回的结果。
+离线单位，并以 `data/offline/YYYY-MM.json` 的逐文件 hash/size、active/staging 状态与
+content-addressed verified cache 做差分和已完成资源复用。下载只在页面保持打开时进行，不使用
+Background Fetch，也不承诺关闭应用后的后台下载。支持 pause、continue、cancel；重新打开后按
+manifest diff resume，网络恢复后继续，重试间隔为 1s、3s、10s。失败保留已完成内容并标记
+INCOMPLETE；remove quarter 与 cancel 是不同操作。storage estimate 与 persist 只陈述浏览器真实
+返回的结果。
 
 更新只显示轻量、非阻塞提示，由用户主动 refresh；不得意外 reload。不得把全部历史资料库作为
-单一 monolithic snapshot。
+单一 monolithic snapshot 产品。
 
 程序版本使用语义化版本；资料版本使用 `YYYY.MM.DD.N`。
 
-系统日志：`CHANGELOG.md`。资料日志每次发布自动生成。
+系统变更记录在 `CHANGELOG.md`。每次 publication 的版本、source commit、候选 identity 与远端
+commit 写入本地 workspace report 和 `gh-pages` commit message；正式运行时树不额外生成资料日志。
 
-第一版本地手动发布，不使用 GitHub Actions。`publish` 使用 staging，完整验证后推送 `gh-pages`。无变化拒绝空版本。发布失败不影响旧站点、旧版本或旧 PWA 快照。第一版不提供 rollback。
+第一版本地手动发布，不使用 GitHub Actions。`bgmb release prepare` 离线收敛并绑定候选；
+`bgmb release publish` 只允许官方 origin，验证 prepared state 后普通 push `gh-pages`，并确认远端
+HEAD 精确等于本次 release commit。无变化拒绝空版本；禁止 force push 和自动重试。确认前失败不
+覆盖已有站点，确认后的本地 housekeeping 问题作为 warning 报告。第一版不提供 rollback。
 
 禁止发布 SQLite、workspace、报告、临时文件、备份、Token、本地路径、用户名、完整堆栈和角色图片。
 

@@ -797,6 +797,184 @@ def test_content_gc_waits_for_cross_page_reference_lease(
     context.close()
 
 
+def test_content_gc_snapshot_cannot_delete_new_quarter_content(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    manifest = json.loads(
+        (pwa_site / "data" / "offline" / "2026-07.json").read_text("utf-8")
+    )
+    target_hashes = {item["content_hash"] for item in manifest["resources"]}
+    orphan_hash = "e" * 64
+    context = chromium.new_context()
+    first = context.new_page()
+    first.goto(f"{pwa_server}/settings/index.html")
+    first.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    first.evaluate(
+        """
+        async (hash) => {
+          const content = await caches.open("bsb-content-v1");
+          await content.put(
+            new Request(new URL(`../__bsb_content__/${hash}`, location.href)),
+            new Response("orphan"),
+          );
+        }
+        """,
+        orphan_hash,
+    )
+    first.evaluate(
+        """
+        () => {
+          const nativeOpen = caches.open.bind(caches);
+          const wrapped = new WeakSet();
+          window.__gcKeysEntered = false;
+          window.__releaseGcKeys = null;
+          caches.open = async (name) => {
+            const cache = await nativeOpen(name);
+            if (name !== "bsb-content-v1" || wrapped.has(cache)) return cache;
+            wrapped.add(cache);
+            const nativeKeys = cache.keys.bind(cache);
+            cache.keys = async (...args) => {
+              if (!window.__gcKeysEntered) {
+                window.__gcKeysEntered = true;
+                await new Promise((resolve) => {
+                  window.__releaseGcKeys = resolve;
+                });
+              }
+              return nativeKeys(...args);
+            };
+            return cache;
+          };
+        }
+        """
+    )
+    first.evaluate("void (window.__gcPromise = window.BsbPwa.garbageCollect())")
+    first.wait_for_function("window.__gcKeysEntered === true")
+
+    second = context.new_page()
+    second.goto(f"{pwa_server}/settings/index.html")
+    second.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    second.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    second.wait_for_function(
+        "window.BsbPwa.currentQueue().then((queue) => queue.current === '2026-07')"
+    )
+    second.wait_for_timeout(100)
+    assert first.evaluate("window.__gcKeysEntered")
+    assert first.evaluate(
+        """
+        async (hash) => {
+          const cache = await caches.open("bsb-content-v1");
+          return Boolean(await cache.match(new Request(new URL(
+            `../__bsb_content__/${hash}`, location.href))));
+        }
+        """,
+        orphan_hash,
+    )
+    first.evaluate("window.__releaseGcKeys()")
+    first.evaluate("window.__gcPromise")
+    _wait_for_queue(second, 1)
+    state = second.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert state["status"] == "COMPLETE"
+    assert all(
+        second.evaluate(
+            """
+            async (hash) => {
+              const content = await caches.open("bsb-content-v1");
+              return Boolean(await content.match(new Request(new URL(
+                `../__bsb_content__/${hash}`, location.href))));
+            }
+            """,
+            content_hash,
+        )
+        for content_hash in target_hashes
+    )
+    assert not second.evaluate(
+        """
+        async (hash) => {
+          const cache = await caches.open("bsb-content-v1");
+          return Boolean(await cache.match(new Request(new URL(
+            `../__bsb_content__/${hash}`, location.href))));
+        }
+        """,
+        orphan_hash,
+    )
+    context.set_offline(True)
+    second.goto(f"{pwa_server}/2026-07/index.html")
+    second.wait_for_selector('[data-subject-id="101"]')
+    second.wait_for_function(
+        "document.querySelector('[data-subject-id=\"101\"] img')?.complete"
+    )
+    context.close()
+
+
+def test_no_web_locks_defers_destructive_content_gc(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    context.add_init_script(
+        "Object.defineProperty(navigator, 'locks', {"
+        " configurable: true, value: undefined });"
+    )
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    assert page.evaluate("navigator.locks === undefined")
+    page.evaluate(
+        """
+        async () => {
+          const content = await caches.open("bsb-content-v1");
+          await content.put(
+            new Request(new URL(`../__bsb_content__/${"d".repeat(64)}`, location.href)),
+            new Response("orphan"),
+          );
+        }
+        """
+    )
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-04', '2026-07'])")
+    _wait_for_queue(page, 2)
+    before_remove = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert before_remove["status"] == "COMPLETE"
+    shared_cover = next(
+        item for item in before_remove["active"]["resources"]
+        if item["url"] == "covers/101.webp"
+    )
+    page.evaluate("async () => window.BsbPwa.removeQuarter('2026-04')")
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.getQuarterState('2026-04')).status"
+    ) == "NONE"
+    after_remove = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert after_remove["status"] == "COMPLETE"
+    assert page.evaluate(
+        """
+        async (hash) => {
+          const content = await caches.open("bsb-content-v1");
+          return Boolean(await content.match(new Request(new URL(
+            `../__bsb_content__/${hash}`, location.href))));
+        }
+        """,
+        "d" * 64,
+    )
+    assert page.evaluate(
+        """
+        async (hash) => {
+          const content = await caches.open("bsb-content-v1");
+          return Boolean(await content.match(new Request(new URL(
+            `../__bsb_content__/${hash}`, location.href))));
+        }
+        """,
+        shared_cover["content_hash"],
+    )
+    context.close()
+
+
 def test_quarter_progress_counts_logical_resources_and_shares_inflight_hash(
     chromium: Browser,
     pwa_server: str,
@@ -2876,6 +3054,138 @@ def test_waiting_shell_survives_page_gc_and_activation_cleans_pending_metadata(
     context.set_offline(True)
     page.goto(f"{update_server}/settings/index.html")
     assert page.get_by_role("heading", name="设置").is_visible()
+    context.close()
+
+
+def test_shell_activation_gc_serializes_with_quarter_download(
+    chromium: Browser,
+    update_server: str,
+    update_site: tuple[object, object, Path, Path],
+) -> None:
+    builder, _database, isolated_root, served = update_site
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{update_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    control = context.new_page()
+    control.goto(f"{update_server}/settings/index.html")
+    control.wait_for_function("navigator.serviceWorker.controller !== null")
+    shell_before = page.evaluate(
+        """
+        async () => {
+          const cache = await caches.open("bsb-meta-v1");
+          const response = await cache.match(new Request(new URL(
+            "../__bsb_meta__/shell.json", location.href)));
+          return response.json();
+        }
+        """
+    )
+    page.evaluate(
+        """
+        () => {
+          const nativePut = Cache.prototype.put;
+          window.__contentPutStarted = false;
+          window.__releaseContentPut = null;
+          Cache.prototype.put = async function(request, response) {
+            if (
+              !window.__contentPutStarted
+              && request.url.includes("/__bsb_content__/")
+            ) {
+              window.__contentPutStarted = true;
+              await new Promise((resolve) => {
+                window.__releaseContentPut = resolve;
+              });
+            }
+            return nativePut.call(this, request, response);
+          };
+        }
+        """
+    )
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    page.wait_for_function("window.__contentPutStarted === true")
+
+    pwa_source = isolated_root / "static" / "js" / "pwa.js"
+    pwa_source.write_text(
+        pwa_source.read_text("utf-8") + "\n/* activation race fixture */\n",
+        encoding="utf-8",
+    )
+    builder.build()
+    worker_stat = (served / "sw.js").stat()
+    os.utime(served / "sw.js", (worker_stat.st_atime + 2, worker_stat.st_mtime + 2))
+    control.evaluate(
+        "navigator.serviceWorker.ready.then((registration) => registration.update())"
+    )
+    pending = control.evaluate(
+        """
+        async () => {
+          const registration = await navigator.serviceWorker.ready;
+          for (let attempt = 0; attempt < 200; attempt += 1) {
+            if (registration.waiting) {
+              const meta = await caches.open("bsb-meta-v1");
+              const keys = await meta.keys();
+              const key = keys.find((request) =>
+                request.url.includes("shell-pending-"));
+              if (!key) throw new Error("pending shell metadata missing");
+              return meta.match(key).then((response) => response.json());
+            }
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+          throw new Error("updated worker did not enter waiting");
+        }
+        """
+    )
+    assert control.evaluate("async () => window.BsbPwa.refreshApp()") is True
+    control.wait_for_timeout(100)
+    shell_during = page.evaluate(
+        """
+        async () => {
+          const cache = await caches.open("bsb-meta-v1");
+          const response = await cache.match(new Request(new URL(
+            "../__bsb_meta__/shell.json", location.href)));
+          return response.json();
+        }
+        """
+    )
+    assert shell_during["revision"] == shell_before["revision"]
+    assert pending["revision"] != shell_before["revision"]
+    page.evaluate("window.__releaseContentPut()")
+    _wait_for_queue(page, 1)
+    page.wait_for_function(
+        """
+        async (revision) => {
+          const cache = await caches.open("bsb-meta-v1");
+          const response = await cache.match(new Request(new URL(
+            "../__bsb_meta__/shell.json", location.href)));
+          const value = response ? await response.json() : null;
+          return value && value.revision !== revision;
+        }
+        """,
+        arg=shell_before["revision"],
+    )
+    state = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert state["status"] == "COMPLETE"
+    assert state["staging"] is None
+    assert all(
+        page.evaluate(
+            """
+            async (hash) => {
+              const content = await caches.open("bsb-content-v1");
+              return Boolean(await content.match(new Request(new URL(
+                `../__bsb_content__/${hash}`, location.href))));
+            }
+            """,
+            resource["content_hash"],
+        )
+        for resource in state["active"]["resources"]
+    )
+    context.set_offline(True)
+    page.goto(f"{update_server}/2026-07/index.html")
+    page.wait_for_selector('[data-subject-id="101"]')
+    page.wait_for_function(
+        "document.querySelector('[data-subject-id=\"101\"] img')?.complete"
+    )
     context.close()
 
 

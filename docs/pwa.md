@@ -94,10 +94,3 @@ A new Service Worker or application shell produces a thin, nonblocking notice.
 The user explicitly refreshes when ready; the application never performs a
 surprise reload. Updates do not switch a complete archive snapshot or block
 ordinary online startup.
-
-## Legacy boundary
-
-`static/js/pwa-controller.js`, `static/js/pwa-ui.js`, and `static/sw.js` belong to
-the legacy snapshot implementation. They are not part of the formal
-unified-site runtime and must not be used to define current PWA behavior. Any
-future cleanup of these files is a separate explicit maintenance task.

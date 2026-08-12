@@ -42,6 +42,7 @@ bgmb serve --port 8000
 发布。真实发布仍需明确执行：
 
 ```powershell
+bgmb release prepare
 git push origin main
 bgmb release publish
 ```

@@ -38,6 +38,9 @@ Bangumi 数据或依赖业务后端。
 python -m bgm_side_b --help
 ```
 
+日常同步、REVIEW 裁决、构建、浏览、PWA 离线与正式发布的完整操作说明见
+[用户指南](docs/USER_GUIDE.md)。
+
 ## PWA 与离线使用
 
 Pages 站点可以直接在线浏览，不需要先初始化资料库。安装为 PWA 后，最小应用外壳可离线打开，
@@ -114,12 +117,14 @@ bgmb release publish
 `doctor` 额外读取 `origin/main` 和 `gh-pages`。真实 Pages 发布仍只能通过明确的
 `release publish` 流程执行。
 
-更多开发与验收说明见 [开发文档](docs/development.md)。
+日常使用从[用户指南](docs/USER_GUIDE.md)开始；开发与验收说明见
+[开发文档](docs/development.md)。
 
 仓库跟踪源代码、配置、模板、静态资源、测试和文档。SQLite 数据库、下载封面、报告、备份、
 生成站点、缓存、临时文件和密钥不应提交。
 
-更多说明见[同步说明](docs/subject-sync.md)、[国家/地区规则](docs/country-filter.md)、
+更多说明见[用户指南](docs/USER_GUIDE.md)、[同步说明](docs/subject-sync.md)、
+[国家/地区规则](docs/country-filter.md)、
 [静态构建说明](docs/static-build.md)、[PWA 说明](docs/pwa.md)、
 [发布说明](docs/publish.md)和[数据重置流程](docs/data-reset.md)。
 

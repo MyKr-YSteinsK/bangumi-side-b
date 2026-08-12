@@ -49,8 +49,8 @@ when no current quarter references them.
 commit. Incomplete facts or relevant unresolved REVIEW retain only that quarter's
 last-known-good artifacts; they do not freeze healthy quarters. A blocked quarter
 without a usable previous tree is omitted with a warning. Complete facts with
-missing covers may build with warnings. `publish` is a later explicit release
-operation and never calls `sync` or `build`.
+missing covers may build with warnings. `bgmb release publish` is a later explicit
+release operation and never calls `sync` or `build`.
 
 ## Local preview
 

@@ -987,6 +987,32 @@
     return queueRunner;
   }
 
+  async function waitForQueueRunnerQuiescent() {
+    if (typeof navigator.locks?.request === "function") {
+      let entered = false;
+      try {
+        await navigator.locks.request(
+          QUEUE_LOCK_NAME,
+          { mode: "exclusive" },
+          async () => {
+            entered = true;
+          },
+        );
+        return entered;
+      } catch {
+        return false;
+      }
+    }
+    const runner = queueRunner;
+    if (!runner) return false;
+    try {
+      await runner;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   stateChannel?.addEventListener("message", async (event) => {
     if (event.data?.type !== "state-changed") return;
     notify(false);
@@ -1097,7 +1123,7 @@
       await deleteQuarterStateUnlocked(quarter);
       await deleteQuarterProgressUnlocked(quarter);
     });
-    await garbageCollect();
+    if (await waitForQueueRunnerQuiescent()) await garbageCollect();
   }
 
   async function detectUpdates() {

@@ -1459,6 +1459,84 @@ def test_remove_current_queue_quarter_requires_cancel_first(
     context.close()
 
 
+def test_remove_quarter_waits_for_runner_before_gc(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    manifest = json.loads(
+        (pwa_site / "data" / "offline" / "2026-07.json").read_text("utf-8")
+    )
+    target = next(
+        item for item in manifest["resources"]
+        if item["url"] == "data/quarters/2026-07.json"
+    )
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.evaluate(
+        """
+        () => {
+          const nativePut = Cache.prototype.put;
+          window.__contentPutStarted = false;
+          window.__releaseContentPut = null;
+          Cache.prototype.put = async function(request, response) {
+            if (
+              !window.__contentPutStarted
+              && request.url.includes("/__bsb_content__/")
+            ) {
+              window.__contentPutStarted = true;
+              await new Promise((resolve) => {
+                window.__releaseContentPut = resolve;
+              });
+            }
+            return nativePut.call(this, request, response);
+          };
+        }
+        """
+    )
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    page.wait_for_function("window.__contentPutStarted === true")
+    page.evaluate("async () => window.BsbPwa.cancelQueue()")
+    page.wait_for_function(
+        "window.BsbPwa.currentQueue().then((queue) => queue.state === 'cancelled')"
+    )
+    page.evaluate(
+        """
+        () => {
+          window.__removeDone = false;
+          window.__removeError = null;
+          window.__removePromise = window.BsbPwa.removeQuarter('2026-07')
+            .then(() => { window.__removeDone = true; })
+            .catch((error) => { window.__removeError = error.message; });
+        }
+        """
+    )
+    page.wait_for_timeout(100)
+    assert page.evaluate("window.__removeDone") is False
+    assert page.evaluate("window.__removeError") is None
+    page.evaluate("window.__releaseContentPut()")
+    page.wait_for_function(
+        "window.__removeDone || window.__removeError !== null"
+    )
+    assert page.evaluate("window.__removeError") is None
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
+    ) == "NONE"
+    assert page.evaluate(
+        """
+        async (hash) => {
+          const content = await caches.open("bsb-content-v1");
+          return Boolean(await content.match(new Request(new URL(
+            `../__bsb_content__/${hash}`, location.href))));
+        }
+        """,
+        target["content_hash"],
+    ) is False
+    context.close()
+
+
 def test_remove_pending_queue_quarter_scrubs_it_before_runner_reaches_it(
     chromium: Browser,
     pwa_server: str,

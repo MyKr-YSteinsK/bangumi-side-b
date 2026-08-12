@@ -22,6 +22,7 @@ from bgm_side_b.build.site_builder import (
 )
 from bgm_side_b.config import load_tag_rules
 from bgm_side_b.database import Database as ArchiveDatabase
+from bgm_side_b.database import DatabaseError
 from bgm_side_b.domain import Quarter
 from bgm_side_b.overrides import load_quarter_overrides, save_quarter_overrides
 from bgm_side_b.progress import create_progress_reporter
@@ -347,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
                     reports_directory=root / "workspace" / "reports",
                     reporter=reporter,
                 ).run(scope)
-            except (SyncError, ValueError) as error:
+            except (DatabaseError, SyncError, ValueError) as error:
                 parser.error(str(error))
             except KeyboardInterrupt:
                 reporter.warning(
@@ -449,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
                     message="已中断｜上一版 dist 输出保持不变",
                 )
                 return 130
-            except (SiteBuildError, ValueError) as error:
+            except (DatabaseError, SiteBuildError, ValueError) as error:
                 parser.error(str(error))
         print(f"build report: {_relative_output_path(root, run.report_path)}")
         return 0

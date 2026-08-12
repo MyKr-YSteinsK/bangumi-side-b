@@ -242,6 +242,9 @@ class Database:
         connection = self._raw_connect()
         try:
             _validate_schema(connection)
+        except sqlite3.Error as error:
+            connection.close()
+            raise DatabaseError("database cannot be opened safely") from error
         except BaseException:
             connection.close()
             raise

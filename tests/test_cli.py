@@ -401,4 +401,23 @@ def test_build_cli_rejects_missing_database_before_build(
         main(["build", "2026", "1"])
 
     assert error.value.code == 2
-    assert "database is missing" in capsys.readouterr().err
+
+
+def test_build_cli_reports_invalid_database_without_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "project"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "config", root / "config")
+    (root / "pyproject.toml").write_text("[project]\nname = 'test'\n", "utf-8")
+    database = root / "workspace" / "data" / "bangumi-side-b.sqlite3"
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b"not a sqlite database")
+    monkeypatch.chdir(root)
+
+    with pytest.raises(SystemExit) as error:
+        main(["build", "2026", "4"])
+
+    assert error.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "database" in stderr.lower()
+    assert "traceback" not in stderr.lower()

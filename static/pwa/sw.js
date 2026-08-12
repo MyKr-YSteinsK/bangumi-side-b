@@ -299,6 +299,16 @@ async function authorizedResource(path, hash) {
   return null;
 }
 
+async function putAuthorizedContent(path, resource, response) {
+  return withContentReferenceLease(async () => {
+    const current = await authorizedResource(path, resource.content_hash);
+    if (!current) return false;
+    const content = await caches.open(CONTENT_CACHE);
+    await content.put(contentRequest(current.content_hash), response.clone());
+    return true;
+  });
+}
+
 async function guaranteedResponse(request) {
   const path = physicalPath(request.url);
   const url = new URL(request.url);
@@ -358,8 +368,7 @@ async function versionedResponse(request) {
   try {
     const response = await fetch(request);
     const verified = await verifiedResponse(response, authorized);
-    const content = await caches.open(CONTENT_CACHE);
-    await content.put(contentRequest(authorized.content_hash), verified.clone());
+    await putAuthorizedContent(path, authorized, verified);
     return verified;
   } catch {
     const runtime = await caches.open(RUNTIME_CACHE);
@@ -367,8 +376,7 @@ async function versionedResponse(request) {
     if (candidate) {
       try {
         const verified = await verifiedResponse(candidate, authorized);
-        const content = await caches.open(CONTENT_CACHE);
-        await content.put(contentRequest(authorized.content_hash), verified.clone());
+        await putAuthorizedContent(path, authorized, verified);
         await runtime.delete(request);
         return verified;
       } catch {

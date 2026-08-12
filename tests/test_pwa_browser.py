@@ -67,6 +67,46 @@ def pwa_server(pwa_site: Path) -> Iterator[str]:
 
 
 @pytest.fixture
+def delayed_cover_server(
+    pwa_site: Path,
+) -> Iterator[tuple[str, threading.Event, threading.Event, threading.Event]]:
+    armed = threading.Event()
+    started = threading.Event()
+    release = threading.Event()
+
+    class DelayedCoverHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if (
+                armed.is_set()
+                and self.path.split("?", 1)[0].endswith("/covers/101.webp")
+            ):
+                started.set()
+                if not release.wait(5):
+                    self.send_error(504, "repair response timeout")
+                    return
+            super().do_GET()
+
+    handler = functools.partial(
+        DelayedCoverHandler,
+        directory=str(pwa_site.parent),
+    )
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield (
+            f"http://127.0.0.1:{server.server_port}/bangumi-side-b",
+            armed,
+            started,
+            release,
+        )
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.fixture
 def delayed_manifest_server(pwa_site: Path) -> Iterator[str]:
     requests = [0]
 
@@ -669,6 +709,75 @@ def test_active_quarter_uses_content_identity_for_offline_navigation_and_cover(
         },
     )
     assert mismatched_status != 200
+    context.close()
+
+
+def test_versioned_service_worker_repair_does_not_recreate_removed_content(
+    chromium: Browser,
+    delayed_cover_server: tuple[str, threading.Event, threading.Event, threading.Event],
+) -> None:
+    pwa_server, armed, started, release = delayed_cover_server
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    cover = next(
+        item
+        for item in state["active"]["resources"]
+        if item["url"] == "covers/101.webp"
+    )
+    page.evaluate(
+        """
+        async (resource) => {
+          const content = await caches.open("bsb-content-v1");
+          await content.delete(new Request(new URL(
+            `../__bsb_content__/${resource.content_hash}`, location.href)));
+          const runtime = await caches.open("bsb-runtime-v1");
+          for (const url of [
+            resource.url,
+            `${resource.url}?v=${resource.content_hash}`,
+          ]) {
+            await runtime.delete(new Request(new URL(`../${url}`, location.href)));
+          }
+        }
+        """,
+        cover,
+    )
+    armed.set()
+    page.evaluate(
+        """
+        ({ url, hash }) => {
+          window.__repair = fetch(`${url}?v=${hash}`)
+            .then(async (response) => ({
+              status: response.status,
+              bytes: (await response.arrayBuffer()).byteLength,
+            }));
+        }
+        """,
+        {"url": f"{pwa_server}/{cover['url']}", "hash": cover["content_hash"]},
+    )
+    assert started.wait(5)
+    page.evaluate("void (window.__remove = window.BsbPwa.removeQuarter('2026-07'))")
+    page.wait_for_function(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status === 'NONE'"
+    )
+    release.set()
+    result = page.evaluate("window.__repair")
+    assert result["status"] == 200
+    assert result["bytes"] == cover["size_bytes"]
+    assert page.evaluate(
+        """
+        async (hash) => {
+          const content = await caches.open("bsb-content-v1");
+          return Boolean(await content.match(new Request(new URL(
+            `../__bsb_content__/${hash}`, location.href))));
+        }
+        """,
+        cover["content_hash"],
+    ) is False
     context.close()
 
 

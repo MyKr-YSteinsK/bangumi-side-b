@@ -477,8 +477,6 @@
 
   function detailHtml(record) {
     const aliases = Array.isArray(record.aliases) ? record.aliases : [];
-    const shownAliases = aliases.slice(0, 3);
-    const moreAliases = Math.max(0, aliases.length - shownAliases.length);
     const cover = record.cover || record.cover_url;
     const coverHtml = cover
       ? `<button type="button" class="detail-cover-button" data-lightbox aria-label="查看封面"><img src="../${esc(String(cover))}" alt="${esc(record.preferred_title)}" width="180" height="270"></button>`
@@ -502,7 +500,7 @@
       <p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
       <dl class="detail-facts">${facts}</dl>
       ${record.appearance === "continuing" ? `<p class="detail-continuing">当前归档：续播${record.premiere_quarter ? ` · 首播 ${esc(record.premiere_quarter)}` : ""}</p>` : ""}
-      ${shownAliases.length ? `<section class="detail-section"><h3>别名</h3><div class="detail-tags">${shownAliases.map((alias) => `<span class="tag">${esc(alias)}</span>`).join("")}${moreAliases ? `<span class="detail-more">+ 另外 ${moreAliases} 个标题</span>` : ""}</div></section>` : ""}
+      ${aliases.length ? `<section class="detail-section"><h3>别名</h3><div class="detail-tags">${aliases.map((alias) => `<span class="tag">${esc(alias)}</span>`).join("")}</div></section>` : ""}
       ${tags ? `<section class="detail-section"><h3>标签</h3><div class="detail-tags">${tags}</div></section>` : ""}
       ${summaryText ? `<section class="detail-section detail-summary"><h3>简介</h3><p>${esc(summaryText).replaceAll("\n", "<br>")}</p></section>` : ""}
       <p class="detail-footer"><a class="text-link" href="${esc(record.bangumi_url || ("https://" + "bgm.tv/subject/" + record.id))}" target="_blank" rel="noreferrer">在 Bangumi 查看 ↗</a></p>`;
@@ -1212,7 +1210,7 @@
       <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}<p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
       <dl class="detail-facts">${facts}</dl>
       ${record.appearance === "continuing" ? `<p class="detail-continuing">当前归档：续播${record.premiere_quarter ? ` · 首播 ${esc(record.premiere_quarter)}` : ""}</p>` : ""}
-      ${aliases.length ? `<section class="detail-section"><h3>别名</h3><div class="detail-tags">${aliases.slice(0, 3).map((alias) => `<span class="tag">${esc(alias)}</span>`).join("")}${aliases.length > 3 ? `<span class="detail-more">+ 另外 ${aliases.length - 3} 个标题</span>` : ""}</div></section>` : ""}
+      ${aliases.length ? `<section class="detail-section"><h3>别名</h3><div class="detail-tags">${aliases.map((alias) => `<span class="tag">${esc(alias)}</span>`).join("")}</div></section>` : ""}
       ${tags ? `<section class="detail-section"><h3>标签</h3><div class="detail-tags">${tags}</div></section>` : ""}
       ${summary ? `<section class="detail-section detail-summary"><h3>简介</h3><p>${esc(summary).replaceAll("\n", "<br>")}</p></section>` : ""}
       <p class="detail-footer"><a class="text-link" href="${esc(record.bangumi_url || ("https://" + "bgm.tv/subject/" + record.id))}" target="_blank" rel="noreferrer">在 Bangumi 查看 ↗</a></p>`;

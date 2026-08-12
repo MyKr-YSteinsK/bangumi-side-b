@@ -696,6 +696,80 @@ def test_archive_lazy_loads_and_reuses_selected_quarter_details(
     assert len(detail_requests()) == 2
 
 
+def test_quarter_and_archive_details_show_all_aliases_and_search_them(
+    chromium: BrowserContext,
+    site_server: str,
+    unified_site: Path,
+) -> None:
+    aliases = [
+        "Alias One",
+        "Alias Two",
+        "Alias Three",
+        "Alias Four",
+        "Final Alias",
+    ]
+    quarter = json.loads(
+        (unified_site / "data" / "quarters" / "2026-07.json").read_text("utf-8")
+    )
+    quarter["tv"]["continuing"][0]["aliases"] = aliases
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/quarters/2026-07.json",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(quarter)
+        ),
+    )
+    _open_quarter(page, site_server, (390, 844))
+    page.locator('[data-subject-id="101"] [data-open-subject]').click()
+    detail = page.locator("[data-detail-panel]")
+    assert all(alias in detail.inner_text() for alias in aliases)
+    assert "另外" not in detail.inner_text()
+    assert detail.evaluate("node => node.scrollWidth <= node.clientWidth")
+    detail.locator("[data-detail-close]").click()
+    page.locator("[data-search]").fill("Final Alias")
+    assert "1 / 1" in page.locator("[data-results-summary]").inner_text()
+
+    catalog = json.loads(
+        (unified_site / "data" / "catalog" / "2026.json").read_text("utf-8")
+    )
+    for archive_record in catalog["records"]:
+        if archive_record["id"] == 101:
+            archive_record["aliases"] = aliases
+    premiere = json.loads(
+        (unified_site / "data" / "quarters" / "2026-04.json").read_text("utf-8")
+    )
+    premiere["tv"]["premiere"][0]["aliases"] = aliases
+    page.route(
+        "**/data/catalog/2026.json",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(catalog)
+        ),
+    )
+    page.route(
+        "**/data/quarters/2026-04.json",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(premiere)
+        ),
+    )
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+    )
+    page.locator('[data-subject-id="101"] [data-open-subject]').first.click()
+    page.wait_for_function(
+        "document.querySelector('[data-detail-panel]')"
+        "?.textContent.includes('Final Alias')"
+    )
+    detail = page.locator("[data-detail-panel]")
+    assert all(alias in detail.inner_text() for alias in aliases)
+    assert "另外" not in detail.inner_text()
+    assert detail.evaluate("node => node.scrollWidth <= node.clientWidth")
+    detail.locator("[data-detail-close]").click()
+    page.locator("[data-search]").fill("Final Alias")
+    assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
+
+
 def test_archive_detail_failure_stays_same_origin_and_reports_rebuild(
     chromium: BrowserContext,
     site_server: str,

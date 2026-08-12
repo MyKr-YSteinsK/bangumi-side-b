@@ -63,6 +63,13 @@ confirmed remove action for `INCOMPLETE`, `UPDATE_INCOMPLETE`, and
 progress record, then garbage-collects only content that no remaining shell or
 quarter references.
 
+## Content lifecycle invariants
+
+Content GC is reference-safe across windows and the Service Worker. A quarter is
+`COMPLETE` only when every manifest content hash is physically present and
+verified in the content store. On browsers without cross-context locking,
+cleanup may be deferred rather than risking verified offline content.
+
 ## Cover cache identity
 
 The offline manifest identifies one physical cover as:

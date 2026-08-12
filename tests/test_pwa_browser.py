@@ -21,6 +21,21 @@ from playwright.sync_api import Browser, Page, sync_playwright
 from bgm_side_b.repository import SubjectRepository
 from tests.test_site_builder import _build_fixture
 
+_NEXT_SAFE_PORT = 18080
+
+
+def _server(handler: object) -> http.server.ThreadingHTTPServer:
+    """Use high, Chromium-safe loopback ports instead of unsafe-port roulette."""
+    global _NEXT_SAFE_PORT
+    for _ in range(100):
+        port = _NEXT_SAFE_PORT
+        _NEXT_SAFE_PORT += 1
+        try:
+            return http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
+        except OSError:
+            continue
+    raise RuntimeError("could not allocate a safe browser test port")
+
 
 def _wait_for_queue(page: Page, completed: int) -> None:
     page.evaluate(
@@ -55,7 +70,7 @@ def pwa_server(pwa_site: Path) -> Iterator[str]:
         http.server.SimpleHTTPRequestHandler,
         directory=str(pwa_site.parent),
     )
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _server(handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -90,7 +105,7 @@ def delayed_cover_server(
         DelayedCoverHandler,
         directory=str(pwa_site.parent),
     )
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _server(handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -122,7 +137,7 @@ def delayed_manifest_server(pwa_site: Path) -> Iterator[str]:
         DelayedManifestHandler,
         directory=str(pwa_site.parent),
     )
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _server(handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -146,7 +161,7 @@ def failing_manifest_server(pwa_site: Path) -> Iterator[str]:
         FailingManifestHandler,
         directory=str(pwa_site.parent),
     )
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _server(handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -166,7 +181,7 @@ def slow_pwa_server(pwa_site: Path) -> Iterator[str]:
             super().do_GET()
 
     handler = functools.partial(SlowHandler, directory=str(pwa_site.parent))
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _server(handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -191,7 +206,7 @@ def retry_pwa_server(pwa_site: Path) -> Iterator[tuple[str, list[int]]]:
             super().do_GET()
 
     handler = functools.partial(RetryHandler, directory=str(pwa_site.parent))
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _server(handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -219,7 +234,7 @@ def flaky_resource_server(pwa_site: Path) -> Iterator[tuple[str, list[int]]]:
         FlakyResourceHandler,
         directory=str(pwa_site.parent),
     )
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _server(handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -247,7 +262,7 @@ def gzip_pwa_server(pwa_site: Path) -> Iterator[str]:
             super().do_GET()
 
     handler = functools.partial(GzipHandler, directory=str(pwa_site.parent))
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _server(handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -277,7 +292,7 @@ def update_server(update_site: tuple[object, object, Path, Path]) -> Iterator[st
         http.server.SimpleHTTPRequestHandler,
         directory=str(served.parent),
     )
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _server(handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

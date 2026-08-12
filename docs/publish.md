@@ -22,7 +22,8 @@ bgmb release publish
 成功后写入 `workspace/state/prepared-release.json`（schema 2），只绑定 source commit、
 程序版本、候选内容哈希、文件数、总字节数、公开季度和准备时的远端 `gh-pages` commit。
 候选哈希来自排序后的相对路径、文件 SHA-256 和大小；build state 只作为一致性校验，不能
-替代真实文件树。
+替代真实文件树。prepared state 的 source/content/remote identity 必须是严格的小写 Git
+hex，公开季度必须是排序唯一的合法季度列表，报告路径必须是项目内相对路径。
 
 `release prepare` 会在临时 staging 上执行 dry-run，不修改 `main`、`dist/site` 或远端。
 `release publish` 不 sync、不 build；它重新检查 prepared state、干净工作树、`HEAD`、
@@ -30,7 +31,9 @@ bgmb release publish
 要求重新 prepare。
 
 真实发布通过临时 Git worktree，把 `dist/site` 原样复制到 `gh-pages`，创建普通提交并执行
-`git push HEAD:gh-pages`；不 force push、不修改 main、不发布 `gh-pages` 以外的内容。dry-run
+`git push HEAD:gh-pages`；提交消息严格为 `release: YYYY.MM.DD.N [source <12位 commit>]`，
+版本只从当前远端 `gh-pages` HEAD 消息推导，发布树不包含 `release-report.json`。不 force
+push、不修改 main、不发布 `gh-pages` 以外的内容。高层真实发布要求官方项目 origin；dry-run
 和测试使用隔离目录或 bare remote，禁止操作用户真实站点。
 
 ## 状态与报告

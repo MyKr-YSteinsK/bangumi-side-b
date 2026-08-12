@@ -229,7 +229,7 @@ def test_assign_missing_subject_uses_one_fake_official_detail_fetch(
     ).read_text(encoding="utf-8")
 
 
-def test_build_cli_rejects_every_scope_outside_2026_04(
+def test_build_cli_rejects_missing_database_before_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = tmp_path / "project"

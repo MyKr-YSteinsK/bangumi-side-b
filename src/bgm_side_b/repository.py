@@ -22,6 +22,8 @@ from bgm_side_b.domain import (
     SourceType,
 )
 
+_ID_QUERY_CHUNK_SIZE = 400
+
 
 @dataclass(frozen=True)
 class SubjectRecord:
@@ -517,24 +519,145 @@ class SubjectRepository:
     def get_subject_facts(self, subject_id: int) -> SubjectSnapshot | None:
         connection = self.database.connect()
         try:
-            return self._subject_facts(connection, subject_id)
+            return self._subject_facts_many(connection, (subject_id,)).get(subject_id)
         finally:
             connection.close()
 
     def get_subject_facts_many(
         self, subject_ids: Iterable[int]
     ) -> dict[int, SubjectSnapshot]:
-        """Read existing snapshots through one validated database connection."""
+        """Read existing snapshots with bounded bulk queries per child table."""
         connection = self.database.connect()
         try:
-            snapshots: dict[int, SubjectSnapshot] = {}
-            for subject_id in sorted(set(subject_ids)):
-                snapshot = self._subject_facts(connection, subject_id)
-                if snapshot is not None:
-                    snapshots[subject_id] = snapshot
-            return snapshots
+            return self._subject_facts_many(connection, subject_ids)
         finally:
             connection.close()
+
+    def _subject_facts_many(
+        self,
+        connection: sqlite3.Connection,
+        subject_ids: Iterable[int],
+    ) -> dict[int, SubjectSnapshot]:
+        snapshots: dict[int, SubjectSnapshot] = {}
+        for requested_ids in _id_chunks(subject_ids):
+            placeholders = ", ".join("?" for _ in requested_ids)
+            subject_rows = tuple(
+                connection.execute(
+                    f"SELECT * FROM subjects WHERE id IN ({placeholders}) ORDER BY id",
+                    requested_ids,
+                )
+            )
+            found_ids = tuple(row["id"] for row in subject_rows)
+            if not found_ids:
+                continue
+            found_placeholders = ", ".join("?" for _ in found_ids)
+            aliases: dict[int, list[str]] = {subject_id: [] for subject_id in found_ids}
+            for row in connection.execute(
+                f"""
+                SELECT subject_id, title FROM subject_titles
+                WHERE subject_id IN ({found_placeholders})
+                ORDER BY subject_id, position
+                """,
+                found_ids,
+            ):
+                aliases[row["subject_id"]].append(row["title"])
+            infobox: dict[int, list[InfoboxItem]] = {
+                subject_id: [] for subject_id in found_ids
+            }
+            for row in connection.execute(
+                f"""
+                SELECT subject_id, item_key, value_json FROM subject_infobox
+                WHERE subject_id IN ({found_placeholders})
+                ORDER BY subject_id, position
+                """,
+                found_ids,
+            ):
+                infobox[row["subject_id"]].append(
+                    InfoboxItem(row["item_key"], json.loads(row["value_json"]))
+                )
+            tags: dict[int, list[str]] = {subject_id: [] for subject_id in found_ids}
+            for row in connection.execute(
+                f"""
+                SELECT subject_id, tag_name FROM subject_tags
+                WHERE subject_id IN ({found_placeholders})
+                ORDER BY subject_id, position
+                """,
+                found_ids,
+            ):
+                tags[row["subject_id"]].append(row["tag_name"])
+            sources = {
+                row["subject_id"]: _source_from_row(row)
+                for row in connection.execute(
+                    f"""
+                    SELECT * FROM subject_sources
+                    WHERE subject_id IN ({found_placeholders})
+                    """,
+                    found_ids,
+                )
+            }
+            appearances: dict[int, list[QuarterAppearance]] = {
+                subject_id: [] for subject_id in found_ids
+            }
+            for row in connection.execute(
+                f"""
+                SELECT * FROM subject_quarters
+                WHERE subject_id IN ({found_placeholders})
+                ORDER BY subject_id, appearance_kind = 'premiere' DESC,
+                         year, quarter_month
+                """,
+                found_ids,
+            ):
+                appearances[row["subject_id"]].append(_appearance_from_row(row))
+            covers = {
+                row["subject_id"]: _cover_from_row(row)
+                for row in connection.execute(
+                    f"""
+                    SELECT * FROM subject_covers
+                    WHERE subject_id IN ({found_placeholders})
+                    """,
+                    found_ids,
+                )
+            }
+            reviews: dict[int, list[ReviewIssue]] = {
+                subject_id: [] for subject_id in found_ids
+            }
+            for row in connection.execute(
+                f"""
+                SELECT * FROM subject_review_issues
+                WHERE subject_id IN ({found_placeholders})
+                ORDER BY subject_id, issue_code
+                """,
+                found_ids,
+            ):
+                reviews[row["subject_id"]].append(_review_issue_from_row(row))
+            for row in subject_rows:
+                subject_id = row["id"]
+                subject_appearances = tuple(appearances[subject_id])
+                snapshots[subject_id] = SubjectSnapshot(
+                    subject=_subject_from_row(row),
+                    aliases=tuple(aliases[subject_id]),
+                    infobox=tuple(infobox[subject_id]),
+                    tags=tuple(tags[subject_id]),
+                    source=sources.get(subject_id, SourceDecision(SourceType.UNKNOWN)),
+                    premiere=next(
+                        (
+                            item
+                            for item in subject_appearances
+                            if item.appearance_kind
+                            is QuarterAppearanceKind.PREMIERE
+                        ),
+                        None,
+                    ),
+                    continuing=tuple(
+                        item
+                        for item in subject_appearances
+                        if item.appearance_kind
+                        is QuarterAppearanceKind.CONTINUING
+                    ),
+                    cover=covers.get(subject_id),
+                    review_issues=tuple(reviews[subject_id]),
+                )
+        return snapshots
 
     def get_premiere_appearance(self, subject_id: int) -> QuarterAppearance | None:
         """Return a subject's unique permanent premiere appearance, if assigned."""
@@ -719,140 +842,7 @@ class SubjectRepository:
     def _subject_facts(
         self, connection: sqlite3.Connection, subject_id: int
     ) -> SubjectSnapshot | None:
-        row = connection.execute(
-            "SELECT * FROM subjects WHERE id = ?", (subject_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        aliases = tuple(
-            child["title"]
-            for child in connection.execute(
-                """
-                SELECT title FROM subject_titles
-                WHERE subject_id = ? ORDER BY position
-                """,
-                (subject_id,),
-            )
-        )
-        infobox = tuple(
-            InfoboxItem(child["item_key"], json.loads(child["value_json"]))
-            for child in connection.execute(
-                """
-                SELECT item_key, value_json FROM subject_infobox
-                WHERE subject_id = ? ORDER BY position
-                """,
-                (subject_id,),
-            )
-        )
-        tags = tuple(
-            child["tag_name"]
-            for child in connection.execute(
-                """
-                SELECT tag_name FROM subject_tags
-                WHERE subject_id = ? ORDER BY position
-                """,
-                (subject_id,),
-            )
-        )
-        source_row = connection.execute(
-            "SELECT * FROM subject_sources WHERE subject_id = ?", (subject_id,)
-        ).fetchone()
-        source = (
-            SourceDecision(SourceType.UNKNOWN)
-            if source_row is None
-            else SourceDecision(
-                SourceType(source_row["source_type"]),
-                source_row["evidence_type"],
-                source_row["evidence_value"],
-            )
-        )
-        appearance_rows = tuple(
-            connection.execute(
-                """
-                SELECT * FROM subject_quarters
-                WHERE subject_id = ?
-                ORDER BY appearance_kind = 'premiere' DESC, year, quarter_month
-                """,
-                (subject_id,),
-            )
-        )
-        appearances = tuple(_appearance_from_row(item) for item in appearance_rows)
-        premiere = next(
-            (
-                item
-                for item in appearances
-                if item.appearance_kind is QuarterAppearanceKind.PREMIERE
-            ),
-            None,
-        )
-        continuing = tuple(
-            item
-            for item in appearances
-            if item.appearance_kind is QuarterAppearanceKind.CONTINUING
-        )
-        cover_row = connection.execute(
-            "SELECT * FROM subject_covers WHERE subject_id = ?", (subject_id,)
-        ).fetchone()
-        cover = (
-            None
-            if cover_row is None
-            else CoverRecord(
-                cover_row["source_url"],
-                cover_row["source_variant"],
-                cover_row["content_hash"],
-                cover_row["width"],
-                cover_row["height"],
-                cover_row["size_bytes"],
-            )
-        )
-        review_issues = tuple(
-            ReviewIssue(
-                issue["issue_code"],
-                (
-                    Quarter(issue["candidate_year"], issue["candidate_quarter"])
-                    if issue["candidate_year"] is not None
-                    else None
-                ),
-                issue["observed_value"],
-                json.loads(issue["details_json"]),
-                issue["detected_at"],
-            )
-            for issue in connection.execute(
-                """
-                SELECT * FROM subject_review_issues
-                WHERE subject_id = ? ORDER BY issue_code
-                """,
-                (subject_id,),
-            )
-        )
-        subject = SubjectRecord(
-            row["id"],
-            row["name_original"],
-            row["name_cn"],
-            row["summary_raw"],
-            MediaFormat(row["media_format"]),
-            _stored_date(row["air_date"]),
-            _stored_date(row["end_date"]),
-            row["episode_count"],
-            row["rating_score"],
-            row["rating_count"],
-            JapaneseDecision(
-                _stored_japanese_classification(row["japanese_evidence_type"]),
-                row["japanese_evidence_type"],
-                row["japanese_evidence_value"],
-            ),
-        )
-        return SubjectSnapshot(
-            subject=subject,
-            aliases=aliases,
-            infobox=infobox,
-            tags=tags,
-            source=source,
-            premiere=premiere,
-            continuing=continuing,
-            cover=cover,
-            review_issues=review_issues,
-        )
+        return self._subject_facts_many(connection, (subject_id,)).get(subject_id)
 
 
 def cover_relative_path(subject_id: int) -> PurePosixPath:
@@ -878,6 +868,65 @@ def _stored_japanese_classification(evidence_type: object) -> JapaneseClassifica
     if isinstance(evidence_type, str) and evidence_type.startswith("unresolved_"):
         return JapaneseClassification.UNRESOLVED
     return JapaneseClassification.ACCEPTED_JAPANESE
+
+
+def _id_chunks(subject_ids: Iterable[int]) -> Iterator[tuple[int, ...]]:
+    ordered = tuple(sorted(set(subject_ids)))
+    for offset in range(0, len(ordered), _ID_QUERY_CHUNK_SIZE):
+        yield ordered[offset : offset + _ID_QUERY_CHUNK_SIZE]
+
+
+def _subject_from_row(row: sqlite3.Row) -> SubjectRecord:
+    return SubjectRecord(
+        row["id"],
+        row["name_original"],
+        row["name_cn"],
+        row["summary_raw"],
+        MediaFormat(row["media_format"]),
+        _stored_date(row["air_date"]),
+        _stored_date(row["end_date"]),
+        row["episode_count"],
+        row["rating_score"],
+        row["rating_count"],
+        JapaneseDecision(
+            _stored_japanese_classification(row["japanese_evidence_type"]),
+            row["japanese_evidence_type"],
+            row["japanese_evidence_value"],
+        ),
+    )
+
+
+def _source_from_row(row: sqlite3.Row) -> SourceDecision:
+    return SourceDecision(
+        SourceType(row["source_type"]),
+        row["evidence_type"],
+        row["evidence_value"],
+    )
+
+
+def _cover_from_row(row: sqlite3.Row) -> CoverRecord:
+    return CoverRecord(
+        row["source_url"],
+        row["source_variant"],
+        row["content_hash"],
+        row["width"],
+        row["height"],
+        row["size_bytes"],
+    )
+
+
+def _review_issue_from_row(row: sqlite3.Row) -> ReviewIssue:
+    return ReviewIssue(
+        row["issue_code"],
+        (
+            Quarter(row["candidate_year"], row["candidate_quarter"])
+            if row["candidate_year"] is not None
+            else None
+        ),
+        row["observed_value"],
+        json.loads(row["details_json"]),
+        row["detected_at"],
+    )
 
 
 def _appearance_from_row(row: sqlite3.Row) -> QuarterAppearance:

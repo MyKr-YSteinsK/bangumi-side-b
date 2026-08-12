@@ -159,6 +159,42 @@ def test_subject_snapshot_batch_uses_one_connection(
     assert connect_calls == 1
 
 
+def test_subject_snapshot_batch_selects_scale_with_chunks(
+    repository: SubjectRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subject_ids = tuple(range(1, 1201))
+    with repository.transaction() as connection:
+        for subject_id in subject_ids:
+            repository.upsert_subject(connection, _subject(subject_id))
+
+    connect_calls = 0
+    selects: list[str] = []
+    native_connect = repository.database.connect
+
+    def traced_connect() -> sqlite3.Connection:
+        nonlocal connect_calls
+        connect_calls += 1
+        connection = native_connect()
+        connection.set_trace_callback(
+            lambda statement: selects.append(statement)
+            if statement.lstrip().upper().startswith("SELECT")
+            else None
+        )
+        return connection
+
+    monkeypatch.setattr(repository.database, "connect", traced_connect)
+    observed: list[int] = []
+    for count, maximum in ((1, 10), (100, 10), (1200, 30)):
+        selects.clear()
+        snapshots = repository.get_subject_facts_many(subject_ids[:count])
+        assert tuple(snapshots) == subject_ids[:count]
+        observed.append(len(selects))
+        assert len(selects) <= maximum
+
+    assert connect_calls == 3
+    assert observed[2] < observed[1] * 4
+
+
 def test_failed_snapshot_replacement_rolls_back_every_child(
     repository: SubjectRepository,
 ) -> None:

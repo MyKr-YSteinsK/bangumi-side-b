@@ -13,8 +13,6 @@ from bgm_side_b.archive_config import (
     load_archive_source_rules,
     load_archive_sync_settings,
 )
-from bgm_side_b.audit import ReleaseDataAuditor
-from bgm_side_b.build.queries import BuildDataError
 from bgm_side_b.build.serve import ServeError, serve_site
 from bgm_side_b.build.site_builder import (
     BuildError as SiteBuildError,
@@ -22,11 +20,12 @@ from bgm_side_b.build.site_builder import (
 from bgm_side_b.build.site_builder import (
     UnifiedSiteBuilder,
 )
-from bgm_side_b.config import load_rules, load_tag_rules
+from bgm_side_b.config import load_tag_rules
 from bgm_side_b.database import Database as ArchiveDatabase
 from bgm_side_b.domain import Quarter
 from bgm_side_b.overrides import load_quarter_overrides, save_quarter_overrides
 from bgm_side_b.progress import create_progress_reporter
+from bgm_side_b.release.unified_audit import UnifiedReleaseAuditor
 from bgm_side_b.release.workflow import (
     WorkflowError,
     doctor,
@@ -72,7 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_command = subparsers.add_parser("doctor", help="检查本地与远端发布环境。")
     doctor_command.add_argument("--local", action="store_true", help="只检查本地状态。")
     subparsers.add_parser("status", help="快速查看本地发布状态。")
-    sync_parser = subparsers.add_parser("sync", help="Synchronise subject facts only.")
+    sync_parser = subparsers.add_parser(
+        "sync",
+        help="Synchronise facts/covers and build the affected static site scope.",
+    )
     _add_progress_arguments(sync_parser)
     sync_parser.add_argument("scope", nargs="*", metavar="YEAR_OR_QUARTER")
     sync_parser.add_argument(
@@ -160,8 +162,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 "could not find a project root containing pyproject.toml and config"
             )
-        settings, _, _ = load_rules(root / "config")
-        result = ReleaseDataAuditor(root, settings).audit()
+        settings = load_archive_sync_settings(root / "config" / "bangumi.toml")
+        result = UnifiedReleaseAuditor(root, settings).audit()
         print(result.render())
         return 0 if result.passed else 1
     if args.command in {"review", "assign"}:
@@ -287,7 +289,6 @@ def main(argv: list[str] | None = None) -> int:
                 reporter.warning(stage="interrupted", message="已中断；未创建新的发布")
                 return 130
             except (
-                BuildDataError,
                 WorkflowError,
                 ValueError,
             ) as error:
@@ -439,7 +440,7 @@ def main(argv: list[str] | None = None) -> int:
                     message="已中断｜上一版 dist 输出保持不变",
                 )
                 return 130
-            except (BuildDataError, SiteBuildError, ValueError) as error:
+            except (SiteBuildError, ValueError) as error:
                 parser.error(str(error))
         print(f"build report: {_relative_output_path(root, run.report_path)}")
         return 0

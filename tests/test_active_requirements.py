@@ -52,7 +52,7 @@ def test_clean_paths_do_not_read_legacy_release_configuration() -> None:
         ROOT / "src" / "bgm_side_b" / "sync.py",
         ROOT / "src" / "bgm_side_b" / "build" / "site_builder.py",
         ROOT / "src" / "bgm_side_b" / "build" / "site_projection.py",
-        ROOT / "src" / "bgm_side_b" / "build" / "frontend.py",
+        ROOT / "src" / "bgm_side_b" / "release" / "workflow.py",
         ROOT / "static" / "js" / "app.js",
     )
     forbidden = (

@@ -1,4 +1,4 @@
-"""Deterministic, read-only data models for static archive builds."""
+"""Offline deterministic builders for the formal ``dist/site`` tree."""
 
 from bgm_side_b.build.fingerprint import (
     BuildState,
@@ -9,8 +9,6 @@ from bgm_side_b.build.fingerprint import (
     read_build_state,
     shared_fingerprint,
 )
-from bgm_side_b.build.projection import BuildProjection
-from bgm_side_b.build.queries import BuildDataError, BuildQueries
 from bgm_side_b.build.serve import (
     DEFAULT_BASE_PATH,
     ServeError,
@@ -55,9 +53,6 @@ __all__ = [
     "BuildState",
     "BuildBlockedError",
     "BuildBlocked",
-    "BuildDataError",
-    "BuildProjection",
-    "BuildQueries",
     "DEFAULT_BASE_PATH",
     "BuildError",
     "IncrementalSiteWriter",

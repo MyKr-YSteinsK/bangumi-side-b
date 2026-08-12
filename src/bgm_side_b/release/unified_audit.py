@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from bgm_side_b.archive_config import ArchiveSyncSettings
 from bgm_side_b.build.site_projection import ArchiveFactsReader, ProjectionError
-from bgm_side_b.config import ProjectSettings
 from bgm_side_b.database import Database, DatabaseError, UnknownSchemaError
 from bgm_side_b.domain import MediaFormat
 
@@ -49,7 +49,7 @@ class UnifiedAuditResult:
 class UnifiedReleaseAuditor:
     """Audit only the released SQLite schema; it never creates or mutates data."""
 
-    def __init__(self, project_root: Path, settings: ProjectSettings) -> None:
+    def __init__(self, project_root: Path, settings: ArchiveSyncSettings) -> None:
         self.root = project_root.resolve()
         self.settings = settings
         self.database_path = self.root / "workspace" / "data" / "bangumi-side-b.sqlite3"

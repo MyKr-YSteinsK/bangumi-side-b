@@ -14,7 +14,8 @@ from importlib.metadata import version as distribution_version
 from pathlib import Path, PurePosixPath
 
 from bgm_side_b import __version__
-from bgm_side_b.config import load_rules
+from bgm_side_b.archive_config import load_archive_sync_settings
+from bgm_side_b.config import load_tag_rules
 from bgm_side_b.database import Database
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.release.site_candidate import (
@@ -156,7 +157,7 @@ def local_status(project_root: Path) -> LocalStatus:
     head = _git_value(root, "rev-parse", "HEAD")
     clean = not _worktree_changes(root)
     try:
-        settings, _, _ = load_rules(root / "config")
+        settings = load_archive_sync_settings(root / "config" / "bangumi.toml")
         audit = UnifiedReleaseAuditor(root, settings).audit()
         blocking = {"workspace", "schema"}
         sqlite_status = (
@@ -194,7 +195,7 @@ def local_status(project_root: Path) -> LocalStatus:
 def doctor(project_root: Path, *, local_only: bool = False) -> DoctorResult:
     """Inspect local facts and, unless local-only, refresh the two remote refs."""
     root = project_root.resolve()
-    settings, _, _ = load_rules(root / "config")
+    settings = load_archive_sync_settings(root / "config" / "bangumi.toml")
     local = local_status(root)
     audit = UnifiedReleaseAuditor(root, settings).audit()
     if local_only:
@@ -219,7 +220,8 @@ def prepare_release(
     active = reporter or NullProgressReporter()
     active.start(stage="release-preflight", message="正在执行本地发布预检")
     _require_prepare_preflight(root)
-    settings, tags, _ = load_rules(root / "config")
+    settings = load_archive_sync_settings(root / "config" / "bangumi.toml")
+    tags = load_tag_rules(root / "config" / "allowed-tags.toml")
     active.stage(stage="release-audit", message="正在执行统一资料审计")
     audit = UnifiedReleaseAuditor(root, settings).audit()
     if not audit.passed:
@@ -312,7 +314,7 @@ def _require_prepare_preflight(root: Path) -> None:
     if not (root / "workspace" / "data" / "bangumi-side-b.sqlite3").is_file():
         raise WorkflowError("workspace SQLite database is missing")
     try:
-        load_rules(root / "config")
+        load_archive_sync_settings(root / "config" / "bangumi.toml")
     except (OSError, ValueError) as error:
         raise WorkflowError(f"配置不可读：{error}") from error
 

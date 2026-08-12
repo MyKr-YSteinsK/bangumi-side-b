@@ -27,6 +27,10 @@ _SUMMARY_CHARACTERS = re.compile(
 )
 _KANA_MINIMUM = 20
 _KANA_RATIO = 0.25
+_SOURCE_PRECEDENCE = {
+    frozenset({SourceType.VISUAL_NOVEL, SourceType.GAME}): SourceType.VISUAL_NOVEL,
+    frozenset({SourceType.LIGHT_NOVEL, SourceType.NOVEL}): SourceType.LIGHT_NOVEL,
+}
 
 
 @dataclass(frozen=True)
@@ -89,8 +93,13 @@ def resolve_source(evidence: Iterable[SourceEvidence]) -> SourceDecision:
     if not observations:
         return SourceDecision(SourceType.UNKNOWN)
     source_types = {item.source_type for item in observations}
-    if len(source_types) == 1:
-        first = observations[0]
+    resolved_type = (
+        observations[0].source_type
+        if len(source_types) == 1
+        else _SOURCE_PRECEDENCE.get(frozenset(source_types))
+    )
+    if resolved_type is not None:
+        first = next(item for item in observations if item.source_type is resolved_type)
         return SourceDecision(
             first.source_type, first.evidence_type, first.evidence_value
         )

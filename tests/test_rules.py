@@ -50,6 +50,33 @@ def test_source_resolution_is_single_evidence_driven_and_conflict_safe() -> None
     assert "原创动画" in str(conflict.evidence_value)
 
 
+def test_source_resolution_honors_only_explicit_compatible_precedence() -> None:
+    visual_novel = SourceEvidence(SourceType.VISUAL_NOVEL, "infobox", "视觉小说")
+    game = SourceEvidence(SourceType.GAME, "tag", "游戏改")
+    light_novel = SourceEvidence(SourceType.LIGHT_NOVEL, "infobox", "轻小说")
+    novel = SourceEvidence(SourceType.NOVEL, "tag", "小说改")
+
+    resolved_game = resolve_source((game, visual_novel))
+    assert resolved_game.source_type is SourceType.VISUAL_NOVEL
+    assert resolved_game.evidence_type == "infobox"
+    assert resolved_game.evidence_value == "视觉小说"
+
+    resolved_novel = resolve_source((novel, light_novel))
+    assert resolved_novel.source_type is SourceType.LIGHT_NOVEL
+    assert resolved_novel.evidence_type == "infobox"
+    assert resolved_novel.evidence_value == "轻小说"
+
+    unrelated = resolve_source(
+        (
+            game,
+            visual_novel,
+            SourceEvidence(SourceType.MANGA, "infobox", "漫画"),
+        )
+    )
+    assert unrelated.source_type is SourceType.UNKNOWN
+    assert unrelated.evidence_type == "conflict"
+
+
 def test_japanese_classification_uses_only_exact_structured_country_evidence() -> None:
     accepted = classify_japanese((("国家/地区", "日本 / 美国"),))
     rejected = classify_japanese((("制片国家/地区", "中国"),))

@@ -14,6 +14,20 @@ from playwright.sync_api import BrowserContext, Page, sync_playwright
 
 from tests.test_site_builder import _build_fixture
 
+_NEXT_SAFE_PORT = 18280
+
+
+def _server(handler: object) -> http.server.ThreadingHTTPServer:
+    global _NEXT_SAFE_PORT
+    for _ in range(100):
+        port = _NEXT_SAFE_PORT
+        _NEXT_SAFE_PORT += 1
+        try:
+            return http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
+        except OSError:
+            continue
+    raise RuntimeError("could not allocate a safe browser test port")
+
 
 @pytest.fixture
 def unified_site(tmp_path: Path) -> Iterator[Path]:
@@ -51,7 +65,7 @@ def site_server(unified_site: Path) -> Iterator[str]:
         http.server.SimpleHTTPRequestHandler,
         directory=str(unified_site),
     )
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = _server(handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

@@ -226,6 +226,145 @@ def test_publish_rejects_an_unchanged_site_without_an_empty_release_commit(
     )
 
 
+def test_publish_race_before_push_fails_without_force_or_retry(
+    isolated_release: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, remote = isolated_release
+    publisher = UnifiedPublisher(root)
+    publisher.publish()
+    index = root / "dist" / "site" / "index.html"
+    index.write_text(index.read_text("utf-8") + "\nrelease change\n", "utf-8")
+
+    racer = root.parent / "pre-push-racer"
+    _git(root.parent, "clone", "-q", "--branch", "gh-pages", str(remote), str(racer))
+    (racer / "race.txt").write_text("r2\n", "utf-8")
+    _git(racer, "add", "race.txt")
+    _git(
+        racer,
+        "-c",
+        "user.name=Racer",
+        "-c",
+        "user.email=racer@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        "advance before release push",
+    )
+    original_git = publisher._git
+    publish_pushes: list[tuple[str, ...]] = []
+
+    def race_git(
+        *args: str, cwd: Path | None = None, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        if args and args[0] == "push":
+            publish_pushes.append(args)
+            _git(racer, "push", "-q", "origin", "HEAD:gh-pages")
+        return original_git(*args, cwd=cwd, check=check)
+
+    monkeypatch.setattr(publisher, "_git", race_git)
+    with pytest.raises(SitePublishError):
+        publisher.publish()
+    raced_commit = _git(root, "--git-dir", str(remote), "rev-parse", "gh-pages")
+    assert raced_commit == _git(racer, "rev-parse", "HEAD")
+    assert len(publish_pushes) == 1
+    assert all("force" not in argument for argument in publish_pushes[0])
+
+
+def test_publish_race_after_push_refuses_to_attribute_the_new_remote_head(
+    isolated_release: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, remote = isolated_release
+    publisher = UnifiedPublisher(root)
+    original_git = publisher._git
+    actor = root.parent / "post-push-racer"
+    actor.mkdir()
+    _git(actor, "init", "-q")
+    _git(actor, "remote", "add", "origin", str(remote))
+
+    def race_git(
+        *args: str, cwd: Path | None = None, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        result = original_git(*args, cwd=cwd, check=check)
+        if args and args[0] == "push":
+            _git(actor, "fetch", "-q", "origin", "gh-pages")
+            _git(actor, "checkout", "-q", "-B", "gh-pages", "origin/gh-pages")
+            (actor / "race.txt").write_text("new head\n", "utf-8")
+            _git(actor, "add", "race.txt")
+            _git(
+                actor,
+                "-c",
+                "user.name=Racer",
+                "-c",
+                "user.email=racer@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "advance after release push",
+            )
+            _git(actor, "push", "-q", "origin", "HEAD:gh-pages")
+        return result
+
+    monkeypatch.setattr(publisher, "_git", race_git)
+    with pytest.raises(
+        SitePublishError, match="advanced before confirmation"
+    ):
+        publisher.publish()
+    assert _git(root, "--git-dir", str(remote), "rev-parse", "gh-pages") == _git(
+        actor, "rev-parse", "HEAD"
+    )
+
+
+def test_confirmed_publish_survives_final_report_failure(
+    isolated_release: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, remote = isolated_release
+    publisher = UnifiedPublisher(root)
+
+    def fail_report(*args: object, **kwargs: object) -> Path:
+        raise OSError("private failure detail")
+
+    monkeypatch.setattr(publisher, "_write_report", fail_report)
+    run = publisher.publish()
+    assert run.published
+    assert run.remote_commit == _git(
+        root, "--git-dir", str(remote), "rev-parse", "gh-pages"
+    )
+    assert run.warnings == (
+        "remote published but local report finalization failed",
+    )
+    warning = run.warnings[0]
+    assert "Traceback" not in warning
+    assert str(root) not in warning
+    assert "http" not in warning
+
+
+def test_report_preflight_failure_refuses_publish_before_remote_mutation(
+    isolated_release: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, remote = isolated_release
+    publisher = UnifiedPublisher(root)
+
+    def fail_preflight() -> None:
+        raise SitePublishError("local release report is not writable")
+
+    monkeypatch.setattr(publisher, "_preflight_report", fail_preflight)
+    with pytest.raises(SitePublishError, match="report is not writable"):
+        publisher.publish()
+    missing = subprocess.run(
+        [
+            "git",
+            "--git-dir",
+            str(remote),
+            "show-ref",
+            "--verify",
+            "refs/heads/gh-pages",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert missing.returncode != 0
+
+
 def test_prepared_state_rejects_invalid_identity_and_scope_fields(
     isolated_release: tuple[Path, Path],
 ) -> None:

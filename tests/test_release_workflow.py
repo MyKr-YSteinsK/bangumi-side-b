@@ -165,3 +165,38 @@ def test_prepare_builds_from_current_schema_fixture(tmp_path: Path) -> None:
     run = builder.build()
     assert run.patch.written
     assert (root / "dist" / "site" / "2026-07" / "index.html").is_file()
+
+
+def test_confirmed_publish_survives_prepared_state_cleanup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, remote = create_release_project(tmp_path)
+    monkeypatch.setattr(workflow, "validate_release_origin", lambda _: "fixture")
+    workflow.prepare_release(root)
+    prepared = root / "workspace" / "state" / "prepared-release.json"
+    original_unlink = Path.unlink
+
+    def fail_prepared_unlink(
+        path: Path, missing_ok: bool = False
+    ) -> None:
+        if path.resolve() == prepared.resolve():
+            raise PermissionError("private cleanup detail")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_prepared_unlink)
+    run = workflow.publish_prepared_release(root)
+    assert run.published
+    assert prepared.is_file()
+    assert run.remote_commit == git(
+        root, "--git-dir", str(remote), "rev-parse", "gh-pages"
+    )
+    assert run.warnings == (
+        "remote published but local prepared state cleanup failed",
+    )
+    warning = run.warnings[0]
+    assert "Traceback" not in warning
+    assert str(root) not in warning
+    assert "http" not in warning
+
+    with pytest.raises(WorkflowError, match="prepared release"):
+        workflow.publish_prepared_release(root)

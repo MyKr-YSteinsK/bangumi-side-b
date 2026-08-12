@@ -195,6 +195,41 @@ def test_subject_snapshot_batch_selects_scale_with_chunks(
     assert observed[2] < observed[1] * 4
 
 
+def test_repository_fanout_readers_use_bounded_selects(
+    repository: SubjectRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshots = tuple(_snapshot(subject_id) for subject_id in range(1, 101))
+    with repository.transaction() as connection:
+        for snapshot in snapshots:
+            repository.replace_subject_snapshot(connection, snapshot)
+
+    selects: list[str] = []
+    native_connect = repository.database.connect
+
+    def traced_connect() -> sqlite3.Connection:
+        connection = native_connect()
+        connection.set_trace_callback(
+            lambda statement: selects.append(statement)
+            if statement.lstrip().upper().startswith("SELECT")
+            else None
+        )
+        return connection
+
+    monkeypatch.setattr(repository.database, "connect", traced_connect)
+    appearing = repository.list_subjects_appearing_in_quarter(Quarter(2026, 4))
+    assert tuple(item.subject.subject_id for item in appearing) == tuple(range(1, 101))
+    assert len(selects) <= 10
+
+    selects.clear()
+    reviews = repository.list_review_issues(Quarter(2026, 4))
+    assert len(reviews) == 100
+    assert len(selects) <= 10
+
+    selects.clear()
+    assert repository.get_premiere_appearance(1) == snapshots[0].premiere
+    assert len(selects) == 1
+
+
 def test_failed_snapshot_replacement_rolls_back_every_child(
     repository: SubjectRepository,
 ) -> None:

@@ -661,8 +661,18 @@ class SubjectRepository:
 
     def get_premiere_appearance(self, subject_id: int) -> QuarterAppearance | None:
         """Return a subject's unique permanent premiere appearance, if assigned."""
-        snapshot = self.get_subject_facts(subject_id)
-        return None if snapshot is None else snapshot.premiere
+        connection = self.database.connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT * FROM subject_quarters
+                WHERE subject_id = ? AND appearance_kind = 'premiere'
+                """,
+                (subject_id,),
+            ).fetchone()
+            return None if row is None else _appearance_from_row(row)
+        finally:
+            connection.close()
 
     def list_subjects_appearing_in_quarter(
         self,
@@ -678,21 +688,23 @@ class SubjectRepository:
             if appearance_kind is not None:
                 kind_clause = " AND appearance_kind = ?"
                 parameters += (appearance_kind.value,)
-            subject_ids = (
+            subject_ids = tuple(
                 row["subject_id"]
                 for row in connection.execute(
                     f"""
                     SELECT subject_id FROM subject_quarters
-                    WHERE year = ? AND quarter_month = ? ORDER BY subject_id
+                    WHERE year = ? AND quarter_month = ?
                     {kind_clause}
+                    ORDER BY subject_id
                     """,
                     parameters,
                 )
             )
+            snapshots = self._subject_facts_many(connection, subject_ids)
             return tuple(
-                snapshot
+                snapshots[subject_id]
                 for subject_id in subject_ids
-                if (snapshot := self._subject_facts(connection, subject_id)) is not None
+                if subject_id in snapshots
             )
         finally:
             connection.close()
@@ -803,47 +815,35 @@ class SubjectRepository:
             if quarter is not None:
                 where = "WHERE issue.candidate_year = ? AND issue.candidate_quarter = ?"
                 parameters = (quarter.year, quarter.month)
-            rows = connection.execute(
-                f"""
-                SELECT issue.*, subject.id FROM subject_review_issues AS issue
-                JOIN subjects AS subject ON subject.id = issue.subject_id
-                {where}
-                ORDER BY issue.candidate_year, issue.candidate_quarter,
-                         issue.issue_code, issue.subject_id
-                """,
-                parameters,
+            rows = tuple(
+                connection.execute(
+                    f"""
+                    SELECT issue.*, subject.id FROM subject_review_issues AS issue
+                    JOIN subjects AS subject ON subject.id = issue.subject_id
+                    {where}
+                    ORDER BY issue.candidate_year, issue.candidate_quarter,
+                             issue.issue_code, issue.subject_id
+                    """,
+                    parameters,
+                )
+            )
+            snapshots = self._subject_facts_many(
+                connection, (row["subject_id"] for row in rows)
             )
             items: list[ReviewQueueItem] = []
             for row in rows:
-                subject = self._subject_facts(connection, row["subject_id"])
-                if subject is None:
+                snapshot = snapshots.get(row["subject_id"])
+                if snapshot is None:
                     raise RuntimeError("review issue subject is missing")
-                candidate_quarter = (
-                    Quarter(row["candidate_year"], row["candidate_quarter"])
-                    if row["candidate_year"] is not None
-                    else None
-                )
                 items.append(
                     ReviewQueueItem(
-                        subject.subject,
-                        ReviewIssue(
-                            row["issue_code"],
-                            candidate_quarter,
-                            row["observed_value"],
-                            json.loads(row["details_json"]),
-                            row["detected_at"],
-                        ),
+                        snapshot.subject,
+                        _review_issue_from_row(row),
                     )
                 )
             return tuple(items)
         finally:
             connection.close()
-
-    def _subject_facts(
-        self, connection: sqlite3.Connection, subject_id: int
-    ) -> SubjectSnapshot | None:
-        return self._subject_facts_many(connection, (subject_id,)).get(subject_id)
-
 
 def cover_relative_path(subject_id: int) -> PurePosixPath:
     """Derive the only supported cover path without storing it in SQLite."""

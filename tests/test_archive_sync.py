@@ -231,10 +231,11 @@ def _store_existing(
         repository.replace_subject_snapshot(connection, snapshot)
 
 
-def test_quarter_sync_preloads_existing_facts_with_bounded_connections(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("candidate_count", (100, 1200))
+def test_quarter_sync_preloads_existing_facts_with_bounded_queries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, candidate_count: int
 ) -> None:
-    subject_ids = range(1000, 1101)
+    subject_ids = tuple(range(1000, 1000 + candidate_count))
     api = FakeApi(
         {subject_id: _detail(subject_id, cover=None) for subject_id in subject_ids}
     )
@@ -245,20 +246,51 @@ def test_quarter_sync_preloads_existing_facts_with_bounded_connections(
             tuple(_candidate(subject_id, MediaFormat.TV) for subject_id in subject_ids)
         ),
     )
+    repository.database.initialize()
+    with repository.transaction() as connection:
+        for subject_id in subject_ids:
+            repository.upsert_subject(
+                connection,
+                SubjectRecord(
+                    subject_id,
+                    f"Existing {subject_id}",
+                    None,
+                    None,
+                    MediaFormat.TV,
+                    date(2026, 4, 2),
+                    None,
+                    None,
+                    None,
+                    None,
+                    JapaneseDecision(
+                        JapaneseClassification.ACCEPTED_JAPANESE,
+                        "infobox_country",
+                        '["日本"]',
+                    ),
+                ),
+            )
     connect_calls = 0
+    selects: list[str] = []
     native_connect = repository.database.connect
 
     def counted_connect() -> sqlite3.Connection:
         nonlocal connect_calls
         connect_calls += 1
-        return native_connect()
+        connection = native_connect()
+        connection.set_trace_callback(
+            lambda statement: selects.append(statement)
+            if statement.lstrip().upper().startswith("SELECT")
+            else None
+        )
+        return connection
 
     monkeypatch.setattr(repository.database, "connect", counted_connect)
     run = sync.run(SyncScope(QUARTER, QUARTER))
 
     assert run.exit_code == 0
-    assert run.quarters[0].accepted_tv == 101
+    assert run.quarters[0].accepted_tv == candidate_count
     assert connect_calls < 20
+    assert len(selects) < 100
 
 
 def _continuing(quarter: Quarter, evidence_value: str) -> QuarterAppearance:

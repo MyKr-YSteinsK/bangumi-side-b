@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -26,6 +27,10 @@ class SitePublishError(RuntimeError):
 
 
 _OFFICIAL_ORIGIN = "github.com/mykr-ysteinsk/bangumi-side-b"
+_RELEASE_COMMIT = re.compile(
+    r"^release: (?P<date>\d{4}\.\d{2}\.\d{2})\.(?P<serial>[1-9]\d*) "
+    r"\[source (?P<source>[0-9a-f]{12})\]$"
+)
 
 
 def validate_release_origin(project_root: Path, remote: str = "origin") -> str:
@@ -151,7 +156,14 @@ class UnifiedPublisher:
             self.reporter.stage(
                 stage="publish-worktree", message="正在创建临时发布 worktree"
             )
-            pushed = self._publish_tree(staging / "site", remote, branch, remote_commit)
+            pushed = self._publish_tree(
+                staging / "site",
+                remote,
+                branch,
+                remote_commit,
+                release_version,
+                candidate.identity.source_commit,
+            )
             report = self._write_report(
                 candidate.identity,
                 release_version,
@@ -196,6 +208,8 @@ class UnifiedPublisher:
         remote: str,
         branch: str,
         expected_remote_commit: str | None,
+        release_version: str,
+        source_commit: str,
     ) -> str:
         current_remote = self.remote_commit(remote, branch)
         if current_remote != expected_remote_commit:
@@ -234,7 +248,7 @@ class UnifiedPublisher:
                 "user.email=release@localhost.invalid",
                 "commit",
                 "-m",
-                f"release: publish {self._head()[:12]}",
+                f"release: {release_version} [source {source_commit[:12]}]",
                 cwd=worktree,
             )
             self._git("push", remote, f"HEAD:{branch}", cwd=worktree)
@@ -257,20 +271,49 @@ class UnifiedPublisher:
 
     def _release_version(self, remote: str, branch: str) -> str:
         today = datetime.now(UTC).strftime("%Y.%m.%d")
-        result = self._git(
-            "show",
-            f"{remote}/{branch}:release-report.json",
-            check=False,
-        )
-        serial = 1
-        if result.returncode == 0:
-            try:
-                previous = json.loads(result.stdout)
-                if str(previous.get("release_version", "")).startswith(today + "."):
-                    serial = int(str(previous["release_version"]).rsplit(".", 1)[1]) + 1
-            except (ValueError, TypeError, json.JSONDecodeError):
-                pass
-        return f"{today}.{serial}"
+        message = self._remote_commit_message(remote, branch)
+        if message is None:
+            return f"{today}.1"
+        first_line = message.splitlines()[0].strip() if message.splitlines() else ""
+        match = _RELEASE_COMMIT.fullmatch(first_line)
+        if match is None:
+            return f"{today}.1"
+        try:
+            release_date = datetime.strptime(match["date"], "%Y.%m.%d").date()
+        except ValueError:
+            return f"{today}.1"
+        if release_date.strftime("%Y.%m.%d") != today:
+            return f"{today}.1"
+        return f"{today}.{int(match['serial']) + 1}"
+
+    def _remote_commit_message(self, remote: str, branch: str) -> str | None:
+        commit = self.remote_commit(remote, branch)
+        if commit is None:
+            return None
+        temporary = Path(tempfile.mkdtemp(prefix="bgmb-remote-read-"))
+        try:
+            repository = temporary / "remote.git"
+            self._git("init", "-q", "--bare", str(repository))
+            self._git("remote", "add", remote, self._remote_url(remote), cwd=repository)
+            self._git(
+                "fetch",
+                "-q",
+                "--depth=1",
+                remote,
+                f"refs/heads/{branch}:refs/heads/{branch}",
+                cwd=repository,
+            )
+            result = self._git(
+                "log", "-1", "--format=%B", f"refs/heads/{branch}", cwd=repository
+            )
+            return result.stdout
+        except subprocess.CalledProcessError as error:
+            detail = (
+                error.stderr or error.stdout or "cannot read remote commit message"
+            ).strip()
+            raise SitePublishError(detail) from error
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
 
     def _write_report(
         self,

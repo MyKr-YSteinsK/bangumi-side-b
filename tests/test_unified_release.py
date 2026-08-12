@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,25 @@ def _site(root: Path) -> None:
     (root / "data" / "archive-index.json").write_text(
         json.dumps({"quarters": [{"quarter": "2026-07"}]}), "utf-8"
     )
+
+
+def _seed_pages(root: Path, remote: Path, message: str) -> None:
+    pages = root.parent / "pages"
+    _git(root.parent, "clone", "-q", str(remote), str(pages))
+    (pages / "legacy.txt").write_text("legacy", "utf-8")
+    _git(pages, "add", "legacy.txt")
+    _git(
+        pages,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        message,
+    )
+    _git(pages, "push", "-q", "origin", "HEAD:gh-pages")
 
 
 @pytest.fixture
@@ -125,6 +145,50 @@ def test_publish_dry_run_and_exact_tree_update(
     assert "index.html" in _git(
         root, "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "gh-pages"
     )
+    assert "release-report.json" not in tree.splitlines()
+    message = _git(
+        root, "--git-dir", str(remote), "log", "-1", "--format=%B", "gh-pages"
+    ).splitlines()[0]
+    assert message == (
+        f"release: {run.release_version} [source {before_main[:12]}]"
+    )
+
+
+def test_release_version_uses_current_remote_commit_message(
+    isolated_release: tuple[Path, Path],
+) -> None:
+    root, remote = isolated_release
+    publisher = UnifiedPublisher(root)
+    today = datetime.now(UTC).strftime("%Y.%m.%d")
+    assert publisher._release_version("origin", "gh-pages") == f"{today}.1"
+
+    _seed_pages(root, remote, f"release: {today}.1 [source {'0' * 12}]")
+    assert publisher._release_version("origin", "gh-pages") == f"{today}.2"
+
+
+@pytest.mark.parametrize("message", [
+    "legacy release",
+    "release: 2026.02.30.4 [source 000000000000]",
+])
+def test_release_version_resets_for_legacy_or_unparseable_remote_message(
+    isolated_release: tuple[Path, Path], message: str
+) -> None:
+    root, remote = isolated_release
+    publisher = UnifiedPublisher(root)
+    today = datetime.now(UTC).strftime("%Y.%m.%d")
+    _seed_pages(root, remote, message)
+    assert publisher._release_version("origin", "gh-pages") == f"{today}.1"
+
+
+def test_release_version_resets_for_a_different_day(
+    isolated_release: tuple[Path, Path],
+) -> None:
+    root, remote = isolated_release
+    publisher = UnifiedPublisher(root)
+    previous = (datetime.now(UTC).date() - timedelta(days=1)).strftime("%Y.%m.%d")
+    _seed_pages(root, remote, f"release: {previous}.9 [source {'0' * 12}]")
+    today = datetime.now(UTC).strftime("%Y.%m.%d")
+    assert publisher._release_version("origin", "gh-pages") == f"{today}.1"
 
 
 def test_publish_fails_closed_when_bound_remote_or_tree_changes(

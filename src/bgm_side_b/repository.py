@@ -725,16 +725,18 @@ class SubjectRepository:
             return ()
         connection = self.database.connect()
         try:
-            placeholders = ", ".join("?" for _ in subject_ids)
-            rows = connection.execute(
-                f"""
-                SELECT DISTINCT year, quarter_month FROM subject_quarters
-                WHERE subject_id IN ({placeholders})
-                ORDER BY year, quarter_month
-                """,
-                tuple(sorted(subject_ids)),
-            )
-            return tuple(Quarter(row["year"], row["quarter_month"]) for row in rows)
+            quarters = {
+                Quarter(row["year"], row["quarter_month"])
+                for chunk in _id_chunks(subject_ids)
+                for row in connection.execute(
+                    f"""
+                    SELECT DISTINCT year, quarter_month FROM subject_quarters
+                    WHERE subject_id IN ({", ".join("?" for _ in chunk)})
+                    """,
+                    chunk,
+                )
+            }
+            return tuple(sorted(quarters))
         finally:
             connection.close()
 
@@ -743,12 +745,15 @@ class SubjectRepository:
     ) -> int:
         if not subject_ids:
             return 0
-        placeholders = ", ".join("?" for _ in subject_ids)
-        result = connection.execute(
-            f"DELETE FROM subjects WHERE id IN ({placeholders})",
-            tuple(sorted(subject_ids)),
-        )
-        return result.rowcount
+        deleted = 0
+        for chunk in _id_chunks(subject_ids):
+            result = connection.execute(
+                f"DELETE FROM subjects WHERE id IN "
+                f"({', '.join('?' for _ in chunk)})",
+                chunk,
+            )
+            deleted += result.rowcount
+        return deleted
 
     def write_sync_state(
         self, connection: sqlite3.Connection, state: QuarterSyncState

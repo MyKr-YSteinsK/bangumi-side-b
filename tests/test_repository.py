@@ -298,6 +298,50 @@ def test_affected_quarters_and_blacklist_purge_cascade_subject_facts(
         connection.close()
 
 
+def test_large_id_set_queries_are_chunked_and_delete_rolls_back_atomically(
+    repository: SubjectRepository,
+) -> None:
+    subject_ids = frozenset(range(1, 1502))
+    april = QuarterAppearance(
+        Quarter(2026, 4),
+        QuarterAppearanceKind.PREMIERE,
+        QuarterAssignmentSource.AUTOMATIC,
+        "air_date",
+        "2026-04-01",
+    )
+    july = replace(april, quarter=Quarter(2026, 7), evidence_value="2026-07-01")
+    with repository.transaction() as connection:
+        for subject_id in subject_ids:
+            repository.upsert_subject(connection, _subject(subject_id))
+            repository.replace_appearances(
+                connection,
+                subject_id,
+                (april if subject_id % 2 else july,),
+            )
+
+    assert repository.affected_quarters(subject_ids | frozenset({999999})) == (
+        Quarter(2026, 4),
+        Quarter(2026, 7),
+    )
+    with pytest.raises(RuntimeError, match="rollback"):
+        with repository.transaction() as connection:
+            assert repository.delete_subjects(connection, subject_ids) == 1501
+            raise RuntimeError("rollback")
+
+    connection = repository.database.connect()
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM subjects").fetchone()[0] == 1501
+    finally:
+        connection.close()
+    with repository.transaction() as connection:
+        assert repository.delete_subjects(connection, subject_ids) == 1501
+    connection = repository.database.connect()
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM subjects").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
 def test_tv_premiere_and_continuing_appearances_are_independent(
     repository: SubjectRepository,
 ) -> None:

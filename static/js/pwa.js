@@ -818,11 +818,13 @@
     for (const resource of manifest.resources) unique.set(resource.content_hash, resource);
     for (const resource of unique.values()) {
       await assertQueueGeneration(generation);
-      if (!await existingContent(resource)) {
+      let ready = await existingContent(resource);
+      if (!ready) {
         await ensureResource(resource, generation);
         await assertQueueGeneration(generation);
+        ready = await existingContent(resource);
       }
-      if (!await existingContent(resource)) {
+      if (!ready) {
         throw new Error("季度内容缓存未完整校验");
       }
     }

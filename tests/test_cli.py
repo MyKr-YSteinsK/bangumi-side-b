@@ -155,10 +155,35 @@ def test_release_publish_prints_post_publish_warnings(
 
     assert main(["release", "publish", "--progress", "off"]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        "publish report: workspace/reports/release-publish.json",
+        "publish report: unavailable",
         "warning: remote published but local report finalization failed",
         "warning: remote published but local prepared state cleanup failed",
     ]
+
+
+def test_release_publish_prints_an_existing_report_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "project"
+    report = root / "workspace" / "reports" / "release-publish.json"
+    report.parent.mkdir(parents=True)
+    report.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "find_project_root", lambda: root)
+    monkeypatch.setattr(
+        cli, "create_progress_reporter", lambda *args: nullcontext(object())
+    )
+    monkeypatch.setattr(
+        cli,
+        "publish_prepared_release",
+        lambda *args: SimpleNamespace(report_path=report, warnings=()),
+    )
+
+    assert main(["release", "publish", "--progress", "off"]) == 0
+    assert capsys.readouterr().out == (
+        "publish report: workspace/reports/release-publish.json\n"
+    )
 
 
 def test_sync_summary_is_compact_and_lists_early_premiere_evidence() -> None:

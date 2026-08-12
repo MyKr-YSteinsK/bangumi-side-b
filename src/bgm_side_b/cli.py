@@ -295,7 +295,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"prepared release: {_relative_output_path(root, run.state_path)}")
             print(f"dry-run report: {_relative_output_path(root, run.report_path)}")
         else:
-            print(f"publish report: {_relative_output_path(root, run.report_path)}")
+            report = (
+                _relative_output_path(root, run.report_path)
+                if run.report_path.is_file()
+                else "unavailable"
+            )
+            print(f"publish report: {report}")
             for warning in run.warnings:
                 print(f"warning: {warning}")
         return 0

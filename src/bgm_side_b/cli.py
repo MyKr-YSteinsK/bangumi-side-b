@@ -65,9 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"%(prog)s {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command")
-    subparsers.add_parser(
-        "audit", help="Read-only audit of first-release workspace data."
-    )
+    subparsers.add_parser("audit", help="Read-only audit of current archive facts.")
     doctor_command = subparsers.add_parser("doctor", help="检查本地与远端发布环境。")
     doctor_command.add_argument("--local", action="store_true", help="只检查本地状态。")
     subparsers.add_parser("status", help="快速查看本地发布状态。")
@@ -123,7 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     release_subparsers = release_command.add_subparsers(dest="release_command")
     prepare_command = release_subparsers.add_parser(
-        "prepare", help="审计、构建 Pages 并执行发布 dry-run。"
+        "prepare", help="审计、构建统一站点并执行发布 dry-run。"
     )
     _add_progress_arguments(prepare_command)
     release_publish_command = release_subparsers.add_parser(

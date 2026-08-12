@@ -937,6 +937,7 @@ def test_content_gc_snapshot_cannot_delete_new_quarter_content(
     first = context.new_page()
     first.goto(f"{pwa_server}/settings/index.html")
     first.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    first.wait_for_function("navigator.serviceWorker.controller !== null")
     first.evaluate(
         """
         async (hash) => {
@@ -981,6 +982,7 @@ def test_content_gc_snapshot_cannot_delete_new_quarter_content(
     second = context.new_page()
     second.goto(f"{pwa_server}/settings/index.html")
     second.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    second.wait_for_function("navigator.serviceWorker.controller !== null")
     second.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
     second.wait_for_function(
         "window.BsbPwa.currentQueue().then((queue) => queue.current === '2026-07')"
@@ -1486,18 +1488,21 @@ def test_quarter_metadata_writes_merge_monotonically_when_older_write_is_delayed
               },
             }),
           );
-          const first = addHash("a");
-          for (let attempt = 0; attempt < 100; attempt += 1) {
-            if (
-              window.__quarterPutHeld
-              && typeof window.__releaseQuarterPut === "function"
-            ) break;
-            await new Promise((resolve) => setTimeout(resolve, 5));
-          }
-          const second = addHash("b");
-          await new Promise((resolve) => setTimeout(resolve, 50));
+          window.__addQuarterHash = addHash;
+          window.__firstQuarterPut = addHash("a");
+        }
+        """
+    )
+    page.wait_for_function(
+        "window.__quarterPutHeld === true "
+        "&& typeof window.__releaseQuarterPut === 'function'"
+    )
+    page.evaluate(
+        """
+        async () => {
+          const second = window.__addQuarterHash("b");
           window.__releaseQuarterPut();
-          await Promise.all([first, second]);
+          await Promise.all([window.__firstQuarterPut, second]);
         }
         """
     )
@@ -2721,6 +2726,7 @@ def test_settings_can_remove_incomplete_download_and_partial_content(
     (pwa_site / "data" / "quarters" / "2026-07.json").write_bytes(b"corrupt")
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
     _wait_for_queue(page, 1)
     state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
@@ -2736,6 +2742,10 @@ def test_settings_can_remove_incomplete_download_and_partial_content(
     assert row.locator("[data-quarter-remove]").is_visible()
     page.on("dialog", lambda dialog: dialog.accept())
     row.locator("[data-quarter-remove]").click()
+    page.wait_for_function(
+        "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
+        "?.textContent.includes('未下载')"
+    )
     page.wait_for_function(
         "async () => (await window.BsbPwa.getQuarterState('2026-07')).status === 'NONE'"
     )
@@ -3082,7 +3092,10 @@ def test_settings_rechecks_offline_updates_after_reconnect(
 
     context.set_offline(True)
     page.reload()
-    page.wait_for_function("document.querySelector('[data-page=\"settings\"]')")
+    page.wait_for_function(
+        "document.querySelector('[data-page=\"settings\"]') "
+        "&& Boolean(window.BsbPwa)"
+    )
     context.set_offline(False)
     page.wait_for_function(
         "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
@@ -3162,7 +3175,8 @@ def test_waiting_shell_survives_page_gc_and_activation_cleans_pending_metadata(
         pending,
     )
 
-    page.evaluate("window.BsbPwa.refreshApp()")
+    with page.expect_navigation():
+        assert page.evaluate("async () => window.BsbPwa.refreshApp()") is True
     page.wait_for_function(
         """
         async (revision) => {

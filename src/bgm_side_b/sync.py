@@ -908,24 +908,36 @@ class ArchiveSynchronizer:
         prior_states = {
             quarter: self.repository.get_sync_state(quarter) for quarter in affected
         }
-        for subject_id in excluded:
+        try:
+            covers = self.covers.quarantine_subject_covers(excluded)
+        except OSError as error:
+            raise SyncError("blacklisted cover cleanup failed") from error
+        try:
+            with self.repository.transaction() as connection:
+                self.repository.delete_subjects(connection, excluded)
+                for quarter in affected:
+                    prior = prior_states[quarter]
+                    if prior is not None:
+                        self.repository.write_sync_state(
+                            connection,
+                            replace(
+                                prior,
+                                facts_status=FACTS_INCOMPLETE,
+                                last_attempt_at=_timestamp(),
+                            ),
+                        )
+        except BaseException:
             try:
-                self.covers.remove_subject_cover(subject_id)
-            except OSError as error:
-                raise SyncError("blacklisted cover cleanup failed") from error
-        with self.repository.transaction() as connection:
-            self.repository.delete_subjects(connection, excluded)
-            for quarter in affected:
-                prior = prior_states[quarter]
-                if prior is not None:
-                    self.repository.write_sync_state(
-                        connection,
-                        replace(
-                            prior,
-                            facts_status=FACTS_INCOMPLETE,
-                            last_attempt_at=_timestamp(),
-                        ),
-                    )
+                covers.restore()
+            except OSError as recovery_error:
+                raise SyncError(
+                    "blacklist transaction failed and cover recovery is incomplete"
+                ) from recovery_error
+            raise
+        try:
+            covers.finalize()
+        except OSError as error:
+            raise SyncError("blacklisted cover cleanup finalization failed") from error
 
     def _write_incomplete(
         self,

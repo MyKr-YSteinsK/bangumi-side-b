@@ -599,6 +599,38 @@ def test_blacklist_purges_database_and_exact_final_cover_before_sync(
     assert not (covers / "101.webp").exists()
 
 
+def test_blacklist_transaction_failure_restores_quarantined_covers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = replace(
+        load_archive_sync_settings(ROOT / "config" / "bangumi.toml"),
+        excluded_subject_ids=frozenset({101, 102}),
+    )
+    sync, repository = _sync(
+        tmp_path, FakeApi({}), DiscoveryBatch(()), settings=settings
+    )
+    _store_existing(repository, 101)
+    _store_existing(repository, 102)
+    covers = tmp_path / "covers"
+    covers.mkdir()
+    (covers / "101.webp").write_bytes(b"cover-101")
+    (covers / "102.webp").write_bytes(b"cover-102")
+
+    def fail_delete(*_: object, **__: object) -> int:
+        raise RuntimeError("database write failed")
+
+    monkeypatch.setattr(repository, "delete_subjects", fail_delete)
+
+    with pytest.raises(RuntimeError, match="database write failed"):
+        sync._purge_blacklist()
+
+    assert repository.get_subject_facts(101) is not None
+    assert repository.get_subject_facts(102) is not None
+    assert (covers / "101.webp").read_bytes() == b"cover-101"
+    assert (covers / "102.webp").read_bytes() == b"cover-102"
+    assert not list(covers.glob(".blacklist-*"))
+
+
 def test_cover_failure_does_not_rollback_complete_facts(tmp_path: Path) -> None:
     api = FakeApi({101: _detail(101)}, image_failure=True)
     sync, repository = _sync(

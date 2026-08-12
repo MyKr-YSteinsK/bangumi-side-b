@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import tempfile
+import uuid
 import warnings
 from dataclasses import dataclass
 from io import BytesIO
@@ -39,6 +41,37 @@ class CoverResult:
     cover: CoverRecord | None
     error_code: str | None = None
     error_summary: str | None = None
+
+
+@dataclass(frozen=True)
+class CoverRemovalBatch:
+    """A recoverable set of cover moves waiting for a database commit."""
+
+    quarantine: Path
+    entries: tuple[tuple[Path, Path], ...]
+
+    def restore(self) -> None:
+        for source, parked in reversed(self.entries):
+            if not parked.exists():
+                if source.exists():
+                    continue
+                raise OSError(f"cover recovery source is missing: {source}")
+            try:
+                parked.replace(source)
+            except OSError:
+                if source.exists() and not parked.exists():
+                    continue
+                raise
+        self._remove_quarantine()
+
+    def finalize(self) -> None:
+        self._remove_quarantine()
+
+    def _remove_quarantine(self) -> None:
+        try:
+            shutil.rmtree(self.quarantine)
+        except FileNotFoundError:
+            return
 
 
 class CoverStore:
@@ -86,6 +119,38 @@ class CoverStore:
     def remove_subject_cover(self, subject_id: int) -> None:
         """Remove only the known final cover path for a blacklisted subject."""
         self._destination(subject_id).unlink(missing_ok=True)
+
+    def quarantine_subject_covers(
+        self, subject_ids: set[int] | frozenset[int]
+    ) -> CoverRemovalBatch:
+        """Move known covers aside until the blacklist transaction commits."""
+        quarantine = self.covers_directory / f".blacklist-{uuid.uuid4().hex}"
+        quarantine.mkdir(parents=True, exist_ok=False)
+        entries: list[tuple[Path, Path]] = []
+        try:
+            for subject_id in sorted(subject_ids):
+                source = self._destination(subject_id)
+                if not source.exists():
+                    continue
+                parked = quarantine / source.name
+                try:
+                    source.replace(parked)
+                except OSError:
+                    if parked.exists() and not source.exists():
+                        entries.append((source, parked))
+                        continue
+                    raise
+                entries.append((source, parked))
+        except BaseException:
+            batch = CoverRemovalBatch(quarantine, tuple(entries))
+            try:
+                batch.restore()
+            except OSError as recovery_error:
+                raise OSError(
+                    "cover quarantine failed and recovery is incomplete"
+                ) from recovery_error
+            raise
+        return CoverRemovalBatch(quarantine, tuple(entries))
 
     def _destination(self, subject_id: int) -> Path:
         if subject_id <= 0:

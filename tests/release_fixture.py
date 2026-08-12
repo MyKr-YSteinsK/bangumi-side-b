@@ -64,10 +64,7 @@ def create_release_project(tmp_path: Path) -> tuple[Path, Path]:
 
 def make_builder(root: Path) -> UnifiedSiteBuilder:
     database = Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")
-    tags = load_tag_rules(
-        root / "config" / "allowed-tags.toml",
-        root / "config" / "tag-aliases.toml",
-    )
+    tags = load_tag_rules(root / "config" / "allowed-tags.toml")
     return UnifiedSiteBuilder(
         root,
         database,

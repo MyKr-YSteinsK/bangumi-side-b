@@ -134,10 +134,7 @@ def _build_fixture(tmp_path: Path) -> tuple[UnifiedSiteBuilder, Database]:
             connection,
             QuarterSyncState(Quarter(2026, 7), "complete", "complete", 2, 1, now, now),
         )
-    tags = load_tag_rules(
-        ROOT / "config" / "allowed-tags.toml",
-        ROOT / "config" / "tag-aliases.toml",
-    )
+    tags = load_tag_rules(ROOT / "config" / "allowed-tags.toml")
     builder = UnifiedSiteBuilder(
         ROOT,
         database,

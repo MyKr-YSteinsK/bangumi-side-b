@@ -91,11 +91,3 @@ def test_shared_fingerprint_includes_whitelist_and_blacklist() -> None:
         tag_rules=reordered,
         excluded_subject_ids=frozenset(),
     ) != first
-
-    alias_only = replace(rules, aliases={"搞笑": "恋爱"})
-    assert shared_fingerprint(
-        stylesheet=b"css",
-        script=b"js",
-        tag_rules=alias_only,
-        excluded_subject_ids=frozenset(),
-    ) == first

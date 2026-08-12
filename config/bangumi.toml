@@ -5,26 +5,3 @@ excluded_subject_ids = []
 api_concurrency = 3
 request_timeout_seconds = 20
 max_retries = 3
-
-# LEGACY-ONLY: audit/doctor/release compatibility. Clean Sync reads only
-# [filters]/[sync]; clean Build and Frontend do not consume the sections below.
-# Remove these fields with the legacy loaders in Plan 20.
-[scope]
-release_quarters = ["2026-04"]
-formats = ["tv"]
-include_continuations = false
-
-[country_filter]
-required_country = "日本"
-country_keys = ["制片国家/地区", "国家/地区"]
-country_value_aliases = ["日本", "Japan"]
-positive_tags = ["日本", "日本动画"]
-negative_tags = ["国产", "中国", "中国动画", "欧美", "欧美动画", "美国", "韩国"]
-allow_tv_default_without_country = true
-
-[roles]
-main_character_relations = ["\u4e3b\u89d2"]
-
-[infobox]
-end_date_keys = ["\u64ad\u653e\u7ed3\u675f"]
-chinese_name_keys = ["\u7b80\u4f53\u4e2d\u6587\u540d"]

@@ -67,7 +67,22 @@ def test_clean_paths_do_not_read_legacy_release_configuration() -> None:
             assert value not in source, f"{path.name} reads legacy setting {value}"
 
     config = (ROOT / "config" / "bangumi.toml").read_text(encoding="utf-8")
-    assert "LEGACY-ONLY" in config
+    for legacy_table in ("[scope]", "[country_filter]", "[roles]", "[infobox]"):
+        assert legacy_table not in config
+
+
+def test_formal_tag_display_has_no_alias_configuration_path() -> None:
+    config_source = (ROOT / "src" / "bgm_side_b" / "config.py").read_text(
+        encoding="utf-8"
+    )
+    projection_source = (
+        ROOT / "src" / "bgm_side_b" / "build" / "site_projection.py"
+    ).read_text(encoding="utf-8")
+
+    assert not (ROOT / "config" / "tag-aliases.toml").exists()
+    assert "aliases_path" not in config_source
+    assert "tag-aliases.toml" not in config_source
+    assert "tag-aliases.toml" not in projection_source
 
 
 def test_pwa_contract_replaces_the_legacy_snapshot_product() -> None:
@@ -144,3 +159,15 @@ def test_formal_unified_runtime_does_not_reference_legacy_pwa() -> None:
         source = path.read_text(encoding="utf-8")
         for value in forbidden:
             assert value not in source, f"{path.name} references legacy PWA {value}"
+
+
+def test_retired_template_and_frontend_artifacts_are_absent() -> None:
+    retired = (
+        ROOT / "static" / "js" / "site.js",
+        ROOT / "static" / "js" / "pwa-controller.js",
+        ROOT / "static" / "js" / "pwa-ui.js",
+        ROOT / "static" / "sw.js",
+    )
+    assert all(not path.exists() for path in retired)
+    assert not any(path.is_file() for path in (ROOT / "templates").rglob("*"))
+    assert "Jinja2" not in (ROOT / "pyproject.toml").read_text(encoding="utf-8")

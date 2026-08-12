@@ -157,6 +157,15 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert (site / "settings" / "index.html").is_file()
     assert (site / "data" / "offline" / "2026-07.json").is_file()
     assert not (site / "subjects").exists()
+    for page in (
+        "index.html",
+        "2026-07/index.html",
+        "archive/index.html",
+        "settings/index.html",
+    ):
+        page_html = (site / page).read_text("utf-8")
+        assert '<a class="skip-link" href="#main-content">' in page_html
+        assert '<main id="main-content" tabindex="-1"' in page_html
     archive_html = (site / "archive" / "index.html").read_text("utf-8")
     assert 'data-archive-index-url="../data/archive-index.json"' in archive_html
     assert 'data-scope-choice="range"' in archive_html

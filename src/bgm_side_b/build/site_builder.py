@@ -1245,7 +1245,7 @@ def _quarter_items(payload: Mapping[str, object]) -> tuple[Mapping[str, object],
 
 def _root_html(revisions: Mapping[str, str]) -> bytes:
     body = (
-        '<main class="root-entry" data-root-loading><p class="archive-intro__code">'
+        '<main id="main-content" tabindex="-1" class="root-entry" data-root-loading><p class="archive-intro__code">'
         'ARCHIVE / LATEST</p><h1>正在打开最新季度…</h1></main>'
         '<main class="root-entry" data-root-fallback hidden><p>当前无法读取季度索引。</p>'
         '<p><a href="archive/index.html">打开 Archive</a> · '
@@ -1270,7 +1270,7 @@ def _root_html(revisions: Mapping[str, str]) -> bytes:
 def _archive_html(revisions: Mapping[str, str]) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "ARCHIVE")
-        + '<main class="archive-page" data-archive-app data-page="archive" data-workspace-mode="scope" '
+        + '<main id="main-content" tabindex="-1" class="archive-page" data-archive-app data-page="archive" data-workspace-mode="scope" '
         'data-archive-index-url="../data/archive-index.json" data-site-root="../">'
         '<section class="archive-intro">'
         '<p class="archive-intro__code">ARCHIVE / INDEX</p>'
@@ -1340,7 +1340,7 @@ def _archive_html(revisions: Mapping[str, str]) -> bytes:
 def _settings_html(revisions: Mapping[str, str]) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "SETTINGS")
-        + '<main class="reference-page settings-page" data-pwa-settings '
+        + '<main id="main-content" tabindex="-1" class="reference-page settings-page" data-pwa-settings '
         'data-archive-index-url="../data/archive-index.json"><section class="archive-intro">'
         '<p class="archive-intro__code">SETTINGS / LOCAL</p><div><h1>设置</h1>'
         '<p class="archive-intro__summary">管理应用状态、浏览器存储与按季度离线档案。</p>'
@@ -1396,7 +1396,7 @@ def _quarter_html(
     }
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", f"QUARTER / {quarter.quarter}")
-        + f'<main class="quarter-page season-{html.escape(quarter.quarter[-2:])}" '
+        + f'<main id="main-content" tabindex="-1" class="quarter-page season-{html.escape(quarter.quarter[-2:])}" '
         f'data-archive-app data-page="quarter" data-quarter="{label}" data-workspace-mode="scope" '
         f'data-data-url="../data/quarters/{label}.json" data-site-root="../" '
         f'data-count-tv="{counts["tv"]}" data-count-movie="{counts["movie"]}" '
@@ -1572,6 +1572,7 @@ def _page(
         f'<link rel="icon" href="{favicon_href}" type="image/svg+xml">'
         f'<link rel="stylesheet" href="{_revision_href(css_href, revisions["assets/app.css"])}"></head>'
         f"<body{class_attr}{attributes}>"
+        '<a class="skip-link" href="#main-content">跳到主要内容</a>'
         '<aside class="pwa-update-notice" data-pwa-update-notice hidden>'
         '<span>应用更新可用</span><button type="button" data-pwa-refresh>刷新</button></aside>'
         f"{body}"

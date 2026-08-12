@@ -208,6 +208,24 @@ def test_publish_fails_closed_when_bound_remote_or_tree_changes(
     assert candidate.identity.content_hash
 
 
+def test_publish_rejects_an_unchanged_site_without_an_empty_release_commit(
+    isolated_release: tuple[Path, Path],
+) -> None:
+    root, remote = isolated_release
+    publisher = UnifiedPublisher(root)
+    first = publisher.publish()
+    before = _git(root, "--git-dir", str(remote), "rev-parse", "gh-pages")
+
+    with pytest.raises(SitePublishError, match="no publishable changes"):
+        publisher.publish(expected_remote_commit=first.remote_commit)
+
+    assert _git(root, "--git-dir", str(remote), "rev-parse", "gh-pages") == before
+    assert (
+        _git(root, "--git-dir", str(remote), "rev-list", "--count", "gh-pages")
+        == "1"
+    )
+
+
 def test_prepared_state_rejects_invalid_identity_and_scope_fields(
     isolated_release: tuple[Path, Path],
 ) -> None:

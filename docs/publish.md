@@ -30,6 +30,9 @@ hex，公开季度必须是排序唯一的合法季度列表，报告路径必�
 `HEAD == origin/main`、`dist/site` 精确哈希和远端 `gh-pages` commit。任何变化都会拒绝，
 要求重新 prepare。
 
+如果 validated `dist/site` 与当前 `gh-pages` 文件树完全相同，发布会拒绝创建只改变提交消息的
+空版本；资料版本号不会通过 `--allow-empty` 人为推进。
+
 真实发布通过临时 Git worktree，把 `dist/site` 原样复制到 `gh-pages`，创建普通提交并执行
 `git push HEAD:gh-pages`；提交消息严格为 `release: YYYY.MM.DD.N [source <12位 commit>]`，
 版本只从当前远端 `gh-pages` HEAD 消息推导，发布树不包含 `release-report.json`。不 force

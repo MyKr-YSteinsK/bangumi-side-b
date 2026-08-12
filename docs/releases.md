@@ -16,6 +16,7 @@ hex，公开季度必须是排序唯一的 `YYYY-(01|04|07|10)` 列表，状态�
 identity；dry-run 报告的版本只是候选值，正式发布会重新读取远端并再次检查安全状态。
 真实发布通过临时 worktree 对 `gh-pages` 做一次普通 push，发布内容与 validated `dist/site`
 逐字节相同，不生成 `release-report.json` 或额外的运行时快照、历史页或详情产品。
+若候选树与当前 `gh-pages` 完全相同，则拒绝创建纯 metadata 的空 release commit。
 
 高层 `bgmb release publish` 只接受当前项目的官方 origin
 (`github.com/MyKr-YSteinsK/bangumi-side-b` 的 HTTPS/SSH 形式)；本地 bare remote 仅可用于

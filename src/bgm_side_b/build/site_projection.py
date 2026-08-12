@@ -13,6 +13,7 @@ import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
+from functools import cached_property
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from unicodedata import normalize
@@ -97,22 +98,26 @@ class ArchiveFacts:
     def state_by_quarter(self) -> MappingProxyType[Quarter, SyncFactState]:
         return MappingProxyType(dict(self.sync_states))
 
-    @property
+    @cached_property
     def by_quarter(
         self,
-    ) -> dict[Quarter, tuple[tuple[SubjectFact, AppearanceFact], ...]]:
+    ) -> MappingProxyType[
+        Quarter, tuple[tuple[SubjectFact, AppearanceFact], ...]
+    ]:
         grouped: defaultdict[Quarter, list[tuple[SubjectFact, AppearanceFact]]] = (
             defaultdict(list)
         )
         for subject in self.subjects:
             for appearance in subject.appearances:
                 grouped[appearance.quarter].append((subject, appearance))
-        return {
-            quarter: tuple(
-                sorted(values, key=lambda item: _subject_sort_key(item[0]))
-            )
-            for quarter, values in sorted(grouped.items())
-        }
+        return MappingProxyType(
+            {
+                quarter: tuple(
+                    sorted(values, key=lambda item: _subject_sort_key(item[0]))
+                )
+                for quarter, values in sorted(grouped.items())
+            }
+        )
 
 
 class ArchiveFactsReader:
@@ -188,47 +193,40 @@ class ArchiveFactsReader:
             FROM subjects ORDER BY id
             """
         ).fetchall()
-        ids = tuple(row["id"] for row in rows)
-        if not ids:
+        if not rows:
             return ()
-        placeholders = ", ".join("?" for _ in ids)
         aliases = _group_strings(
             connection.execute(
-                f"""
+                """
                 SELECT subject_id, title FROM subject_titles
-                WHERE subject_id IN ({placeholders}) ORDER BY subject_id, position
-                """,
-                ids,
+                ORDER BY subject_id, position
+                """
             ).fetchall(),
             "title",
         )
         tags = _group_strings(
             connection.execute(
-                f"""
+                """
                 SELECT subject_id, tag_name FROM subject_tags
-                WHERE subject_id IN ({placeholders}) ORDER BY subject_id, position
-                """,
-                ids,
+                ORDER BY subject_id, position
+                """
             ).fetchall(),
             "tag_name",
         )
         source_rows = connection.execute(
-            f"""
+            """
             SELECT subject_id, source_type FROM subject_sources
-            WHERE subject_id IN ({placeholders}) ORDER BY subject_id
-            """,
-            ids,
+            ORDER BY subject_id
+            """
         ).fetchall()
         sources = {row["subject_id"]: row["source_type"] for row in source_rows}
         appearance_rows = connection.execute(
-            f"""
+            """
             SELECT subject_id, year, quarter_month, appearance_kind,
                    assignment_source, evidence_type, evidence_value
             FROM subject_quarters
-            WHERE subject_id IN ({placeholders})
             ORDER BY subject_id, year, quarter_month, appearance_kind
-            """,
-            ids,
+            """
         ).fetchall()
         appearances: defaultdict[int, list[AppearanceFact]] = defaultdict(list)
         for row in appearance_rows:
@@ -242,12 +240,11 @@ class ArchiveFactsReader:
                 )
             )
         cover_rows = connection.execute(
-            f"""
+            """
             SELECT subject_id, content_hash, size_bytes
-            FROM subject_covers WHERE subject_id IN ({placeholders})
+            FROM subject_covers
             ORDER BY subject_id
-            """,
-            ids,
+            """
         ).fetchall()
         covers = {
             row["subject_id"]: _cover_fact(

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from datetime import date
 from pathlib import Path
+
+import pytest
 
 from bgm_side_b.build.site_projection import (
     ArchiveFactsReader,
@@ -207,3 +210,77 @@ def test_projection_missing_cover_is_a_warning_and_null_url(tmp_path: Path) -> N
     projection = project_quarter(facts, Quarter(2026, 4), _rules(), workspace)
     assert projection.tv_premiere[0].cover_url is None
     assert projection.warnings == ("subject 303 has no cover",)
+
+
+def test_large_archive_read_avoids_parameter_limits_and_caches_quarter_groups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    database = Database(workspace / "archive.sqlite3")
+    database.initialize()
+    quarters = tuple(
+        Quarter(year, month)
+        for year in range(2016, 2027)
+        for month in (1, 4, 7, 10)
+    )
+    connection = database.connect()
+    try:
+        connection.executemany(
+            """
+            INSERT INTO subjects (
+                id, name_original, name_cn, summary_raw, media_format, air_date,
+                end_date, episode_count, rating_score, rating_count,
+                japanese_evidence_type, japanese_evidence_value
+            ) VALUES (?, ?, NULL, NULL, 'TV', ?, NULL, 12, NULL, NULL,
+                      'infobox_country', 'Japan')
+            """,
+            (
+                (
+                    subject_id,
+                    f"Subject {subject_id}",
+                    date(quarter.year, quarter.month, 1).isoformat(),
+                )
+                for subject_id in range(1, 1201)
+                for quarter in (quarters[(subject_id - 1) % len(quarters)],)
+            ),
+        )
+        connection.executemany(
+            """
+            INSERT INTO subject_quarters (
+                subject_id, year, quarter_month, appearance_kind,
+                assignment_source, evidence_type, evidence_value
+            ) VALUES (?, ?, ?, 'premiere', 'automatic', 'air_date', ?)
+            """,
+            (
+                (
+                    subject_id,
+                    quarter.year,
+                    quarter.month,
+                    date(quarter.year, quarter.month, 1).isoformat(),
+                )
+                for subject_id in range(1, 1201)
+                for quarter in (quarters[(subject_id - 1) % len(quarters)],)
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    statements: list[str] = []
+    native_connect = database.connect
+
+    def traced_connect() -> sqlite3.Connection:
+        traced = native_connect()
+        traced.set_trace_callback(lambda sql: statements.append(sql.lower()))
+        return traced
+
+    monkeypatch.setattr(database, "connect", traced_connect)
+    facts = ArchiveFactsReader(database, workspace).read()
+
+    assert len(facts.subjects) == 1200
+    first_grouping = facts.by_quarter
+    assert len(first_grouping) == 44
+    assert facts.by_quarter is first_grouping
+    with pytest.raises(TypeError):
+        first_grouping[quarters[0]] = ()  # type: ignore[index]
+    assert not any("where subject_id in" in sql for sql in statements)

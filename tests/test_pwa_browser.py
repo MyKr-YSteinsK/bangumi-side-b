@@ -1423,6 +1423,74 @@ def test_simultaneous_cross_tab_enqueue_serializes_queue_metadata(
     context.close()
 
 
+def test_simultaneous_cross_tab_enqueue_without_web_locks_keeps_both_labels(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    context.add_init_script(
+        "Object.defineProperty(navigator, 'locks', {"
+        " configurable: true, value: undefined });"
+    )
+    first = context.new_page()
+    second = context.new_page()
+    first.goto(f"{pwa_server}/settings/index.html")
+    second.goto(f"{pwa_server}/settings/index.html")
+    for page in (first, second):
+        page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+        page.evaluate("async () => window.BsbPwa.pauseQueue()")
+    context.set_offline(True)
+
+    channel_name = "bsb-test-no-lock-enqueue"
+    first.evaluate(
+        """
+        (channelName) => {
+          const channel = new BroadcastChannel(channelName);
+          let start;
+          window.__enqueueStart = () => start();
+          window.__enqueueChannel = channel;
+          window.__enqueueResult = new Promise((resolve) => { start = resolve; })
+            .then(() => window.BsbPwa.enqueue(["2026-07"]));
+        }
+        """,
+        channel_name,
+    )
+    second.evaluate(
+        """
+        (channelName) => {
+          const channel = new BroadcastChannel(channelName);
+          window.__enqueueResult = new Promise((resolve) => {
+            channel.addEventListener("message", (event) => {
+              if (event.data === "start") resolve();
+            }, { once: true });
+          }).then(() => window.BsbPwa.enqueue(["2026-04"]));
+        }
+        """,
+        channel_name,
+    )
+    first.evaluate(
+        "() => { window.__enqueueStart(); "
+        "window.__enqueueChannel.postMessage('start'); }"
+    )
+    first_result = first.evaluate("window.__enqueueResult")
+    second_result = second.evaluate("window.__enqueueResult")
+    first.wait_for_function(
+        """
+        () => caches.open("bsb-meta-v1")
+          .then((cache) => cache.keys())
+          .then((keys) => !keys.some((key) =>
+            key.url.includes("/__bsb_meta__/locks/queue-mutation/")))
+        """
+    )
+    first.wait_for_function(
+        "window.BsbPwa.currentQueue().then((queue) => queue.labels.length === 2)"
+    )
+    queue = first.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert first_result["generation"] == second_result["generation"]
+    assert queue["labels"] == ["2026-07", "2026-04"]
+    context.close()
+
+
 def test_quarter_metadata_writes_merge_monotonically_when_older_write_is_delayed(
     chromium: Browser,
     pwa_server: str,

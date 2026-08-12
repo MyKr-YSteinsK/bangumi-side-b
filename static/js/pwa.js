@@ -12,6 +12,9 @@
   const QUEUE_META = "queue.json";
   const QUEUE_LOCK_NAME = "bsb-offline-queue-runner";
   const QUEUE_MUTATION_LOCK_NAME = "bsb-offline-queue-mutation";
+  const FALLBACK_QUEUE_LOCK_PREFIX = "locks/queue-mutation/";
+  const FALLBACK_QUEUE_LOCK_TIMEOUT = 5000;
+  const FALLBACK_QUEUE_LOCK_LEASE = 30000;
   const QUARTER_MUTATION_LOCK_PREFIX = "bsb-offline-quarter-";
   const CONTENT_MAINTENANCE_LOCK_NAME = "bsb-pwa-content-maintenance";
   const STATE_CHANNEL_NAME = "bsb-pwa-state";
@@ -31,6 +34,12 @@
   let registrationPromise = null;
   let serviceWorkerRegistration = null;
   let registrationError = null;
+  let fallbackQueueLockSequence = 0;
+  let activeFallbackQueueLock = null;
+  const fallbackQueueLockPage = crypto.randomUUID?.()
+    || [...crypto.getRandomValues(new Uint8Array(16))]
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("");
   const quarterMutations = new Map();
   const watchedRegistrations = new WeakSet();
   try {
@@ -87,6 +96,7 @@
 
   async function writeMeta(name, value) {
     const cache = await caches.open(META_CACHE);
+    await assertFallbackQueueMutationLock(cache);
     await cache.put(
       metaRequest(name),
       new Response(JSON.stringify(value), {
@@ -98,6 +108,7 @@
 
   async function deleteMeta(name) {
     const cache = await caches.open(META_CACHE);
+    await assertFallbackQueueMutationLock(cache);
     await cache.delete(metaRequest(name));
     notify();
   }
@@ -429,7 +440,9 @@
   function enqueueQueueMutation(operationCallback) {
     const operation = queueMutation.then(async () => {
       const mutate = async () => operationCallback();
-      if (typeof navigator.locks?.request !== "function") return mutate();
+      if (typeof navigator.locks?.request !== "function") {
+        return withFallbackQueueMutationLock(mutate);
+      }
       let entered = false;
       try {
         return await navigator.locks.request(
@@ -447,6 +460,116 @@
     });
     queueMutation = operation.catch(() => {});
     return operation;
+  }
+
+  function fallbackQueueLockName(kind, token) {
+    return `${FALLBACK_QUEUE_LOCK_PREFIX}${kind}/${token}.json`;
+  }
+
+  async function fallbackQueueLockKeys(cache, kind) {
+    const prefix = absolute(`${META_PATH}${FALLBACK_QUEUE_LOCK_PREFIX}${kind}/`).href;
+    return (await cache.keys()).filter((request) => request.url.startsWith(prefix));
+  }
+
+  async function fallbackQueueLockRecords(cache, kind) {
+    const records = [];
+    for (const request of await fallbackQueueLockKeys(cache, kind)) {
+      const response = await cache.match(request);
+      if (!response) continue;
+      try {
+        const value = await response.json();
+        if (
+          typeof value?.token === "string"
+          && value.token
+          && Number.isFinite(value?.expires_at)
+        ) {
+          if (value.expires_at <= Date.now()) await cache.delete(request);
+          else records.push(value);
+          continue;
+        }
+      } catch {
+        // Fall through to the fail-closed error below.
+      }
+      throw new Error("离线队列锁记录无效");
+    }
+    return records;
+  }
+
+  async function fallbackQueueTickets(cache) {
+    const tickets = await fallbackQueueLockRecords(cache, "tickets");
+    if (tickets.some((value) => !Number.isInteger(value.ticket) || value.ticket <= 0)) {
+      throw new Error("离线队列锁记录无效");
+    }
+    return tickets;
+  }
+
+  async function assertFallbackQueueMutationLock(cache) {
+    if (!activeFallbackQueueLock) return;
+    const response = await cache.match(activeFallbackQueueLock.ticketKey);
+    if (!response) throw new Error("离线队列锁已失效");
+    try {
+      const value = await response.json();
+      if (
+        value?.token === activeFallbackQueueLock.token
+        && Number.isFinite(value?.expires_at)
+        && value.expires_at > Date.now()
+      ) return;
+    } catch {
+      // Fall through to the stale-owner error below.
+    }
+    throw new Error("离线队列锁已失效");
+  }
+
+  async function withFallbackQueueMutationLock(callback) {
+    const cache = await caches.open(META_CACHE);
+    fallbackQueueLockSequence += 1;
+    const token = `${fallbackQueueLockPage}-${fallbackQueueLockSequence}`;
+    const choosing = metaRequest(fallbackQueueLockName("choosing", token));
+    const ticketKey = metaRequest(fallbackQueueLockName("tickets", token));
+    const deadline = Date.now() + FALLBACK_QUEUE_LOCK_TIMEOUT;
+    const expiresAt = Date.now() + FALLBACK_QUEUE_LOCK_LEASE;
+    let ticketWritten = false;
+    await cache.put(choosing, new Response(JSON.stringify({ token, expires_at: expiresAt })));
+    try {
+      const currentTickets = await fallbackQueueTickets(cache);
+      const ticket = currentTickets.reduce(
+        (maximum, item) => Math.max(maximum, item.ticket),
+        0,
+      ) + 1;
+      await cache.put(
+        ticketKey,
+        new Response(JSON.stringify({ ticket, token, expires_at: expiresAt }), {
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+        }),
+      );
+      ticketWritten = true;
+      await cache.delete(choosing);
+
+      while (true) {
+        const choosingRecords = await fallbackQueueLockRecords(cache, "choosing");
+        if (!choosingRecords.length) {
+          const tickets = await fallbackQueueTickets(cache);
+          tickets.sort((left, right) => (
+            left.ticket - right.ticket || left.token.localeCompare(right.token)
+          ));
+          if (tickets[0]?.token === token) {
+            activeFallbackQueueLock = { token, ticketKey };
+            try {
+              return await callback();
+            } finally {
+              activeFallbackQueueLock = null;
+            }
+          }
+        }
+        if (Date.now() >= deadline) {
+          throw new Error("无法安全串行化离线队列，请关闭其他页面后重试");
+        }
+        await delay(10);
+      }
+    } finally {
+      await cache.delete(choosing);
+      if (ticketWritten) await cache.delete(ticketKey);
+    }
   }
 
   function updateQueue(mutator) {

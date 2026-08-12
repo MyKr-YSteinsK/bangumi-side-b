@@ -28,6 +28,7 @@ from bgm_side_b.discovery import (
     SearchDiscoveryAdapter,
 )
 from bgm_side_b.domain import (
+    MediaFormat,
     Quarter,
     QuarterAppearanceKind,
     QuarterAssignmentSource,
@@ -332,12 +333,15 @@ class ArchiveSynchronizer:
         rejected_non_japanese = 0
         accepted_tv = 0
         accepted_movie = 0
+        tv_candidates = 0
+        admitted_japanese_tv = 0
         premiere_conflict_warnings: list[dict[str, str]] = []
         try:
             for candidate in batch.candidates:
                 if candidate.subject_id in self.settings.excluded_subject_ids:
                     blacklisted += 1
                     continue
+                candidate_is_tv = MediaFormat.TV in candidate.media_formats
                 try:
                     detail = candidate.detail or self.api.get_subject(
                         candidate.subject_id
@@ -360,6 +364,13 @@ class ArchiveSynchronizer:
                         }
                     )
                     continue
+                if candidate_is_tv or decision.media_format is MediaFormat.TV:
+                    tv_candidates += 1
+                if (
+                    decision.status is AdmissionStatus.ACCEPTED
+                    and decision.media_format is MediaFormat.TV
+                ):
+                    admitted_japanese_tv += 1
                 if decision.status is AdmissionStatus.BLACKLISTED:
                     blacklisted += 1
                     continue
@@ -416,6 +427,47 @@ class ArchiveSynchronizer:
                 len(batch.candidates),
                 tuple(errors),
                 blacklisted=blacklisted,
+            )
+        if tv_candidates > 0 and admitted_japanese_tv == 0:
+            self.reporter.error(
+                stage="candidate-summary",
+                message="候选存在但日本 TV 收录为 0；保留旧事实并标记未完成。",
+                quarter=_quarter_label(quarter),
+                counters={"TV 候选": tv_candidates, "日本 TV": 0},
+            )
+            return self._write_incomplete(
+                quarter,
+                prior,
+                len(batch.candidates),
+                (
+                    {
+                        "code": "empty_included_result",
+                        "summary": (
+                            "TV candidates exist but no Japanese TV subject "
+                            "was admitted"
+                        ),
+                    },
+                ),
+                blacklisted=blacklisted,
+            )
+        if tv_candidates >= 20 and admitted_japanese_tv / tv_candidates < 0.20:
+            premiere_conflict_warnings.append(
+                {
+                    "code": "low_japan_tv_inclusion_rate",
+                    "summary": (
+                        "Japanese TV inclusion rate is below 20% "
+                        f"({admitted_japanese_tv}/{tv_candidates})"
+                    ),
+                }
+            )
+            self.reporter.warning(
+                stage="candidate-summary",
+                message="日本 TV 收录率低于 20%。",
+                quarter=_quarter_label(quarter),
+                counters={
+                    "TV 候选": tv_candidates,
+                    "日本 TV": admitted_japanese_tv,
+                },
             )
 
         premiere_subject_ids = {

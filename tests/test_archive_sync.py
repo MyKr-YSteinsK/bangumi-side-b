@@ -325,6 +325,96 @@ def test_detail_failure_marks_incomplete_without_committing_partial_quarter(
     assert repository.get_sync_state(QUARTER).facts_status == FACTS_INCOMPLETE  # type: ignore[union-attr]
 
 
+def test_zero_japanese_tv_admission_preserves_old_facts_and_marks_incomplete(
+    tmp_path: Path,
+) -> None:
+    api = FakeApi(
+        {
+            101: _detail(101, country="中国", cover=None),
+            202: _detail(
+                202,
+                media=MediaFormat.MOVIE,
+                air_date="2026-05-01",
+                cover=None,
+            ),
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch(
+            (
+                _candidate(101, MediaFormat.TV),
+                _candidate(202, MediaFormat.MOVIE, date(2026, 5, 1)),
+            )
+        ),
+    )
+    _store_existing(repository, 99)
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection,
+            QuarterSyncState(
+                QUARTER,
+                FACTS_COMPLETE,
+                "complete",
+                1,
+                0,
+                "attempt-1",
+                "success-1",
+            ),
+        )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    result = run.quarters[0]
+    assert run.exit_code == 1
+    assert result.facts_status == FACTS_INCOMPLETE
+    assert result.errors[0]["code"] == "empty_included_result"
+    assert repository.get_subject_facts(99) is not None
+    assert repository.get_subject_facts(101) is None
+    assert repository.get_subject_facts(202) is None
+    state = repository.get_sync_state(QUARTER)
+    assert state is not None
+    assert state.facts_status == FACTS_INCOMPLETE
+    assert state.subject_count == 1
+    assert state.last_success_at == "success-1"
+
+
+def test_low_japanese_tv_inclusion_rate_warns_without_blocking(
+    tmp_path: Path,
+) -> None:
+    subject_ids = tuple(range(100, 120))
+    api = FakeApi(
+        {
+            subject_id: _detail(
+                subject_id,
+                country="日本" if subject_id == 100 else "中国",
+                cover=None,
+            )
+            for subject_id in subject_ids
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch(
+            tuple(_candidate(subject_id, MediaFormat.TV) for subject_id in subject_ids)
+        ),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    result = run.quarters[0]
+    assert run.exit_code == 0
+    assert result.facts_status == FACTS_COMPLETE
+    assert result.accepted_tv == 1
+    assert any(
+        warning["code"] == "low_japan_tv_inclusion_rate"
+        for warning in result.warnings
+    )
+    assert repository.get_subject_facts(100) is not None
+
+
 def test_complete_facts_store_tv_movie_review_and_final_webp_cover(
     tmp_path: Path,
 ) -> None:

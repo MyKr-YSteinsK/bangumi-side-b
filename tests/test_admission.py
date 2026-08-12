@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date
 
+import pytest
+
 from bgm_side_b.admission import (
     DISCOVERY_DATE_MISMATCH,
     DISCOVERY_MEDIA_CONFLICT,
@@ -69,6 +71,21 @@ def test_blacklist_is_checked_before_any_candidate_or_detail_normalisation() -> 
 
     assert decision.status is AdmissionStatus.BLACKLISTED
     assert decision.reason == "blacklist"
+
+
+@pytest.mark.parametrize("platform", ("WEB", "OVA", "OAD"))
+def test_explicit_unsupported_platform_cannot_inherit_browse_tv(
+    platform: str,
+) -> None:
+    decision = admit_subject(
+        _candidate(),
+        _detail(platform=platform, country="日本"),
+        Quarter(2026, 4),
+    )
+
+    assert decision.status is AdmissionStatus.REJECTED
+    assert decision.media_format is None
+    assert decision.reason == "unsupported_media"
 
 
 def test_japanese_three_state_admission_never_guesses() -> None:

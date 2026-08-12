@@ -28,6 +28,7 @@ DISCOVERY_DATE_MISMATCH: Final = "DISCOVERY_DATE_MISMATCH"
 DISCOVERY_MEDIA_CONFLICT: Final = "DISCOVERY_MEDIA_CONFLICT"
 JAPANESE_CLASSIFICATION_UNRESOLVED: Final = "JAPANESE_CLASSIFICATION_UNRESOLVED"
 SEARCH_ONLY_MEDIA_UNRESOLVED: Final = "SEARCH_ONLY_MEDIA_UNRESOLVED"
+_UNSUPPORTED_MEDIA_PLATFORMS: Final = frozenset({"WEB", "OVA", "OAD"})
 
 
 class AdmissionStatus(StrEnum):
@@ -90,6 +91,15 @@ def admit_subject(
     ):
         return AdmissionDecision(
             AdmissionStatus.REJECTED, detail.subject_id, reason="not_anime"
+        )
+    if (
+        detail.platform is not None
+        and normalize_text(detail.platform) in _UNSUPPORTED_MEDIA_PLATFORMS
+    ):
+        return AdmissionDecision(
+            AdmissionStatus.REJECTED,
+            detail.subject_id,
+            reason="unsupported_media",
         )
 
     media_format, media_review = _resolve_media(candidate, detail)

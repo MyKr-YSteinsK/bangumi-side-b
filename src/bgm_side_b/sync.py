@@ -1218,6 +1218,10 @@ class ArchiveSynchronizer:
                 item["rejected_non_japanese"] for item in serialized
             ),
             "blacklisted": sum(item["blacklisted"] for item in serialized),
+            "manual_blacklisted": sum(
+                item["blacklisted"] - len(item["auto_blacklisted"])
+                for item in serialized
+            ),
             "auto_blacklisted_count": sum(
                 len(item["auto_blacklisted"]) for item in serialized
             ),

@@ -288,6 +288,12 @@ def test_auto_blacklist_stops_before_review_and_cover_download(
     event = result.auto_blacklisted[0]
     assert event["days_since_air_date"] == 9
     assert event["rating_count"] == 29
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    assert report["auto_blacklisted_count"] == 1
+    assert report["manual_blacklisted"] == 0
+    assert report["quarters"][0]["auto_blacklisted"][0]["reason"] == (
+        "low_rating_count"
+    )
 
 
 @pytest.mark.parametrize(

@@ -482,6 +482,15 @@ def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:
         )
         for item in result.early_premieres
     )
+    lines.extend(
+        (
+            "AUTO BLACKLISTED "
+            f"{item['subject_id']}: {item['title']} "
+            f"({item['days_since_air_date']} days, "
+            f"ratings={item['rating_count']})"
+        )
+        for item in result.auto_blacklisted
+    )
     if result.warnings or result.errors:
         lines.append(
             f"exceptions: warnings={len(result.warnings)}, errors={len(result.errors)}"

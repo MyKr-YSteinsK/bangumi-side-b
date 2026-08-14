@@ -1,5 +1,6 @@
 [filters]
 excluded_subject_ids = []
+auto_excluded_subject_ids = []
 
 [sync]
 api_concurrency = 3

@@ -38,6 +38,17 @@ bgmb serve --port 8000
 构建应无 artifact 写入。`serve` 只服务已有 `dist/site`，不读 SQLite、不构建、不同步
 也不发布。release prepare 属于后续发布生命周期。
 
+同步还会在基础 Anime、日本、TV/MOVIE 范围确认后检查自动冷门规则：可靠首播日期超过 7 天且
+评分人数少于 30 的作品会永久写入 `auto_excluded_subject_ids`，并在同一次同步中停止季度归属、
+REVIEW 和封面处理。缺少日期或评分人数时不会按零猜测。评分人数后来上涨不会自动恢复；需要人工
+删除配置中的自动 ID 后再重新 sync。日常裁决流程仍是：
+
+```powershell
+cd <repository-root>
+bgmb sync YEAR QUARTER_MONTH
+bgmb review YEAR QUARTER_MONTH
+```
+
 整份 Plan 的集成验证通过后，按仓库规则由 Codex 执行一次普通分支 push；它不是 Pages
 发布。真实发布仍需明确执行：
 

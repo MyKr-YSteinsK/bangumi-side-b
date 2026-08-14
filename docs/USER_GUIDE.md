@@ -12,6 +12,9 @@ bgmb --version
 bgmb --help
 ```
 
+日常使用也可以用 pipx editable 安装：`pipx install --editable .`。这样直接使用 `bgmb`，
+无需手动激活 `.venv`；项目命令仍应在项目根目录或其子目录执行。
+
 本地事实、封面、报告和临时状态位于 `workspace/`，不会提交到 Git。唯一生成站点是
 `dist/site/`。
 
@@ -32,6 +35,14 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 
 `sync` 会联网访问 Bangumi，获取可验证的事实和封面。事实成功提交后，它会自动触发受影响
 范围的增量 build。局部失败或中断不会把未验证资料标记为完整。
+
+同步在确认 Anime、日本、TV/MOVIE 基础范围后，还会应用自动永久冷门规则：首播超过 7 天且评分
+人数少于 30 的作品会写入 `config/bangumi.toml` 的 `auto_excluded_subject_ids`，同时记录标题
+注释和审计证据，并在本次同步中跳过季度归属、REVIEW、封面和站点输出。7 天整、30 人及以上、
+缺少可靠首播日期或评分人数都不会自动排除；评分人数后来上涨也不会自动恢复。
+
+自动黑名单是永久状态。只有人工从 `auto_excluded_subject_ids` 删除对应 ID 后，作品才有机会在
+后续 sync 中重新评估。人工 `excluded_subject_ids` 与自动列表来源不同，均应保留配置中的现有注释。
 
 ## REVIEW 与人工裁决
 
@@ -150,6 +161,7 @@ bgmb release publish
 ### REVIEW 怎么办？
 
 先人工查证，再用 `bgmb assign` 明确分配、明确未分配或清除旧决定。不要用标题、简介或 AI 猜测。
+自动黑名单不通过 REVIEW 处理；如需重新评估，先人工删除对应自动 ID，再重新执行目标季度同步。
 
 ### 为什么 build 不联网？
 

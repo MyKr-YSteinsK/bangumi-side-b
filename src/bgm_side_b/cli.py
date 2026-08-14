@@ -491,6 +491,13 @@ def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:
         )
         for item in result.auto_blacklisted
     )
+    if result.blacklisted:
+        lines.append(
+            "BLACKLIST "
+            f"manual={result.manual_blacklisted}, "
+            f"existing_auto={result.existing_auto_blacklisted}, "
+            f"new_auto={len(result.auto_blacklisted)}"
+        )
     if result.warnings or result.errors:
         lines.append(
             f"exceptions: warnings={len(result.warnings)}, errors={len(result.errors)}"

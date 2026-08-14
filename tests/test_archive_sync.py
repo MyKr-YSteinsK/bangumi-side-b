@@ -18,6 +18,7 @@ from bgm_side_b.admission import QuarterOverride
 from bgm_side_b.api import BangumiApiError, ImageResponse, SubjectDetail
 from bgm_side_b.archive_config import (
     ArchiveSyncSettings,
+    add_auto_excluded_subject,
     load_archive_source_rules,
     load_archive_sync_settings,
 )
@@ -252,6 +253,34 @@ def _auto_settings_path(tmp_path: Path) -> Path:
     return path
 
 
+def test_blacklist_source_counts_manual_hit_explicitly(
+    tmp_path: Path,
+) -> None:
+    settings = replace(
+        load_archive_sync_settings(ROOT / "config" / "bangumi.toml"),
+        excluded_subject_ids=frozenset({650000}),
+    )
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi({}),
+        DiscoveryBatch((_candidate(650000, MediaFormat.TV),)),
+        settings=settings,
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    result = run.quarters[0]
+    assert result.blacklisted == 1
+    assert result.manual_blacklisted == 1
+    assert result.existing_auto_blacklisted == 0
+    assert result.auto_blacklisted == ()
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    assert report["manual_blacklisted"] == 1
+    assert report["existing_auto_blacklisted"] == 0
+    assert report["auto_blacklisted_count"] == 0
+    assert repository.get_subject_facts(650000) is None
+
+
 def test_auto_blacklist_stops_before_review_and_cover_download(
     tmp_path: Path,
 ) -> None:
@@ -278,6 +307,8 @@ def test_auto_blacklist_stops_before_review_and_cover_download(
     result = run.quarters[0]
     assert run.exit_code == 0
     assert result.blacklisted == 1
+    assert result.manual_blacklisted == 0
+    assert result.existing_auto_blacklisted == 0
     assert len(result.auto_blacklisted) == 1
     assert result.reviews == ()
     assert api.image_calls == []
@@ -513,7 +544,68 @@ def test_auto_blacklist_is_permanent_and_does_not_repeat_event(
     assert first.quarters[0].auto_blacklisted[0]["subject_id"] == 650008
     assert second.quarters[0].auto_blacklisted == ()
     assert second.quarters[0].blacklisted == 1
+    assert second.quarters[0].manual_blacklisted == 0
+    assert second.quarters[0].existing_auto_blacklisted == 1
+    second_report = json.loads(second.report_path.read_text(encoding="utf-8"))
+    assert second_report["manual_blacklisted"] == 0
+    assert second_report["existing_auto_blacklisted"] == 1
+    assert second_report["auto_blacklisted_count"] == 0
     assert repository.get_subject_facts(650008) is None
+
+
+def test_blacklist_source_counts_mixed_manual_existing_and_new_auto(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    add_auto_excluded_subject(settings_path, 650012, name_cn="历史自动")
+    settings_path.write_text(
+        settings_path.read_text(encoding="utf-8").replace(
+            "excluded_subject_ids = []", "excluded_subject_ids = [650013]"
+        ),
+        encoding="utf-8",
+    )
+    api = FakeApi(
+        {
+            650014: _detail(
+                650014,
+                air_date="2026-04-02",
+                rating_count=29,
+                cover=None,
+            )
+        }
+    )
+    sync, _ = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch(
+            (
+                _candidate(650012, MediaFormat.TV),
+                _candidate(650013, MediaFormat.TV),
+                _candidate(650014, MediaFormat.TV),
+            )
+        ),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    result = run.quarters[0]
+    assert result.blacklisted == 3
+    assert result.manual_blacklisted == 1
+    assert result.existing_auto_blacklisted == 1
+    assert len(result.auto_blacklisted) == 1
+    assert (
+        result.manual_blacklisted
+        + result.existing_auto_blacklisted
+        + len(result.auto_blacklisted)
+        == result.blacklisted
+    )
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    assert report["blacklisted"] == 3
+    assert report["manual_blacklisted"] == 1
+    assert report["existing_auto_blacklisted"] == 1
+    assert report["auto_blacklisted_count"] == 1
 
 
 def test_auto_blacklist_requires_unambiguous_media_scope(
@@ -576,6 +668,8 @@ def test_manual_removal_allows_later_reassessment(
 
     assert run.exit_code == 0
     assert run.quarters[0].auto_blacklisted == ()
+    assert run.quarters[0].manual_blacklisted == 0
+    assert run.quarters[0].existing_auto_blacklisted == 0
     assert repository.get_subject_facts(650010) is not None
 
 

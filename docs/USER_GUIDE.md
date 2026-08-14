@@ -43,6 +43,7 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 
 自动黑名单是永久状态。只有人工从 `auto_excluded_subject_ids` 删除对应 ID 后，作品才有机会在
 后续 sync 中重新评估。人工 `excluded_subject_ids` 与自动列表来源不同，均应保留配置中的现有注释。
+同步报告会分别显示人工命中、历史自动命中和本次新增自动拉黑数量。
 
 ## REVIEW 与人工裁决
 

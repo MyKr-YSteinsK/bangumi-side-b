@@ -145,6 +145,8 @@ class QuarterSyncResult:
     boundary_reviews: int = 0
     skipped: bool = False
     auto_blacklisted: tuple[dict[str, object], ...] = ()
+    manual_blacklisted: int = 0
+    existing_auto_blacklisted: int = 0
 
 
 @dataclass(frozen=True)
@@ -224,14 +226,17 @@ class ArchiveSynchronizer:
         self.covers = CoverStore(workspace_directory / "covers", api)
         self.settings_path = settings_path or workspace_directory / "bangumi.toml"
         self.evaluation_date = evaluation_date or date.today()
+        self._manual_excluded_subject_ids = set(settings.excluded_subject_ids)
+        self._auto_excluded_subject_ids = set(settings.auto_excluded_subject_ids)
         self._active_excluded_subject_ids = set(settings.all_excluded_subject_ids)
 
     def run(self, scope: SyncScope) -> SyncRun:
         """Synchronize the requested scope without writing any legacy fact tables."""
         if self.settings_path.is_file():
-            self._active_excluded_subject_ids = set(
-                load_archive_sync_settings(self.settings_path).all_excluded_subject_ids
-            )
+            settings = load_archive_sync_settings(self.settings_path)
+            self._manual_excluded_subject_ids = set(settings.excluded_subject_ids)
+            self._auto_excluded_subject_ids = set(settings.auto_excluded_subject_ids)
+            self._active_excluded_subject_ids = set(settings.all_excluded_subject_ids)
         self.repository.database.initialize()
         self._purge_blacklist()
         overrides = load_quarter_overrides(self.overrides_path)
@@ -360,6 +365,8 @@ class ArchiveSynchronizer:
         external_reviews: list[dict[str, object]] = []
         errors: list[dict[str, str]] = []
         blacklisted = 0
+        manual_blacklisted = 0
+        existing_auto_blacklisted = 0
         auto_blacklisted: list[dict[str, object]] = []
         rejected_non_japanese = 0
         accepted_tv = 0
@@ -369,8 +376,13 @@ class ArchiveSynchronizer:
         premiere_conflict_warnings: list[dict[str, str]] = []
         try:
             for candidate in batch.candidates:
-                if candidate.subject_id in self._active_excluded_subject_ids:
+                if candidate.subject_id in self._manual_excluded_subject_ids:
                     blacklisted += 1
+                    manual_blacklisted += 1
+                    continue
+                if candidate.subject_id in self._auto_excluded_subject_ids:
+                    blacklisted += 1
+                    existing_auto_blacklisted += 1
                     continue
                 candidate_is_tv = MediaFormat.TV in candidate.media_formats
                 try:
@@ -406,6 +418,10 @@ class ArchiveSynchronizer:
                     admitted_japanese_tv += 1
                 if decision.status is AdmissionStatus.BLACKLISTED:
                     blacklisted += 1
+                    if candidate.subject_id in self._manual_excluded_subject_ids:
+                        manual_blacklisted += 1
+                    elif candidate.subject_id in self._auto_excluded_subject_ids:
+                        existing_auto_blacklisted += 1
                     continue
                 if _eligible_for_auto_blacklist(decision) and should_auto_blacklist(
                     detail.air_date, detail.rating_total, self.evaluation_date
@@ -484,6 +500,9 @@ class ArchiveSynchronizer:
                 prior,
                 len(batch.candidates),
                 (),
+                blacklisted=blacklisted,
+                manual_blacklisted=manual_blacklisted,
+                existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
             )
             raise
@@ -494,6 +513,8 @@ class ArchiveSynchronizer:
                 len(batch.candidates),
                 tuple(errors),
                 blacklisted=blacklisted,
+                manual_blacklisted=manual_blacklisted,
+                existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
             )
         if tv_candidates > 0 and admitted_japanese_tv == 0:
@@ -517,6 +538,8 @@ class ArchiveSynchronizer:
                     },
                 ),
                 blacklisted=blacklisted,
+                manual_blacklisted=manual_blacklisted,
+                existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
             )
         if tv_candidates >= 20 and admitted_japanese_tv / tv_candidates < 0.20:
@@ -555,6 +578,9 @@ class ArchiveSynchronizer:
                 prior,
                 len(batch.candidates),
                 (),
+                blacklisted=blacklisted,
+                manual_blacklisted=manual_blacklisted,
+                existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
             )
             raise
@@ -565,6 +591,8 @@ class ArchiveSynchronizer:
                 len(batch.candidates),
                 reconciliation.errors,
                 blacklisted=blacklisted,
+                manual_blacklisted=manual_blacklisted,
+                existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
             )
 
@@ -693,6 +721,8 @@ class ArchiveSynchronizer:
             early_premieres,
             boundary_reviews,
             auto_blacklisted=tuple(auto_blacklisted),
+            manual_blacklisted=manual_blacklisted,
+            existing_auto_blacklisted=existing_auto_blacklisted,
         )
 
     def _prepare_subject(
@@ -1048,8 +1078,10 @@ class ArchiveSynchronizer:
                     name_original=detail.name,
                 )
                 config_changed = True
+                self._auto_excluded_subject_ids.add(subject_id)
                 self._active_excluded_subject_ids.add(subject_id)
         except BaseException:
+            self._auto_excluded_subject_ids.discard(subject_id)
             self._active_excluded_subject_ids.discard(subject_id)
             if config_changed or self.settings_path.read_bytes() != original_config:
                 try:
@@ -1090,6 +1122,8 @@ class ArchiveSynchronizer:
         errors: tuple[dict[str, str], ...],
         *,
         blacklisted: int = 0,
+        manual_blacklisted: int = 0,
+        existing_auto_blacklisted: int = 0,
         auto_blacklisted: tuple[dict[str, object], ...] = (),
     ) -> QuarterSyncResult:
         with self.repository.transaction() as connection:
@@ -1119,6 +1153,8 @@ class ArchiveSynchronizer:
             (),
             errors,
             auto_blacklisted=auto_blacklisted,
+            manual_blacklisted=manual_blacklisted,
+            existing_auto_blacklisted=existing_auto_blacklisted,
         )
 
     def _sync_covers(
@@ -1225,8 +1261,11 @@ class ArchiveSynchronizer:
             ),
             "blacklisted": sum(item["blacklisted"] for item in serialized),
             "manual_blacklisted": sum(
-                item["blacklisted"] - len(item["auto_blacklisted"])
+                item["manual_blacklisted"]
                 for item in serialized
+            ),
+            "existing_auto_blacklisted": sum(
+                item["existing_auto_blacklisted"] for item in serialized
             ),
             "auto_blacklisted_count": sum(
                 len(item["auto_blacklisted"]) for item in serialized
@@ -1480,6 +1519,8 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
         "accepted_movie": result.accepted_movie,
         "rejected_non_japanese": result.rejected_non_japanese,
         "blacklisted": result.blacklisted,
+        "manual_blacklisted": result.manual_blacklisted,
+        "existing_auto_blacklisted": result.existing_auto_blacklisted,
         "auto_blacklisted": list(result.auto_blacklisted),
         "reviews": [
             {

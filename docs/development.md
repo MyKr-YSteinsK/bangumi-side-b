@@ -49,6 +49,9 @@ bgmb sync YEAR QUARTER_MONTH
 bgmb review YEAR QUARTER_MONTH
 ```
 
+同步报告的黑名单汇总分别记录人工命中、历史自动命中和本次新增自动拉黑；三者之和必须等于
+黑名单总命中数。
+
 整份 Plan 的集成验证通过后，按仓库规则由 Codex 执行一次普通分支 push；它不是 Pages
 发布。真实发布仍需明确执行：
 

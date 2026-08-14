@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import re
+import tempfile
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -83,6 +86,58 @@ def should_auto_blacklist(
     return (evaluation_date - air_date).days > 7 and rating_count < 30
 
 
+def add_auto_excluded_subject(
+    path: Path,
+    subject_id: int,
+    *,
+    name_cn: str | None = None,
+    name_original: str | None = None,
+) -> bool:
+    """Persist one automatic exclusion while leaving manual config untouched.
+
+    The existing TOML is edited only inside the ``[filters]`` automatic list.
+    A temporary file and an atomic replacement keep a failed write from
+    exposing a partial configuration.  The return value is false when the ID
+    was already present, making repeated decisions idempotent.
+    """
+    if not _positive_id(subject_id):
+        raise ValueError("auto-excluded subject id must be positive")
+    settings = load_archive_sync_settings(path)
+    if subject_id in settings.auto_excluded_subject_ids:
+        return False
+    subject_ids = sorted((*settings.auto_excluded_subject_ids, subject_id))
+    title = _comment_title(subject_id, name_cn, name_original)
+    source = path.read_text(encoding="utf-8")
+    lines = source.splitlines(keepends=True)
+    filters_start, filters_end = _filters_section(lines)
+    rendered = _render_auto_exclusions(subject_ids, title, subject_id)
+    auto_start = next(
+        (
+            index
+            for index in range(filters_start + 1, filters_end)
+            if _AUTO_KEY_RE.match(lines[index])
+        ),
+        None,
+    )
+    comments: dict[int, str] = {}
+    if auto_start is None:
+        insertion = filters_end
+        block = rendered
+        if insertion > filters_start + 1 and not lines[insertion - 1].endswith(
+            ("\n", "\r")
+        ):
+            block = "\n" + block
+        lines[insertion:insertion] = [block]
+    else:
+        auto_end = _array_end(lines, auto_start)
+        comments = _auto_comments(lines[auto_start:auto_end])
+        lines[auto_start:auto_end] = [
+            _render_auto_exclusions(subject_ids, title, subject_id, comments)
+        ]
+    _atomic_replace_text(path, "".join(lines))
+    return True
+
+
 def _subject_ids(
     filters: Mapping[str, object], key: str, *, required: bool
 ) -> list[int]:
@@ -94,6 +149,91 @@ def _subject_ids(
     if len(set(value)) != len(value):
         raise ValueError(f"{key} must not contain duplicates")
     return value
+
+
+_AUTO_KEY_RE = re.compile(r"^\s*auto_excluded_subject_ids\s*=")
+_TABLE_RE = re.compile(r"^\s*\[[^]]+\]\s*$")
+
+
+def _filters_section(lines: list[str]) -> tuple[int, int]:
+    start = next(
+        (index for index, line in enumerate(lines) if line.strip() == "[filters]"),
+        None,
+    )
+    if start is None:
+        raise ValueError("bangumi.toml must define a filters table")
+    end = next(
+        (
+            index
+            for index in range(start + 1, len(lines))
+            if _TABLE_RE.match(lines[index])
+        ),
+        len(lines),
+    )
+    return start, end
+
+
+def _array_end(lines: list[str], start: int) -> int:
+    depth = 0
+    for index in range(start, len(lines)):
+        value = lines[index].split("#", 1)[0]
+        depth += value.count("[") - value.count("]")
+        if index == start and depth <= 0:
+            return index + 1
+        if index > start and depth <= 0:
+            return index + 1
+    raise ValueError("auto_excluded_subject_ids must be a closed array")
+
+
+def _render_auto_exclusions(
+    subject_ids: list[int],
+    title: str,
+    subject_id: int,
+    comments: Mapping[int, str] | None = None,
+) -> str:
+    known_comments = {} if comments is None else comments
+    lines = ["auto_excluded_subject_ids = [\n"]
+    for item in subject_ids:
+        comment = known_comments.get(item, title if item == subject_id else str(item))
+        lines.append(f"    {item}, # {comment}\n")
+    lines.append("]\n")
+    return "".join(lines)
+
+
+def _auto_comments(lines: list[str]) -> dict[int, str]:
+    comments: dict[int, str] = {}
+    for line in lines[1:]:
+        value, _, comment = line.partition("#")
+        match = re.search(r"\b(\d+)\b", value)
+        if match and comment.strip():
+            comments[int(match.group(1))] = " ".join(comment.split())
+    return comments
+
+
+def _comment_title(
+    subject_id: int, name_cn: str | None, name_original: str | None
+) -> str:
+    for value in (name_cn, name_original):
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split()).replace("\r", " ").replace("\n", " ")
+    return str(subject_id)
+
+
+def _atomic_replace_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as file:
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _integer(value: object) -> bool:

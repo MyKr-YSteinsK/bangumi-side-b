@@ -123,10 +123,11 @@ def _detail(
     *,
     media: MediaFormat = MediaFormat.TV,
     country: str | None = "日本",
-    air_date: str = "2026-04-02",
+    air_date: str | None = "2026-04-02",
     cover: str | None = "https://images.example/cover.png",
     platform: str | None = None,
     meta_tags: tuple[str, ...] = (),
+    rating_count: int | None = 100,
 ) -> SubjectDetail:
     infobox = [] if country is None else [{"key": "国家/地区", "value": country}]
     return SubjectDetail.from_payload(
@@ -144,7 +145,7 @@ def _detail(
             ),
             "eps": 12,
             "total_episodes": 12,
-            "rating": {"score": 7.5, "total": 100},
+            "rating": {"score": 7.5, "total": rating_count},
             "meta_tags": list(meta_tags),
             "tags": [{"name": "漫画改编", "count": 3}],
             "infobox": infobox,
@@ -173,6 +174,8 @@ def _sync(
     browse: DiscoveryBatch,
     search: DiscoveryBatch | None = None,
     settings: ArchiveSyncSettings | None = None,
+    settings_path: Path | None = None,
+    evaluation_date: date | None = None,
 ) -> tuple[ArchiveSynchronizer, SubjectRepository]:
     database = Database(tmp_path / "data" / "facts.sqlite3")
     repository = SubjectRepository(database)
@@ -184,6 +187,8 @@ def _sync(
         overrides_path=tmp_path / "quarter-overrides.toml",
         workspace_directory=tmp_path,
         reports_directory=tmp_path / "reports",
+        settings_path=settings_path,
+        evaluation_date=evaluation_date,
         browse=FakeDiscovery(browse),
         search=FakeDiscovery(search or DiscoveryBatch(())),
     )
@@ -235,6 +240,123 @@ def _store_existing(
     )
     with repository.transaction() as connection:
         repository.replace_subject_snapshot(connection, snapshot)
+
+
+def _auto_settings_path(tmp_path: Path) -> Path:
+    path = tmp_path / "bangumi.toml"
+    path.write_text(
+        (ROOT / "config" / "bangumi.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_auto_blacklist_stops_before_review_and_cover_download(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    api = FakeApi(
+        {
+            650001: _detail(
+                650001,
+                air_date="2026-04-02",
+                rating_count=29,
+            )
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(650001, MediaFormat.TV),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    result = run.quarters[0]
+    assert run.exit_code == 0
+    assert result.blacklisted == 1
+    assert len(result.auto_blacklisted) == 1
+    assert result.reviews == ()
+    assert api.image_calls == []
+    assert repository.get_subject_facts(650001) is None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset({650001})
+    )
+    event = result.auto_blacklisted[0]
+    assert event["days_since_air_date"] == 9
+    assert event["rating_count"] == 29
+
+
+@pytest.mark.parametrize(
+    ("days", "rating_count"),
+    ((7, 0), (8, 30)),
+)
+def test_auto_blacklist_protection_and_rating_threshold_keep_subject(
+    tmp_path: Path, days: int, rating_count: int
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    evaluation_date = date(2026, 4, 11)
+    air_date = evaluation_date.fromordinal(evaluation_date.toordinal() - days)
+    api = FakeApi(
+        {
+            650002: _detail(
+                650002,
+                air_date=air_date.isoformat(),
+                rating_count=rating_count,
+                cover=None,
+            )
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(650002, MediaFormat.TV, air_date),)),
+        settings_path=settings_path,
+        evaluation_date=evaluation_date,
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 0
+    assert run.quarters[0].auto_blacklisted == ()
+    assert repository.get_subject_facts(650002) is not None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset()
+    )
+
+
+def test_auto_blacklist_does_not_guess_missing_air_date_or_rating_count(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    details = {
+        650003: _detail(650003, air_date=None, rating_count=0, cover=None),
+        650004: _detail(650004, air_date="2026-04-02", rating_count=None, cover=None),
+    }
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi(details),
+        DiscoveryBatch(
+            (
+                _candidate(650003, MediaFormat.TV),
+                _candidate(650004, MediaFormat.TV),
+            )
+        ),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 0
+    assert run.quarters[0].auto_blacklisted == ()
+    assert repository.get_subject_facts(650003) is not None
+    assert repository.get_subject_facts(650004) is not None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset()
+    )
 
 
 @pytest.mark.parametrize("candidate_count", (100, 1200))

@@ -262,7 +262,7 @@ def prepare_release(
             tags,
             workspace_directory=root / "workspace",
             reporter=active,
-            excluded_subject_ids=settings.excluded_subject_ids,
+            excluded_subject_ids=settings.all_excluded_subject_ids,
         ).build()
     except Exception as error:  # builder normalizes product errors below
         if isinstance(error, KeyboardInterrupt):

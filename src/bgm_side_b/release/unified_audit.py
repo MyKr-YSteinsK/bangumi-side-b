@@ -61,7 +61,7 @@ class UnifiedReleaseAuditor:
         try:
             database.verify_integrity()
             facts = ArchiveFactsReader(database, self.root / "workspace").read(
-                self.settings.excluded_subject_ids
+                self.settings.all_excluded_subject_ids
             )
         except (DatabaseError, UnknownSchemaError, ProjectionError) as error:
             return _failed("schema", _safe_error(error))

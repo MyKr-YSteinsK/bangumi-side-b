@@ -21,13 +21,20 @@ from bgm_side_b.admission import (
     quarter_for_date,
 )
 from bgm_side_b.api import BangumiApiClient, BangumiApiError, SubjectDetail
-from bgm_side_b.archive_config import ArchiveSourceRules, ArchiveSyncSettings
+from bgm_side_b.archive_config import (
+    ArchiveSourceRules,
+    ArchiveSyncSettings,
+    add_auto_excluded_subject,
+    restore_archive_config,
+    should_auto_blacklist,
+)
 from bgm_side_b.discovery import (
     BrowseDiscoveryAdapter,
     DiscoveryFailure,
     SearchDiscoveryAdapter,
 )
 from bgm_side_b.domain import (
+    JapaneseClassification,
     MediaFormat,
     Quarter,
     QuarterAppearanceKind,
@@ -135,6 +142,7 @@ class QuarterSyncResult:
     early_premieres: tuple[dict[str, object], ...] = ()
     boundary_reviews: int = 0
     skipped: bool = False
+    auto_blacklisted: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -198,6 +206,8 @@ class ArchiveSynchronizer:
         reporter: ProgressReporter | None = None,
         browse: BrowseDiscoveryAdapter | None = None,
         search: SearchDiscoveryAdapter | None = None,
+        settings_path: Path | None = None,
+        evaluation_date: date | None = None,
     ) -> None:
         self.repository = repository
         self.api = api
@@ -210,6 +220,9 @@ class ArchiveSynchronizer:
         self.browse = browse or BrowseDiscoveryAdapter(api)
         self.search = search or SearchDiscoveryAdapter(api)
         self.covers = CoverStore(workspace_directory / "covers", api)
+        self.settings_path = settings_path or workspace_directory / "bangumi.toml"
+        self.evaluation_date = evaluation_date or date.today()
+        self._active_excluded_subject_ids = set(settings.all_excluded_subject_ids)
 
     def run(self, scope: SyncScope) -> SyncRun:
         """Synchronize the requested scope without writing any legacy fact tables."""
@@ -267,7 +280,7 @@ class ArchiveSynchronizer:
         self, subject_id: int, override: QuarterOverride
     ) -> SingleSubjectImport:
         """Fetch one missing manual-assignment subject through the official endpoint."""
-        if subject_id in self.settings.excluded_subject_ids:
+        if subject_id in self._active_excluded_subject_ids:
             raise SyncError("blacklisted subjects cannot be imported")
         self.repository.database.initialize()
         detail = self.api.get_subject(subject_id)
@@ -285,7 +298,7 @@ class ArchiveSynchronizer:
             candidate,
             detail,
             target,
-            excluded_subject_ids=self.settings.excluded_subject_ids,
+            excluded_subject_ids=frozenset(self._active_excluded_subject_ids),
             override=override,
         )
         if decision.status is not AdmissionStatus.ACCEPTED:
@@ -341,6 +354,7 @@ class ArchiveSynchronizer:
         external_reviews: list[dict[str, object]] = []
         errors: list[dict[str, str]] = []
         blacklisted = 0
+        auto_blacklisted: list[dict[str, object]] = []
         rejected_non_japanese = 0
         accepted_tv = 0
         accepted_movie = 0
@@ -349,7 +363,7 @@ class ArchiveSynchronizer:
         premiere_conflict_warnings: list[dict[str, str]] = []
         try:
             for candidate in batch.candidates:
-                if candidate.subject_id in self.settings.excluded_subject_ids:
+                if candidate.subject_id in self._active_excluded_subject_ids:
                     blacklisted += 1
                     continue
                 candidate_is_tv = MediaFormat.TV in candidate.media_formats
@@ -361,7 +375,9 @@ class ArchiveSynchronizer:
                         candidate,
                         detail,
                         quarter,
-                        excluded_subject_ids=self.settings.excluded_subject_ids,
+                        excluded_subject_ids=frozenset(
+                            self._active_excluded_subject_ids
+                        ),
                         override=overrides.get(candidate.subject_id),
                     )
                 except BangumiApiError as error:
@@ -384,6 +400,28 @@ class ArchiveSynchronizer:
                     admitted_japanese_tv += 1
                 if decision.status is AdmissionStatus.BLACKLISTED:
                     blacklisted += 1
+                    continue
+                if _eligible_for_auto_blacklist(decision) and should_auto_blacklist(
+                    detail.air_date, detail.rating_total, self.evaluation_date
+                ):
+                    try:
+                        added = self._record_auto_blacklist(
+                            detail,
+                            existing_by_subject.get(candidate.subject_id),
+                        )
+                    except (OSError, SyncError, ValueError) as error:
+                        errors.append(
+                            {
+                                "code": "auto_blacklist_persist",
+                                "summary": str(error),
+                            }
+                        )
+                        continue
+                    blacklisted += 1
+                    if added:
+                        auto_blacklisted.append(
+                            _auto_blacklist_event(detail, self.evaluation_date)
+                        )
                     continue
                 if decision.status is AdmissionStatus.REJECTED:
                     if decision.reason == "non_japanese":
@@ -435,7 +473,13 @@ class ArchiveSynchronizer:
                     else:
                         accepted_movie += 1
         except KeyboardInterrupt:
-            self._write_incomplete(quarter, prior, len(batch.candidates), ())
+            self._write_incomplete(
+                quarter,
+                prior,
+                len(batch.candidates),
+                (),
+                auto_blacklisted=tuple(auto_blacklisted),
+            )
             raise
         if errors:
             return self._write_incomplete(
@@ -444,6 +488,7 @@ class ArchiveSynchronizer:
                 len(batch.candidates),
                 tuple(errors),
                 blacklisted=blacklisted,
+                auto_blacklisted=tuple(auto_blacklisted),
             )
         if tv_candidates > 0 and admitted_japanese_tv == 0:
             self.reporter.error(
@@ -466,6 +511,7 @@ class ArchiveSynchronizer:
                     },
                 ),
                 blacklisted=blacklisted,
+                auto_blacklisted=tuple(auto_blacklisted),
             )
         if tv_candidates >= 20 and admitted_japanese_tv / tv_candidates < 0.20:
             premiere_conflict_warnings.append(
@@ -498,7 +544,13 @@ class ArchiveSynchronizer:
                 quarter, excluded_subject_ids=frozenset(premiere_subject_ids)
             )
         except KeyboardInterrupt:
-            self._write_incomplete(quarter, prior, len(batch.candidates), ())
+            self._write_incomplete(
+                quarter,
+                prior,
+                len(batch.candidates),
+                (),
+                auto_blacklisted=tuple(auto_blacklisted),
+            )
             raise
         if reconciliation.errors:
             return self._write_incomplete(
@@ -507,6 +559,7 @@ class ArchiveSynchronizer:
                 len(batch.candidates),
                 reconciliation.errors,
                 blacklisted=blacklisted,
+                auto_blacklisted=tuple(auto_blacklisted),
             )
 
         stale_ids = {
@@ -633,6 +686,7 @@ class ArchiveSynchronizer:
             natural_premiere_tv,
             early_premieres,
             boundary_reviews,
+            auto_blacklisted=tuple(auto_blacklisted),
         )
 
     def _prepare_subject(
@@ -901,7 +955,7 @@ class ArchiveSynchronizer:
             self.repository.replace_review_issues(connection, subject_id, tuple(issues))
 
     def _purge_blacklist(self) -> None:
-        excluded = self.settings.excluded_subject_ids
+        excluded = frozenset(self._active_excluded_subject_ids)
         if not excluded:
             return
         affected = self.repository.affected_quarters(excluded)
@@ -939,6 +993,89 @@ class ArchiveSynchronizer:
         except OSError as error:
             raise SyncError("blacklisted cover cleanup finalization failed") from error
 
+    def _record_auto_blacklist(
+        self, detail: SubjectDetail, existing: SubjectSnapshot | None
+    ) -> bool:
+        """Persist one new automatic exclusion with existing-data rollback."""
+        subject_id = detail.subject_id
+        if subject_id in self._active_excluded_subject_ids:
+            return False
+        if not self.settings_path.is_file():
+            raise SyncError("automatic blacklist configuration is missing")
+        original_config = self.settings_path.read_bytes()
+        affected = (
+            self.repository.affected_quarters(frozenset({subject_id}))
+            if existing is not None
+            else ()
+        )
+        prior_states = {
+            quarter: self.repository.get_sync_state(quarter) for quarter in affected
+        }
+        covers = None
+        if existing is not None:
+            try:
+                covers = self.covers.quarantine_subject_covers({subject_id})
+            except OSError as error:
+                raise SyncError(
+                    "automatic blacklist cover quarantine failed"
+                ) from error
+        config_changed = False
+        try:
+            with self.repository.transaction() as connection:
+                if existing is not None:
+                    self.repository.delete_subjects(connection, frozenset({subject_id}))
+                    for quarter in affected:
+                        prior = prior_states[quarter]
+                        if prior is not None:
+                            self.repository.write_sync_state(
+                                connection,
+                                replace(
+                                    prior,
+                                    facts_status=FACTS_INCOMPLETE,
+                                    last_attempt_at=_timestamp(),
+                                ),
+                            )
+                add_auto_excluded_subject(
+                    self.settings_path,
+                    subject_id,
+                    name_cn=detail.name_cn,
+                    name_original=detail.name,
+                )
+                config_changed = True
+                self._active_excluded_subject_ids.add(subject_id)
+        except BaseException:
+            self._active_excluded_subject_ids.discard(subject_id)
+            if config_changed or self.settings_path.read_bytes() != original_config:
+                try:
+                    restore_archive_config(self.settings_path, original_config)
+                except OSError as error:
+                    if covers is not None:
+                        try:
+                            covers.restore()
+                        except OSError as recovery_error:
+                            raise SyncError(
+                                "automatic blacklist rollback is incomplete"
+                            ) from recovery_error
+                    raise SyncError(
+                        "automatic blacklist configuration rollback failed"
+                    ) from error
+            if covers is not None:
+                try:
+                    covers.restore()
+                except OSError as error:
+                    raise SyncError(
+                        "automatic blacklist cover recovery is incomplete"
+                    ) from error
+            raise
+        if covers is not None:
+            try:
+                covers.finalize()
+            except OSError as error:
+                raise SyncError(
+                    "automatic blacklist cover cleanup finalization failed"
+                ) from error
+        return True
+
     def _write_incomplete(
         self,
         quarter: Quarter,
@@ -947,6 +1084,7 @@ class ArchiveSynchronizer:
         errors: tuple[dict[str, str], ...],
         *,
         blacklisted: int = 0,
+        auto_blacklisted: tuple[dict[str, object], ...] = (),
     ) -> QuarterSyncResult:
         with self.repository.transaction() as connection:
             self.repository.write_sync_state(
@@ -974,6 +1112,7 @@ class ArchiveSynchronizer:
             (),
             (),
             errors,
+            auto_blacklisted=auto_blacklisted,
         )
 
     def _sync_covers(
@@ -1079,6 +1218,9 @@ class ArchiveSynchronizer:
                 item["rejected_non_japanese"] for item in serialized
             ),
             "blacklisted": sum(item["blacklisted"] for item in serialized),
+            "auto_blacklisted_count": sum(
+                len(item["auto_blacklisted"]) for item in serialized
+            ),
             "review_count": sum(
                 len(item["reviews"]) + len(item["external_reviews"])
                 for item in serialized
@@ -1193,6 +1335,32 @@ def _review_issue(finding: ReviewFinding, subject_id: int) -> ReviewIssue:
     )
 
 
+def _eligible_for_auto_blacklist(decision: AdmissionDecision) -> bool:
+    return (
+        decision.media_format in {MediaFormat.TV, MediaFormat.MOVIE}
+        and decision.japanese is not None
+        and decision.japanese.classification is JapaneseClassification.ACCEPTED_JAPANESE
+    )
+
+
+def _auto_blacklist_event(
+    detail: SubjectDetail, evaluation_date: date
+) -> dict[str, object]:
+    assert detail.air_date is not None
+    assert detail.rating_total is not None
+    return {
+        "subject_id": detail.subject_id,
+        "title": detail.name_cn or detail.name or str(detail.subject_id),
+        "air_date": detail.air_date.isoformat(),
+        "evaluation_date": evaluation_date.isoformat(),
+        "days_since_air_date": (evaluation_date - detail.air_date).days,
+        "rating_count": detail.rating_total,
+        "threshold": "rating_count < 30",
+        "protection_days": "> 7 days",
+        "reason": "low_rating_count",
+    }
+
+
 def _external_review(
     subject_id: int, decision: AdmissionDecision, target_quarter: Quarter
 ) -> dict[str, object]:
@@ -1292,6 +1460,7 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
         "accepted_movie": result.accepted_movie,
         "rejected_non_japanese": result.rejected_non_japanese,
         "blacklisted": result.blacklisted,
+        "auto_blacklisted": list(result.auto_blacklisted),
         "reviews": [
             {
                 "subject_id": issue.details.get("subject_id"),

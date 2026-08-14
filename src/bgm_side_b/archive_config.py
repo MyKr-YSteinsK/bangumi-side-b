@@ -134,8 +134,22 @@ def add_auto_excluded_subject(
         lines[auto_start:auto_end] = [
             _render_auto_exclusions(subject_ids, title, subject_id, comments)
         ]
-    _atomic_replace_text(path, "".join(lines))
+    desired = "".join(lines)
+    try:
+        _atomic_replace_text(path, desired)
+    except OSError:
+        # A Windows replace can complete at the filesystem boundary and still
+        # surface an exception.  Reconcile that observable final state before
+        # reporting failure to callers.
+        if path.read_text(encoding="utf-8") == desired:
+            return True
+        raise
     return True
+
+
+def restore_archive_config(path: Path, content: bytes) -> None:
+    """Atomically restore a previously captured UTF-8 configuration snapshot."""
+    _atomic_replace_bytes(path, content)
 
 
 def _subject_ids(
@@ -220,13 +234,17 @@ def _comment_title(
 
 
 def _atomic_replace_text(path: Path, content: str) -> None:
+    _atomic_replace_bytes(path, content.encode("utf-8"))
+
+
+def _atomic_replace_bytes(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as file:
+        with os.fdopen(descriptor, "wb") as file:
             file.write(content)
             file.flush()
             os.fsync(file.fileno())

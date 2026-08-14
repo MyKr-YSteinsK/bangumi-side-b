@@ -195,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             adjudicator = ArchiveAdjudicator(
                 repository,
                 root / "config" / "quarter-overrides.toml",
-                settings.excluded_subject_ids,
+                settings.all_excluded_subject_ids,
             )
             existing = repository.get_subject_facts(args.subject_id)
             report_warning = None
@@ -235,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
                         overrides_path=root / "config" / "quarter-overrides.toml",
                         workspace_directory=root / "workspace",
                         reports_directory=root / "workspace" / "reports",
+                        settings_path=root / "config" / "bangumi.toml",
                     ).import_single_subject(args.subject_id, override)
                 except BaseException:
                     save_quarter_overrides(
@@ -347,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
                     workspace_directory=root / "workspace",
                     reports_directory=root / "workspace" / "reports",
                     reporter=reporter,
+                    settings_path=root / "config" / "bangumi.toml",
                 ).run(scope)
             except (DatabaseError, SyncError, ValueError) as error:
                 parser.error(str(error))
@@ -395,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
                         tags,
                         workspace_directory=root / "workspace",
                         reporter=build_reporter,
-                        excluded_subject_ids=settings.excluded_subject_ids,
+                        excluded_subject_ids=settings.all_excluded_subject_ids,
                     ).build()
             except (SiteBuildError, ServeError, ValueError) as error:
                 print(f"sync facts committed but automatic build failed: {error}")
@@ -442,7 +444,7 @@ def main(argv: list[str] | None = None) -> int:
                     database,
                     tag_rules,
                     reporter=reporter,
-                    excluded_subject_ids=settings.excluded_subject_ids,
+                    excluded_subject_ids=settings.all_excluded_subject_ids,
                 ).build(scope)
             except KeyboardInterrupt:
                 reporter.warning(

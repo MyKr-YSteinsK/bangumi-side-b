@@ -516,6 +516,69 @@ def test_auto_blacklist_is_permanent_and_does_not_repeat_event(
     assert repository.get_subject_facts(650008) is None
 
 
+def test_auto_blacklist_requires_unambiguous_media_scope(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    detail = _detail(650009, air_date="2026-04-02", rating_count=1, cover=None)
+    stable_detail = _detail(650011, rating_count=100, cover=None)
+    conflict = DiscoveredSubject(
+        650009,
+        frozenset({MediaFormat.TV, MediaFormat.MOVIE}),
+        frozenset({date(2026, 4, 2)}),
+        frozenset({2}),
+        ("browse:TV:2026-04", "browse:MOVIE:2026-04"),
+        detail,
+    )
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi({650009: detail, 650011: stable_detail}),
+        DiscoveryBatch((conflict, _candidate(650011, MediaFormat.TV))),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 0
+    assert run.quarters[0].auto_blacklisted == ()
+    assert run.quarters[0].reviews[0].issue_code == "DISCOVERY_MEDIA_CONFLICT"
+    assert repository.get_subject_facts(650009) is not None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset()
+    )
+
+
+def test_manual_removal_allows_later_reassessment(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    api = FakeApi(
+        {650010: _detail(650010, air_date="2026-04-02", rating_count=29, cover=None)}
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(650010, MediaFormat.TV),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+    sync.run(SyncScope(QUARTER, QUARTER))
+    settings_path.write_text(
+        (ROOT / "config" / "bangumi.toml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    api.details[650010] = _detail(
+        650010, air_date="2026-04-02", rating_count=100, cover=None
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 0
+    assert run.quarters[0].auto_blacklisted == ()
+    assert repository.get_subject_facts(650010) is not None
+
+
 @pytest.mark.parametrize("candidate_count", (100, 1200))
 def test_quarter_sync_preloads_existing_facts_with_bounded_queries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, candidate_count: int

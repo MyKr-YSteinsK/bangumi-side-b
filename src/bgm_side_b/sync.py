@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from bgm_side_b.admission import (
+    DISCOVERY_MEDIA_CONFLICT,
     AdmissionDecision,
     AdmissionStatus,
     QuarterOverride,
@@ -25,6 +26,7 @@ from bgm_side_b.archive_config import (
     ArchiveSourceRules,
     ArchiveSyncSettings,
     add_auto_excluded_subject,
+    load_archive_sync_settings,
     restore_archive_config,
     should_auto_blacklist,
 )
@@ -226,6 +228,10 @@ class ArchiveSynchronizer:
 
     def run(self, scope: SyncScope) -> SyncRun:
         """Synchronize the requested scope without writing any legacy fact tables."""
+        if self.settings_path.is_file():
+            self._active_excluded_subject_ids = set(
+                load_archive_sync_settings(self.settings_path).all_excluded_subject_ids
+            )
         self.repository.database.initialize()
         self._purge_blacklist()
         overrides = load_quarter_overrides(self.overrides_path)
@@ -413,7 +419,7 @@ class ArchiveSynchronizer:
                         errors.append(
                             {
                                 "code": "auto_blacklist_persist",
-                                "summary": str(error),
+                                "summary": _auto_blacklist_error_summary(error),
                             }
                         )
                         continue
@@ -1344,7 +1350,17 @@ def _eligible_for_auto_blacklist(decision: AdmissionDecision) -> bool:
         decision.media_format in {MediaFormat.TV, MediaFormat.MOVIE}
         and decision.japanese is not None
         and decision.japanese.classification is JapaneseClassification.ACCEPTED_JAPANESE
+        and all(
+            issue.issue_code != DISCOVERY_MEDIA_CONFLICT
+            for issue in decision.reviews
+        )
     )
+
+
+def _auto_blacklist_error_summary(error: Exception) -> str:
+    if isinstance(error, SyncError):
+        return str(error)
+    return "automatic blacklist transaction failed"
 
 
 def _auto_blacklist_event(

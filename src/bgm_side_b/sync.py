@@ -409,7 +409,7 @@ class ArchiveSynchronizer:
                             detail,
                             existing_by_subject.get(candidate.subject_id),
                         )
-                    except (OSError, SyncError, ValueError) as error:
+                    except Exception as error:
                         errors.append(
                             {
                                 "code": "auto_blacklist_persist",

@@ -46,6 +46,7 @@ from bgm_side_b.repository import (
     SubjectSnapshot,
 )
 from bgm_side_b.sync import (
+    COVERS_COMPLETE,
     FACTS_COMPLETE,
     FACTS_INCOMPLETE,
     ArchiveSynchronizer,
@@ -357,6 +358,156 @@ def test_auto_blacklist_does_not_guess_missing_air_date_or_rating_count(
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
         frozenset()
     )
+
+
+def test_auto_blacklist_removes_existing_facts_reviews_and_cover_safely(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    api = FakeApi(
+        {
+            650005: _detail(
+                650005,
+                air_date="2026-04-02",
+                rating_count=29,
+                cover=None,
+            )
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(650005, MediaFormat.TV),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+    _store_existing(repository, 650005)
+    covers = tmp_path / "covers"
+    covers.mkdir(exist_ok=True)
+    (covers / "650005.webp").write_bytes(b"old cover")
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection,
+            QuarterSyncState(
+                QUARTER,
+                FACTS_COMPLETE,
+                COVERS_COMPLETE,
+                1,
+                0,
+                "attempt-1",
+                "success-1",
+            ),
+        )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 0
+    assert repository.get_subject_facts(650005) is None
+    assert not (covers / "650005.webp").exists()
+    assert not list(covers.glob(".blacklist-*"))
+    state = repository.get_sync_state(QUARTER)
+    assert state is not None
+    assert state.facts_status == FACTS_COMPLETE
+    assert state.subject_count == 0
+    assert state.last_success_at is not None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset({650005})
+    )
+
+
+def test_auto_blacklist_config_failure_restores_existing_data_and_cover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    api = FakeApi(
+        {650006: _detail(650006, air_date="2026-04-02", rating_count=29, cover=None)}
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(650006, MediaFormat.TV),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+    _store_existing(repository, 650006)
+    covers = tmp_path / "covers"
+    covers.mkdir(exist_ok=True)
+    (covers / "650006.webp").write_bytes(b"old cover")
+    original = settings_path.read_bytes()
+
+    def fail_replace(*_: object, **__: object) -> None:
+        raise PermissionError("config replace denied")
+
+    monkeypatch.setattr(
+        "bgm_side_b.archive_config._atomic_replace_bytes", fail_replace
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 1
+    assert run.quarters[0].facts_status == FACTS_INCOMPLETE
+    assert repository.get_subject_facts(650006) is not None
+    assert (covers / "650006.webp").read_bytes() == b"old cover"
+    assert settings_path.read_bytes() == original
+    assert not list(covers.glob(".blacklist-*"))
+
+
+def test_auto_blacklist_database_failure_restores_cover_and_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    api = FakeApi(
+        {650007: _detail(650007, air_date="2026-04-02", rating_count=29, cover=None)}
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(650007, MediaFormat.TV),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+    _store_existing(repository, 650007)
+    covers = tmp_path / "covers"
+    covers.mkdir(exist_ok=True)
+    (covers / "650007.webp").write_bytes(b"old cover")
+    original = settings_path.read_bytes()
+
+    def fail_delete(*_: object, **__: object) -> int:
+        raise RuntimeError("delete failed")
+
+    monkeypatch.setattr(repository, "delete_subjects", fail_delete)
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 1
+    assert repository.get_subject_facts(650007) is not None
+    assert (covers / "650007.webp").read_bytes() == b"old cover"
+    assert settings_path.read_bytes() == original
+    assert not list(covers.glob(".blacklist-*"))
+
+
+def test_auto_blacklist_is_permanent_and_does_not_repeat_event(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    api = FakeApi(
+        {650008: _detail(650008, air_date="2026-04-02", rating_count=29, cover=None)}
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(650008, MediaFormat.TV),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+
+    first = sync.run(SyncScope(QUARTER, QUARTER))
+    second = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert first.quarters[0].auto_blacklisted[0]["subject_id"] == 650008
+    assert second.quarters[0].auto_blacklisted == ()
+    assert second.quarters[0].blacklisted == 1
+    assert repository.get_subject_facts(650008) is None
 
 
 @pytest.mark.parametrize("candidate_count", (100, 1200))

@@ -218,6 +218,46 @@ def test_build_rejects_malformed_changelog_instead_of_dropping_release_data(
         builder.build()
 
 
+def test_settings_embeds_escaped_changelog_with_release_defaults(
+    tmp_path: Path,
+) -> None:
+    builder, _ = _build_fixture(tmp_path)
+    builder.changelog_path = tmp_path / "CHANGELOG.md"
+    builder.changelog_path.write_text(
+        """# Changelog
+
+## 尚未发布
+
+### 修复
+
+- <b>escaped</b>
+
+## 0.2.0 - 2026-08-13
+
+### 新增
+
+- current
+
+## 0.1.0
+
+- history
+""",
+        encoding="utf-8",
+    )
+    builder.build()
+
+    page = (tmp_path / "dist" / "site" / "settings" / "index.html").read_text(
+        "utf-8"
+    )
+    assert "05 / CHANGELOG" in page
+    assert "当前程序版本</dt><dd>0.2.0" in page
+    assert 'data-changelog-release="unreleased" open' in page
+    assert 'data-changelog-release="0.2.0" open' in page
+    assert 'data-changelog-release="0.1.0"' in page
+    assert 'data-changelog-release="0.1.0" open' not in page
+    assert "&lt;b&gt;escaped&lt;/b&gt;" in page
+
+
 def test_unified_pwa_shell_is_complete_stable_and_prefix_safe(tmp_path: Path) -> None:
     builder, _ = _build_fixture(tmp_path)
     builder.build()

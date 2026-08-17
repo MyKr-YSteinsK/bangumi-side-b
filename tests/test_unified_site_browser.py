@@ -116,6 +116,34 @@ def test_quarter_detail_movie_history_and_lightbox(
     assert page.locator("[data-detail-panel]").is_hidden()
 
 
+@pytest.mark.parametrize("viewport", [(390, 844), (360, 800)])
+def test_settings_changelog_is_static_accessible_and_narrow_safe(
+    chromium: BrowserContext,
+    site_server: str,
+    viewport: tuple[int, int],
+) -> None:
+    page = chromium.new_page(viewport={"width": viewport[0], "height": viewport[1]})
+    page.set_default_timeout(8000)
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+
+    page.goto(f"{site_server}/settings/index.html")
+    page.wait_for_selector('[data-changelog-release="unreleased"]')
+    assert page.get_by_text("当前程序版本").is_visible()
+    assert page.get_by_text("0.2.0", exact=True).is_visible()
+    assert page.locator('[data-changelog-release="unreleased"]').evaluate(
+        "node => node.open"
+    )
+    assert page.locator('[data-changelog-release="0.2.0"]').evaluate(
+        "node => node.open"
+    )
+    assert not page.locator('[data-changelog-release="0.1.3"]').evaluate(
+        "node => node.open"
+    )
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    assert not any("CHANGELOG" in url or "github.com" in url for url in requests)
+
+
 def test_desktop_detail_workspace_uses_viewport_height_and_internal_scroll(
     chromium: BrowserContext,
     site_server: str,

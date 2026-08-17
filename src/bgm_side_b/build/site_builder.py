@@ -16,7 +16,13 @@ from pathlib import Path
 from time import monotonic
 
 from bgm_side_b import __version__
-from bgm_side_b.build.changelog import ChangelogError, load_changelog
+from bgm_side_b.build.changelog import (
+    ChangelogDocument,
+    ChangelogError,
+    ChangelogItem,
+    ChangelogSection,
+    load_changelog,
+)
 from bgm_side_b.build.fingerprint import (
     BuildState,
     DirtySet,
@@ -215,6 +221,7 @@ class UnifiedSiteBuilder:
                 years,
                 archive,
                 sources,
+                changelog=changelog,
                 retained=retained,
                 previous=previous,
                 dirty=dirty,
@@ -565,6 +572,7 @@ class UnifiedSiteBuilder:
         archive: ArchiveIndexProjection,
         sources: Mapping[str, bytes],
         *,
+        changelog: ChangelogDocument,
         retained: tuple[str, ...],
         previous: BuildState | None,
         dirty: DirtySet,
@@ -640,7 +648,7 @@ class UnifiedSiteBuilder:
         generated(
             "settings/index.html",
             "shared-shell",
-            lambda: _settings_html(revisions),
+            lambda: _settings_html(revisions, changelog, __version__),
             dirty.shared_dirty,
         )
         shell = _pwa_shell_bytes(specs)
@@ -1349,7 +1357,9 @@ def _archive_html(revisions: Mapping[str, str]) -> bytes:
     )
 
 
-def _settings_html(revisions: Mapping[str, str]) -> bytes:
+def _settings_html(
+    revisions: Mapping[str, str], changelog: ChangelogDocument, app_version: str
+) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "SETTINGS")
         + '<main id="main-content" tabindex="-1" class="reference-page settings-page" data-pwa-settings '
@@ -1370,6 +1380,11 @@ def _settings_html(revisions: Mapping[str, str]) -> bytes:
         '<section class="settings-section" aria-labelledby="settings-queue-title">'
         '<header><p>04 / DOWNLOAD QUEUE</p><h2 id="settings-queue-title">下载队列</h2></header>'
         '<div data-settings-queue><p class="loading-state">队列空闲</p></div></section>'
+        '<section class="settings-section" aria-labelledby="settings-changelog-title">'
+        '<header><p>05 / CHANGELOG</p><h2 id="settings-changelog-title">更新日志</h2></header>'
+        f'<div class="settings-changelog"><dl class="settings-facts">'
+        f'<div><dt>当前程序版本</dt><dd>{html.escape(app_version)}</dd></div></dl>'
+        f'{_changelog_releases_html(changelog, app_version)}</div></section>'
         '</div></main>'
         '<footer class="site-footer"><p>离线下载仅使用当前站点的同源、逐文件校验资源。</p></footer>'
     )
@@ -1385,6 +1400,64 @@ def _settings_html(revisions: Mapping[str, str]) -> bytes:
         body_class="season-archive",
         data_attrs={"data-page": "settings"},
     )
+
+
+def _changelog_releases_html(
+    changelog: ChangelogDocument, app_version: str
+) -> str:
+    """Render the parsed model without allowing Markdown/HTML passthrough."""
+    rendered: list[str] = []
+    for release in changelog.releases:
+        has_content = any(
+            block.items if isinstance(block, ChangelogSection) else (block,)
+            for block in release.blocks
+        )
+        is_current = release.version == app_version
+        is_unreleased = release.version is None
+        open_attribute = " open" if (is_current or (is_unreleased and has_content)) else ""
+        identifier = "unreleased" if is_unreleased else release.version
+        rendered.append(
+            f'<details class="settings-changelog__release" '
+            f'data-changelog-release="{html.escape(identifier or "", quote=True)}"'
+            f'{open_attribute}><summary>{html.escape(release.heading)}</summary>'
+            f'<div class="settings-changelog__body">{_changelog_blocks_html(release.blocks)}</div>'
+            "</details>"
+        )
+    return '<div class="settings-changelog__releases">' + "".join(rendered) + "</div>"
+
+
+def _changelog_blocks_html(
+    blocks: tuple[ChangelogItem | ChangelogSection, ...],
+) -> str:
+    rendered: list[str] = []
+    for block in blocks:
+        if isinstance(block, ChangelogSection):
+            rendered.append(
+                f'<section class="settings-changelog__group"><h3>{html.escape(block.title)}</h3>'
+                f'{_changelog_items_html(block.items)}</section>'
+            )
+        else:
+            rendered.append(_changelog_items_html((block,)))
+    return "".join(rendered)
+
+
+def _changelog_items_html(items: tuple[ChangelogItem, ...]) -> str:
+    rendered: list[str] = []
+    in_list = False
+    for item in items:
+        if item.kind == "bullet":
+            if not in_list:
+                rendered.append("<ul>")
+                in_list = True
+            rendered.append(f"<li>{html.escape(item.text)}</li>")
+            continue
+        if in_list:
+            rendered.append("</ul>")
+            in_list = False
+        rendered.append(f"<p>{html.escape(item.text)}</p>")
+    if in_list:
+        rendered.append("</ul>")
+    return "".join(rendered)
 
 
 def _quarter_html(

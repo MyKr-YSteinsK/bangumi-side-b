@@ -132,7 +132,7 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
 
     page.goto(f"{site_server}/settings/index.html")
     page.wait_for_selector('[data-changelog-release="unreleased"]')
-    assert page.get_by_text("当前程序版本").is_visible()
+    assert page.get_by_text("当前程序版本", exact=True).is_visible()
     assert page.get_by_text("0.2.0", exact=True).is_visible()
     assert page.locator('[data-changelog-release="unreleased"]').evaluate(
         "node => node.open"

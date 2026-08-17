@@ -232,6 +232,56 @@ def test_archive_shell_is_usable_at_plan39_boundaries(
         assert metrics["workspace"] >= 300
 
 
+@pytest.mark.parametrize(
+    "viewport",
+    [
+        (1920, 1080),
+        (1199, 800),
+        (900, 900),
+        (768, 1024),
+        (767, 900),
+        (390, 844),
+        (360, 800),
+    ],
+)
+def test_plan39_responsive_visual_acceptance(
+    chromium: BrowserContext,
+    site_server: str,
+    viewport: tuple[int, int],
+) -> None:
+    page = chromium.new_page(viewport={"width": viewport[0], "height": viewport[1]})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server, viewport)
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    page.locator("[data-search]").fill("no matching visual audit title")
+    assert page.locator("[data-no-results]").is_visible()
+    page.locator("[data-clear-all]").click()
+    page.locator('[data-subject-id="101"] [data-open-subject]').click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    page.wait_for_timeout(250)
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    layout = page.locator("[data-quarter-layout]")
+    workspace = layout.locator(".workspace")
+    if viewport[0] < 768:
+        assert layout.locator(".master-pane").evaluate(
+            "node => getComputedStyle(node).display"
+        ) == "none"
+        assert workspace.bounding_box()["width"] >= layout.bounding_box()["width"] - 2
+    else:
+        assert workspace.bounding_box()["width"] >= 300
+    page.locator("[data-detail-panel] [data-detail-close]").click()
+    page.locator("[data-filter-toggle]").click()
+    page.wait_for_selector('[data-filter-panel]:not([hidden])')
+    page.locator("[data-filter-option-search]").fill("source")
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    if viewport[0] < 768:
+        assert layout.locator(".master-pane").evaluate(
+            "node => getComputedStyle(node).display"
+        ) == "none"
+        assert workspace.bounding_box()["width"] >= layout.bounding_box()["width"] - 2
+    page.get_by_role("button", name="关闭筛选").click()
+
+
 def test_mobile_controls_have_touch_targets_and_reduced_motion(
     chromium: BrowserContext,
     site_server: str,

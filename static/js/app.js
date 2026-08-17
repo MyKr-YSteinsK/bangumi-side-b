@@ -50,6 +50,7 @@
       selectedSubjectId: null,
       selectedOccurrence: null,
       workspaceMode: "scope",
+      listScrollTop: 0,
       ...overrides,
     };
     state.filters = {
@@ -717,7 +718,21 @@
 
   function focusRecordTrigger(recordKey) {
     rows.find((row) => row.dataset.recordKey === recordKey)
-      ?.querySelector("[data-open-subject]")?.focus();
+      ?.querySelector("[data-open-subject]")?.focus({ preventScroll: true });
+  }
+
+  function restoreListScroll() {
+    if (window.innerWidth >= 768 || !state.listScrollTop) return;
+    const target = state.listScrollTop;
+    const apply = () => window.scrollTo({ top: target, behavior: "auto" });
+    apply();
+    let frames = 0;
+    const retry = () => {
+      apply();
+      if (frames++ < 5) requestAnimationFrame(retry);
+    };
+    requestAnimationFrame(retry);
+    window.setTimeout(apply, 120);
   }
 
   function closeFilterAndRestoreFocus() {
@@ -744,7 +759,7 @@
       record.rating_count !== null && record.rating_count !== undefined ? ["评分人数", record.rating_count] : null,
       ["来源", archive.sourceLabel(record.source)],
     ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");
-    return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="关闭详情">×</button>
+    return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button>
       <p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}</p>
       <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>
       ${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}
@@ -759,6 +774,7 @@
 
   function selectRecord(record, replace = false) {
     if (!record) return;
+    if (window.innerWidth < 768 && state.workspaceMode !== "detail") state.listScrollTop = window.scrollY;
     const hadSelection = state.selectedOccurrence !== null;
     state.selectedSubjectId = record.id;
     state.selectedOccurrence = record.key;
@@ -772,6 +788,7 @@
         clearSelection(true);
         render();
         focusRecordTrigger(record.key);
+        restoreListScroll();
       });
       detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(record));
       detailPanel.scrollTop = 0;
@@ -797,6 +814,7 @@
     const match = window.location.hash.match(/^#bgm-(\d+)$/);
     if (!match || !records.length) {
       if (!match && state.selectedOccurrence !== null) { clearSelection(false); render(); }
+      if (!match && state.selectedOccurrence === null) restoreListScroll();
       return;
     }
     const candidate = archive.selectedRecord(records, Number(match[1]));
@@ -1389,7 +1407,21 @@
 
   function focusRecordTrigger(recordKey) {
     rows.find((row) => row.dataset.recordKey === recordKey)
-      ?.querySelector("[data-open-subject]")?.focus();
+      ?.querySelector("[data-open-subject]")?.focus({ preventScroll: true });
+  }
+
+  function restoreListScroll() {
+    if (window.innerWidth >= 768 || !state.listScrollTop) return;
+    const target = state.listScrollTop;
+    const apply = () => window.scrollTo({ top: target, behavior: "auto" });
+    apply();
+    let frames = 0;
+    const retry = () => {
+      apply();
+      if (frames++ < 5) requestAnimationFrame(retry);
+    };
+    requestAnimationFrame(retry);
+    window.setTimeout(apply, 120);
   }
 
   function closeFilterAndRestoreFocus() {
@@ -1520,7 +1552,7 @@
       record.rating_count !== null && record.rating_count !== undefined ? ["评分人数", record.rating_count] : null,
       ["来源", archive.sourceLabel(record.source)],
     ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");
-    return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="关闭详情">×</button><p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}</p>
+    return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button><p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}</p>
       <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}<p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
       <dl class="detail-facts">${facts}</dl>
       ${record.appearance === "continuing" ? `<p class="detail-continuing">当前归档：续播${record.premiere_quarter ? ` · 首播 ${esc(record.premiere_quarter)}` : ""}</p>` : ""}
@@ -1546,6 +1578,7 @@
 
   async function selectRecord(record, replace = false) {
     if (!record) return;
+    if (window.innerWidth < 768 && state.workspaceMode !== "detail") state.listScrollTop = window.scrollY;
     const request = ++detailRequest;
     const hadSelection = state.selectedOccurrence !== null;
     state.selectedSubjectId = record.id;
@@ -1570,6 +1603,7 @@
           clearSelection(true);
           render();
           focusRecordTrigger(record.key);
+          restoreListScroll();
         });
         selectors.detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(detail));
       }
@@ -1588,6 +1622,7 @@
         clearSelection(false);
         render();
       }
+      if (!match && state.selectedOccurrence === null) restoreListScroll();
       return;
     }
     const candidate = archive.selectedRecord(records, Number(match[1]));

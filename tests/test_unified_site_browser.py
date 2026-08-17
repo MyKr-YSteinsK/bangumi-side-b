@@ -289,24 +289,56 @@ def test_mobile_scope_detail_and_filter_keep_the_context_rail(
     page.locator('[data-subject-id="101"] [data-open-subject]').click()
     page.wait_for_selector('[data-detail-panel]:not([hidden])')
     assert root.get_attribute("data-workspace-mode") == "detail"
-    rail_width = master.bounding_box()["width"]
-    assert 90 <= rail_width <= 125
+    assert master.evaluate("node => getComputedStyle(node).display") == "none"
+    assert workspace.bounding_box()["width"] >= layout.bounding_box()["width"] - 2
 
+    page.get_by_role("button", name="返回结果").click()
+    assert root.get_attribute("data-workspace-mode") == "scope"
     page.locator("[data-filter-toggle]").click()
     page.wait_for_selector('[data-filter-panel]:not([hidden])')
     assert root.get_attribute("data-workspace-mode") == "filter"
-    assert "#bgm-101" in page.url
-    assert abs(master.bounding_box()["width"] - rail_width) <= 2
+    rail_width = master.bounding_box()["width"]
+    assert 90 <= rail_width <= 125
     page.get_by_role("button", name="关闭筛选").click()
-    assert root.get_attribute("data-workspace-mode") == "detail"
+    assert root.get_attribute("data-workspace-mode") == "scope"
 
     page.locator("[data-filter-toggle]").click()
     assert page.get_by_label("首播").count() == 0
     assert page.get_by_label("续播").count() == 0
     page.get_by_role("button", name="关闭筛选").click()
-    page.get_by_role("button", name="关闭详情").click()
     assert root.get_attribute("data-workspace-mode") == "scope"
     assert page.url.endswith("/2026-07/index.html")
+
+
+def test_mobile_detail_is_full_width_and_restores_list_scroll(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server, (390, 844))
+    page.locator("[data-quarter-layout] .master-pane").evaluate(
+        "node => { node.style.minHeight = '2600px'; "
+        "node.querySelector(\"[data-subject-id='101']\")?.style.setProperty("
+        "'margin-top', '1200px'); }"
+    )
+    target = page.locator('[data-subject-id="101"] [data-open-subject]')
+    target.scroll_into_view_if_needed()
+    saved_scroll = page.evaluate("window.scrollY")
+    assert saved_scroll > 0
+    target.click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    layout = page.locator("[data-quarter-layout]")
+    workspace = page.locator("[data-quarter-layout] .workspace")
+    assert page.locator("[data-quarter-layout] .master-pane").evaluate(
+        "node => getComputedStyle(node).display"
+    ) == "none"
+    assert workspace.bounding_box()["width"] >= layout.bounding_box()["width"] - 2
+    assert page.get_by_role("button", name="返回结果").is_visible()
+    page.get_by_role("button", name="返回结果").click()
+    page.wait_for_function(
+        "target => Math.abs(window.scrollY - target) <= 2", arg=saved_scroll
+    )
 
 
 def test_filter_media_switch_and_archive_detail_history(

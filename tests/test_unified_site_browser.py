@@ -711,9 +711,17 @@ def test_custom_listboxes_keep_keyboard_and_outside_click_behavior(
     assert page.locator("select").count() == 0
 
     trigger = page.locator("[data-page-size] .select-trigger")
+    assert trigger.get_attribute("role") == "combobox"
+    assert trigger.get_attribute("aria-controls")
     trigger.click()
     listbox = page.locator('[data-page-size] [role="listbox"]')
     assert listbox.is_visible()
+    assert listbox.get_attribute("aria-labelledby") == trigger.get_attribute("id")
+    assert trigger.get_attribute("aria-activedescendant")
+    assert (
+        page.locator('[data-page-size] [role="option"][aria-selected="true"]').count()
+        == 1
+    )
     trigger.press("End")
     trigger.press("Enter")
     assert trigger.inner_text() == "100"
@@ -749,6 +757,21 @@ def test_sort_popover_has_menu_state_and_focus_return(
     trigger.click()
     menu.get_by_role("menuitemradio", name="评分：低到高").click()
     assert trigger.inner_text() == "评分：低到高"
+    assert menu.is_hidden()
+    assert trigger.evaluate("node => node === document.activeElement")
+
+    trigger.press("Enter")
+    current = menu.locator('[role="menuitemradio"][aria-checked="true"]')
+    assert current.evaluate("node => node === document.activeElement")
+    current.press("ArrowDown")
+    assert menu.get_by_role("menuitemradio").nth(2).evaluate(
+        "node => node === document.activeElement"
+    )
+    current.press("Home")
+    assert menu.get_by_role("menuitemradio").first.evaluate(
+        "node => node === document.activeElement"
+    )
+    menu.get_by_role("menuitemradio").first.press("Space")
     assert menu.is_hidden()
     assert trigger.evaluate("node => node === document.activeElement")
 

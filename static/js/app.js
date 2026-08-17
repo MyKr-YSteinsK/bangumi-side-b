@@ -278,6 +278,7 @@
     const trigger = document.createElement("button");
     trigger.type = "button";
     trigger.className = "select-trigger";
+    trigger.setAttribute("role", "combobox");
     trigger.id = triggerId;
     trigger.setAttribute("aria-haspopup", "listbox");
     trigger.setAttribute("aria-expanded", "false");
@@ -288,7 +289,7 @@
     listbox.id = listboxId;
     listbox.hidden = true;
     listbox.setAttribute("role", "listbox");
-    listbox.setAttribute("aria-label", label);
+    listbox.setAttribute("aria-labelledby", triggerId);
     root.classList.add("select-control");
     root.replaceChildren(trigger, listbox);
 
@@ -308,13 +309,27 @@
       return -1;
     };
 
+    const firstEnabledIndex = () => options.findIndex((option) => !option.disabled);
+
+    function normalizeActiveIndex() {
+      if (activeIndex < 0 || activeIndex >= options.length || options[activeIndex]?.disabled) {
+        activeIndex = firstEnabledIndex();
+      }
+    }
+
     function syncActive() {
       const optionNodes = [...listbox.querySelectorAll('[role="option"]')];
+      normalizeActiveIndex();
       optionNodes.forEach((node, index) => {
         node.classList.toggle("is-active", index === activeIndex);
       });
       const active = optionNodes[activeIndex];
-      if (active) trigger.setAttribute("aria-activedescendant", active.id);
+      if (active && !options[activeIndex]?.disabled) {
+        trigger.setAttribute("aria-activedescendant", active.id);
+        if (!listbox.hidden) active.scrollIntoView({ block: "nearest" });
+      } else {
+        trigger.removeAttribute("aria-activedescendant");
+      }
     }
 
     function render() {
@@ -327,12 +342,14 @@
         node.id = `${listboxId}-option-${index}`;
         node.setAttribute("role", "option");
         node.setAttribute("aria-selected", String(option.value === current));
+        node.setAttribute("aria-disabled", String(option.disabled));
         node.disabled = option.disabled;
         node.textContent = option.label;
         node.addEventListener("click", () => select(option.value));
         return node;
       }));
       activeIndex = Math.max(0, options.findIndex((option) => option.value === current));
+      normalizeActiveIndex();
       syncActive();
     }
 
@@ -345,6 +362,7 @@
 
     function open() {
       if (!options.length) return;
+      normalizeActiveIndex();
       listbox.hidden = false;
       trigger.setAttribute("aria-expanded", "true");
       activeIndex = Math.max(0, options.findIndex((option) => option.value === current));
@@ -411,6 +429,7 @@
       setOptions: (nextOptions, { value = current, notify = false } = {}) => {
         options.splice(0, options.length, ...normalizeOptions(nextOptions));
         current = String(value ?? options.find((option) => !option.disabled)?.value ?? "");
+        activeIndex = Math.max(0, options.findIndex((option) => option.value === current));
         render();
         if (notify && typeof config.onChange === "function") config.onChange(current);
       },
@@ -800,6 +819,25 @@
       }));
       if (focusOption) sortPopover.querySelector('[aria-checked="true"]')?.focus();
     };
+    sortPopover?.addEventListener("keydown", (event) => {
+      const items = [...sortPopover.querySelectorAll('[role="menuitemradio"]')];
+      if (!items.length) return;
+      const currentIndex = Math.max(0, items.indexOf(document.activeElement));
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const offset = event.key === "ArrowDown" ? 1 : -1;
+        items[(currentIndex + offset + items.length) % items.length].focus();
+      } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        items[event.key === "Home" ? 0 : items.length - 1].focus();
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        document.activeElement?.click();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        closeSortPopover(true);
+      }
+    });
     sortButton?.addEventListener("click", (event) => {
       if (!sortPopover) return;
       if (sortPopover.hidden) openSortPopover(event.detail === 0);
@@ -1632,6 +1670,25 @@
       }));
       if (focusOption) selectors.sortPopover.querySelector('[aria-checked="true"]')?.focus();
     };
+    selectors.sortPopover?.addEventListener("keydown", (event) => {
+      const items = [...selectors.sortPopover.querySelectorAll('[role="menuitemradio"]')];
+      if (!items.length) return;
+      const currentIndex = Math.max(0, items.indexOf(document.activeElement));
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const offset = event.key === "ArrowDown" ? 1 : -1;
+        items[(currentIndex + offset + items.length) % items.length].focus();
+      } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        items[event.key === "Home" ? 0 : items.length - 1].focus();
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        document.activeElement?.click();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        closeSortPopover(true);
+      }
+    });
     sortButton?.addEventListener("click", (event) => {
       if (!selectors.sortPopover) return;
       if (selectors.sortPopover.hidden) openSortPopover(event.detail === 0);

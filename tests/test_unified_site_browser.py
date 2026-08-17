@@ -115,6 +115,23 @@ def test_quarter_detail_movie_history_and_lightbox(
     page.locator("[data-detail-panel] [data-detail-close]").click()
     assert page.locator("[data-detail-panel]").is_hidden()
 
+
+def test_desktop_detail_workspace_uses_viewport_height_and_internal_scroll(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server, (1440, 900))
+    page.locator('[data-subject-id="101"] [data-open-subject]').click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    metrics = page.locator("[data-detail-panel]").evaluate(
+        "node => ({height: node.getBoundingClientRect().height, "
+        "viewport: window.innerHeight, overflowY: getComputedStyle(node).overflowY})"
+    )
+    assert metrics["overflowY"] == "auto"
+    assert metrics["height"] >= metrics["viewport"] - 48
+
     page.locator('[data-media-mode="tv"]').click()
     page.locator('[data-subject-id="101"] [data-open-subject]').click()
     assert "?v=" in page.locator(

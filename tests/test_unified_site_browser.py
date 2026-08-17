@@ -151,8 +151,11 @@ def test_desktop_detail_workspace_uses_viewport_height_and_internal_scroll(
         (1440, 900),
         (1280, 800),
         (1366, 768),
+        (1199, 800),
         (1024, 768),
+        (900, 900),
         (768, 1024),
+        (767, 900),
         (430, 932),
         (390, 844),
         (360, 800),
@@ -168,6 +171,22 @@ def test_quarter_shell_is_usable_across_plan16_viewports(
     _open_quarter(page, site_server, viewport)
     page.locator('[data-subject-id="101"] [data-open-subject]').click()
     page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    page.wait_for_timeout(300)
+    metrics = page.locator("[data-quarter-layout]").evaluate(
+        "node => ({width: node.getBoundingClientRect().width, "
+        "columns: getComputedStyle(node).gridTemplateColumns, "
+        "master: node.querySelector('.master-pane').getBoundingClientRect().width, "
+        "workspace: node.querySelector('.workspace').getBoundingClientRect().width, "
+        "masterDisplay: getComputedStyle(node.querySelector('.master-pane')).display})"
+    )
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    if viewport[0] < 768:
+        assert metrics["masterDisplay"] == "none"
+        assert metrics["workspace"] >= metrics["width"] - 2
+    else:
+        assert metrics["masterDisplay"] == "block"
+        assert metrics["master"] >= 220
+        assert metrics["workspace"] >= 300
     layout = page.locator("[data-quarter-layout]").evaluate(
         "node => getComputedStyle(node).gridTemplateColumns"
     )
@@ -177,6 +196,40 @@ def test_quarter_shell_is_usable_across_plan16_viewports(
         assert page.locator('[data-subject-id="101"] .subject-row__cover').evaluate(
             "node => getComputedStyle(node).display"
         ) == "none"
+
+
+@pytest.mark.parametrize(
+    "viewport", [(1199, 800), (1024, 768), (900, 900), (768, 1024), (767, 900)]
+)
+def test_archive_shell_is_usable_at_plan39_boundaries(
+    chromium: BrowserContext,
+    site_server: str,
+    viewport: tuple[int, int],
+) -> None:
+    page = chromium.new_page(viewport={"width": viewport[0], "height": viewport[1]})
+    page.set_default_timeout(8000)
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+    )
+    page.locator('[data-subject-id="101"] [data-open-subject]').first.click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    page.wait_for_timeout(300)
+    layout = page.locator("[data-archive-layout]")
+    metrics = layout.evaluate(
+        "node => ({width: node.getBoundingClientRect().width, "
+        "master: node.querySelector('.master-pane').getBoundingClientRect().width, "
+        "workspace: node.querySelector('.workspace').getBoundingClientRect().width, "
+        "masterDisplay: getComputedStyle(node.querySelector('.master-pane')).display})"
+    )
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    if viewport[0] < 768:
+        assert metrics["masterDisplay"] == "none"
+        assert metrics["workspace"] >= metrics["width"] - 2
+    else:
+        assert metrics["masterDisplay"] == "block"
+        assert metrics["master"] >= 220
+        assert metrics["workspace"] >= 300
 
 
 def test_mobile_controls_have_touch_targets_and_reduced_motion(

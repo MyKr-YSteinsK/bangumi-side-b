@@ -778,6 +778,19 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .loading-state { font-family: var(--font-sans); font-size: .78rem; }
 .empty-state { background: var(--surface-subtle); border-color: var(--border-default); border-radius: var(--radius-control); }
 
+/* Visual System V2: editorial density and type balance. */
+html { line-height: 1.65; }
+.result-section { border-top: 1px solid var(--border-default); margin-top: 1.4rem; padding-top: .85rem; }
+.result-section__header > span, .results-summary { font-family: var(--font-sans); letter-spacing: .01em; }
+.result-section__code { letter-spacing: .08em; }
+.scope-facts dt, .detail-facts dt, .settings-facts dt { font-family: var(--font-sans); font-size: .7rem; font-weight: 650; letter-spacing: .02em; text-transform: none; }
+.subject-row.is-selected { background: var(--surface-selected); }
+.detail-section { border-top-color: var(--border-subtle); }
+.settings-section + .settings-section { border-top-color: var(--border-subtle); }
+.settings-facts div + div { border-top-color: var(--border-subtle); }
+.offline-quarter-list { border-top-color: var(--border-subtle); }
+.queue-errors { border-top-color: var(--border-subtle); }
+
 @media (max-width: 767px) {
   .control-button, .button, .pwa-action, .pwa-actions button, .archive-range__shortcuts button { min-height: var(--control-height-touch); }
   .mode-switch, .scope-tabs { width: 100%; }

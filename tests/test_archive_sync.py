@@ -926,6 +926,13 @@ def test_complete_facts_store_tv_movie_review_and_final_webp_cover(
     report = json.loads(run.report_path.read_text(encoding="utf-8"))
     assert report["accepted_tv"] == 1
     assert report["quarters"][0]["reviews"][0]["subject_id"] == 104
+    assert report["source_counts"] == {"漫画改": 2}
+    assert report["episode_count"] == {
+        "known": 2,
+        "unknown": 0,
+        "legacy_zero_written": 0,
+    }
+    assert report["canonical_detail_requests"] == 4
 
 
 def test_browse_candidate_always_uses_canonical_subject_detail(

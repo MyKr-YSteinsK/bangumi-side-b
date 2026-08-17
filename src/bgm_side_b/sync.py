@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import tempfile
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
@@ -150,6 +151,10 @@ class QuarterSyncResult:
     existing_auto_blacklisted: int = 0
     canonical_detail_requests: int = 0
     persisted_review_count: int = 0
+    source_counts: tuple[tuple[str, int], ...] = ()
+    episode_known: int = 0
+    episode_unknown: int = 0
+    legacy_zero_written: int = 0
 
 
 @dataclass(frozen=True)
@@ -261,7 +266,18 @@ class ArchiveSynchronizer:
                     and current.facts_status == FACTS_COMPLETE
                     and current.covers_status == COVERS_COMPLETE
                 ):
-                    results.append(_skipped_result(quarter, current))
+                    source_counts, episode_known, episode_unknown = (
+                        _persisted_fact_aggregates(self.repository, quarter)
+                    )
+                    results.append(
+                        _skipped_result(
+                            quarter,
+                            current,
+                            source_counts=source_counts,
+                            episode_known=episode_known,
+                            episode_unknown=episode_unknown,
+                        )
+                    )
                     continue
                 result = self._sync_quarter(quarter, overrides, current)
                 if result.facts_status == FACTS_COMPLETE:
@@ -718,6 +734,9 @@ class ArchiveSynchronizer:
                 ),
             )
         persisted_review_count = len(self.repository.list_review_issues(quarter))
+        source_counts, episode_known, episode_unknown = _persisted_fact_aggregates(
+            self.repository, quarter
+        )
         return QuarterSyncResult(
             quarter,
             FACTS_COMPLETE,
@@ -745,6 +764,9 @@ class ArchiveSynchronizer:
             existing_auto_blacklisted=existing_auto_blacklisted,
             canonical_detail_requests=canonical_detail_requests,
             persisted_review_count=persisted_review_count,
+            source_counts=source_counts,
+            episode_known=episode_known,
+            episode_unknown=episode_unknown,
         )
 
     def _prepare_subject(
@@ -1273,6 +1295,16 @@ class ArchiveSynchronizer:
     ) -> Path:
         completed_at = _timestamp()
         serialized = [_result_payload(item) for item in results]
+        source_totals: Counter[str] = Counter()
+        episode_known = 0
+        episode_unknown = 0
+        legacy_zero_written = 0
+        for item in serialized:
+            source_totals.update(item["source_counts"])
+            episode = item["episode_count"]
+            episode_known += episode["known"]
+            episode_unknown += episode["unknown"]
+            legacy_zero_written += episode["legacy_zero_written"]
         payload = {
             "scope": scope.label,
             "started_at": started_at,
@@ -1296,6 +1328,15 @@ class ArchiveSynchronizer:
             "auto_blacklisted_count": sum(
                 len(item["auto_blacklisted"]) for item in serialized
             ),
+            "canonical_detail_requests": sum(
+                item["canonical_detail_requests"] for item in serialized
+            ),
+            "source_counts": dict(sorted(source_totals.items())),
+            "episode_count": {
+                "known": episode_known,
+                "unknown": episode_unknown,
+                "legacy_zero_written": legacy_zero_written,
+            },
             "review_count": sum(
                 item["persisted_review_count"] for item in serialized
             ),
@@ -1388,6 +1429,17 @@ def _appearance_count(connection: sqlite3.Connection, quarter: Quarter) -> int:
     ).fetchone()
     assert row is not None
     return int(row["count"])
+
+
+def _persisted_fact_aggregates(
+    repository: SubjectRepository, quarter: Quarter
+) -> tuple[tuple[tuple[str, int], ...], int, int]:
+    snapshots = repository.list_subjects_appearing_in_quarter(quarter)
+    source_counts = Counter(
+        snapshot.source.source_type.value for snapshot in snapshots
+    )
+    known = sum(snapshot.subject.episode_count is not None for snapshot in snapshots)
+    return tuple(sorted(source_counts.items())), known, len(snapshots) - known
 
 
 def _quarter_label(quarter: Quarter) -> str:
@@ -1548,7 +1600,14 @@ def _source_decision(detail: SubjectDetail, rules: ArchiveSourceRules):
     return resolve_source(evidence)
 
 
-def _skipped_result(quarter: Quarter, state: QuarterSyncState) -> QuarterSyncResult:
+def _skipped_result(
+    quarter: Quarter,
+    state: QuarterSyncState,
+    *,
+    source_counts: tuple[tuple[str, int], ...] = (),
+    episode_known: int = 0,
+    episode_unknown: int = 0,
+) -> QuarterSyncResult:
     return QuarterSyncResult(
         quarter,
         state.facts_status,
@@ -1563,6 +1622,9 @@ def _skipped_result(quarter: Quarter, state: QuarterSyncState) -> QuarterSyncRes
         (),
         (),
         skipped=True,
+        source_counts=source_counts,
+        episode_known=episode_known,
+        episode_unknown=episode_unknown,
     )
 
 
@@ -1581,6 +1643,12 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
         "auto_blacklisted": list(result.auto_blacklisted),
         "canonical_detail_requests": result.canonical_detail_requests,
         "persisted_review_count": result.persisted_review_count,
+        "source_counts": dict(result.source_counts),
+        "episode_count": {
+            "known": result.episode_known,
+            "unknown": result.episode_unknown,
+            "legacy_zero_written": result.legacy_zero_written,
+        },
         "reviews": [
             {
                 "subject_id": issue.details.get("subject_id"),

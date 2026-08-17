@@ -739,6 +739,7 @@
     closeFilter();
     render();
     quarterRoot.querySelector("[data-filter-toggle]")?.focus();
+    restoreListScroll();
   }
 
   function detailHtml(record) {
@@ -916,6 +917,7 @@
       if (state.workspaceMode === "filter") {
         closeFilter();
       } else {
+        if (window.innerWidth < 768) state.listScrollTop = window.scrollY;
         state.workspaceMode = "filter";
       }
       renderFilterPanel();
@@ -940,7 +942,54 @@
   function renderFilterPanel() {
     if (!filterPanel) return;
     const options = archive.filterOptionMetadata(records, state);
-    filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
+    filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button></div><h2>筛选资料</h2><p class="filter-workspace-summary" data-filter-workspace-summary></p><div class="active-filter-strip filter-workspace-active" data-filter-workspace-active hidden></div><button type="button" class="text-button filter-workspace-clear" data-filter-workspace-clear>清除全部筛选</button><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
+    const result = archive.applyPipeline(records, state);
+    const workspaceSummary = filterPanel.querySelector("[data-filter-workspace-summary]");
+    if (workspaceSummary) workspaceSummary.textContent = `当前结果 ${result.total} 部`;
+    const workspaceActive = filterPanel.querySelector("[data-filter-workspace-active]");
+    const activeValues = [
+      ...(state.query ? [{ label: `搜索：${state.query}`, type: "query", value: state.query }] : []),
+      ...state.filters.sources.map((value) => ({ label: `来源：${archive.sourceLabel(value)}`, type: "sources", value })),
+      ...state.filters.tags.map((value) => ({ label: `标签：${value}`, type: "tags", value })),
+      ...state.filters.sections.map((value) => ({ label: `分区：${archive.appearanceLabel(value)}`, type: "sections", value })),
+    ];
+    if (workspaceActive) {
+      workspaceActive.hidden = activeValues.length === 0;
+      activeValues.forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "active-filter";
+        button.textContent = `${item.label} ×`;
+        button.addEventListener("click", () => {
+          if (item.type === "query") {
+            state.query = "";
+            if (search) search.value = "";
+          } else {
+            state.filters[item.type] = state.filters[item.type].filter((value) => value !== item.value);
+          }
+          state.page = 1;
+          state.workspaceMode = "filter";
+          render();
+          renderFilterPanel();
+        });
+        workspaceActive.append(button);
+      });
+    }
+    const workspaceClear = filterPanel.querySelector("[data-filter-workspace-clear]");
+    if (workspaceClear) {
+      workspaceClear.disabled = activeValues.length === 0;
+      workspaceClear.addEventListener("click", () => {
+        state.query = "";
+        state.filterOptionQuery = "";
+        state.filters = { sources: [], tags: [], sections: [] };
+        if (search) search.value = "";
+        state.page = 1;
+        clearSelection(true);
+        state.workspaceMode = "filter";
+        render();
+        renderFilterPanel();
+      });
+    }
     const optionSearch = filterPanel.querySelector("[data-filter-option-search]");
     if (optionSearch) optionSearch.value = state.filterOptionQuery;
     const applyOptionQuery = () => {
@@ -1005,7 +1054,8 @@
     applyButton.type = "button";
     applyButton.className = "filter-apply-mobile button button--ink";
     applyButton.dataset.filterClose = "true";
-    applyButton.textContent = `显示 ${archive.applyPipeline(records, state).total} 部`;
+    applyButton.textContent = `返回结果 · ${result.total} 部`;
+    applyButton.setAttribute("aria-label", `返回结果，当前 ${result.total} 部`);
     applyButton.addEventListener("click", closeFilterAndRestoreFocus);
     filterPanel.append(applyButton);
     filterPanel.querySelector("[data-filter-close]")?.addEventListener(
@@ -1428,6 +1478,7 @@
     closeFilter();
     render();
     root.querySelector("[data-filter-toggle]")?.focus();
+    restoreListScroll();
   }
 
   function renderRows(result) {
@@ -1643,7 +1694,54 @@
   function renderFilterPanel() {
     if (!selectors.filterPanel) return;
     const options = archive.filterOptionMetadata(records, state);
-    selectors.filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
+    selectors.filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button></div><h2>筛选资料</h2><p class="filter-workspace-summary" data-filter-workspace-summary></p><div class="active-filter-strip filter-workspace-active" data-filter-workspace-active hidden></div><button type="button" class="text-button filter-workspace-clear" data-filter-workspace-clear>清除全部筛选</button><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
+    const result = archive.applyPipeline(records, state);
+    const workspaceSummary = selectors.filterPanel.querySelector("[data-filter-workspace-summary]");
+    if (workspaceSummary) workspaceSummary.textContent = `当前结果 ${result.total} 部`;
+    const workspaceActive = selectors.filterPanel.querySelector("[data-filter-workspace-active]");
+    const activeValues = [
+      ...(state.query ? [{ label: `搜索：${state.query}`, type: "query", value: state.query }] : []),
+      ...state.filters.sources.map((value) => ({ label: `来源：${archive.sourceLabel(value)}`, type: "sources", value })),
+      ...state.filters.tags.map((value) => ({ label: `标签：${value}`, type: "tags", value })),
+      ...state.filters.sections.map((value) => ({ label: `分区：${archive.appearanceLabel(value)}`, type: "sections", value })),
+    ];
+    if (workspaceActive) {
+      workspaceActive.hidden = activeValues.length === 0;
+      activeValues.forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "active-filter";
+        button.textContent = `${item.label} ×`;
+        button.addEventListener("click", () => {
+          if (item.type === "query") {
+            state.query = "";
+            if (selectors.search) selectors.search.value = "";
+          } else {
+            state.filters[item.type] = state.filters[item.type].filter((value) => value !== item.value);
+          }
+          state.page = 1;
+          state.workspaceMode = "filter";
+          render();
+          renderFilterPanel();
+        });
+        workspaceActive.append(button);
+      });
+    }
+    const workspaceClear = selectors.filterPanel.querySelector("[data-filter-workspace-clear]");
+    if (workspaceClear) {
+      workspaceClear.disabled = activeValues.length === 0;
+      workspaceClear.addEventListener("click", () => {
+        state.query = "";
+        state.filterOptionQuery = "";
+        state.filters = { sources: [], tags: [], sections: [] };
+        if (selectors.search) selectors.search.value = "";
+        state.page = 1;
+        clearSelection(true);
+        state.workspaceMode = "filter";
+        render();
+        renderFilterPanel();
+      });
+    }
     const optionSearch = selectors.filterPanel.querySelector("[data-filter-option-search]");
     if (optionSearch) optionSearch.value = state.filterOptionQuery;
     const applyOptionQuery = () => {
@@ -1705,7 +1803,8 @@
     const apply = document.createElement("button");
     apply.type = "button";
     apply.className = "filter-apply-mobile button button--ink";
-    apply.textContent = `显示 ${archive.applyPipeline(records, state).total} 部`;
+    apply.textContent = `返回结果 · ${result.total} 部`;
+    apply.setAttribute("aria-label", `返回结果，当前 ${result.total} 部`);
     apply.addEventListener("click", closeFilterAndRestoreFocus);
     selectors.filterPanel.append(apply);
     selectors.filterPanel.querySelector("[data-filter-close]")?.addEventListener(
@@ -1732,7 +1831,15 @@
     }
     selectors.search?.addEventListener("input", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); });
     root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
-    root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => { if (state.workspaceMode === "filter") closeFilter(); else state.workspaceMode = "filter"; renderFilterPanel(); render(); });
+    root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
+      if (state.workspaceMode === "filter") closeFilter();
+      else {
+        if (window.innerWidth < 768) state.listScrollTop = window.scrollY;
+        state.workspaceMode = "filter";
+      }
+      renderFilterPanel();
+      render();
+    });
     const sortButton = root.querySelector("[data-sort-toggle]");
     const closeSortPopover = (restoreFocus = false) => {
       if (!selectors.sortPopover || selectors.sortPopover.hidden) return;

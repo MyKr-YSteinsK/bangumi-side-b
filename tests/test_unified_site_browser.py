@@ -269,7 +269,7 @@ def test_archive_year_listbox_updates_scope_without_native_select(
 
 
 @pytest.mark.parametrize("viewport", [(390, 844), (360, 800)])
-def test_mobile_scope_detail_and_filter_keep_the_context_rail(
+def test_mobile_scope_detail_and_filter_use_single_pane_workspace(
     chromium: BrowserContext,
     site_server: str,
     viewport: tuple[int, int],
@@ -297,8 +297,10 @@ def test_mobile_scope_detail_and_filter_keep_the_context_rail(
     page.locator("[data-filter-toggle]").click()
     page.wait_for_selector('[data-filter-panel]:not([hidden])')
     assert root.get_attribute("data-workspace-mode") == "filter"
-    rail_width = master.bounding_box()["width"]
-    assert 90 <= rail_width <= 125
+    assert master.evaluate("node => getComputedStyle(node).display") == "none"
+    assert workspace.bounding_box()["width"] >= layout.bounding_box()["width"] - 2
+    assert page.locator("[data-filter-workspace-summary]").is_visible()
+    assert page.locator("[data-filter-workspace-clear]").is_disabled()
     page.get_by_role("button", name="关闭筛选").click()
     assert root.get_attribute("data-workspace-mode") == "scope"
 
@@ -308,6 +310,65 @@ def test_mobile_scope_detail_and_filter_keep_the_context_rail(
     page.get_by_role("button", name="关闭筛选").click()
     assert root.get_attribute("data-workspace-mode") == "scope"
     assert page.url.endswith("/2026-07/index.html")
+
+
+def test_mobile_filter_workspace_keeps_facets_active_filters_and_scroll(
+    chromium: BrowserContext,
+    site_server: str,
+    unified_site: Path,
+) -> None:
+    payload = json.loads(
+        (unified_site / "data" / "quarters" / "2026-07.json").read_text("utf-8")
+    )
+    base = payload["tv"]["continuing"][0]
+    payload["tv"]["continuing"] = [
+        _facet_record(base, 101, "shared-source", "shared-tag"),
+        _facet_record(base, 301, "tv-only-source", "tv-only-tag"),
+    ]
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/quarters/2026-07.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        ),
+    )
+    _open_quarter(page, site_server, (390, 844))
+    page.locator("[data-quarter-layout] .master-pane").evaluate(
+        "node => { node.style.minHeight = '2200px'; node.style.paddingTop = '900px'; }"
+    )
+    toggle = page.locator("[data-filter-toggle]")
+    toggle.scroll_into_view_if_needed()
+    saved_scroll = page.evaluate("window.scrollY")
+    assert saved_scroll > 0
+    toggle.click()
+    root = page.locator('main[data-page="quarter"][data-archive-app]')
+    layout = page.locator("[data-quarter-layout]")
+    workspace = page.locator("[data-quarter-layout] .workspace")
+    assert root.get_attribute("data-workspace-mode") == "filter"
+    assert page.locator("[data-quarter-layout] .master-pane").evaluate(
+        "node => getComputedStyle(node).display"
+    ) == "none"
+    assert workspace.bounding_box()["width"] >= layout.bounding_box()["width"] - 2
+    option_search = page.locator("[data-filter-option-search]")
+    option_search.fill("tv-only")
+    page.get_by_label("tv-only-source").check()
+    active = page.locator("[data-filter-workspace-active]")
+    assert active.is_visible()
+    assert "来源" in active.inner_text()
+    assert not page.locator(
+        "[data-filter-workspace-summary]"
+    ).inner_text().endswith("2 部")
+    page.locator("[data-filter-workspace-clear]").click()
+    assert page.locator("[data-filter-workspace-active]").is_hidden()
+    assert page.locator("[data-filter-workspace-summary]").inner_text().endswith("2 部")
+    page.get_by_role("button", name="关闭筛选").click()
+    assert root.get_attribute("data-workspace-mode") == "scope"
+    page.wait_for_function(
+        "target => Math.abs(window.scrollY - target) <= 2", arg=saved_scroll
+    )
 
 
 def test_mobile_detail_is_full_width_and_restores_list_scroll(
@@ -336,6 +397,59 @@ def test_mobile_detail_is_full_width_and_restores_list_scroll(
     assert workspace.bounding_box()["width"] >= layout.bounding_box()["width"] - 2
     assert page.get_by_role("button", name="返回结果").is_visible()
     page.get_by_role("button", name="返回结果").click()
+    page.wait_for_function(
+        "target => Math.abs(window.scrollY - target) <= 2", arg=saved_scroll
+    )
+
+
+def test_mobile_archive_filter_workspace_is_full_width(
+    chromium: BrowserContext,
+    site_server: str,
+    unified_site: Path,
+) -> None:
+    payload = json.loads(
+        (unified_site / "data" / "catalog" / "2026.json").read_text("utf-8")
+    )
+    base = next(record for record in payload["records"] if record["media"] == "TV")
+    payload["records"] = [
+        _facet_record(base, 101, "shared-source", "shared-tag"),
+        _facet_record(base, 301, "tv-only-source", "tv-only-tag"),
+    ]
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/catalog/2026.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        ),
+    )
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+    )
+    page.locator("[data-archive-layout] .master-pane").evaluate(
+        "node => { node.style.minHeight = '2200px'; node.style.paddingTop = '900px'; }"
+    )
+    toggle = page.locator("[data-filter-toggle]")
+    toggle.scroll_into_view_if_needed()
+    saved_scroll = page.evaluate("window.scrollY")
+    assert saved_scroll > 0
+    toggle.click()
+    root = page.locator('main[data-page="archive"][data-archive-app]')
+    layout = page.locator("[data-archive-layout]")
+    workspace = page.locator("[data-archive-layout] .workspace")
+    assert root.get_attribute("data-workspace-mode") == "filter"
+    assert page.locator("[data-archive-layout] .master-pane").evaluate(
+        "node => getComputedStyle(node).display"
+    ) == "none"
+    assert workspace.bounding_box()["width"] >= layout.bounding_box()["width"] - 2
+    page.locator("[data-filter-option-search]").fill("tv-only")
+    page.get_by_label("tv-only-source").check()
+    assert page.locator("[data-filter-workspace-active]").is_visible()
+    page.get_by_role("button", name="关闭筛选").click()
+    assert root.get_attribute("data-workspace-mode") == "scope"
     page.wait_for_function(
         "target => Math.abs(window.scrollY - target) <= 2", arg=saved_scroll
     )

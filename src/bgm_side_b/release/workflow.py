@@ -137,7 +137,7 @@ class DoctorResult:
             f"SQLite           {self.local.sqlite_status}",
             f"正式站点         {self.local.site_status}",
             f"公开季度         {', '.join(self.local.public_quarters) or 'none'}",
-            f"资料作品         {self.audit.subject_count}",
+            f"数据库总作品     {self.audit.subject_count}",
             f"Prepared release  {self.prepared_release_status}",
             f"gh-pages         {self.gh_pages}",
             "",

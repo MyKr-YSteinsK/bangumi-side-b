@@ -6,9 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bgm_side_b.archive_config import ArchiveSyncSettings
-from bgm_side_b.build.site_projection import ArchiveFactsReader, ProjectionError
+from bgm_side_b.build.site_projection import (
+    ArchiveFacts,
+    ArchiveFactsReader,
+    ProjectionError,
+)
 from bgm_side_b.database import Database, DatabaseError, UnknownSchemaError
-from bgm_side_b.domain import MediaFormat
+from bgm_side_b.domain import MediaFormat, Quarter
 
 
 @dataclass(frozen=True)
@@ -19,11 +23,26 @@ class UnifiedAuditFailure:
 
 
 @dataclass(frozen=True)
+class QuarterAuditSummary:
+    """Unambiguous appearance composition for one publishable quarter."""
+
+    quarter: str
+    tv_premiere: int
+    tv_continuing: int
+    movie_premiere: int
+
+    @property
+    def total_appearances(self) -> int:
+        return self.tv_premiere + self.tv_continuing + self.movie_premiere
+
+
+@dataclass(frozen=True)
 class UnifiedAuditResult:
     subject_count: int
     publishable_quarters: tuple[str, ...]
     review_quarters: tuple[str, ...]
     failures: tuple[UnifiedAuditFailure, ...]
+    quarter_summaries: tuple[QuarterAuditSummary, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -33,10 +52,20 @@ class UnifiedAuditResult:
         heading = "统一资料审计通过" if self.passed else "统一资料审计失败"
         lines = [
             heading,
-            f"作品             {self.subject_count}",
+            f"数据库总作品     {self.subject_count}",
             f"可发布季度       {', '.join(self.publishable_quarters) or 'none'}",
             f"待裁决季度       {', '.join(self.review_quarters) or 'none'}",
         ]
+        lines.extend(
+            (
+                f"季度条目 {summary.quarter}  "
+                f"TV首播={summary.tv_premiere}  "
+                f"TV续播={summary.tv_continuing}  "
+                f"剧场版={summary.movie_premiere}  "
+                f"合计={summary.total_appearances}"
+            )
+            for summary in self.quarter_summaries
+        )
         if self.failures:
             lines.append("问题")
             lines.extend(
@@ -109,13 +138,48 @@ class UnifiedReleaseAuditor:
                     "format", len(unsupported), "unsupported media format"
                 )
             )
+        summaries = tuple(
+            _quarter_summary(facts, quarter)
+            for quarter in sorted(facts.state_by_quarter)
+            if _quarter_label(quarter) in publishable
+        )
         return UnifiedAuditResult(
-            len(facts.subjects), publishable, review_quarters, tuple(failures)
+            len(facts.subjects),
+            publishable,
+            review_quarters,
+            tuple(failures),
+            summaries,
         )
 
 
 def _failed(check: str, reason: str) -> UnifiedAuditResult:
     return UnifiedAuditResult(0, (), (), (UnifiedAuditFailure(check, 1, reason),))
+
+
+def _quarter_label(quarter: Quarter) -> str:
+    return f"{quarter.year:04d}-{quarter.month:02d}"
+
+
+def _quarter_summary(facts: ArchiveFacts, quarter: Quarter) -> QuarterAuditSummary:
+    entries = facts.by_quarter.get(quarter, ())
+    counts = {
+        "tv_premiere": sum(
+            subject.media_format == MediaFormat.TV.value
+            and appearance.kind == "premiere"
+            for subject, appearance in entries
+        ),
+        "tv_continuing": sum(
+            subject.media_format == MediaFormat.TV.value
+            and appearance.kind == "continuing"
+            for subject, appearance in entries
+        ),
+        "movie_premiere": sum(
+            subject.media_format == MediaFormat.MOVIE.value
+            and appearance.kind == "premiere"
+            for subject, appearance in entries
+        ),
+    }
+    return QuarterAuditSummary(_quarter_label(quarter), **counts)
 
 
 def _safe_error(error: BaseException) -> str:

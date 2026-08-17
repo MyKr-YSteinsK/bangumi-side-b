@@ -12,6 +12,11 @@ from bgm_side_b.release.site_publish import (
     SitePublishRun,
     UnifiedPublisher,
 )
+from bgm_side_b.release.unified_audit import (
+    QuarterAuditSummary,
+    UnifiedAuditFailure,
+    UnifiedAuditResult,
+)
 from bgm_side_b.release.workflow import (
     DoctorResult,
     LocalStatus,
@@ -28,11 +33,14 @@ __all__ = [
     "DoctorResult",
     "LocalStatus",
     "PreparedRelease",
+    "QuarterAuditSummary",
     "SiteCandidate",
     "SiteCandidateError",
     "SitePublishError",
     "SitePublishRun",
     "UnifiedPublisher",
+    "UnifiedAuditFailure",
+    "UnifiedAuditResult",
     "WorkflowError",
     "doctor",
     "local_status",

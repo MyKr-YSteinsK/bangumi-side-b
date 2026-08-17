@@ -75,6 +75,28 @@ def test_build_parser_exposes_only_unified_scope_and_release_commands() -> None:
     assert release_publish.progress == "plain"
 
 
+def test_serve_prints_url_and_ctrl_c_instructions_after_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "find_project_root", lambda: tmp_path)
+
+    def fake_serve(*args: object, **kwargs: object) -> None:
+        callback = kwargs["ready_callback"]
+        assert callable(callback)
+        callback("http://127.0.0.1:8123/bangumi-side-b/")
+
+    monkeypatch.setattr(cli, "serve_site", fake_serve)
+
+    assert main(["serve", "--port", "8123"]) == 0
+    assert capsys.readouterr().out == (
+        "Bangumi Side B preview\n"
+        "http://127.0.0.1:8123/bangumi-side-b/\n"
+        "Press Ctrl+C to stop.\n"
+    )
+
+
 def test_sync_parser_requires_one_year_and_one_quarter() -> None:
     with pytest.raises(SystemExit) as error:
         main(["sync", "2026"])

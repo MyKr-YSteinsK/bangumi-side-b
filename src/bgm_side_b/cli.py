@@ -396,7 +396,11 @@ def main(argv: list[str] | None = None) -> int:
                 "could not find a project root containing pyproject.toml and config"
             )
         try:
-            serve_site(root / "dist" / "site", port=args.port)
+            serve_site(
+                root / "dist" / "site",
+                port=args.port,
+                ready_callback=_print_serve_ready,
+            )
         except ServeError as error:
             parser.error(str(error))
         return 0
@@ -439,6 +443,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"build report: {_relative_output_path(root, run.report_path)}")
         return 0
     return 2
+
+
+def _print_serve_ready(url: str) -> None:
+    """Print preview instructions only after the socket has bound."""
+    print("Bangumi Side B preview")
+    print(url)
+    print("Press Ctrl+C to stop.")
 
 
 def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:

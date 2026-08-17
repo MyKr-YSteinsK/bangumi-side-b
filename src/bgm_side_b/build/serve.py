@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import posixpath
+from collections.abc import Callable
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -59,8 +60,11 @@ def create_preview_server(
             super().__init__(*args, directory=str(site), **kwargs)
 
     handler = PrefixedStaticHandler
+    class PreviewServer(ThreadingHTTPServer):
+        allow_reuse_address = False
+
     try:
-        return ThreadingHTTPServer(("127.0.0.1", port), handler)
+        return PreviewServer(("127.0.0.1", port), handler)
     except OSError as error:
         raise ServeError("preview port is already in use") from error
 
@@ -70,16 +74,27 @@ def serve_site(
     *,
     port: int = 8000,
     base_path: str = DEFAULT_BASE_PATH,
+    ready_callback: Callable[[str], None] | None = None,
 ) -> None:
     """Serve only the generated site until Ctrl-C."""
     server = create_preview_server(site_directory, port=port, base_path=base_path)
     try:
+        if ready_callback is not None:
+            ready_callback(preview_url(server, base_path=base_path))
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.shutdown()
         server.server_close()
+
+
+def preview_url(
+    server: ThreadingHTTPServer, *, base_path: str = DEFAULT_BASE_PATH
+) -> str:
+    """Return the exact loopback URL served by a successfully-bound preview."""
+    normalized = _normalize_base_path(base_path)
+    return f"http://127.0.0.1:{server.server_port}{normalized}"
 
 
 def _normalize_base_path(value: str) -> str:
@@ -92,4 +107,10 @@ def _normalize_base_path(value: str) -> str:
     return candidate
 
 
-__all__ = ["DEFAULT_BASE_PATH", "ServeError", "create_preview_server", "serve_site"]
+__all__ = [
+    "DEFAULT_BASE_PATH",
+    "ServeError",
+    "create_preview_server",
+    "preview_url",
+    "serve_site",
+]

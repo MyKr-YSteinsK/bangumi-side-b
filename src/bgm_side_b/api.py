@@ -221,12 +221,12 @@ class BangumiApiClient:
 
     def browse_subjects(
         self, *, year: int, month: int, category: int, limit: int = 100
-    ) -> tuple[SubjectDetail, ...]:
-        """Read every documented Browse page for one month and media category."""
+    ) -> tuple[CandidateSubject, ...]:
+        """Read Browse pages as candidate evidence, not canonical facts."""
         if category not in BROWSE_CATEGORIES:
             raise ValueError("category must be the TV or theatrical movie category")
         return tuple(
-            SubjectDetail.from_payload(item)
+            CandidateSubject.from_payload(item, category)
             for item in self._paged_json(
                 "/subjects",
                 {
@@ -246,8 +246,8 @@ class BangumiApiClient:
         air_date_start: date,
         air_date_end: date,
         limit: int = 100,
-    ) -> tuple[SubjectDetail, ...]:
-        """Use the official experimental date search as a supplementary signal."""
+    ) -> tuple[CandidateSubject, ...]:
+        """Use date search as supplementary candidate evidence only."""
         if air_date_start >= air_date_end:
             raise ValueError("search air-date range must be non-empty")
         body = {
@@ -261,7 +261,7 @@ class BangumiApiClient:
             },
         }
         return tuple(
-            SubjectDetail.from_payload(item)
+            CandidateSubject.from_payload(item, None)
             for item in self._paged_json(
                 "/search/subjects",
                 {},

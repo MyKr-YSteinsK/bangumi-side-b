@@ -181,10 +181,18 @@ def _sync(
 ) -> tuple[ArchiveSynchronizer, SubjectRepository]:
     database = Database(tmp_path / "data" / "facts.sqlite3")
     repository = SubjectRepository(database)
+    effective_settings = (
+        settings
+        if settings is not None
+        else replace(
+            load_archive_sync_settings(ROOT / "config" / "bangumi.toml"),
+            auto_excluded_subject_ids=frozenset(),
+        )
+    )
     synchronizer = ArchiveSynchronizer(
         repository,
         api,  # type: ignore[arg-type]
-        settings or load_archive_sync_settings(ROOT / "config" / "bangumi.toml"),
+        effective_settings,
         load_archive_source_rules(ROOT / "config" / "source-rules.toml"),
         overrides_path=tmp_path / "quarter-overrides.toml",
         workspace_directory=tmp_path,
@@ -246,10 +254,23 @@ def _store_existing(
 
 def _auto_settings_path(tmp_path: Path) -> Path:
     path = tmp_path / "bangumi.toml"
-    path.write_text(
-        (ROOT / "config" / "bangumi.toml").read_text(encoding="utf-8"),
-        encoding="utf-8",
+    source = (ROOT / "config" / "bangumi.toml").read_text(encoding="utf-8")
+    lines = source.splitlines(keepends=True)
+    start = next(
+        index
+        for index, line in enumerate(lines)
+        if line.lstrip().startswith("auto_excluded_subject_ids")
     )
+    end = start
+    depth = 0
+    while end < len(lines):
+        depth += lines[end].split("#", 1)[0].count("[")
+        depth -= lines[end].split("#", 1)[0].count("]")
+        end += 1
+        if depth <= 0:
+            break
+    lines[start:end] = ["auto_excluded_subject_ids = []\n"]
+    path.write_text("".join(lines), encoding="utf-8")
     return path
 
 
@@ -620,7 +641,6 @@ def test_auto_blacklist_requires_unambiguous_media_scope(
         frozenset({date(2026, 4, 2)}),
         frozenset({2}),
         ("browse:TV:2026-04", "browse:MOVIE:2026-04"),
-        detail,
     )
     sync, repository = _sync(
         tmp_path,
@@ -908,7 +928,7 @@ def test_complete_facts_store_tv_movie_review_and_final_webp_cover(
     assert report["quarters"][0]["reviews"][0]["subject_id"] == 104
 
 
-def test_full_browse_snapshot_uses_public_region_without_subject_get(
+def test_browse_candidate_always_uses_canonical_subject_detail(
     tmp_path: Path,
 ) -> None:
     detail = _detail(101, country=None, meta_tags=("日本", "TV"))
@@ -918,13 +938,12 @@ def test_full_browse_snapshot_uses_public_region_without_subject_get(
         frozenset({date(2026, 4, 2)}),
         frozenset({2}),
         ("browse:TV:2026-04",),
-        detail,
     )
     api = FakeApi({101: detail})
     sync, repository = _sync(tmp_path, api, DiscoveryBatch((candidate,)))
 
     assert sync.run(SyncScope(QUARTER, QUARTER)).exit_code == 0
-    assert api.subject_calls == []
+    assert api.subject_calls == [101]
     facts = repository.get_subject_facts(101)
     assert facts is not None
     assert facts.subject.japanese.evidence_type == "bangumi_public_region_tag"
@@ -980,10 +999,11 @@ def test_search_only_media_does_not_enter_normal_premiere_sync(
     assert run.exit_code == 0
     result = run.quarters[0]
     assert result.facts_status == FACTS_COMPLETE
-    assert result.external_reviews == ()
+    assert len(result.external_reviews) == 1
     assert repository.get_subject_facts(202) is None
     report = json.loads(run.report_path.read_text(encoding="utf-8"))
     assert report["review_count"] == 0
+    assert report["external_review_count"] == 1
     assert report["error_count"] == 0
 
 

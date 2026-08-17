@@ -34,6 +34,7 @@ from bgm_side_b.discovery import (
     BrowseDiscoveryAdapter,
     DiscoveryFailure,
     SearchDiscoveryAdapter,
+    merge_discovery_batches,
 )
 from bgm_side_b.domain import (
     JapaneseClassification,
@@ -147,6 +148,8 @@ class QuarterSyncResult:
     auto_blacklisted: tuple[dict[str, object], ...] = ()
     manual_blacklisted: int = 0
     existing_auto_blacklisted: int = 0
+    canonical_detail_requests: int = 0
+    persisted_review_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -349,12 +352,22 @@ class ArchiveSynchronizer:
             current=_quarter_label(quarter),
         )
         try:
-            batch = self.browse.discover(quarter)
+            browse_batch = self.browse.discover(quarter)
+            search_batch = self.search.discover(quarter)
         except KeyboardInterrupt:
             self._write_incomplete(quarter, prior, 0, ())
             raise
-        if batch.failures:
-            errors = tuple(_discovery_error(item) for item in batch.failures)
+        batch = merge_discovery_batches(browse_batch, search_batch)
+        fatal_failures = tuple(
+            item for item in batch.failures if item.source.value != "search"
+        )
+        discovery_warnings = tuple(
+            _discovery_warning(item)
+            for item in batch.failures
+            if item.source.value == "search"
+        )
+        if fatal_failures:
+            errors = tuple(_discovery_error(item) for item in fatal_failures)
             return self._write_incomplete(quarter, prior, len(batch.candidates), errors)
         existing_by_subject = self.repository.get_subject_facts_many(
             candidate.subject_id for candidate in batch.candidates
@@ -374,6 +387,7 @@ class ArchiveSynchronizer:
         tv_candidates = 0
         admitted_japanese_tv = 0
         premiere_conflict_warnings: list[dict[str, str]] = []
+        canonical_detail_requests = 0
         try:
             for candidate in batch.candidates:
                 if candidate.subject_id in self._manual_excluded_subject_ids:
@@ -386,9 +400,8 @@ class ArchiveSynchronizer:
                     continue
                 candidate_is_tv = MediaFormat.TV in candidate.media_formats
                 try:
-                    detail = candidate.detail or self.api.get_subject(
-                        candidate.subject_id
-                    )
+                    canonical_detail_requests += 1
+                    detail = self.api.get_subject(candidate.subject_id)
                     decision = admit_subject(
                         candidate,
                         detail,
@@ -504,6 +517,7 @@ class ArchiveSynchronizer:
                 manual_blacklisted=manual_blacklisted,
                 existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
+                canonical_detail_requests=canonical_detail_requests,
             )
             raise
         if errors:
@@ -516,6 +530,7 @@ class ArchiveSynchronizer:
                 manual_blacklisted=manual_blacklisted,
                 existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
+                canonical_detail_requests=canonical_detail_requests,
             )
         if tv_candidates > 0 and admitted_japanese_tv == 0:
             self.reporter.error(
@@ -541,6 +556,7 @@ class ArchiveSynchronizer:
                 manual_blacklisted=manual_blacklisted,
                 existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
+                canonical_detail_requests=canonical_detail_requests,
             )
         if tv_candidates >= 20 and admitted_japanese_tv / tv_candidates < 0.20:
             premiere_conflict_warnings.append(
@@ -582,6 +598,7 @@ class ArchiveSynchronizer:
                 manual_blacklisted=manual_blacklisted,
                 existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
+                canonical_detail_requests=canonical_detail_requests,
             )
             raise
         if reconciliation.errors:
@@ -594,6 +611,7 @@ class ArchiveSynchronizer:
                 manual_blacklisted=manual_blacklisted,
                 existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
+                canonical_detail_requests=canonical_detail_requests,
             )
 
         stale_ids = {
@@ -674,6 +692,7 @@ class ArchiveSynchronizer:
         )
         warnings = tuple(
             [
+                *discovery_warnings,
                 *premiere_conflict_warnings,
                 *cleanup_warnings,
                 *cover_warnings,
@@ -698,6 +717,7 @@ class ArchiveSynchronizer:
                     completed_at,
                 ),
             )
+        persisted_review_count = len(self.repository.list_review_issues(quarter))
         return QuarterSyncResult(
             quarter,
             FACTS_COMPLETE,
@@ -723,6 +743,8 @@ class ArchiveSynchronizer:
             auto_blacklisted=tuple(auto_blacklisted),
             manual_blacklisted=manual_blacklisted,
             existing_auto_blacklisted=existing_auto_blacklisted,
+            canonical_detail_requests=canonical_detail_requests,
+            persisted_review_count=persisted_review_count,
         )
 
     def _prepare_subject(
@@ -1125,6 +1147,7 @@ class ArchiveSynchronizer:
         manual_blacklisted: int = 0,
         existing_auto_blacklisted: int = 0,
         auto_blacklisted: tuple[dict[str, object], ...] = (),
+        canonical_detail_requests: int = 0,
     ) -> QuarterSyncResult:
         with self.repository.transaction() as connection:
             self.repository.write_sync_state(
@@ -1139,6 +1162,7 @@ class ArchiveSynchronizer:
                     prior.last_success_at if prior is not None else None,
                 ),
             )
+        persisted_review_count = len(self.repository.list_review_issues(quarter))
         return QuarterSyncResult(
             quarter,
             FACTS_INCOMPLETE,
@@ -1155,6 +1179,8 @@ class ArchiveSynchronizer:
             auto_blacklisted=auto_blacklisted,
             manual_blacklisted=manual_blacklisted,
             existing_auto_blacklisted=existing_auto_blacklisted,
+            canonical_detail_requests=canonical_detail_requests,
+            persisted_review_count=persisted_review_count,
         )
 
     def _sync_covers(
@@ -1271,8 +1297,13 @@ class ArchiveSynchronizer:
                 len(item["auto_blacklisted"]) for item in serialized
             ),
             "review_count": sum(
-                len(item["reviews"]) + len(item["external_reviews"])
-                for item in serialized
+                item["persisted_review_count"] for item in serialized
+            ),
+            "persisted_review_count": sum(
+                item["persisted_review_count"] for item in serialized
+            ),
+            "external_review_count": sum(
+                len(item["external_reviews"]) for item in serialized
             ),
             "warning_count": sum(len(item["warnings"]) for item in serialized),
             "error_count": sum(len(item["errors"]) for item in serialized),
@@ -1368,6 +1399,13 @@ def _timestamp() -> str:
 
 
 def _discovery_error(failure: DiscoveryFailure) -> dict[str, str]:
+    return {
+        "code": f"discovery_{failure.source.value}_{failure.code}",
+        "summary": failure.summary,
+    }
+
+
+def _discovery_warning(failure: DiscoveryFailure) -> dict[str, str]:
     return {
         "code": f"discovery_{failure.source.value}_{failure.code}",
         "summary": failure.summary,
@@ -1522,6 +1560,8 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
         "manual_blacklisted": result.manual_blacklisted,
         "existing_auto_blacklisted": result.existing_auto_blacklisted,
         "auto_blacklisted": list(result.auto_blacklisted),
+        "canonical_detail_requests": result.canonical_detail_requests,
+        "persisted_review_count": result.persisted_review_count,
         "reviews": [
             {
                 "subject_id": issue.details.get("subject_id"),

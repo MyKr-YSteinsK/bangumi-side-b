@@ -365,12 +365,12 @@ def main(argv: list[str] | None = None) -> int:
             result = run.quarters[0]
             for line in _sync_summary_lines(result):
                 print(line)
-            if result.reviews:
-                if len(result.reviews) <= MAX_INLINE_SYNC_REVIEWS:
+            if result.persisted_review_count:
+                if result.persisted_review_count <= MAX_INLINE_SYNC_REVIEWS:
                     print(render_review(repository, scope.start))
                 else:
                     print(
-                        f"{len(result.reviews)} persisted REVIEW items; "
+                        f"{result.persisted_review_count} persisted REVIEW items; "
                         "run bgmb review for the complete local queue"
                     )
             for review in result.external_reviews[:MAX_INLINE_SYNC_REVIEWS]:

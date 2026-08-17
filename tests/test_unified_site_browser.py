@@ -657,6 +657,44 @@ def test_archive_filters_are_media_local_and_normalized(
     assert page.get_by_label("tv-only-source").count() == 0
 
 
+def test_filter_options_wrap_and_selected_chip_survives_option_search(
+    chromium: BrowserContext,
+    site_server: str,
+    unified_site: Path,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    payload = json.loads(
+        (unified_site / "data" / "quarters" / "2026-07.json").read_text("utf-8")
+    )
+    base = payload["tv"]["continuing"][0]
+    payload["tv"]["continuing"] = [
+        _facet_record(base, 101, "source-a", "tag-a"),
+        _facet_record(base, 301, "source-b", "tag-b"),
+    ]
+    page.route(
+        "**/data/quarters/2026-07.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        ),
+    )
+    _open_quarter(page, site_server, (390, 844))
+    page.locator("[data-filter-toggle]").click()
+    group = page.locator(".filter-group").first
+    assert group.evaluate("node => getComputedStyle(node).flexWrap") == "wrap"
+    option = group.locator(".filter-option").first
+    option.locator("input").check()
+    assert option.get_attribute("data-filter-option-count") is not None
+    assert "is-selected" in (option.get_attribute("class") or "")
+    page.locator("[data-filter-option-search]").fill("no-such-filter-option")
+    assert option.is_visible()
+    assert option.locator("input").is_checked()
+    option.locator("input").uncheck()
+    assert not option.locator("input").is_checked()
+
+
 def test_large_archive_renders_only_the_current_page_and_restores_deep_link(
     chromium: BrowserContext,
     site_server: str,

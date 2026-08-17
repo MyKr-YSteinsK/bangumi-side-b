@@ -928,7 +928,12 @@
     const applyOptionQuery = () => {
       const query = archive.normalize(state.filterOptionQuery);
       filterPanel.querySelectorAll("[data-filter-option]").forEach((option) => {
-        option.hidden = option.dataset.filterOption?.includes(query) === false;
+        const selected = option.querySelector("input")?.checked === true;
+        option.hidden = Boolean(
+          query
+          && option.dataset.filterOption?.includes(query) === false
+          && !selected
+        );
       });
     };
     optionSearch?.addEventListener("input", () => {
@@ -949,6 +954,7 @@
         const shown = optionLabel;
         label.dataset.filterOption = archive.normalize(shown);
         label.dataset.filterOptionCount = String(count);
+        label.classList.toggle("is-selected", selected);
         const input = document.createElement("input");
         input.type = "checkbox";
         input.dataset.filterGroup = group;
@@ -1608,7 +1614,12 @@
     const applyOptionQuery = () => {
       const query = archive.normalize(state.filterOptionQuery);
       selectors.filterPanel.querySelectorAll("[data-filter-option]").forEach((option) => {
-        option.hidden = option.dataset.filterOption?.includes(query) === false;
+        const selected = option.querySelector("input")?.checked === true;
+        option.hidden = Boolean(
+          query
+          && option.dataset.filterOption?.includes(query) === false
+          && !selected
+        );
       });
     };
     optionSearch?.addEventListener("input", () => {
@@ -1629,6 +1640,7 @@
         const shown = optionLabel;
         label.dataset.filterOption = archive.normalize(shown);
         label.dataset.filterOptionCount = String(count);
+        label.classList.toggle("is-selected", selected);
         const input = document.createElement("input");
         input.type = "checkbox";
         input.dataset.filterGroup = group;

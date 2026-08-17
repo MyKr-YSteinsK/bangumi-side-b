@@ -62,6 +62,7 @@ def test_build_parser_exposes_only_unified_scope_and_release_commands() -> None:
     scoped = parser.parse_args(["build", "2022", "1"])
     all_quarters = parser.parse_args(["build", "--all"])
     doctor = parser.parse_args(["doctor", "--local"])
+    serve_open = parser.parse_args(["serve", "--open"])
     prepare = parser.parse_args(["release", "prepare", "--quiet"])
     release_publish = parser.parse_args(["release", "publish", "--progress", "plain"])
 
@@ -69,6 +70,7 @@ def test_build_parser_exposes_only_unified_scope_and_release_commands() -> None:
     assert not scoped.all
     assert all_quarters.all
     assert doctor.local
+    assert serve_open.open_browser
     assert prepare.release_command == "prepare"
     assert prepare.quiet
     assert release_publish.release_command == "publish"
@@ -94,6 +96,58 @@ def test_serve_prints_url_and_ctrl_c_instructions_after_ready(
         "Bangumi Side B preview\n"
         "http://127.0.0.1:8123/bangumi-side-b/\n"
         "Press Ctrl+C to stop.\n"
+    )
+
+
+def test_serve_open_calls_browser_only_when_explicitly_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "find_project_root", lambda: tmp_path)
+    opened: list[str] = []
+    monkeypatch.setattr(cli.webbrowser, "open", lambda url: opened.append(url) or True)
+
+    def fake_serve(*args: object, **kwargs: object) -> None:
+        kwargs["ready_callback"]("http://127.0.0.1:8123/bangumi-side-b/")
+
+    monkeypatch.setattr(cli, "serve_site", fake_serve)
+
+    assert main(["serve"]) == 0
+    assert opened == []
+    capsys.readouterr()
+
+    assert main(["serve", "--open"]) == 0
+    assert opened == ["http://127.0.0.1:8123/bangumi-side-b/"]
+    assert "warning:" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("browser_result", [False, RuntimeError("browser unavailable")])
+def test_serve_open_browser_failure_is_only_a_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    browser_result: object,
+) -> None:
+    monkeypatch.setattr(cli, "find_project_root", lambda: tmp_path)
+
+    def open_browser(url: str) -> bool:
+        if isinstance(browser_result, Exception):
+            raise browser_result
+        return browser_result
+
+    monkeypatch.setattr(cli.webbrowser, "open", open_browser)
+    monkeypatch.setattr(
+        cli,
+        "serve_site",
+        lambda *args, **kwargs: kwargs["ready_callback"](
+            "http://127.0.0.1:8123/bangumi-side-b/"
+        ),
+    )
+
+    assert main(["serve", "--open"]) == 0
+    assert capsys.readouterr().out.endswith(
+        "warning: could not open the default browser; open the URL manually\n"
     )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import webbrowser
 from pathlib import Path
 
 from bgm_side_b import __version__
@@ -117,6 +118,12 @@ def build_parser() -> argparse.ArgumentParser:
         "serve", help="Serve the existing dist/site tree on localhost."
     )
     serve_command.add_argument("--port", type=int, default=8000)
+    serve_command.add_argument(
+        "--open",
+        dest="open_browser",
+        action="store_true",
+        help="Open the preview URL in the default browser after binding.",
+    )
     release_command = subparsers.add_parser(
         "release", help="执行明确的发布准备或真实发布编排。"
     )
@@ -399,7 +406,9 @@ def main(argv: list[str] | None = None) -> int:
             serve_site(
                 root / "dist" / "site",
                 port=args.port,
-                ready_callback=_print_serve_ready,
+                ready_callback=lambda url: _print_serve_ready(
+                    url, open_browser=args.open_browser
+                ),
             )
         except ServeError as error:
             parser.error(str(error))
@@ -445,11 +454,19 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
-def _print_serve_ready(url: str) -> None:
+def _print_serve_ready(url: str, *, open_browser: bool = False) -> None:
     """Print preview instructions only after the socket has bound."""
     print("Bangumi Side B preview")
     print(url)
     print("Press Ctrl+C to stop.")
+    if not open_browser:
+        return
+    try:
+        opened = webbrowser.open(url)
+    except Exception:
+        opened = False
+    if not opened:
+        print("warning: could not open the default browser; open the URL manually")
 
 
 def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:

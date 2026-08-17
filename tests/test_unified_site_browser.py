@@ -132,6 +132,7 @@ def test_quarter_detail_movie_history_and_lightbox(
     [
         (1920, 1080),
         (1440, 900),
+        (1280, 800),
         (1366, 768),
         (1024, 768),
         (768, 1024),
@@ -159,6 +160,29 @@ def test_quarter_shell_is_usable_across_plan16_viewports(
         assert page.locator('[data-subject-id="101"] .subject-row__cover').evaluate(
             "node => getComputedStyle(node).display"
         ) == "none"
+
+
+def test_mobile_controls_have_touch_targets_and_reduced_motion(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 360, "height": 800})
+    page.set_default_timeout(8000)
+    page.emulate_media(reduced_motion="reduce")
+    page.goto(f"{site_server}/2026-07/index.html")
+    page.wait_for_selector(".subject-row")
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    selectors = (
+        ".control-button",
+        ".select-trigger",
+        ".mode-switch button",
+        ".search-field input",
+    )
+    for selector in selectors:
+        assert page.locator(selector).first.bounding_box()["height"] >= 44
+    assert page.locator(".workspace-panel--scope").evaluate(
+        "node => parseFloat(getComputedStyle(node).transitionDuration) <= 0.001"
+    )
 
 
 def test_archive_year_range_hash_and_same_origin_network(

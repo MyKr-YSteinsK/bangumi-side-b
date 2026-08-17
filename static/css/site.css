@@ -797,4 +797,16 @@ html { line-height: 1.65; }
   .mode-switch button, .scope-tabs button { flex: 1 1 0; min-height: var(--control-height-touch); }
   .select-trigger { min-height: var(--control-height-touch); }
   .select-option { min-height: var(--control-height-touch); }
+  .search-field input, .filter-option-search input, .archive-range input { min-height: var(--control-height-touch); }
+  .archive-quarter-slot, .active-filter, .pager button { min-height: var(--control-height-touch); }
+  .page-size, .archive-selector, .queue-selector { min-width: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+  }
 }

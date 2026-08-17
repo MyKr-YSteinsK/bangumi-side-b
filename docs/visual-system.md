@@ -6,7 +6,16 @@
 
 ## 令牌
 
-基础令牌在 `static/css/site.css` 的 `:root`：
+基础令牌在 `static/css/site.css` 的 `:root`。Visual System V2 先用语义别名把纸面内容层和应用交互层分开；组件只引用语义令牌，不直接复制颜色。
+
+| 语义层 | V2 令牌 | 当前含义 |
+| --- | --- | --- |
+| 页面 / 内容 | `--surface-page` / `--surface` | 页面纸面与普通内容表面 |
+| 提升 / 弱化 | `--surface-raised` / `--surface-subtle` | 输入、内容承载与弱背景 |
+| 选中 / 浮层 | `--surface-selected` / `--surface-overlay` | 选中状态与更新/菜单浮层 |
+| 边界 | `--border-subtle` / `--border-default` / `--border-strong` | 弱分隔、普通控件边框、强调边框 |
+
+基础颜色令牌仍为：
 
 | 用途 | 令牌 | 起始色 |
 | --- | --- | --- |
@@ -15,6 +24,11 @@
 | 细线 / 强分隔 | `--rule` / `--rule-strong` | `#C9C6BB` / `#72776F` |
 | 弱表面 | `--surface-muted` | `#E8E4DA` |
 | 可见键盘焦点 | `--focus` | `#1E5D9C` |
+
+控件基础度量为 `--control-height-compact`（32px）、`--control-height-normal`（40px）和
+`--control-height-touch`（44px）；默认圆角为 `--radius-small`（4px）、
+`--radius-control`（7px）和 `--radius-popover`（10px）。标签仍可使用 pill 语义，但普通按钮、输入框和菜单不使用胶囊圆角。
+浮层只使用 `--shadow-popover` / `--shadow-dialog`，普通列表、按钮和输入框不堆叠厚阴影。
 
 季度强调色仅用于编号、细线、选中态、来源小标签和评分：01 `#8A3147`，04 `#287565`，07 `#C95C32`，10 `#3C4F72`。正文始终使用深色墨色；浅色纸面上的正文和焦点均以人工审查的高对比配对使用，不把季节色用于长段落正文。
 
@@ -34,6 +48,6 @@ Quarter 与 Archive 的长分页共用紧凑窗口：始终保留首尾页与当
 
 ## 动效与无障碍
 
-普通交互使用 180ms 自然减速过渡：卡片 hover 最多上移 2px，边线变色而非厚阴影。抽屉仅在需要时使用轻阴影。无持续动画、3D 翻转或视差。`prefers-reduced-motion: reduce` 把位移、缩放和非必要过渡压缩到近乎即时。
+普通交互使用 `--motion-fast` 或 `--motion-standard` 自然减速过渡：卡片 hover 最多上移 2px，边线变色而非厚阴影。抽屉、菜单和更新提示才使用浮层阴影。无持续动画、3D 翻转或视差。`prefers-reduced-motion: reduce` 把位移、缩放和非必要过渡压缩到近乎即时。
 
 CSS 不加载远程字体或 CDN。运行时 JavaScript 只处理页面交互、PWA 缓存与下载，并请求构建生成的同源 JSON 和静态资源；不能读取 SQLite、访问 Bangumi 或其它远程业务 API、载入远程图片或埋点。

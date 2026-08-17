@@ -13,6 +13,28 @@
   --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --font-mono: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   --ease-out: cubic-bezier(.2, .7, .2, 1);
+
+  /* Visual System V2: semantic surfaces, borders, controls, and motion. */
+  --surface-page: var(--paper);
+  --surface: var(--paper-raised);
+  --surface-raised: #fffefa;
+  --surface-subtle: var(--surface-muted);
+  --surface-selected: color-mix(in srgb, var(--accent) 9%, var(--paper-raised));
+  --surface-overlay: rgb(255 253 248 / 96%);
+  --border-subtle: color-mix(in srgb, var(--rule) 68%, transparent);
+  --border-default: var(--rule);
+  --border-strong: var(--rule-strong);
+  --radius-small: 4px;
+  --radius-control: 7px;
+  --radius-popover: 10px;
+  --control-height-compact: 2rem;
+  --control-height-normal: 2.5rem;
+  --control-height-touch: 2.75rem;
+  --control-padding-inline: .8rem;
+  --shadow-popover: 0 12px 28px rgb(23 32 29 / 12%), 0 2px 6px rgb(23 32 29 / 7%);
+  --shadow-dialog: 0 18px 48px rgb(23 32 29 / 18%);
+  --motion-fast: 120ms var(--ease-out);
+  --motion-standard: 180ms var(--ease-out);
 }
 
 .season-01 { --accent: #5d718b; --accent-ink: #40546c; }
@@ -22,7 +44,7 @@
 
 * { box-sizing: border-box; }
 
-html { background: var(--paper); color: var(--ink); font-family: var(--font-sans); line-height: 1.6; }
+html { background: var(--surface-page); color: var(--ink); font-family: var(--font-sans); line-height: 1.6; }
 
 body { margin: 0; min-width: 320px; }
 

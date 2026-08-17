@@ -38,6 +38,11 @@ bgmb serve --port 8000
 构建应无 artifact 写入。`serve` 只服务已有 `dist/site`，不读 SQLite、不构建、不同步
 也不发布。release prepare 属于后续发布生命周期。
 
+站点控件保持原生 HTML / CSS / JavaScript：builder 输出选择器根节点，`static/js/app.js`
+提供 Quarter / Archive 共用的 `window.BsbListbox`，`static/js/pwa.js` 复用它渲染
+Settings 队列筛选。用户可见选择器不使用原生 `<select>` 展开 UI；键盘、触屏和
+Escape / 外部点击关闭由该基础层统一处理，业务选择值和 localStorage 契约不变。
+
 同步还会在基础 Anime、日本、TV/MOVIE 范围确认后检查自动冷门规则：可靠首播日期超过 7 天且
 评分人数少于 30 的作品会永久写入 `auto_excluded_subject_ids`，并在同一次同步中停止季度归属、
 REVIEW 和封面处理。缺少日期或评分人数时不会按零猜测。评分人数后来上涨不会自动恢复；需要人工

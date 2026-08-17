@@ -6,6 +6,7 @@
 
 ### 新增
 
+- 建立 Visual System V2：统一 surface、边界、圆角、控件高度、浮层和动效状态；Quarter、Archive 与 Settings 的用户可见选择器改为支持键盘与触屏的自定义 Select/Listbox，并补齐移动端触控尺寸与 reduced-motion 行为。
 - 同步新增自动永久冷门黑名单：可靠首播超过 7 天且评分人数少于 30 的日本 TV/MOVIE 会在季度归属前被审计化排除；配置保留人工与自动来源、标题注释和可恢复的跨资源清理状态。
 - 修正同步报告的黑名单来源统计，明确区分人工命中、历史自动命中和本次新增自动拉黑，不再把历史自动条目误报为人工条目。
 - 修复 discovery partial payload 覆盖最终事实的问题：Browse/Search 现在只发现候选，canonical subject detail 负责持久化 facts，并在报告中记录正式 detail 请求数。

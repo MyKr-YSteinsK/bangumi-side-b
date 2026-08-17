@@ -45,6 +45,15 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 后续 sync 中重新评估。人工 `excluded_subject_ids` 与自动列表来源不同，均应保留配置中的现有注释。
 同步报告会分别显示人工命中、历史自动命中和本次新增自动拉黑数量。
 
+Browse/Search 只发现候选，正式 subject facts 会再通过 canonical detail 验证。集数只接受可靠
+正整数；`0`、缺失、负数和无效文本都显示为未知，只有精确 Infobox `话数` 的纯数字值可以作为
+严格 fallback，不会从简介、季度长度或已播章节估算。
+
+同步报告中的来源和集数是 bounded aggregate。`source_counts` 统计已持久化季度事实，
+`episode_count` 区分 known、unknown 与 legacy zero，`canonical_detail_requests` 记录本次正式
+detail 请求数；不会把原始 API 响应写入报告。来源顺序是精确 Infobox、已验证 exact source tag，
+再到能够明确区分类型的结构化 relation；当前 relations 不能区分小说与轻小说，因此保持来源未知。
+
 ## REVIEW 与人工裁决
 
 查看全部或某季度尚未解决的 REVIEW：
@@ -65,6 +74,10 @@ bgmb assign BGM_ID --clear
 
 `YEAR MONTH` 明确指定首播季度；`--unassigned` 明确保持未分配；`--clear` 移除已有人工决定并
 恢复自动规则处理。对尚未在 SQLite 中的 BGM ID 执行 assign 可能联网导入该作品。
+
+同步输出中的 `persisted REVIEW` 只指已经写入 SQLite 且带当前季度作用域的 REVIEW 行，
+因此它与 `bgmb review YEAR QUARTER_MONTH` 和 `bgmb audit` 的待裁决季度保持一致。无季度作用域的
+证据问题和 Search-only finding 会以独立的当前运行统计显示，不会伪装成季度队列。
 
 ## 离线 build
 

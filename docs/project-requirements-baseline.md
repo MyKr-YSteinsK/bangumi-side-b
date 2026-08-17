@@ -110,7 +110,11 @@ other
 unknown
 ```
 
-优先结构化 Infobox，再使用有限、精确的社区标签回退。禁止简介推断。多来源必须有明确证据。`visual_novel` 优先于 `game`，`light_novel` 优先于 `novel`。原创与改编冲突记录警告；无法解释的冲突归 `unknown`。保存证据类型和值。规则变化后可离线重新 build。
+Browse/Search 只提供候选发现证据；canonical `GET /subjects/{id}` 才是最终 subject facts 的正式边界。
+来源按以下固定顺序判断：精确结构化 Infobox → 已验证的精确社区 source tag → 已验证且能明确区分来源类型的结构化 relation fallback → `unknown`。
+禁止简介推断、标题猜测、模糊匹配和 AI 判断。多来源必须有明确证据。`visual_novel` 优先于 `game`，
+`light_novel` 优先于 `novel`。原创与改编冲突记录警告；无法解释的冲突归 `unknown`。保存证据类型和值。
+当前官方 relations 只提供书籍等宽泛类型，不能安全区分小说与轻小说，因此不得据此推断。规则变化后可离线重新 build。
 
 ## 8. 社区标签
 
@@ -182,7 +186,10 @@ appearance 表：TV 最多一个 premiere、可以有多个 continuing，Movie �
 `subject_quarters` 保存 `(subject_id, year, quarter_month, appearance_kind)`；TV 最多一个
 premiere、可以有多个 continuing，Movie 只有一个 premiere。季度来源明确区分
 automatic/manual；未确认时允许没有季度行。SQLite 不保存单集记录，也不从任何列表推断总集数，
-只保存上游明确提供的单一集数字段。
+只保存上游明确提供的单一集数字段。总集数优先使用 canonical detail 的可靠正整数
+`total_episodes` / `eps`；`0`、负数、缺失和无效值均表示 unknown。canonical 字段不可用时，
+只能严格读取 Infobox 精确键 `话数` 的正整数或纯数字字符串，不解析“11话”等自然语言，也不估算集数。
+旧 SQLite 中的 `episode_count = 0` 在仓储和 public projection 中均表现为 unknown，不回写旧库。
 
 只登记通过过滤作品的唯一最终封面元数据；相对路径固定由 Subject ID 派生为
 `covers/<subject_id>.webp`，不写入 SQLite。第一版不保存、下载、展示或查询角色、声优与角色图片；

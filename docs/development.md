@@ -52,6 +52,15 @@ bgmb review YEAR QUARTER_MONTH
 同步报告的黑名单汇总分别记录人工命中、历史自动命中和本次新增自动拉黑；三者之和必须等于
 黑名单总命中数。
 
+Browse/Search 返回的字段只用于候选发现；最终标题、日期、集数、Infobox、tags、来源和图片事实
+必须来自 canonical subject detail。同步报告还提供 bounded `source_counts`、`episode_count`
+（known/unknown/legacy_zero_written）和 `canonical_detail_requests` 聚合，不保存原始 API 响应。
+集数 `0` 不表示零集：只持久化正整数，严格的 Infobox `话数` fallback 仍不可得时保持 unknown。
+
+同步 summary 与 `bgmb review YEAR QUARTER_MONTH` 使用同一 scoped persisted REVIEW 定义。
+只有实际写入 `subject_review_issues` 且带目标季度的行才称为 `persisted REVIEW`；无季度作用域的
+当前运行 finding 和 Search-only finding 会单独计数，不会被误报为该季度队列。
+
 整份 Plan 的集成验证通过后，按仓库规则由 Codex 执行一次普通分支 push；它不是 Pages
 发布。真实发布仍需明确执行：
 

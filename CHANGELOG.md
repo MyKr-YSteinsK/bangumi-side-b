@@ -8,6 +8,10 @@
 
 - 同步新增自动永久冷门黑名单：可靠首播超过 7 天且评分人数少于 30 的日本 TV/MOVIE 会在季度归属前被审计化排除；配置保留人工与自动来源、标题注释和可恢复的跨资源清理状态。
 - 修正同步报告的黑名单来源统计，明确区分人工命中、历史自动命中和本次新增自动拉黑，不再把历史自动条目误报为人工条目。
+- 修复 discovery partial payload 覆盖最终事实的问题：Browse/Search 现在只发现候选，canonical subject detail 负责持久化 facts，并在报告中记录正式 detail 请求数。
+- 收敛来源与集数事实：加入经实际数据验证的精确 source tags；只接受正整数集数，严格回退 Infobox `话数`，旧 `0` 在 public projection 中表现为未知。
+- 统一 REVIEW 口径：sync summary、`bgmb review YEAR QUARTER_MONTH` 与 `audit` 只统计带季度作用域且已持久化的 REVIEW；无作用域和 Search-only findings 单独报告。
+- 同步报告增加 bounded 来源计数与 known/unknown 集数聚合，便于审计 unknown / legacy zero 的原因而不泄漏原始 API 响应。
 
 ## 0.2.0 - 2026-08-13
 

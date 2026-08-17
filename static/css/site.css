@@ -755,6 +755,8 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
   transition: background-color var(--motion-fast), color var(--motion-fast);
 }
 .filter-option:hover { background: var(--surface-subtle); color: var(--accent-ink); }
+.filter-option__count { color: var(--ink-muted); font-family: var(--font-mono); font-size: .68rem; margin-left: auto; font-variant-numeric: tabular-nums; }
+.filter-option[data-filter-option-count="0"] .filter-option__count { opacity: .5; }
 .filter-group legend { font-family: var(--font-sans); font-size: .72rem; font-weight: 700; letter-spacing: .02em; text-transform: none; }
 .filter-option input {
   appearance: none;

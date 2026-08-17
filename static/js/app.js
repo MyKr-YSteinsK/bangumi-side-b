@@ -210,6 +210,45 @@
     };
   }
 
+  function filterOptionMetadata(records, state) {
+    const available = availableFilterValues(records, state.media);
+    const groups = ["sources", "tags", "sections"];
+    const metadata = {};
+    for (const group of groups) {
+      const filters = {
+        sources: [...(state.filters?.sources || [])],
+        tags: [...(state.filters?.tags || [])],
+        sections: [...(state.filters?.sections || [])],
+      };
+      filters[group] = [];
+      const query = normalize(state.query);
+      const candidates = recordsForMedia(records, state.media).filter((record) => {
+        if (query && !String(record.search || "").includes(query)) return false;
+        return matchesFilters(record, filters);
+      });
+      const counts = new Map(available[group].map((value) => [value, 0]));
+      candidates.forEach((record) => {
+        const values = group === "tags"
+          ? record.allowed_tags
+          : [group === "sections" ? record.appearance : record.source];
+        new Set(values).forEach((value) => {
+          if (counts.has(value)) counts.set(value, counts.get(value) + 1);
+        });
+      });
+      metadata[group] = available[group].map((value) => ({
+        value,
+        label: group === "sources"
+          ? sourceLabel(value)
+          : group === "sections"
+            ? appearanceLabel(value)
+            : value,
+        count: counts.get(value) || 0,
+        selected: (state.filters?.[group] || []).includes(value),
+      }));
+    }
+    return metadata;
+  }
+
   function normalizeFiltersForMedia(state, records) {
     const available = availableFilterValues(records, state.media);
     for (const group of ["sources", "tags", "sections"]) {
@@ -249,6 +288,7 @@
     sourceLabel,
     recordsForMedia,
     availableFilterValues,
+    filterOptionMetadata,
     normalizeFiltersForMedia,
     paginationTokens,
   });
@@ -881,7 +921,7 @@
 
   function renderFilterPanel() {
     if (!filterPanel) return;
-    const options = archive.availableFilterValues(records, state.media);
+    const options = archive.filterOptionMetadata(records, state);
     filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
     const optionSearch = filterPanel.querySelector("[data-filter-option-search]");
     if (optionSearch) optionSearch.value = state.filterOptionQuery;
@@ -902,20 +942,19 @@
       const legend = document.createElement("legend");
       legend.textContent = group === "sources" ? "来源" : group === "tags" ? "标签" : "TV 分区";
       section.append(legend);
-      for (const value of values) {
+      for (const option of values) {
+        const { value, label: optionLabel, count, selected } = option;
         const label = document.createElement("label");
         label.className = "filter-option";
-        const shown = group === "sections"
-          ? archive.appearanceLabel(value)
-          : group === "sources"
-            ? archive.sourceLabel(value)
-            : value;
+        const shown = optionLabel;
         label.dataset.filterOption = archive.normalize(shown);
+        label.dataset.filterOptionCount = String(count);
         const input = document.createElement("input");
         input.type = "checkbox";
         input.dataset.filterGroup = group;
         input.dataset.filterValue = value;
-        input.checked = state.filters[group].includes(value);
+        input.checked = selected;
+        input.setAttribute("aria-label", shown);
         input.addEventListener("change", () => {
           state.filters[group] = input.checked
             ? [...state.filters[group], value]
@@ -929,7 +968,10 @@
               && candidate.dataset.filterValue === value);
           (replacement || filterPanel.querySelector("[data-filter-option-search]"))?.focus();
         });
-        label.append(input, document.createTextNode(shown));
+        const countNode = document.createElement("span");
+        countNode.className = "filter-option__count";
+        countNode.textContent = String(count);
+        label.append(input, document.createTextNode(shown), countNode);
         section.append(label);
       }
       filterPanel.append(section);
@@ -1559,7 +1601,7 @@
 
   function renderFilterPanel() {
     if (!selectors.filterPanel) return;
-    const options = archive.availableFilterValues(records, state.media);
+    const options = archive.filterOptionMetadata(records, state);
     selectors.filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选">×</button></div><h2>筛选资料</h2><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
     const optionSearch = selectors.filterPanel.querySelector("[data-filter-option-search]");
     if (optionSearch) optionSearch.value = state.filterOptionQuery;
@@ -1580,20 +1622,19 @@
       const legend = document.createElement("legend");
       legend.textContent = group === "sources" ? "来源" : group === "tags" ? "标签" : "TV 分区";
       fieldset.append(legend);
-      values.forEach((value) => {
+      values.forEach((option) => {
+        const { value, label: optionLabel, count, selected } = option;
         const label = document.createElement("label");
         label.className = "filter-option";
-        const shown = group === "sections"
-          ? archive.appearanceLabel(value)
-          : group === "sources"
-            ? archive.sourceLabel(value)
-            : value;
+        const shown = optionLabel;
         label.dataset.filterOption = archive.normalize(shown);
+        label.dataset.filterOptionCount = String(count);
         const input = document.createElement("input");
         input.type = "checkbox";
         input.dataset.filterGroup = group;
         input.dataset.filterValue = value;
-        input.checked = state.filters[group].includes(value);
+        input.checked = selected;
+        input.setAttribute("aria-label", shown);
         input.addEventListener("change", () => {
           state.filters[group] = input.checked ? [...state.filters[group], value] : state.filters[group].filter((item) => item !== value);
           state.page = 1;
@@ -1605,7 +1646,10 @@
               && candidate.dataset.filterValue === value);
           (replacement || selectors.filterPanel.querySelector("[data-filter-option-search]"))?.focus();
         });
-        label.append(input, document.createTextNode(shown));
+        const countNode = document.createElement("span");
+        countNode.className = "filter-option__count";
+        countNode.textContent = String(count);
+        label.append(input, document.createTextNode(shown), countNode);
         fieldset.append(label);
       });
       selectors.filterPanel.append(fieldset);

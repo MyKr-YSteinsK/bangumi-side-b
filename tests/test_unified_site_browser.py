@@ -391,6 +391,50 @@ def test_section_facets_only_include_active_media_appearances(
     }
 
 
+def test_filter_facets_keep_query_and_other_dimensions_for_counts(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page()
+    page.goto(f"{site_server}/archive/index.html")
+    values = page.evaluate(
+        """
+        () => {
+          const make = (id, title, source, tag, appearance, media = "TV") =>
+            window.BsbArchive.asRecord({
+              id, preferred_title: title, original_title: title,
+              source, allowed_tags: [tag], appearance, media,
+            });
+          const records = [
+            make(1, "Alpha one", "source-a", "tag-x", "premiere"),
+            make(2, "Alpha two", "source-b", "tag-y", "continuing"),
+            make(3, "Beta three", "source-a", "tag-x", "premiere"),
+            make(4, "Alpha movie", "source-c", "tag-x", "premiere", "MOVIE"),
+          ];
+          const state = window.BsbArchive.createState({
+            media: "tv", query: "alpha", filters: { tags: ["tag-x"] },
+          });
+          return window.BsbArchive.filterOptionMetadata(records, state);
+        }
+        """
+    )
+    assert [(item["value"], item["count"]) for item in values["sources"]] == [
+        ("source-a", 1),
+        ("source-b", 0),
+    ]
+    assert [
+        (item["value"], item["count"], item["selected"])
+        for item in values["tags"]
+    ] == [
+        ("tag-x", 1, True),
+        ("tag-y", 1, False),
+    ]
+    assert [(item["value"], item["count"]) for item in values["sections"]] == [
+        ("premiere", 1),
+        ("continuing", 0),
+    ]
+
+
 def test_shared_pagination_tokens_are_compact_and_deterministic(
     chromium: BrowserContext,
     site_server: str,
@@ -502,6 +546,12 @@ def test_quarter_filters_are_media_local_and_normalized(
     _open_quarter(page, site_server, (1440, 900))
 
     page.locator("[data-filter-toggle]").click()
+    assert page.locator(
+        '[data-filter-option="tv-only-source"] .filter-option__count'
+    ).inner_text() == "1"
+    assert page.locator(
+        '[data-filter-option="shared-source"] .filter-option__count'
+    ).inner_text() == "1"
     option_search = page.locator("[data-filter-option-search]")
     option_search.fill("tv-only")
     assert page.get_by_label("tv-only-source").is_visible()

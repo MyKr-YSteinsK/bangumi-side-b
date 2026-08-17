@@ -949,6 +949,36 @@ def test_browse_candidate_always_uses_canonical_subject_detail(
     assert facts.subject.japanese.evidence_type == "bangumi_public_region_tag"
 
 
+def test_canonical_detail_episode_count_is_persisted_after_partial_discovery(
+    tmp_path: Path,
+) -> None:
+    fixture = json.loads(
+        (ROOT / "tests" / "fixtures" / "api" / "subject-547888.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    detail = SubjectDetail.from_payload(
+        {
+            **fixture,
+            "infobox": [*fixture["infobox"], {"key": "国家/地区", "value": "日本"}],
+        }
+    )
+    api = FakeApi({547888: detail})
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(547888, MediaFormat.TV, date(2026, 4, 8)),)),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    facts = repository.get_subject_facts(547888)
+    assert run.exit_code == 0
+    assert facts is not None
+    assert facts.subject.episode_count == 11
+    assert run.quarters[0].canonical_detail_requests == 1
+
+
 def test_search_failure_does_not_block_stable_browse_premiere_sync(
     tmp_path: Path,
 ) -> None:

@@ -46,8 +46,8 @@ class SubjectRecord:
             raise ValueError("subject id must be positive")
         if not self.name_original.strip():
             raise ValueError("subject original name must not be empty")
-        if self.episode_count is not None and self.episode_count < 0:
-            raise ValueError("episode count must not be negative")
+        if self.episode_count is not None and self.episode_count <= 0:
+            raise ValueError("episode count must be positive when present")
         if self.rating_score is not None and not 0 <= self.rating_score <= 10:
             raise ValueError("rating score must be between 0 and 10")
         if self.rating_count is not None and self.rating_count < 0:
@@ -889,6 +889,11 @@ def _stored_date(value: object) -> date | None:
     return date.fromisoformat(value) if isinstance(value, str) else None
 
 
+def _stored_episode_count(value: object) -> int | None:
+    """Expose legacy zero episode counts as unknown without rewriting SQLite."""
+    return value if isinstance(value, int) and value > 0 else None
+
+
 def _stored_japanese_classification(evidence_type: object) -> JapaneseClassification:
     if isinstance(evidence_type, str) and evidence_type.startswith("unresolved_"):
         return JapaneseClassification.UNRESOLVED
@@ -910,7 +915,7 @@ def _subject_from_row(row: sqlite3.Row) -> SubjectRecord:
         MediaFormat(row["media_format"]),
         _stored_date(row["air_date"]),
         _stored_date(row["end_date"]),
-        row["episode_count"],
+        _stored_episode_count(row["episode_count"]),
         row["rating_score"],
         row["rating_count"],
         JapaneseDecision(

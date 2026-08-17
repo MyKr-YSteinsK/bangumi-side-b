@@ -212,6 +212,25 @@ def test_projection_missing_cover_is_a_warning_and_null_url(tmp_path: Path) -> N
     assert projection.warnings == ("subject 303 has no cover",)
 
 
+def test_legacy_zero_episode_count_projects_as_unknown(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    database = Database(workspace / "archive.sqlite3")
+    database.initialize()
+    repository = SubjectRepository(database)
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection,
+            _snapshot(306, MediaFormat.TV, premiere=Quarter(2026, 4)),
+        )
+        connection.execute("UPDATE subjects SET episode_count = 0 WHERE id = 306")
+
+    facts = ArchiveFactsReader(database, workspace).read()
+    projection = project_quarter(facts, Quarter(2026, 4), _rules(), workspace)
+
+    assert projection.tv_premiere[0].episode_count is None
+    assert projection.to_dict()["tv"]["premiere"][0]["episode_count"] is None
+
+
 def test_large_archive_read_avoids_parameter_limits_and_caches_quarter_groups(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -264,7 +264,7 @@ class ArchiveFactsReader:
                 media_format=row["media_format"],
                 air_date=_parse_date(row["air_date"]),
                 end_date=_parse_date(row["end_date"]),
-                episode_count=row["episode_count"],
+                episode_count=_public_episode_count(row["episode_count"]),
                 rating_score=row["rating_score"],
                 rating_count=row["rating_count"],
                 aliases=tuple(aliases.get(row["id"], ())),
@@ -655,6 +655,11 @@ def _parse_date(value: object) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _public_episode_count(value: object) -> int | None:
+    """Treat legacy zero/invalid values as unknown in public projections."""
+    return value if isinstance(value, int) and value > 0 else None
 
 
 def _date_label(value: date | None) -> str | None:

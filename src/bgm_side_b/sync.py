@@ -1480,8 +1480,27 @@ def _external_review(
 
 
 def _episode_count(detail: SubjectDetail) -> int | None:
-    value = detail.total_episodes if detail.total_episodes is not None else detail.eps
-    return value if value is None or value >= 0 else None
+    for value in (detail.total_episodes, detail.eps):
+        positive = _strict_positive_integer(value)
+        if positive is not None:
+            return positive
+    for item in detail.infobox:
+        if item.key == "话数":
+            positive = _strict_positive_integer(item.value)
+            if positive is not None:
+                return positive
+    return None
+
+
+def _strict_positive_integer(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized.isdecimal():
+            parsed = int(normalized)
+            return parsed if parsed > 0 else None
+    return None
 
 
 def _end_date(items: Iterable[object]) -> date | None:

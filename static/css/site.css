@@ -678,6 +678,38 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .page-size .select-control { min-width: 4.75rem; }
 .archive-selector [data-archive-year-select] { max-width: 10rem; }
 .queue-selector .select-control { min-width: 8.5rem; }
+.sort-popover {
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-popover);
+  box-shadow: var(--shadow-popover);
+  gap: .2rem;
+  margin: .45rem 0 0 auto;
+  max-width: min(18rem, 100%);
+  padding: .35rem;
+  position: relative;
+  z-index: 25;
+}
+.sort-popover button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-small);
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  font: 500 .78rem/1.25 var(--font-sans);
+  justify-content: space-between;
+  min-height: var(--control-height-compact);
+  padding: .45rem .65rem;
+  text-align: left;
+  width: 100%;
+}
+.sort-popover button:hover, .sort-popover button:focus-visible, .sort-popover button[aria-checked="true"] {
+  background: var(--surface-selected);
+  color: var(--accent-ink);
+}
+.sort-popover button[aria-checked="true"] { font-weight: 700; }
 
 @media (max-width: 767px) {
   .control-button, .button, .pwa-action, .pwa-actions button, .archive-range__shortcuts button { min-height: var(--control-height-touch); }

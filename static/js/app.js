@@ -770,25 +770,49 @@
         render();
       });
     });
-    quarterRoot.querySelector("[data-sort-toggle]")?.addEventListener("click", () => {
-      const popover = quarterRoot.querySelector("[data-sort-popover]");
-      if (!popover) return;
-      popover.hidden = !popover.hidden;
-      if (!popover.hidden) {
-        popover.replaceChildren(...Object.entries(archive.SORTS).map(([value, label]) => {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.textContent = label;
-          button.setAttribute("aria-pressed", String(state.sort === value));
-          button.addEventListener("click", () => {
-            state.sort = value;
-            state.page = 1;
-            popover.hidden = true;
-            clearSelection(true);
-            render();
-          });
-          return button;
-        }));
+    const sortButton = quarterRoot.querySelector("[data-sort-toggle]");
+    const sortPopover = quarterRoot.querySelector("[data-sort-popover]");
+    const closeSortPopover = (restoreFocus = false) => {
+      if (!sortPopover || sortPopover.hidden) return;
+      sortPopover.hidden = true;
+      sortButton?.setAttribute("aria-expanded", "false");
+      if (restoreFocus) sortButton?.focus();
+    };
+    const openSortPopover = (focusOption = false) => {
+      if (!sortPopover) return;
+      sortPopover.hidden = false;
+      sortButton?.setAttribute("aria-expanded", "true");
+      sortPopover.replaceChildren(...Object.entries(archive.SORTS).map(([value, label]) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("role", "menuitemradio");
+        button.textContent = label;
+        button.setAttribute("aria-checked", String(state.sort === value));
+        button.addEventListener("click", () => {
+          state.sort = value;
+          state.page = 1;
+          closeSortPopover(true);
+          clearSelection(true);
+          render();
+        });
+        return button;
+      }));
+      if (focusOption) sortPopover.querySelector('[aria-checked="true"]')?.focus();
+    };
+    sortButton?.addEventListener("click", (event) => {
+      if (!sortPopover) return;
+      if (sortPopover.hidden) openSortPopover(event.detail === 0);
+      else closeSortPopover(true);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && sortPopover && !sortPopover.hidden) {
+        event.preventDefault();
+        closeSortPopover(true);
+      }
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (sortPopover && !sortPopover.hidden && !sortPopover.contains(event.target) && event.target !== sortButton) {
+        closeSortPopover();
       }
     });
     quarterRoot.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
@@ -1579,18 +1603,48 @@
     selectors.search?.addEventListener("input", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); });
     root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
     root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => { if (state.workspaceMode === "filter") closeFilter(); else state.workspaceMode = "filter"; renderFilterPanel(); render(); });
-    root.querySelector("[data-sort-toggle]")?.addEventListener("click", () => {
+    const sortButton = root.querySelector("[data-sort-toggle]");
+    const closeSortPopover = (restoreFocus = false) => {
+      if (!selectors.sortPopover || selectors.sortPopover.hidden) return;
+      selectors.sortPopover.hidden = true;
+      sortButton?.setAttribute("aria-expanded", "false");
+      if (restoreFocus) sortButton?.focus();
+    };
+    const openSortPopover = (focusOption = false) => {
       if (!selectors.sortPopover) return;
-      selectors.sortPopover.hidden = !selectors.sortPopover.hidden;
-      if (!selectors.sortPopover.hidden) {
-        selectors.sortPopover.replaceChildren(...Object.entries(archive.SORTS).map(([value, label]) => {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.textContent = label;
-          button.setAttribute("aria-pressed", String(value === state.sort));
-          button.addEventListener("click", () => { state.sort = value; state.page = 1; selectors.sortPopover.hidden = true; clearSelection(true); render(); });
-          return button;
-        }));
+      selectors.sortPopover.hidden = false;
+      sortButton?.setAttribute("aria-expanded", "true");
+      selectors.sortPopover.replaceChildren(...Object.entries(archive.SORTS).map(([value, label]) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("role", "menuitemradio");
+        button.textContent = label;
+        button.setAttribute("aria-checked", String(value === state.sort));
+        button.addEventListener("click", () => {
+          state.sort = value;
+          state.page = 1;
+          closeSortPopover(true);
+          clearSelection(true);
+          render();
+        });
+        return button;
+      }));
+      if (focusOption) selectors.sortPopover.querySelector('[aria-checked="true"]')?.focus();
+    };
+    sortButton?.addEventListener("click", (event) => {
+      if (!selectors.sortPopover) return;
+      if (selectors.sortPopover.hidden) openSortPopover(event.detail === 0);
+      else closeSortPopover(true);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && selectors.sortPopover && !selectors.sortPopover.hidden) {
+        event.preventDefault();
+        closeSortPopover(true);
+      }
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (selectors.sortPopover && !selectors.sortPopover.hidden && !selectors.sortPopover.contains(event.target) && event.target !== sortButton) {
+        closeSortPopover();
       }
     });
     root.querySelector("[data-clear-all]")?.addEventListener("click", () => { state.query = ""; state.filterOptionQuery = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); });

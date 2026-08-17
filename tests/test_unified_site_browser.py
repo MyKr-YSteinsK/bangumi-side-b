@@ -681,6 +681,29 @@ def test_custom_listboxes_keep_keyboard_and_outside_click_behavior(
     assert page.locator('[data-page-size] [role="listbox"]').is_hidden()
 
 
+def test_sort_popover_has_menu_state_and_focus_return(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    page.set_default_timeout(8000)
+    page.goto(f"{site_server}/2026-07/index.html")
+    page.wait_for_selector(".subject-row")
+    trigger = page.locator("[data-sort-toggle]")
+    trigger.click()
+    menu = page.locator('[data-sort-popover][role="menu"]')
+    assert menu.is_visible()
+    assert menu.locator('[role="menuitemradio"]').count() == 4
+    trigger.press("Escape")
+    assert menu.is_hidden()
+    assert trigger.evaluate("node => node === document.activeElement")
+    trigger.click()
+    menu.get_by_role("menuitemradio", name="评分：低到高").click()
+    assert trigger.inner_text() == "评分：低到高"
+    assert menu.is_hidden()
+    assert trigger.evaluate("node => node === document.activeElement")
+
+
 def test_archive_lazy_loads_and_reuses_selected_quarter_details(
     chromium: BrowserContext,
     site_server: str,

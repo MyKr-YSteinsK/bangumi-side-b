@@ -1684,53 +1684,66 @@
 
   function renderQueueSelector(container) {
     if (!container) return;
+    for (const destroy of container.__bsbListboxDestroyers || []) destroy();
+    container.__bsbListboxDestroyers = [];
     const availableYears = years();
     if (!settingsSelection.year) settingsSelection.year = availableYears[0] || "";
     if (!settingsSelection.from) settingsSelection.from = availableYears.at(-1) || "";
     if (!settingsSelection.to) settingsSelection.to = availableYears[0] || "";
-    const yearOptions = availableYears
-      .map((year) => `<option value="${year}">${year}</option>`)
-      .join("");
     const labels = selectedQueueLabels();
     container.innerHTML = `<div class="queue-selector">
-      <label>范围<select data-queue-kind>
-        <option value="current">当前季度</option><option value="year">指定年份</option>
-        <option value="range">年份范围</option><option value="all">全部季度</option>
-      </select></label>
-      <label data-queue-year ${settingsSelection.kind === "year" ? "" : "hidden"}>年份<select>${yearOptions}</select></label>
+      <label>范围<div data-queue-kind aria-label="范围"></div></label>
+      <label data-queue-year ${settingsSelection.kind === "year" ? "" : "hidden"}>年份<div data-queue-year-value aria-label="年份"></div></label>
       <div class="queue-range" data-queue-range ${settingsSelection.kind === "range" ? "" : "hidden"}>
-        <label>从<select>${yearOptions}</select></label><label>到<select>${yearOptions}</select></label>
+        <label>从<div data-queue-from aria-label="起始年份"></div></label><label>到<div data-queue-to aria-label="结束年份"></div></label>
       </div>
       <p class="queue-preview"><strong>${labels.length}</strong> 个季度 · newest → oldest</p>
       <button type="button" class="button button--ink" data-start-queue ${!labels.length || !navigator.onLine || capabilityState !== "ready" ? "disabled" : ""}>加入下载队列</button>
     </div>`;
-    const kind = container.querySelector("[data-queue-kind]");
-    kind.value = settingsSelection.kind;
-    kind.addEventListener("change", () => {
-      settingsSelection.kind = kind.value;
-      renderSettings();
-    });
-    const year = container.querySelector("[data-queue-year] select");
-    if (year) {
-      year.value = settingsSelection.year;
-      year.addEventListener("change", () => {
-        settingsSelection.year = year.value;
+    const yearsOptions = availableYears.map((year) => ({ value: String(year), label: String(year) }));
+    const controls = [];
+    controls.push(window.BsbListbox?.create(container.querySelector("[data-queue-kind]"), {
+      label: "范围",
+      options: [
+        { value: "current", label: "当前季度" },
+        { value: "year", label: "指定年份" },
+        { value: "range", label: "年份范围" },
+        { value: "all", label: "全部季度" },
+      ],
+      value: settingsSelection.kind,
+      onChange: (value) => {
+        settingsSelection.kind = value;
         renderSettings();
-      });
-    }
-    const range = container.querySelectorAll("[data-queue-range] select");
-    if (range.length === 2) {
-      range[0].value = settingsSelection.from;
-      range[1].value = settingsSelection.to;
-      range[0].addEventListener("change", () => {
-        settingsSelection.from = range[0].value;
+      },
+    }));
+    controls.push(window.BsbListbox?.create(container.querySelector("[data-queue-year-value]"), {
+      label: "年份",
+      options: yearsOptions,
+      value: settingsSelection.year,
+      onChange: (value) => {
+        settingsSelection.year = value;
         renderSettings();
-      });
-      range[1].addEventListener("change", () => {
-        settingsSelection.to = range[1].value;
+      },
+    }));
+    controls.push(window.BsbListbox?.create(container.querySelector("[data-queue-from]"), {
+      label: "起始年份",
+      options: yearsOptions,
+      value: settingsSelection.from,
+      onChange: (value) => {
+        settingsSelection.from = value;
         renderSettings();
-      });
-    }
+      },
+    }));
+    controls.push(window.BsbListbox?.create(container.querySelector("[data-queue-to]"), {
+      label: "结束年份",
+      options: yearsOptions,
+      value: settingsSelection.to,
+      onChange: (value) => {
+        settingsSelection.to = value;
+        renderSettings();
+      },
+    }));
+    container.__bsbListboxDestroyers = controls.filter(Boolean).map((control) => control.destroy);
     container.querySelector("[data-start-queue]")?.addEventListener("click", async () => {
       await enqueue(selectedQueueLabels());
       renderSettings();

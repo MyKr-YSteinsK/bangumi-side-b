@@ -255,6 +255,175 @@
   window.BsbArchive = api;
 })();
 
+/* Small native listbox primitive shared by archive controls and Settings. */
+(() => {
+  "use strict";
+
+  let nextListboxId = 0;
+
+  function normalizeOptions(options) {
+    return (Array.isArray(options) ? options : []).map((option) => ({
+      value: String(option?.value ?? ""),
+      label: String(option?.label ?? option?.value ?? ""),
+      disabled: Boolean(option?.disabled),
+    }));
+  }
+
+  function create(root, config = {}) {
+    if (!root) return null;
+    const options = normalizeOptions(config.options);
+    const label = String(config.label || root.getAttribute("aria-label") || "选择");
+    const listboxId = root.id ? `${root.id}-listbox` : `bsb-listbox-${++nextListboxId}`;
+    const triggerId = root.id ? `${root.id}-trigger` : `${listboxId}-trigger`;
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "select-trigger";
+    trigger.id = triggerId;
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.setAttribute("aria-label", label);
+    trigger.setAttribute("aria-controls", listboxId);
+    const listbox = document.createElement("div");
+    listbox.className = "select-listbox";
+    listbox.id = listboxId;
+    listbox.hidden = true;
+    listbox.setAttribute("role", "listbox");
+    listbox.setAttribute("aria-label", label);
+    root.classList.add("select-control");
+    root.replaceChildren(trigger, listbox);
+
+    let current = String(config.value ?? options.find((option) => !option.disabled)?.value ?? "");
+    let activeIndex = Math.max(0, options.findIndex((option) => option.value === current));
+    const onPointerDown = (event) => {
+      if (!root.contains(event.target)) close();
+    };
+
+    const enabledIndex = (start, direction) => {
+      if (!options.length) return -1;
+      let index = start;
+      for (let attempts = 0; attempts < options.length; attempts += 1) {
+        index = (index + direction + options.length) % options.length;
+        if (!options[index].disabled) return index;
+      }
+      return -1;
+    };
+
+    function syncActive() {
+      const optionNodes = [...listbox.querySelectorAll('[role="option"]')];
+      optionNodes.forEach((node, index) => {
+        node.classList.toggle("is-active", index === activeIndex);
+      });
+      const active = optionNodes[activeIndex];
+      if (active) trigger.setAttribute("aria-activedescendant", active.id);
+    }
+
+    function render() {
+      const selected = options.find((option) => option.value === current) || options[0];
+      trigger.textContent = selected?.label || label;
+      listbox.replaceChildren(...options.map((option, index) => {
+        const node = document.createElement("button");
+        node.type = "button";
+        node.className = "select-option";
+        node.id = `${listboxId}-option-${index}`;
+        node.setAttribute("role", "option");
+        node.setAttribute("aria-selected", String(option.value === current));
+        node.disabled = option.disabled;
+        node.textContent = option.label;
+        node.addEventListener("click", () => select(option.value));
+        return node;
+      }));
+      activeIndex = Math.max(0, options.findIndex((option) => option.value === current));
+      syncActive();
+    }
+
+    function close({ restoreFocus = false } = {}) {
+      if (listbox.hidden) return;
+      listbox.hidden = true;
+      trigger.setAttribute("aria-expanded", "false");
+      if (restoreFocus) trigger.focus();
+    }
+
+    function open() {
+      if (!options.length) return;
+      listbox.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+      activeIndex = Math.max(0, options.findIndex((option) => option.value === current));
+      syncActive();
+    }
+
+    function select(value) {
+      const option = options.find((candidate) => candidate.value === String(value));
+      if (!option || option.disabled) return;
+      const changed = current !== option.value;
+      current = option.value;
+      render();
+      close({ restoreFocus: true });
+      if (changed && typeof config.onChange === "function") config.onChange(current);
+    }
+
+    function moveTo(index) {
+      if (!options.length) return;
+      let next = Math.min(Math.max(index, 0), options.length - 1);
+      if (options[next]?.disabled) next = enabledIndex(next, index < activeIndex ? -1 : 1);
+      if (next >= 0) {
+        activeIndex = next;
+        syncActive();
+      }
+    }
+
+    trigger.addEventListener("click", () => {
+      if (listbox.hidden) open();
+      else close({ restoreFocus: true });
+    });
+    trigger.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        if (listbox.hidden) open();
+        moveTo(enabledIndex(activeIndex, event.key === "ArrowDown" ? 1 : -1));
+      } else if (event.key === "Home" && !listbox.hidden) {
+        event.preventDefault();
+        moveTo(0);
+      } else if (event.key === "End" && !listbox.hidden) {
+        event.preventDefault();
+        moveTo(options.length - 1);
+      } else if ((event.key === "Enter" || event.key === " ") && !listbox.hidden) {
+        event.preventDefault();
+        if (options[activeIndex]) select(options[activeIndex].value);
+      } else if (event.key === "Escape" && !listbox.hidden) {
+        event.preventDefault();
+        close({ restoreFocus: true });
+      } else if (event.key === "Tab") {
+        close();
+      }
+    });
+    document.addEventListener("pointerdown", onPointerDown);
+    render();
+
+    return {
+      getValue: () => current,
+      setValue: (value, { notify = false } = {}) => {
+        const previous = current;
+        current = String(value ?? "");
+        render();
+        if (notify && previous !== current && typeof config.onChange === "function") config.onChange(current);
+      },
+      setOptions: (nextOptions, { value = current, notify = false } = {}) => {
+        options.splice(0, options.length, ...normalizeOptions(nextOptions));
+        current = String(value ?? options.find((option) => !option.disabled)?.value ?? "");
+        render();
+        if (notify && typeof config.onChange === "function") config.onChange(current);
+      },
+      focus: () => trigger.focus(),
+      trigger,
+      listbox,
+      close,
+      destroy: () => document.removeEventListener("pointerdown", onPointerDown),
+    };
+  }
+
+  window.BsbListbox = Object.freeze({ create });
+})();
+
 (() => {
   "use strict";
 
@@ -280,6 +449,7 @@
   let records = [];
   let payload = null;
   let loadError = false;
+  let pageSizeControl = null;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -300,15 +470,25 @@
   }
 
   function pageSizeSelect() {
-    const select = quarterRoot.querySelector("[data-page-size]");
-    if (!select) return;
-    select.replaceChildren(...archive.PAGE_SIZES.map((size) => {
-      const option = document.createElement("option");
-      option.value = String(size);
-      option.textContent = String(size);
-      option.selected = size === state.pageSize;
-      return option;
-    }));
+    const root = quarterRoot.querySelector("[data-page-size]");
+    if (!root || !window.BsbListbox) return;
+    const options = archive.PAGE_SIZES.map((size) => ({ value: String(size), label: String(size) }));
+    if (!pageSizeControl) {
+      pageSizeControl = window.BsbListbox.create(root, {
+        label: "每页数量",
+        options,
+        value: String(state.pageSize),
+        onChange: (value) => {
+          state.pageSize = archive.writePageSize(value);
+          state.page = 1;
+          clearSelection(true);
+          render();
+          pageSizeSelect();
+        },
+      });
+    } else {
+      pageSizeControl.setValue(String(state.pageSize));
+    }
   }
 
   function scopeText(result) {
@@ -590,13 +770,6 @@
         render();
       });
     });
-    quarterRoot.querySelector("[data-page-size]")?.addEventListener("change", (event) => {
-      state.pageSize = archive.writePageSize(event.target.value);
-      state.page = 1;
-      clearSelection(true);
-      render();
-      pageSizeSelect();
-    });
     quarterRoot.querySelector("[data-sort-toggle]")?.addEventListener("click", () => {
       const popover = quarterRoot.querySelector("[data-sort-popover]");
       if (!popover) return;
@@ -775,6 +948,8 @@
   const detailByQuarter = new Map();
   let detailRequest = 0;
   let loadError = false;
+  let yearControl = null;
+  let pageSizeControl = null;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -880,15 +1055,23 @@
   }
 
   function renderYearSelector() {
-    const select = root.querySelector("[data-archive-year-select]");
-    if (!select || !index) return;
-    select.replaceChildren(...(index.years || []).slice().sort((a, b) => b - a).map((year) => {
-      const option = document.createElement("option");
-      option.value = String(year);
-      option.textContent = String(year);
-      option.selected = Number(state.scope.value) === Number(year);
-      return option;
-    }));
+    const selectRoot = root.querySelector("[data-archive-year-select]");
+    if (!selectRoot || !index || !window.BsbListbox) return;
+    const options = (index.years || []).slice().sort((a, b) => b - a)
+      .map((year) => ({ value: String(year), label: String(year) }));
+    const value = state.scope.kind === "year"
+      ? String(state.scope.value)
+      : String(index.latest_quarter || "").slice(0, 4);
+    if (!yearControl) {
+      yearControl = window.BsbListbox.create(selectRoot, {
+        label: "年份",
+        options,
+        value,
+        onChange: (next) => setScope("year", next),
+      });
+    } else {
+      yearControl.setOptions(options, { value });
+    }
   }
 
   function normalRange(from, to) {
@@ -1379,15 +1562,19 @@
 
   function bindControls() {
     const pageSize = root.querySelector("[data-page-size]");
-    if (pageSize) {
-      pageSize.replaceChildren(...archive.PAGE_SIZES.map((size) => {
-        const option = document.createElement("option");
-        option.value = String(size);
-        option.textContent = String(size);
-        option.selected = size === state.pageSize;
-        return option;
-      }));
-      pageSize.addEventListener("change", () => { state.pageSize = archive.writePageSize(pageSize.value); state.page = 1; clearSelection(true); render(); });
+    if (pageSize && window.BsbListbox) {
+      pageSizeControl = window.BsbListbox.create(pageSize, {
+        label: "每页数量",
+        options: archive.PAGE_SIZES.map((size) => ({ value: String(size), label: String(size) })),
+        value: String(state.pageSize),
+        onChange: (value) => {
+          state.pageSize = archive.writePageSize(value);
+          state.page = 1;
+          clearSelection(true);
+          render();
+          pageSizeControl?.setValue(String(state.pageSize));
+        },
+      });
     }
     selectors.search?.addEventListener("input", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); });
     root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
@@ -1412,7 +1599,7 @@
       setTab(kind);
       if (kind === "quarter") { state.scope = { kind: "quarter", value: "" }; selectors.browser.hidden = true; return; }
       if (kind === "year") {
-        const value = root.querySelector("[data-archive-year-select]")?.value || String(index?.latest_quarter || "").slice(0, 4);
+        const value = yearControl?.getValue() || String(index?.latest_quarter || "").slice(0, 4);
         setScope("year", value);
       }
       if (kind === "range") {
@@ -1427,7 +1614,6 @@
         if (to && !to.value) to.value = String(fallback);
       }
     }));
-    root.querySelector("[data-archive-year-select]")?.addEventListener("change", (event) => setScope("year", event.target.value));
     root.querySelector("[data-range-apply]")?.addEventListener("click", () => {
       const range = normalRange(root.querySelector("[data-archive-from]")?.value, root.querySelector("[data-archive-to]")?.value);
       if (range) setScope("range", range);

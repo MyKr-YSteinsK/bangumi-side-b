@@ -626,9 +626,11 @@ def test_large_archive_renders_only_the_current_page_and_restores_deep_link(
     )
     assert page.locator(".subject-row").count() == 20
 
-    page.locator("[data-page-size]").select_option("100")
+    page.locator("[data-page-size] .select-trigger").click()
+    page.locator('[data-page-size] [role="option"]', has_text="100").click()
     assert page.locator(".subject-row").count() == 100
-    page.locator("[data-page-size]").select_option("20")
+    page.locator("[data-page-size] .select-trigger").click()
+    page.locator('[data-page-size] [role="option"]', has_text="20").click()
     page.locator("[data-pager] button", has_text="02").click()
     assert page.locator(".subject-row").count() == 20
     assert "021" in page.locator(".subject-row__sequence").all_inner_texts()
@@ -645,6 +647,38 @@ def test_large_archive_renders_only_the_current_page_and_restores_deep_link(
     assert page.locator(".subject-row").count() <= 20
     assert "8 / 8" in page.locator("[data-results-summary]").inner_text()
     assert "151" in page.locator(".subject-row__sequence").all_inner_texts()
+
+
+def test_custom_listboxes_keep_keyboard_and_outside_click_behavior(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+    )
+    assert page.locator("select").count() == 0
+
+    trigger = page.locator("[data-page-size] .select-trigger")
+    trigger.click()
+    listbox = page.locator('[data-page-size] [role="listbox"]')
+    assert listbox.is_visible()
+    trigger.press("End")
+    trigger.press("Enter")
+    assert trigger.inner_text() == "100"
+    assert page.evaluate("localStorage.getItem('bsb-archive-page-size')") == "100"
+    assert page.locator('[data-page-size] [role="listbox"]').is_hidden()
+    trigger.press("ArrowDown")
+    assert page.locator('[data-page-size] [role="listbox"]').is_visible()
+    trigger.press("Escape")
+    assert page.locator('[data-page-size] [role="listbox"]').is_hidden()
+    assert trigger.evaluate("node => node === document.activeElement")
+
+    trigger.click()
+    page.locator("[data-results-summary]").click(position={"x": 4, "y": 4})
+    assert page.locator('[data-page-size] [role="listbox"]').is_hidden()
 
 
 def test_archive_lazy_loads_and_reuses_selected_quarter_details(

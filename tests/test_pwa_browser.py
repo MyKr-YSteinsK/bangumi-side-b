@@ -1328,11 +1328,13 @@ def test_orphan_offline_quarter_stays_visible_without_entering_public_queue(
     page.wait_for_function(
         "document.querySelector('[data-offline-quarter=\"2027-01\"]') !== null"
     )
-    page.locator("[data-queue-kind]").select_option("all")
+    page.locator("[data-queue-kind] .select-trigger").click()
+    page.locator('[data-queue-kind] [role="option"]', has_text="全部季度").click()
     page.wait_for_function(
         "document.querySelector('.queue-preview')?.textContent.includes('2 个季度')"
     )
-    page.locator("[data-queue-kind]").select_option("current")
+    page.locator("[data-queue-kind] .select-trigger").click()
+    page.locator('[data-queue-kind] [role="option"]', has_text="当前季度").click()
     page.wait_for_function(
         "document.querySelector('.queue-preview')?.textContent.includes('1 个季度')"
     )
@@ -2780,6 +2782,7 @@ def test_settings_reports_storage_and_controls_quarter_downloads(
     )
     for heading in ("应用", "存储", "离线档案", "下载队列"):
         assert page.get_by_role("heading", name=heading).is_visible()
+    assert page.locator("select").count() == 0
     assert page.get_by_text("2.0 KiB").is_visible()
     assert page.get_by_text("8.0 KiB").is_visible()
     assert page.evaluate("window.__persistCalls") == 0
@@ -2790,7 +2793,7 @@ def test_settings_reports_storage_and_controls_quarter_downloads(
     assert page.get_by_text("添加到主屏幕").is_visible()
 
     selector = page.locator("[data-queue-kind]")
-    assert selector.locator("option").all_text_contents() == [
+    assert selector.locator('[role="option"]').all_text_contents() == [
         "当前季度",
         "指定年份",
         "年份范围",

@@ -226,6 +226,31 @@ def test_archive_year_range_hash_and_same_origin_network(
     assert all(url.startswith(site_server) for url in requests)
 
 
+def test_archive_year_listbox_updates_scope_without_native_select(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+    )
+    trigger = page.locator("[data-archive-year-select] .select-trigger")
+    trigger.press("Enter")
+    assert page.locator('[data-archive-year-select] [role="listbox"]').is_visible()
+    trigger.press("Escape")
+    assert page.locator('[data-archive-year-select] [role="listbox"]').is_hidden()
+    assert trigger.evaluate("node => node === document.activeElement")
+    trigger.click()
+    page.locator('[data-archive-year-select] [role="option"]', has_text="2026").click()
+    page.wait_for_function(
+        "document.querySelector('[data-archive-scope-label]')"
+        "?.textContent.includes('YEAR / 2026')"
+    )
+    assert "year=2026" in page.url
+
+
 @pytest.mark.parametrize("viewport", [(390, 844), (360, 800)])
 def test_mobile_scope_detail_and_filter_keep_the_context_rail(
     chromium: BrowserContext,

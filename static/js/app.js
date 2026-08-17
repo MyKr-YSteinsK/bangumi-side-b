@@ -386,9 +386,10 @@
       } else if (event.key === "End" && !listbox.hidden) {
         event.preventDefault();
         moveTo(options.length - 1);
-      } else if ((event.key === "Enter" || event.key === " ") && !listbox.hidden) {
+      } else if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        if (options[activeIndex]) select(options[activeIndex].value);
+        if (listbox.hidden) open();
+        else if (options[activeIndex]) select(options[activeIndex].value);
       } else if (event.key === "Escape" && !listbox.hidden) {
         event.preventDefault();
         close({ restoreFocus: true });

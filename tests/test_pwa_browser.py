@@ -2799,6 +2799,12 @@ def test_settings_reports_storage_and_controls_quarter_downloads(
         "年份范围",
         "全部季度",
     ]
+    kind_trigger = selector.locator(".select-trigger")
+    kind_trigger.press("Enter")
+    assert selector.locator('[role="listbox"]').is_visible()
+    kind_trigger.press("Escape")
+    assert selector.locator('[role="listbox"]').is_hidden()
+    assert kind_trigger.evaluate("node => node === document.activeElement")
     july = page.locator('[data-offline-quarter="2026-07"]')
     july.get_by_role("button", name="下载").click()
     _wait_for_queue(page, 1)

@@ -790,6 +790,8 @@ html { line-height: 1.65; }
 .settings-facts div + div { border-top-color: var(--border-subtle); }
 .offline-quarter-list { border-top-color: var(--border-subtle); }
 .queue-errors { border-top-color: var(--border-subtle); }
+.settings-offline-content { min-width: 0; }
+.archive-page .browser-controls { grid-template-columns: minmax(10rem, 1fr) auto auto auto; }
 
 @media (max-width: 767px) {
   .control-button, .button, .pwa-action, .pwa-actions button, .archive-range__shortcuts button { min-height: var(--control-height-touch); }
@@ -800,6 +802,7 @@ html { line-height: 1.65; }
   .search-field input, .filter-option-search input, .archive-range input { min-height: var(--control-height-touch); }
   .archive-quarter-slot, .active-filter, .pager button { min-height: var(--control-height-touch); }
   .page-size, .archive-selector, .queue-selector { min-width: 0; }
+  .archive-page .browser-controls { grid-template-columns: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

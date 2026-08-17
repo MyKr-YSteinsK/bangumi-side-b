@@ -557,6 +557,85 @@ def test_filter_media_switch_and_archive_detail_history(
     assert page.evaluate("window.BsbArchive.sourceLabel('unknown')") == "来源未知"
 
 
+def test_query_and_media_changes_close_detail_outside_current_result(
+    chromium: BrowserContext,
+    site_server: str,
+    unified_site: Path,
+) -> None:
+    payload = json.loads(
+        (unified_site / "data" / "quarters" / "2026-07.json").read_text("utf-8")
+    )
+    base = payload["tv"]["continuing"][0]
+    payload["tv"]["continuing"] = [
+        _facet_record(base, 101, "source-a", "tag-a"),
+        _facet_record(base, 301, "source-b", "tag-b"),
+    ]
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/quarters/2026-07.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        ),
+    )
+    _open_quarter(page, site_server, (1440, 900))
+    page.locator('[data-subject-id="101"] [data-open-subject]').click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    assert "#bgm-101" in page.url
+    page.locator("[data-search]").fill("Facet 301")
+    assert page.locator("[data-detail-panel]").is_hidden()
+    assert page.locator('main[data-page="quarter"]').get_attribute(
+        "data-workspace-mode"
+    ) == "scope"
+    assert "#bgm-" not in page.url
+    assert "is-selected" not in (
+        page.locator('[data-subject-id="101"]').get_attribute("class") or ""
+    )
+    page.locator("[data-search]").fill("")
+    page.locator('[data-subject-id="101"] [data-open-subject]').click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    page.locator('[data-media-mode="movie"]').click()
+    assert page.locator("[data-detail-panel]").is_hidden()
+    assert page.locator('main[data-page="quarter"]').get_attribute(
+        "data-workspace-mode"
+    ) == "scope"
+    assert "#bgm-" not in page.url
+
+
+def test_detail_omits_missing_facts_and_uses_safe_fallback_labels(
+    chromium: BrowserContext,
+    site_server: str,
+    unified_site: Path,
+) -> None:
+    payload = json.loads(
+        (unified_site / "data" / "quarters" / "2026-07.json").read_text("utf-8")
+    )
+    record = payload["tv"]["continuing"][0]
+    record["cover"] = None
+    record["cover_url"] = None
+    record["source"] = "unknown"
+    record["episode_count"] = None
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/quarters/2026-07.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        ),
+    )
+    _open_quarter(page, site_server, (390, 844))
+    page.locator('[data-subject-id="101"] [data-open-subject]').click()
+    detail = page.locator("[data-detail-panel]")
+    assert detail.locator(".detail-cover--missing").is_visible()
+    assert "来源未知" in detail.inner_text()
+    assert "集数" not in detail.inner_text()
+    assert detail.evaluate("node => node.scrollWidth <= node.clientWidth")
+
+
 def _facet_record(
     base: dict[str, object], subject_id: int, source: str, tag: str
 ) -> dict[str, object]:

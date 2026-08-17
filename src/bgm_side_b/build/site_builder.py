@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 
+from bgm_side_b import __version__
+from bgm_side_b.build.changelog import ChangelogError, load_changelog
 from bgm_side_b.build.fingerprint import (
     BuildState,
     DirtySet,
@@ -100,6 +102,7 @@ class UnifiedSiteBuilder:
         workspace_directory: Path | None = None,
         site_directory: Path | None = None,
         reports_directory: Path | None = None,
+        changelog_path: Path | None = None,
         excluded_subject_ids: frozenset[int] = frozenset(),
         reporter: ProgressReporter | None = None,
     ) -> None:
@@ -113,6 +116,7 @@ class UnifiedSiteBuilder:
         self.reports_directory = (
             reports_directory or self.workspace_directory / "reports"
         ).resolve()
+        self.changelog_path = (changelog_path or self.root / "CHANGELOG.md").resolve()
         self.excluded_subject_ids = excluded_subject_ids
         self.reporter = reporter or NullProgressReporter()
 
@@ -130,6 +134,10 @@ class UnifiedSiteBuilder:
             current=scope_label,
         )
         try:
+            try:
+                changelog = load_changelog(self.changelog_path)
+            except ChangelogError as error:
+                raise BuildError(str(error)) from error
             facts = self._read_facts()
             previous = read_build_state(self.state_path)
             managed_quarters = tuple(
@@ -173,6 +181,10 @@ class UnifiedSiteBuilder:
                     path: content
                     for path, content in sources.items()
                     if path not in {"assets/app.css", "assets/app.js"}
+                },
+                changelog={
+                    "application_version": __version__,
+                    "document": changelog.to_dict(),
                 },
             )
             quarter_projections, years, archive, current = assign_fingerprints(

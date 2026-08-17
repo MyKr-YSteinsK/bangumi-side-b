@@ -9,6 +9,15 @@ from bgm_side_b.build.fingerprint import (
     read_build_state,
     shared_fingerprint,
 )
+from bgm_side_b.build.changelog import (
+    ChangelogDocument,
+    ChangelogError,
+    ChangelogItem,
+    ChangelogRelease,
+    ChangelogSection,
+    load_changelog,
+    parse_changelog,
+)
 from bgm_side_b.build.serve import (
     DEFAULT_BASE_PATH,
     ServeError,
@@ -51,6 +60,11 @@ __all__ = [
     "ArtifactPlan",
     "ArtifactSpec",
     "BuildState",
+    "ChangelogDocument",
+    "ChangelogError",
+    "ChangelogItem",
+    "ChangelogRelease",
+    "ChangelogSection",
     "BuildBlockedError",
     "BuildBlocked",
     "DEFAULT_BASE_PATH",
@@ -72,6 +86,8 @@ __all__ = [
     "derive_dirty_set",
     "fingerprint",
     "json_bytes",
+    "load_changelog",
+    "parse_changelog",
     "project_archive_index",
     "project_quarter",
     "project_year",

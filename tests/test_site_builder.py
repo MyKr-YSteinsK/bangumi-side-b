@@ -206,6 +206,18 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert first.report_path.is_file()
 
 
+def test_build_rejects_malformed_changelog_instead_of_dropping_release_data(
+    tmp_path: Path,
+) -> None:
+    builder, _ = _build_fixture(tmp_path)
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text("# Changelog\n\n## 0.2 (bad)\n", encoding="utf-8")
+    builder.changelog_path = changelog
+
+    with pytest.raises(BuildError, match="malformed release heading"):
+        builder.build()
+
+
 def test_unified_pwa_shell_is_complete_stable_and_prefix_safe(tmp_path: Path) -> None:
     builder, _ = _build_fixture(tmp_path)
     builder.build()

@@ -80,6 +80,7 @@ def shared_fingerprint(
     excluded_subject_ids: frozenset[int],
     site_base_path: str = "/bangumi-side-b/",
     pwa_assets: Mapping[str, bytes] | None = None,
+    changelog: object | None = None,
 ) -> str:
     """Fingerprint source assets and global projection inputs."""
     return fingerprint(
@@ -94,6 +95,7 @@ def shared_fingerprint(
             },
             "tag_rules": _tag_rules_value(tag_rules),
             "blacklist": sorted(excluded_subject_ids),
+            "changelog": changelog,
         }
     )
 

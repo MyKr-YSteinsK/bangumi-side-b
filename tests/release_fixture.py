@@ -34,6 +34,7 @@ def create_release_project(tmp_path: Path) -> tuple[Path, Path]:
     root.mkdir()
     shutil.copytree(ROOT / "config", root / "config")
     shutil.copytree(ROOT / "static", root / "static")
+    shutil.copy(ROOT / "CHANGELOG.md", root / "CHANGELOG.md")
     shutil.copytree(seed / "workspace", root / "workspace")
     database_path = root / "workspace" / "data" / "archive.sqlite3"
     database_path.rename(root / "workspace" / "data" / "bangumi-side-b.sqlite3")

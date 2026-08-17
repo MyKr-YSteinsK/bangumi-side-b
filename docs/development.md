@@ -32,11 +32,18 @@ python -m pytest tests -q
 python -m ruff check .
 bgmb build --all
 bgmb serve --port 8000
+bgmb serve --open
 ```
 
 `build` 只读 SQLite、配置、静态源文件和已校验封面，写入 `dist/site`；第二次相同
 构建应无 artifact 写入。`serve` 只服务已有 `dist/site`，不读 SQLite、不构建、不同步
-也不发布。release prepare 属于后续发布生命周期。
+也不发布。成功 bind 后 CLI 打印 loopback URL 和 Ctrl+C 退出提示；默认不打开浏览器，
+只有 `--open` 才请求系统默认浏览器，启动失败仅报告 warning。release prepare 属于后续发布生命周期。
+
+Settings 的 05 / CHANGELOG 是 build-time 静态 HTML：builder 读取仓库 `CHANGELOG.md` 与
+源码单一版本号，严格 escape 文本后写入 `settings/index.html`；运行时不 fetch changelog。
+`bgmb audit` 的 `数据库总作品` 是全库 unique subject 数，季度条目统计按
+TV premiere / TV continuing / Movie premiere appearance 分解。
 
 站点控件保持原生 HTML / CSS / JavaScript：builder 输出选择器根节点，`static/js/app.js`
 提供 Quarter / Archive 共用的 `window.BsbListbox`，`static/js/pwa.js` 复用它渲染

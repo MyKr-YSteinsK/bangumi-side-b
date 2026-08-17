@@ -6,6 +6,9 @@
 
 ### 新增
 
+- Settings 新增静态 05 / CHANGELOG，离线显示当前程序版本、尚未发布内容、当前 release 与历史版本折叠状态；不在运行时请求 GitHub 或 CHANGELOG。
+- `bgmb serve` 成功绑定后打印可复制的 Pages 子路径 URL 与 Ctrl+C 退出提示；默认不打开浏览器，`bgmb serve --open` 才会请求系统默认浏览器，启动失败只告警并继续服务。
+- `bgmb audit` 将全库 subject 数明确标为“数据库总作品”，并为每个可发布季度输出 TV 首播、TV 续播、剧场版与合计 appearance 组成。
 - Quarter 与 Archive 浏览工作区完成响应式收口：桌面 detail / filter 使用 viewport 高度和内部滚动，767px 及以下改为无 context rail 的全宽单栏详情与筛选。
 - 筛选工作区增加 context-aware counts、可换行 chip cloud、活动筛选、清除全部和当前结果数；实时筛选返回列表时保留浏览上下文与可恢复滚动位置。
 - 补齐 1199、1024、900、768、767、390、360 等边界宽度和 Quarter / Archive 浏览交互回归，覆盖 hash、历史导航、焦点返回、空结果、缺失事实与移动端无横向溢出。

@@ -97,11 +97,18 @@ bgmb build --all
 ```powershell
 bgmb serve
 bgmb serve --port 8000
+bgmb serve --open
 ```
 
 默认端口是 8000。服务地址为
 `http://127.0.0.1:8000/bangumi-side-b/`，使用与 GitHub Pages 相同的项目子路径。
+`serve` 成功绑定后会打印完整 URL 和 `Press Ctrl+C to stop.`，默认不会自动打开浏览器；只有
+明确使用 `--open` 时才会调用系统默认浏览器。浏览器启动失败只显示 warning，服务仍继续。
 `serve` 只提供已有 `dist/site`，不读 SQLite、不 build、不同步也不发布。
+
+Settings 页面包含直接构建进 `settings/index.html` 的 05 / CHANGELOG：显示当前程序版本、
+尚未发布内容和当前版本 release；历史 release 默认折叠。它离线可读，不会运行时请求 GitHub
+或读取外部 CHANGELOG 文件。
 
 ## 网站浏览
 
@@ -147,7 +154,9 @@ bgmb audit
 - `status` 快速读取本地 SQLite、站点和 prepared state，不联网。
 - `doctor --local` 执行更完整的本地环境与资料检查，不联网。
 - `doctor` 会读取 `origin/main` 与远端 `gh-pages` 状态，但不访问 Bangumi API。
-- `audit` 只读检查当前 SQLite 是否具备可发布的完整季度以及是否存在 REVIEW 阻塞。
+- `audit` 只读检查当前 SQLite 是否具备可发布的完整季度以及是否存在 REVIEW 阻塞；输出中的
+  `数据库总作品` 是全库 unique subject 数，不是某个季度的条目数。每个可发布季度还会显示
+  `TV首播`、`TV续播`、`剧场版` 与 `合计` appearance 组成，同一作品跨季度出现时会分别计入条目。
 
 ## 正式发布
 

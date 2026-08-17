@@ -58,9 +58,11 @@ bgmb build --all
 
 ```powershell
 bgmb serve --port 8000
+bgmb serve --open
 ```
 
-预览地址为 `http://127.0.0.1:8000/bangumi-side-b/`，只读取已经生成的静态文件。
+预览地址为 `http://127.0.0.1:8000/bangumi-side-b/`，只读取已经生成的静态文件。成功启动
+后会打印 URL 和 Ctrl+C 退出提示；默认不打开浏览器，只有 `--open` 才会请求系统默认浏览器。
 
 ## 数据同步
 
@@ -70,7 +72,8 @@ bgmb audit
 ```
 
 `sync` 事实和封面提交成功后会自动触发增量 `build`；同步失败或中断时不会把不完整资料
-标记为可公开季度，也不会覆盖既有 last-known-good 站点。
+标记为可公开季度，也不会覆盖既有 last-known-good 站点。`audit` 中的 `数据库总作品` 是
+全库 unique subject 数；可发布季度另显示 TV 首播、TV 续播、剧场版和合计 appearance 条目。
 
 ## 发布流程
 

@@ -41,8 +41,14 @@ source_keys = ["原作", "原案", "原著"]
 
 [tag_fallback.exact_values]
 "漫画改编" = "manga"
+"漫画改" = "manga"
+"漫改" = "manga"
 "轻小说改编" = "light_novel"
+"轻小说改" = "light_novel"
+"轻改" = "light_novel"
 "小说改编" = "novel"
+"小说改" = "novel"
 "游戏改编" = "game"
+"游戏改" = "game"
 "视觉小说改编" = "visual_novel"
 "原创" = "original"

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from bgm_side_b.archive_config import load_archive_source_rules
 from bgm_side_b.domain import (
     JapaneseClassification,
     SourceEvidence,
@@ -16,6 +19,8 @@ from bgm_side_b.rules import (
     order_tag_candidates,
     resolve_source,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_aliases_and_tag_candidates_have_stable_exact_order() -> None:
@@ -75,6 +80,25 @@ def test_source_resolution_honors_only_explicit_compatible_precedence() -> None:
     )
     assert unrelated.source_type is SourceType.UNKNOWN
     assert unrelated.evidence_type == "conflict"
+
+
+def test_source_config_contains_audited_exact_tags_and_rezero_evidence() -> None:
+    rules = load_archive_source_rules(ROOT / "config" / "source-rules.toml")
+
+    assert rules.tag_values["漫画改"] is SourceType.MANGA
+    assert rules.tag_values["漫改"] is SourceType.MANGA
+    assert rules.tag_values["轻小说改"] is SourceType.LIGHT_NOVEL
+    assert rules.tag_values["轻改"] is SourceType.LIGHT_NOVEL
+    assert rules.tag_values["小说改"] is SourceType.NOVEL
+    assert rules.tag_values["游戏改"] is SourceType.GAME
+    rezero = resolve_source(
+        (
+            SourceEvidence(SourceType.LIGHT_NOVEL, "tag", "轻小说改"),
+            SourceEvidence(SourceType.NOVEL, "tag", "小说改"),
+        )
+    )
+    assert rezero.source_type is SourceType.LIGHT_NOVEL
+    assert rezero.evidence_type == "tag"
 
 
 def test_japanese_classification_uses_only_exact_structured_country_evidence() -> None:

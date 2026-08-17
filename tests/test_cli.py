@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ from bgm_side_b import __version__
 from bgm_side_b.api import ImageResponse, SubjectDetail
 from bgm_side_b.cli import (
     _relative_output_path,
+    _sync_review_lines,
     _sync_summary_lines,
     build_parser,
     find_project_root,
@@ -266,6 +268,33 @@ def test_sync_summary_is_compact_and_lists_early_premiere_evidence() -> None:
         "continuing evidence: end_date=1, main_episode=2, unresolved=0",
         "AUTO PREMIERE 101: 2026-03-28 -> 2026-04 (2026年4月:448)",
         "exceptions: warnings=1, errors=0",
+    )
+
+
+def test_sync_review_summary_uses_scoped_persisted_count() -> None:
+    issue = SimpleNamespace(
+        issue_code="JAPANESE_CLASSIFICATION_UNRESOLVED",
+    )
+    result = QuarterSyncResult(
+        Quarter(2026, 4),
+        "complete",
+        "complete",
+        12,
+        1,
+        0,
+        0,
+        0,
+        (issue,) * 12,
+        (),
+        (),
+        (),
+        persisted_review_count=0,
+    )
+
+    assert _sync_review_lines(result, SimpleNamespace(), Quarter(2026, 4)) == ()
+    result = replace(result, persisted_review_count=12)
+    assert _sync_review_lines(result, SimpleNamespace(), Quarter(2026, 4)) == (
+        "12 persisted REVIEW items; run bgmb review for the complete local queue",
     )
 
 

@@ -1643,6 +1643,7 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
         "auto_blacklisted": list(result.auto_blacklisted),
         "canonical_detail_requests": result.canonical_detail_requests,
         "persisted_review_count": result.persisted_review_count,
+        "review_count": result.persisted_review_count,
         "source_counts": dict(result.source_counts),
         "episode_count": {
             "known": result.episode_known,

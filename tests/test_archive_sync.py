@@ -986,6 +986,37 @@ def test_canonical_detail_episode_count_is_persisted_after_partial_discovery(
     assert run.quarters[0].canonical_detail_requests == 1
 
 
+def test_unscoped_persisted_review_findings_are_not_reported_as_quarter_queue(
+    tmp_path: Path,
+) -> None:
+    unresolved_ids = tuple(range(547900, 547911))
+    details = {
+        547899: _detail(547899, cover=None),
+        **{
+            subject_id: _detail(subject_id, country=None, cover=None)
+            for subject_id in unresolved_ids
+        },
+    }
+    candidates = DiscoveryBatch(
+        (
+            _candidate(547899, MediaFormat.TV),
+            *(_candidate(subject_id, MediaFormat.TV) for subject_id in unresolved_ids),
+        )
+    )
+    sync, repository = _sync(tmp_path, FakeApi(details), candidates)
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    result = run.quarters[0]
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    assert run.exit_code == 0
+    assert len(result.reviews) == 11
+    assert result.persisted_review_count == 0
+    assert repository.list_review_issues(QUARTER) == ()
+    assert report["review_count"] == 0
+    assert report["external_review_count"] == 0
+
+
 def test_search_failure_does_not_block_stable_browse_premiere_sync(
     tmp_path: Path,
 ) -> None:

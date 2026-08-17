@@ -365,26 +365,8 @@ def main(argv: list[str] | None = None) -> int:
             result = run.quarters[0]
             for line in _sync_summary_lines(result):
                 print(line)
-            if result.persisted_review_count:
-                if result.persisted_review_count <= MAX_INLINE_SYNC_REVIEWS:
-                    print(render_review(repository, scope.start))
-                else:
-                    print(
-                        f"{result.persisted_review_count} persisted REVIEW items; "
-                        "run bgmb review for the complete local queue"
-                    )
-            for review in result.external_reviews[:MAX_INLINE_SYNC_REVIEWS]:
-                print(
-                    "REVIEW "
-                    f"{review['subject_id']} {review['issue_code']}｜"
-                    f"{review['command']}"
-                )
-            remaining = len(result.external_reviews) - MAX_INLINE_SYNC_REVIEWS
-            if remaining > 0:
-                print(
-                    f"{remaining} additional Search-only REVIEW items "
-                    "are in the sync report"
-                )
+            for line in _sync_review_lines(result, repository, scope.start):
+                print(line)
         if run.exit_code == 0:
             try:
                 tags = load_tag_rules(
@@ -501,6 +483,36 @@ def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:
     if result.warnings or result.errors:
         lines.append(
             f"exceptions: warnings={len(result.warnings)}, errors={len(result.errors)}"
+        )
+    return tuple(lines)
+
+
+def _sync_review_lines(
+    result: QuarterSyncResult,
+    repository: ArchiveSubjectRepository,
+    quarter: Quarter,
+) -> tuple[str, ...]:
+    """Render only the persisted quarter queue plus explicitly external findings."""
+    lines: list[str] = []
+    if result.persisted_review_count:
+        if result.persisted_review_count <= MAX_INLINE_SYNC_REVIEWS:
+            lines.append(render_review(repository, quarter))
+        else:
+            lines.append(
+                f"{result.persisted_review_count} persisted REVIEW items; "
+                "run bgmb review for the complete local queue"
+            )
+    lines.extend(
+        "REVIEW "
+        f"{review['subject_id']} {review['issue_code']}｜"
+        f"{review['command']}"
+        for review in result.external_reviews[:MAX_INLINE_SYNC_REVIEWS]
+    )
+    remaining = len(result.external_reviews) - MAX_INLINE_SYNC_REVIEWS
+    if remaining > 0:
+        lines.append(
+            f"{remaining} additional Search-only REVIEW items "
+            "are in the sync report"
         )
     return tuple(lines)
 

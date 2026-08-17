@@ -116,7 +116,10 @@ def test_quarter_detail_movie_history_and_lightbox(
     assert page.locator("[data-detail-panel]").is_hidden()
 
 
-@pytest.mark.parametrize("viewport", [(390, 844), (360, 800)])
+@pytest.mark.parametrize(
+    "viewport",
+    [(1920, 1080), (1440, 900), (1024, 768), (768, 1024), (390, 844), (360, 800)],
+)
 def test_settings_changelog_is_static_accessible_and_narrow_safe(
     chromium: BrowserContext,
     site_server: str,

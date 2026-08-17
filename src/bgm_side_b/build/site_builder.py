@@ -140,11 +140,11 @@ class UnifiedSiteBuilder:
             current=scope_label,
         )
         try:
+            facts = self._read_facts()
             try:
                 changelog = load_changelog(self.changelog_path)
             except ChangelogError as error:
                 raise BuildError(str(error)) from error
-            facts = self._read_facts()
             previous = read_build_state(self.state_path)
             managed_quarters = tuple(
                 sorted(_quarter_label(item) for item in facts.state_by_quarter)

@@ -464,3 +464,147 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
   .subject-row__title { font-size: .7rem; }
   .subject-row__meta { display: none; }
 }
+
+/* Visual System V2: shared action, input, and segmented-control primitives. */
+.control-button, .button, .pwa-action, .pwa-actions button,
+.archive-range__shortcuts button, .pager button {
+  align-items: center;
+  border-radius: var(--radius-control);
+  display: inline-flex;
+  font-family: var(--font-sans);
+  font-size: .78rem;
+  font-weight: 650;
+  justify-content: center;
+  line-height: 1.2;
+  min-height: var(--control-height-normal);
+  padding: 0 var(--control-padding-inline);
+  transition: background-color var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), transform var(--motion-fast);
+}
+
+.control-button, .button, .archive-range__shortcuts button, .pager button {
+  background: var(--surface);
+  border: 1px solid var(--border-default);
+  color: var(--ink);
+}
+
+.control-button:hover:not(:disabled), .button:hover:not(:disabled),
+.archive-range__shortcuts button:hover:not(:disabled), .pager button:hover:not(:disabled),
+.control-button[aria-expanded="true"] {
+  background: var(--surface-selected);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.control-button:active:not(:disabled), .button:active:not(:disabled),
+.archive-range__shortcuts button:active:not(:disabled), .pager button:active:not(:disabled),
+.pwa-action:active:not(:disabled), .pwa-actions button:active:not(:disabled) { transform: translateY(1px); }
+
+.control-button:disabled, .button:disabled, .pwa-action:disabled, .pwa-actions button:disabled,
+.archive-range__shortcuts button:disabled, .pager button:disabled {
+  background: var(--surface-subtle);
+  border-color: var(--border-subtle);
+  color: var(--ink-muted);
+  cursor: not-allowed;
+}
+
+.button--ink, .pwa-action, .pwa-actions button {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--surface);
+}
+
+.button--ink:hover:not(:disabled), .pwa-action:hover:not(:disabled), .pwa-actions button:hover:not(:disabled) {
+  background: var(--accent-ink);
+  border-color: var(--accent-ink);
+  color: var(--surface);
+}
+
+.text-button { border-radius: var(--radius-small); padding: .2rem .3rem; transition: background-color var(--motion-fast), color var(--motion-fast); }
+.text-button:hover { background: var(--surface-selected); }
+
+.search-field { display: block; min-width: 0; position: relative; }
+.search-field::before {
+  background: var(--ink-muted);
+  content: "";
+  height: 1rem;
+  left: .85rem;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='m16.5 14.8 5 5-1.7 1.7-5-5a8 8 0 1 1 1.7-1.7ZM10 16a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z'/%3E%3C/svg%3E") center / contain no-repeat;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1rem;
+  z-index: 1;
+}
+
+.search-field input, .filter-option-search input, .archive-controls input,
+.archive-controls select, .archive-range input, .queue-selector select {
+  background-color: var(--surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  min-height: var(--control-height-normal);
+  padding: 0 .8rem;
+  transition: background-color var(--motion-fast), border-color var(--motion-fast), box-shadow var(--motion-fast);
+  width: 100%;
+}
+
+.search-field input { padding-left: 2.35rem; }
+.search-field input::placeholder, input::placeholder { color: color-mix(in srgb, var(--ink-muted) 78%, var(--surface)); opacity: 1; }
+.search-field input:hover, .filter-option-search input:hover, .archive-controls input:hover,
+.archive-controls select:hover, .archive-range input:hover, .queue-selector select:hover { border-color: var(--border-strong); }
+.search-field input:focus, .filter-option-search input:focus, .archive-controls input:focus,
+.archive-controls select:focus, .archive-range input:focus, .queue-selector select:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
+  outline: none;
+}
+
+.mode-switch, .scope-tabs {
+  align-items: center;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  display: inline-flex;
+  gap: .2rem;
+  padding: .2rem;
+}
+
+.mode-switch button, .scope-tabs button {
+  border: 0;
+  border-radius: var(--radius-small);
+  color: var(--ink-muted);
+  font-family: var(--font-sans);
+  font-size: .78rem;
+  font-weight: 650;
+  letter-spacing: .02em;
+  min-height: var(--control-height-compact);
+  padding: 0 .75rem;
+  transition: background-color var(--motion-fast), color var(--motion-fast), box-shadow var(--motion-fast);
+}
+
+.mode-switch button:hover, .scope-tabs button:hover { color: var(--accent-ink); }
+.mode-switch button[aria-selected="true"], .scope-tabs button[aria-selected="true"] {
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--border-subtle);
+  color: var(--accent-ink);
+}
+
+.detail-close, .lightbox-close, .subject-drawer__close {
+  align-items: center;
+  border-radius: var(--radius-control);
+  display: inline-flex;
+  height: var(--control-height-touch);
+  justify-content: center;
+  transition: background-color var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), transform var(--motion-fast);
+  width: var(--control-height-touch);
+}
+
+.detail-close:hover, .subject-drawer__close:hover { background: var(--surface-selected); border-color: var(--accent); color: var(--accent-ink); }
+.lightbox-close:hover { background: rgb(255 255 255 / 14%); border-color: white; }
+
+@media (max-width: 767px) {
+  .control-button, .button, .pwa-action, .pwa-actions button, .archive-range__shortcuts button { min-height: var(--control-height-touch); }
+  .mode-switch, .scope-tabs { width: 100%; }
+  .mode-switch button, .scope-tabs button { flex: 1 1 0; min-height: var(--control-height-touch); }
+}

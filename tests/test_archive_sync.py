@@ -532,6 +532,13 @@ def test_mature_search_only_cold_reviews_are_blacklisted_without_storage(
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
         frozenset({650020, 650021, 650022})
     )
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    assert report["new_auto_by_reason"] == {
+        "unresolved_cold_candidate": 3,
+    }
+    assert report["quarters"][0]["new_auto_by_reason"] == {
+        "unresolved_cold_candidate": 3,
+    }
 
 
 def test_auto_blacklist_removes_existing_facts_reviews_and_cover_safely(

@@ -1367,11 +1367,13 @@ class ArchiveSynchronizer:
         completed_at = _timestamp()
         serialized = [_result_payload(item) for item in results]
         source_totals: Counter[str] = Counter()
+        new_auto_by_reason: Counter[str] = Counter()
         episode_known = 0
         episode_unknown = 0
         legacy_zero_written = 0
         for item in serialized:
             source_totals.update(item["source_counts"])
+            new_auto_by_reason.update(item["new_auto_by_reason"])
             episode = item["episode_count"]
             episode_known += episode["known"]
             episode_unknown += episode["unknown"]
@@ -1399,6 +1401,7 @@ class ArchiveSynchronizer:
             "auto_blacklisted_count": sum(
                 len(item["auto_blacklisted"]) for item in serialized
             ),
+            "new_auto_by_reason": dict(sorted(new_auto_by_reason.items())),
             "canonical_detail_requests": sum(
                 item["canonical_detail_requests"] for item in serialized
             ),
@@ -1789,6 +1792,15 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
         "manual_blacklisted": result.manual_blacklisted,
         "existing_auto_blacklisted": result.existing_auto_blacklisted,
         "auto_blacklisted": list(result.auto_blacklisted),
+        "new_auto_by_reason": dict(
+            sorted(
+                Counter(
+                    item["reason"]
+                    for item in result.auto_blacklisted
+                    if isinstance(item.get("reason"), str)
+                ).items()
+            )
+        ),
         "canonical_detail_requests": result.canonical_detail_requests,
         "persisted_review_count": result.persisted_review_count,
         "review_count": result.persisted_review_count,

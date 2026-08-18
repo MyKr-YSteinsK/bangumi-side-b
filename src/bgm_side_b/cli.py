@@ -492,15 +492,7 @@ def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:
         )
         for item in result.early_premieres
     )
-    lines.extend(
-        (
-            "AUTO BLACKLISTED "
-            f"{item['subject_id']}: {item['title']} "
-            f"({item['days_since_air_date']} days, "
-            f"ratings={item['rating_count']})"
-        )
-        for item in result.auto_blacklisted
-    )
+    lines.extend(_auto_blacklist_line(item) for item in result.auto_blacklisted)
     if result.blacklisted:
         lines.append(
             "BLACKLIST "
@@ -513,6 +505,22 @@ def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:
             f"exceptions: warnings={len(result.warnings)}, errors={len(result.errors)}"
         )
     return tuple(lines)
+
+
+def _auto_blacklist_line(item: dict[str, object]) -> str:
+    """Render a compact automatic exclusion event with its stable reason."""
+    line = (
+        "AUTO BLACKLISTED "
+        f"{item['subject_id']}: {item['title']} "
+        f"({item.get('days_since_air_date')} days, "
+        f"ratings={item['rating_count']})"
+    )
+    if item.get("reason") == "unresolved_cold_candidate":
+        line += (
+            f" reason={item['reason']}"
+            f" issue={item['issue_code']}"
+        )
+    return line
 
 
 def _sync_review_lines(

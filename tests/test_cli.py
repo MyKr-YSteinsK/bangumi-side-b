@@ -14,6 +14,7 @@ import bgm_side_b.cli as cli
 from bgm_side_b import __version__
 from bgm_side_b.api import ImageResponse, SubjectDetail
 from bgm_side_b.cli import (
+    _auto_blacklist_line,
     _relative_output_path,
     _sync_review_lines,
     _sync_summary_lines,
@@ -371,6 +372,22 @@ def test_sync_review_summary_uses_scoped_persisted_count() -> None:
     result = replace(result, persisted_review_count=12)
     assert _sync_review_lines(result, SimpleNamespace(), Quarter(2026, 4)) == (
         "12 persisted REVIEW items; run bgmb review for the complete local queue",
+    )
+
+
+def test_sync_summary_exposes_unresolved_cold_blacklist_reason() -> None:
+    assert _auto_blacklist_line(
+        {
+            "subject_id": 659091,
+            "title": "冷门电影",
+            "days_since_air_date": None,
+            "rating_count": None,
+            "reason": "unresolved_cold_candidate",
+            "issue_code": "MOVIE_DATE_UNRESOLVED",
+        }
+    ) == (
+        "AUTO BLACKLISTED 659091: 冷门电影 (None days, ratings=None) "
+        "reason=unresolved_cold_candidate issue=MOVIE_DATE_UNRESOLVED"
     )
 
 

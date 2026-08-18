@@ -14,9 +14,11 @@ from bgm_side_b.admission import (
     MOVIE_DATE_UNRESOLVED,
     TV_QUARTER_BOUNDARY,
     TV_QUARTER_DATE_UNRESOLVED,
+    UNRESOLVED_COLD_REVIEW_ISSUES,
     AdmissionStatus,
     QuarterOverride,
     admit_subject,
+    is_unresolved_cold_review,
 )
 from bgm_side_b.api import ApiTag, SubjectDetail
 from bgm_side_b.discovery import DiscoveredSubject
@@ -191,6 +193,23 @@ def test_movie_uses_natural_quarter_and_missing_dates_are_reviewed() -> None:
     assert movie.premiere is not None and movie.premiere.quarter == Quarter(2026, 4)
     assert missing_movie.reviews[0].issue_code == MOVIE_DATE_UNRESOLVED
     assert missing_tv.reviews[0].issue_code == TV_QUARTER_DATE_UNRESOLVED
+
+
+def test_unresolved_cold_allowlist_contains_only_evidence_missing_issues() -> None:
+    assert UNRESOLVED_COLD_REVIEW_ISSUES == frozenset(
+        {
+            TV_QUARTER_BOUNDARY,
+            TV_QUARTER_DATE_UNRESOLVED,
+            MOVIE_DATE_UNRESOLVED,
+            "SEARCH_ONLY_MEDIA_UNRESOLVED",
+        }
+    )
+    assert all(
+        is_unresolved_cold_review(code) for code in UNRESOLVED_COLD_REVIEW_ISSUES
+    )
+    assert not is_unresolved_cold_review(DISCOVERY_DATE_MISMATCH)
+    assert not is_unresolved_cold_review(DISCOVERY_MEDIA_CONFLICT)
+    assert not is_unresolved_cold_review("JAPANESE_REGION_CONFLICT")
 
 
 def test_manual_override_wins_only_after_scope_and_japanese_admission() -> None:

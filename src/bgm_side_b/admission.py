@@ -30,6 +30,22 @@ JAPANESE_CLASSIFICATION_UNRESOLVED: Final = "JAPANESE_CLASSIFICATION_UNRESOLVED"
 SEARCH_ONLY_MEDIA_UNRESOLVED: Final = "SEARCH_ONLY_MEDIA_UNRESOLVED"
 _UNSUPPORTED_MEDIA_PLATFORMS: Final = frozenset({"WEB", "OVA", "OAD"})
 
+# Only evidence-missing REVIEWs may participate in the mature-quarter cold
+# candidate rule.  Conflict and classification REVIEWs remain human-only.
+UNRESOLVED_COLD_REVIEW_ISSUES: Final = frozenset(
+    {
+        TV_QUARTER_BOUNDARY,
+        TV_QUARTER_DATE_UNRESOLVED,
+        MOVIE_DATE_UNRESOLVED,
+        SEARCH_ONLY_MEDIA_UNRESOLVED,
+    }
+)
+
+
+def is_unresolved_cold_review(issue_code: str) -> bool:
+    """Return whether an issue is explicitly allowlisted for cold cleanup."""
+    return issue_code in UNRESOLVED_COLD_REVIEW_ISSUES
+
 
 class AdmissionStatus(StrEnum):
     """The only terminal outcomes of deterministic candidate admission."""

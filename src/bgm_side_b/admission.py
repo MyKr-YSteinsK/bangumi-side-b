@@ -47,6 +47,31 @@ def is_unresolved_cold_review(issue_code: str) -> bool:
     return issue_code in UNRESOLVED_COLD_REVIEW_ISSUES
 
 
+def quarter_end_date(quarter: Quarter) -> date:
+    """Return the final calendar day covered by an archive quarter."""
+    if quarter.month == 1:
+        return date(quarter.year, 3, 31)
+    if quarter.month == 4:
+        return date(quarter.year, 6, 30)
+    if quarter.month == 7:
+        return date(quarter.year, 9, 30)
+    return date(quarter.year, 12, 31)
+
+
+def should_auto_blacklist_unresolved_cold(
+    issue_code: str,
+    target_quarter: Quarter | None,
+    rating_count: int | None,
+    evaluation_date: date,
+) -> bool:
+    """Apply the mature-quarter low-signal rule to an allowlisted REVIEW."""
+    if not is_unresolved_cold_review(issue_code) or target_quarter is None:
+        return False
+    if rating_count is not None and not 0 <= rating_count < 30:
+        return False
+    return (evaluation_date - quarter_end_date(target_quarter)).days > 7
+
+
 class AdmissionStatus(StrEnum):
     """The only terminal outcomes of deterministic candidate admission."""
 

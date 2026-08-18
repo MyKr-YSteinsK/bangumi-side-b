@@ -541,6 +541,177 @@ def test_mature_search_only_cold_reviews_are_blacklisted_without_storage(
     }
 
 
+def test_search_only_cold_rule_keeps_unmatured_review(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650025
+    api = FakeApi(
+        {
+            subject_id: _detail(
+                subject_id,
+                platform="",
+                rating_count=None,
+                cover=None,
+            )
+        }
+    )
+    candidate = DiscoveredSubject(
+        subject_id,
+        frozenset(),
+        frozenset(),
+        frozenset({2}),
+        ("search:2026-04",),
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((candidate,)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 7, 7),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    result = run.quarters[0]
+    assert run.exit_code == 0
+    assert result.auto_blacklisted == ()
+    assert result.external_reviews[0]["subject_id"] == subject_id
+    assert repository.get_subject_facts(subject_id) is None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset()
+    )
+
+
+def test_conflict_review_is_never_cold_blacklisted(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650026
+    stable_id = 650029
+    candidate = DiscoveredSubject(
+        subject_id,
+        frozenset({MediaFormat.TV, MediaFormat.MOVIE}),
+        frozenset(),
+        frozenset({2}),
+        ("browse:TV:2026-04", "browse:MOVIE:2026-04"),
+    )
+    api = FakeApi(
+        {
+            subject_id: _detail(
+                subject_id,
+                air_date=None,
+                rating_count=0,
+                cover=None,
+            ),
+            stable_id: _detail(stable_id, rating_count=100, cover=None),
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((candidate, _candidate(stable_id, MediaFormat.TV))),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 8, 18),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    result = run.quarters[0]
+    assert result.auto_blacklisted == ()
+    assert result.reviews[0].issue_code == "DISCOVERY_MEDIA_CONFLICT"
+    assert repository.get_subject_facts(subject_id) is not None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset()
+    )
+
+
+def test_manual_quarter_override_wins_over_unresolved_cold_rule(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650027
+    api = FakeApi(
+        {
+            subject_id: _detail(
+                subject_id,
+                media=MediaFormat.MOVIE,
+                air_date=None,
+                rating_count=None,
+                cover=None,
+            )
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.MOVIE),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 12, 8),
+    )
+
+    sync.overrides_path.write_text(
+        "[[assignments]]\n"
+        f"subject_id = {subject_id}\n"
+        "year = 2026\n"
+        "quarter_month = 4\n"
+        'reason = "manual"\n',
+        encoding="utf-8",
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    result = run.quarters[0]
+    assert result.auto_blacklisted == ()
+    assert result.accepted_movie == 1
+    snapshot = repository.get_subject_facts(subject_id)
+    assert snapshot is not None
+    assert snapshot.premiere is not None
+    assert snapshot.premiere.assignment_source is QuarterAssignmentSource.MANUAL
+
+
+def test_range_sync_deduplicates_new_cold_blacklist_event(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650028
+    api = FakeApi(
+        {
+            subject_id: _detail(
+                subject_id,
+                media=MediaFormat.MOVIE,
+                air_date=None,
+                rating_count=None,
+                cover=None,
+            )
+        }
+    )
+    candidate = _candidate(subject_id, MediaFormat.MOVIE)
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((candidate,)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 12, 8),
+    )
+
+    run = sync.run(SyncScope(Quarter(2026, 4), Quarter(2026, 7)))
+
+    assert run.exit_code == 0
+    assert [len(item.auto_blacklisted) for item in run.quarters] == [1, 0]
+    assert [item.existing_auto_blacklisted for item in run.quarters] == [0, 1]
+    assert sum(item.blacklisted for item in run.quarters) == 2
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    assert report["auto_blacklisted_count"] == 1
+    assert report["new_auto_by_reason"] == {
+        "unresolved_cold_candidate": 1,
+    }
+    assert repository.get_subject_facts(subject_id) is None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset({subject_id})
+    )
+
+
 def test_auto_blacklist_removes_existing_facts_reviews_and_cover_safely(
     tmp_path: Path,
 ) -> None:

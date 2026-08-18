@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from bgm_side_b.admission import QuarterOverride
+from bgm_side_b.admission import MOVIE_DATE_UNRESOLVED, QuarterOverride
 from bgm_side_b.api import BangumiApiError, ImageResponse, SubjectDetail
 from bgm_side_b.archive_config import (
     ArchiveSyncSettings,
@@ -415,6 +415,63 @@ def test_auto_blacklist_does_not_guess_missing_air_date_or_rating_count(
     assert repository.get_subject_facts(650004) is not None
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
         frozenset()
+    )
+
+
+def test_mature_unresolved_movie_review_is_auto_blacklisted_and_cleaned(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    api = FakeApi(
+        {
+            659091: _detail(
+                659091,
+                media=MediaFormat.MOVIE,
+                air_date=None,
+                rating_count=None,
+                cover=None,
+            )
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(659091, MediaFormat.MOVIE),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 8, 18),
+    )
+    _store_existing(
+        repository,
+        659091,
+        media=MediaFormat.MOVIE,
+        review_issues=(
+            ReviewIssue(
+                MOVIE_DATE_UNRESOLVED,
+                QUARTER,
+                None,
+                {"subject_id": 659091},
+                "old",
+            ),
+        ),
+    )
+    covers = tmp_path / "covers"
+    covers.mkdir(exist_ok=True)
+    (covers / "659091.webp").write_bytes(b"old cover")
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    result = run.quarters[0]
+    assert run.exit_code == 0
+    assert result.reviews == ()
+    assert result.external_reviews == ()
+    assert result.auto_blacklisted[0]["subject_id"] == 659091
+    assert result.auto_blacklisted[0]["reason"] == "unresolved_cold_candidate"
+    assert result.auto_blacklisted[0]["issue_code"] == MOVIE_DATE_UNRESOLVED
+    assert result.auto_blacklisted[0]["rating_missing"] is True
+    assert repository.get_subject_facts(659091) is None
+    assert not (covers / "659091.webp").exists()
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset({659091})
     )
 
 

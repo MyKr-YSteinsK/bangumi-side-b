@@ -20,7 +20,10 @@ from bgm_side_b.admission import (
     QuarterOverride,
     ReviewFinding,
     admit_subject,
+    is_unresolved_cold_review,
+    quarter_end_date,
     quarter_for_date,
+    should_auto_blacklist_unresolved_cold,
 )
 from bgm_side_b.api import BangumiApiClient, BangumiApiError, SubjectDetail
 from bgm_side_b.archive_config import (
@@ -474,6 +477,40 @@ class ArchiveSynchronizer:
                             _auto_blacklist_event(detail, self.evaluation_date)
                         )
                     continue
+                unresolved_cold = _persisted_unresolved_cold_review(decision)
+                if unresolved_cold is not None:
+                    issue_code, target_quarter = unresolved_cold
+                    if should_auto_blacklist_unresolved_cold(
+                        issue_code,
+                        target_quarter,
+                        detail.rating_total,
+                        self.evaluation_date,
+                    ):
+                        try:
+                            added = self._record_auto_blacklist(
+                                detail,
+                                existing_by_subject.get(candidate.subject_id),
+                            )
+                        except Exception as error:
+                            errors.append(
+                                {
+                                    "code": "auto_blacklist_persist",
+                                    "summary": _auto_blacklist_error_summary(error),
+                                }
+                            )
+                            continue
+                        blacklisted += 1
+                        if added:
+                            auto_blacklisted.append(
+                                _auto_blacklist_event(
+                                    detail,
+                                    self.evaluation_date,
+                                    reason="unresolved_cold_candidate",
+                                    issue_code=issue_code,
+                                    target_quarter=target_quarter,
+                                )
+                            )
+                        continue
                 if decision.status is AdmissionStatus.REJECTED:
                     if decision.reason == "non_japanese":
                         rejected_non_japanese += 1
@@ -1486,6 +1523,33 @@ def _eligible_for_auto_blacklist(decision: AdmissionDecision) -> bool:
     )
 
 
+def _persisted_unresolved_cold_review(
+    decision: AdmissionDecision,
+) -> tuple[str, Quarter] | None:
+    """Return one explicit cold-review issue when its target is unambiguous."""
+    if (
+        decision.status is not AdmissionStatus.REVIEW
+        or decision.media_format not in {MediaFormat.TV, MediaFormat.MOVIE}
+        or decision.japanese is None
+        or decision.japanese.classification
+        is not JapaneseClassification.ACCEPTED_JAPANESE
+        or not decision.reviews
+    ):
+        return None
+    if any(
+        not is_unresolved_cold_review(issue.issue_code)
+        for issue in decision.reviews
+    ):
+        return None
+    target_quarters = {issue.candidate_quarter for issue in decision.reviews}
+    if len(target_quarters) != 1:
+        return None
+    target_quarter = next(iter(target_quarters))
+    if target_quarter is None:
+        return None
+    return decision.reviews[0].issue_code, target_quarter
+
+
 def _auto_blacklist_error_summary(error: Exception) -> str:
     if isinstance(error, SyncError):
         return str(error)
@@ -1493,21 +1557,51 @@ def _auto_blacklist_error_summary(error: Exception) -> str:
 
 
 def _auto_blacklist_event(
-    detail: SubjectDetail, evaluation_date: date
+    detail: SubjectDetail,
+    evaluation_date: date,
+    *,
+    reason: str = "low_rating_count",
+    issue_code: str | None = None,
+    target_quarter: Quarter | None = None,
 ) -> dict[str, object]:
-    assert detail.air_date is not None
-    assert detail.rating_total is not None
-    return {
+    event: dict[str, object] = {
         "subject_id": detail.subject_id,
         "title": detail.name_cn or detail.name or str(detail.subject_id),
-        "air_date": detail.air_date.isoformat(),
         "evaluation_date": evaluation_date.isoformat(),
-        "days_since_air_date": (evaluation_date - detail.air_date).days,
         "rating_count": detail.rating_total,
-        "threshold": "rating_count < 30",
-        "protection_days": "> 7 days",
-        "reason": "low_rating_count",
+        "reason": reason,
     }
+    if detail.air_date is not None:
+        event["air_date"] = detail.air_date.isoformat()
+        event["days_since_air_date"] = (evaluation_date - detail.air_date).days
+    else:
+        event["air_date"] = None
+        event["days_since_air_date"] = None
+    if reason == "low_rating_count":
+        assert detail.air_date is not None
+        assert detail.rating_total is not None
+        event.update(
+            {
+                "threshold": "rating_count < 30",
+                "protection_days": "> 7 days",
+            }
+        )
+    else:
+        assert issue_code is not None
+        assert target_quarter is not None
+        quarter_end = quarter_end_date(target_quarter)
+        event.update(
+            {
+                "issue_code": issue_code,
+                "target_quarter": _quarter_label(target_quarter),
+                "quarter_end": quarter_end.isoformat(),
+                "days_after_quarter_end": (evaluation_date - quarter_end).days,
+                "rating_threshold": 30,
+                "rating_missing": detail.rating_total is None,
+                "protection_days": "> 7 days after quarter end",
+            }
+        )
+    return event
 
 
 def _external_review(

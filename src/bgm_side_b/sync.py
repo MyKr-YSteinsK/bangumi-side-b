@@ -511,6 +511,40 @@ class ArchiveSynchronizer:
                                 )
                             )
                         continue
+                external_cold = _external_unresolved_cold_review(decision, quarter)
+                if external_cold is not None:
+                    issue_code, target_quarter = external_cold
+                    if should_auto_blacklist_unresolved_cold(
+                        issue_code,
+                        target_quarter,
+                        detail.rating_total,
+                        self.evaluation_date,
+                    ):
+                        try:
+                            added = self._record_auto_blacklist(
+                                detail,
+                                existing_by_subject.get(candidate.subject_id),
+                            )
+                        except Exception as error:
+                            errors.append(
+                                {
+                                    "code": "auto_blacklist_persist",
+                                    "summary": _auto_blacklist_error_summary(error),
+                                }
+                            )
+                            continue
+                        blacklisted += 1
+                        if added:
+                            auto_blacklisted.append(
+                                _auto_blacklist_event(
+                                    detail,
+                                    self.evaluation_date,
+                                    reason="unresolved_cold_candidate",
+                                    issue_code=issue_code,
+                                    target_quarter=target_quarter,
+                                )
+                            )
+                        continue
                 if decision.status is AdmissionStatus.REJECTED:
                     if decision.reason == "non_japanese":
                         rejected_non_japanese += 1
@@ -1546,6 +1580,26 @@ def _persisted_unresolved_cold_review(
         return None
     target_quarter = next(iter(target_quarters))
     if target_quarter is None:
+        return None
+    return decision.reviews[0].issue_code, target_quarter
+
+
+def _external_unresolved_cold_review(
+    decision: AdmissionDecision, target_quarter: Quarter
+) -> tuple[str, Quarter] | None:
+    """Return a Search-only cold issue whose sync scope supplies its target."""
+    if (
+        decision.status is not AdmissionStatus.REVIEW
+        or decision.media_format is not None
+        or decision.japanese is not None
+        or not decision.reviews
+    ):
+        return None
+    if any(
+        not is_unresolved_cold_review(issue.issue_code)
+        or issue.candidate_quarter is not None
+        for issue in decision.reviews
+    ):
         return None
     return decision.reviews[0].issue_code, target_quarter
 

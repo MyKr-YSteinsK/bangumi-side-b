@@ -475,6 +475,65 @@ def test_mature_unresolved_movie_review_is_auto_blacklisted_and_cleaned(
     )
 
 
+def test_mature_search_only_cold_reviews_are_blacklisted_without_storage(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_ids = (650020, 650021, 650022, 650023, 650024)
+    details = {
+        subject_id: _detail(
+            subject_id,
+            platform="",
+            rating_count=rating_count,
+            cover=None,
+        )
+        for subject_id, rating_count in zip(
+            subject_ids, (None, 0, 29, 30, 500), strict=True
+        )
+    }
+    candidates = tuple(
+        DiscoveredSubject(
+            subject_id,
+            frozenset(),
+            frozenset(),
+            frozenset({2}),
+            ("search:2026-04",),
+        )
+        for subject_id in subject_ids
+    )
+    api = FakeApi(details)
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch(candidates),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 7, 8),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    result = run.quarters[0]
+    assert run.exit_code == 0
+    assert [item["subject_id"] for item in result.auto_blacklisted] == [
+        650020,
+        650021,
+        650022,
+    ]
+    assert {item["subject_id"] for item in result.external_reviews} == {
+        650023,
+        650024,
+    }
+    assert result.persisted_review_count == 0
+    assert all(
+        repository.get_subject_facts(subject_id) is None for subject_id in subject_ids
+    )
+    assert api.image_calls == []
+    assert api.subject_calls == list(subject_ids)
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset({650020, 650021, 650022})
+    )
+
+
 def test_auto_blacklist_removes_existing_facts_reviews_and_cover_safely(
     tmp_path: Path,
 ) -> None:

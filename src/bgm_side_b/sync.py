@@ -14,6 +14,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from bgm_side_b.admission import (
+    SEARCH_ONLY_MEDIA_UNRESOLVED,
     AdmissionDecision,
     AdmissionStatus,
     QuarterOverride,
@@ -1599,7 +1600,7 @@ def _external_unresolved_cold_review(
     ):
         return None
     if any(
-        not is_unresolved_cold_review(issue.issue_code)
+        issue.issue_code != SEARCH_ONLY_MEDIA_UNRESOLVED
         or issue.candidate_quarter is not None
         for issue in decision.reviews
     ):

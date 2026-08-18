@@ -40,11 +40,24 @@ UNRESOLVED_COLD_REVIEW_ISSUES: Final = frozenset(
         SEARCH_ONLY_MEDIA_UNRESOLVED,
     }
 )
+CONFLICT_REVIEW_ISSUES: Final = frozenset(
+    {
+        DISCOVERY_DATE_MISMATCH,
+        DISCOVERY_MEDIA_CONFLICT,
+        "JAPANESE_REGION_CONFLICT",
+        "JAPANESE_EVIDENCE_CONFLICT",
+    }
+)
 
 
 def is_unresolved_cold_review(issue_code: str) -> bool:
     """Return whether an issue is explicitly allowlisted for cold cleanup."""
     return issue_code in UNRESOLVED_COLD_REVIEW_ISSUES
+
+
+def is_conflict_review(issue_code: str) -> bool:
+    """Return whether an issue records conflicting structured evidence."""
+    return issue_code in CONFLICT_REVIEW_ISSUES
 
 
 def quarter_end_date(quarter: Quarter) -> date:

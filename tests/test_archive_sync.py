@@ -626,6 +626,46 @@ def test_conflict_review_is_never_cold_blacklisted(
     )
 
 
+def test_date_conflict_is_not_blacklisted_by_existing_low_rating_rule(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650030
+    stable_id = 650031
+    candidate = DiscoveredSubject(
+        subject_id,
+        frozenset({MediaFormat.TV}),
+        frozenset({date(2026, 4, 2), date(2026, 4, 3)}),
+        frozenset({2}),
+        ("browse:TV:2026-04", "search:2026-04"),
+    )
+    api = FakeApi(
+        {
+            subject_id: _detail(
+                subject_id,
+                air_date="2026-04-02",
+                rating_count=0,
+                cover=None,
+            ),
+            stable_id: _detail(stable_id, rating_count=100, cover=None),
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((candidate, _candidate(stable_id, MediaFormat.TV))),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 8, 18),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert run.exit_code == 0
+    assert run.quarters[0].auto_blacklisted == ()
+    assert run.quarters[0].reviews[0].issue_code == "DISCOVERY_DATE_MISMATCH"
+    assert repository.get_subject_facts(subject_id) is not None
+
+
 def test_manual_quarter_override_wins_over_unresolved_cold_rule(
     tmp_path: Path,
 ) -> None:

@@ -14,12 +14,12 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from bgm_side_b.admission import (
-    DISCOVERY_MEDIA_CONFLICT,
     AdmissionDecision,
     AdmissionStatus,
     QuarterOverride,
     ReviewFinding,
     admit_subject,
+    is_conflict_review,
     is_unresolved_cold_review,
     quarter_end_date,
     quarter_for_date,
@@ -1554,7 +1554,7 @@ def _eligible_for_auto_blacklist(decision: AdmissionDecision) -> bool:
         and decision.japanese is not None
         and decision.japanese.classification is JapaneseClassification.ACCEPTED_JAPANESE
         and all(
-            issue.issue_code != DISCOVERY_MEDIA_CONFLICT
+            not is_conflict_review(issue.issue_code)
             for issue in decision.reviews
         )
     )

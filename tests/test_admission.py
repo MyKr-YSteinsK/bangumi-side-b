@@ -8,6 +8,7 @@ from datetime import date
 import pytest
 
 from bgm_side_b.admission import (
+    CONFLICT_REVIEW_ISSUES,
     DISCOVERY_DATE_MISMATCH,
     DISCOVERY_MEDIA_CONFLICT,
     JAPANESE_CLASSIFICATION_UNRESOLVED,
@@ -18,6 +19,7 @@ from bgm_side_b.admission import (
     AdmissionStatus,
     QuarterOverride,
     admit_subject,
+    is_conflict_review,
     is_unresolved_cold_review,
     quarter_end_date,
     should_auto_blacklist_unresolved_cold,
@@ -212,6 +214,15 @@ def test_unresolved_cold_allowlist_contains_only_evidence_missing_issues() -> No
     assert not is_unresolved_cold_review(DISCOVERY_DATE_MISMATCH)
     assert not is_unresolved_cold_review(DISCOVERY_MEDIA_CONFLICT)
     assert not is_unresolved_cold_review("JAPANESE_REGION_CONFLICT")
+    assert CONFLICT_REVIEW_ISSUES == frozenset(
+        {
+            DISCOVERY_DATE_MISMATCH,
+            DISCOVERY_MEDIA_CONFLICT,
+            "JAPANESE_REGION_CONFLICT",
+            "JAPANESE_EVIDENCE_CONFLICT",
+        }
+    )
+    assert all(is_conflict_review(code) for code in CONFLICT_REVIEW_ISSUES)
 
 
 @pytest.mark.parametrize("rating_count", (None, 0, 29))

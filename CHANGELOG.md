@@ -4,6 +4,14 @@
 
 ## 尚未发布
 
+## 0.3.0 - 2026-08-19
+
+### 修复
+
+- Quarter 与 Archive 的评分列表和 Detail 统一固定显示一位小数；缺失评分继续显示为缺失，不伪造 `0.0`。
+- 修复当前季度 TV 总集数事实链：571784 等作品使用已验证的计划正片总话数；未知集数不再显示为 `0`。
+- 同步报告增加总话数来源审计，区分 canonical subject、精确 Infobox、主线 episode registry 与 unknown。
+
 ### 新增
 
 - Settings 新增静态 05 / CHANGELOG，离线显示当前程序版本、尚未发布内容、当前 release 与历史版本折叠状态；不在运行时请求 GitHub 或 CHANGELOG。

@@ -14,7 +14,11 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from bgm_side_b.admission import MOVIE_DATE_UNRESOLVED, QuarterOverride
+from bgm_side_b.admission import (
+    MOVIE_DATE_UNRESOLVED,
+    TV_QUARTER_DATE_UNRESOLVED,
+    QuarterOverride,
+)
 from bgm_side_b.api import BangumiApiError, ImageResponse, SubjectDetail
 from bgm_side_b.archive_config import (
     ArchiveSyncSettings,
@@ -465,9 +469,16 @@ def test_mature_unresolved_movie_review_is_auto_blacklisted_and_cleaned(
     assert result.reviews == ()
     assert result.external_reviews == ()
     assert result.auto_blacklisted[0]["subject_id"] == 659091
-    assert result.auto_blacklisted[0]["reason"] == "unresolved_cold_candidate"
+    assert result.auto_blacklisted[0]["reason"] == (
+        "insufficient_airing_information"
+    )
     assert result.auto_blacklisted[0]["issue_code"] == MOVIE_DATE_UNRESOLVED
-    assert result.auto_blacklisted[0]["rating_missing"] is True
+    assert result.auto_blacklisted[0]["target_quarter"] == "2026-04"
+    assert result.auto_blacklisted[0]["quarter_end"] == "2026-06-30"
+    assert result.auto_blacklisted[0]["days_after_quarter_end"] == 49
+    assert "rating_count" not in result.auto_blacklisted[0]
+    assert "rating_threshold" not in result.auto_blacklisted[0]
+    assert "rating_missing" not in result.auto_blacklisted[0]
     assert repository.get_subject_facts(659091) is None
     assert not (covers / "659091.webp").exists()
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
@@ -514,15 +525,8 @@ def test_mature_search_only_cold_reviews_are_blacklisted_without_storage(
 
     result = run.quarters[0]
     assert run.exit_code == 0
-    assert [item["subject_id"] for item in result.auto_blacklisted] == [
-        650020,
-        650021,
-        650022,
-    ]
-    assert {item["subject_id"] for item in result.external_reviews} == {
-        650023,
-        650024,
-    }
+    assert [item["subject_id"] for item in result.auto_blacklisted] == list(subject_ids)
+    assert result.external_reviews == ()
     assert result.persisted_review_count == 0
     assert all(
         repository.get_subject_facts(subject_id) is None for subject_id in subject_ids
@@ -530,14 +534,14 @@ def test_mature_search_only_cold_reviews_are_blacklisted_without_storage(
     assert api.image_calls == []
     assert api.subject_calls == list(subject_ids)
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
-        frozenset({650020, 650021, 650022})
+        frozenset(subject_ids)
     )
     report = json.loads(run.report_path.read_text(encoding="utf-8"))
     assert report["new_auto_by_reason"] == {
-        "unresolved_cold_candidate": 3,
+        "insufficient_airing_information": 5,
     }
     assert report["quarters"][0]["new_auto_by_reason"] == {
-        "unresolved_cold_candidate": 3,
+        "insufficient_airing_information": 5,
     }
 
 
@@ -583,8 +587,9 @@ def test_search_only_cold_rule_keeps_unmatured_review(
     )
 
 
+@pytest.mark.parametrize("rating_count", (0, 500))
 def test_conflict_review_is_never_cold_blacklisted(
-    tmp_path: Path,
+    tmp_path: Path, rating_count: int
 ) -> None:
     settings_path = _auto_settings_path(tmp_path)
     subject_id = 650026
@@ -601,7 +606,7 @@ def test_conflict_review_is_never_cold_blacklisted(
             subject_id: _detail(
                 subject_id,
                 air_date=None,
-                rating_count=0,
+                rating_count=rating_count,
                 cover=None,
             ),
             stable_id: _detail(stable_id, rating_count=100, cover=None),
@@ -624,6 +629,72 @@ def test_conflict_review_is_never_cold_blacklisted(
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
         frozenset()
     )
+
+
+@pytest.mark.parametrize(
+    ("evaluation_date", "blacklisted"),
+    ((date(2026, 10, 7), False), (date(2026, 10, 8), True)),
+)
+def test_tv_quarter_date_unresolved_616616_uses_target_quarter_maturity(
+    tmp_path: Path, evaluation_date: date, blacklisted: bool
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    target_quarter = Quarter(2026, 7)
+    subject_id = 616616
+    candidate = DiscoveredSubject(
+        subject_id,
+        frozenset({MediaFormat.TV}),
+        frozenset(),
+        frozenset({2}),
+        ("browse:TV:2026-07",),
+    )
+    api = FakeApi(
+        {
+            subject_id: _detail(
+                subject_id,
+                air_date=None,
+                rating_count=500,
+                cover=None,
+            )
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((candidate,)),
+        settings_path=settings_path,
+        evaluation_date=evaluation_date,
+    )
+    _store_existing(
+        repository,
+        subject_id,
+        review_issues=(
+            ReviewIssue(
+                TV_QUARTER_DATE_UNRESOLVED,
+                target_quarter,
+                None,
+                {"subject_id": subject_id},
+                "old",
+            ),
+        ),
+        premiere_quarter=target_quarter,
+    )
+
+    result = sync.run(
+        SyncScope(target_quarter, target_quarter, refresh_existing=True)
+    ).quarters[0]
+
+    assert bool(result.auto_blacklisted) is blacklisted
+    if blacklisted:
+        assert result.auto_blacklisted[0]["subject_id"] == subject_id
+        assert result.reviews == ()
+    else:
+        assert result.auto_blacklisted == ()
+        assert result.persisted_review_count == 1
+        assert (
+            repository.list_review_issues(target_quarter)[0].issue.issue_code
+            == TV_QUARTER_DATE_UNRESOLVED
+        )
 
 
 def test_date_conflict_is_not_blacklisted_by_existing_low_rating_rule(
@@ -744,7 +815,7 @@ def test_range_sync_deduplicates_new_cold_blacklist_event(
     report = json.loads(run.report_path.read_text(encoding="utf-8"))
     assert report["auto_blacklisted_count"] == 1
     assert report["new_auto_by_reason"] == {
-        "unresolved_cold_candidate": 1,
+        "insufficient_airing_information": 1,
     }
     assert repository.get_subject_facts(subject_id) is None
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
@@ -1394,6 +1465,7 @@ def test_search_only_media_does_not_enter_normal_premiere_sync(
         api,
         DiscoveryBatch((_candidate(101, MediaFormat.TV),)),
         DiscoveryBatch((search_only,)),
+        evaluation_date=date(2026, 7, 7),
     )
 
     run = sync.run(SyncScope(QUARTER, QUARTER))

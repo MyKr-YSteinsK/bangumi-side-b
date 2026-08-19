@@ -77,10 +77,12 @@ def should_auto_blacklist_unresolved_cold(
     rating_count: int | None,
     evaluation_date: date,
 ) -> bool:
-    """Apply the mature-quarter low-signal rule to an allowlisted REVIEW."""
+    """Apply the mature-quarter information-insufficiency rule.
+
+    ``rating_count`` remains in the narrow predicate signature for compatibility
+    with existing callers, but is intentionally not part of this decision.
+    """
     if not is_unresolved_cold_review(issue_code) or target_quarter is None:
-        return False
-    if rating_count is not None and not 0 <= rating_count < 30:
         return False
     return (evaluation_date - quarter_end_date(target_quarter)).days > 7
 

@@ -506,7 +506,7 @@ class ArchiveSynchronizer:
                                 _auto_blacklist_event(
                                     detail,
                                     self.evaluation_date,
-                                    reason="unresolved_cold_candidate",
+                                    reason="insufficient_airing_information",
                                     issue_code=issue_code,
                                     target_quarter=target_quarter,
                                 )
@@ -540,7 +540,7 @@ class ArchiveSynchronizer:
                                 _auto_blacklist_event(
                                     detail,
                                     self.evaluation_date,
-                                    reason="unresolved_cold_candidate",
+                                    reason="insufficient_airing_information",
                                     issue_code=issue_code,
                                     target_quarter=target_quarter,
                                 )
@@ -1626,20 +1626,16 @@ def _auto_blacklist_event(
         "subject_id": detail.subject_id,
         "title": detail.name_cn or detail.name or str(detail.subject_id),
         "evaluation_date": evaluation_date.isoformat(),
-        "rating_count": detail.rating_total,
         "reason": reason,
     }
-    if detail.air_date is not None:
-        event["air_date"] = detail.air_date.isoformat()
-        event["days_since_air_date"] = (evaluation_date - detail.air_date).days
-    else:
-        event["air_date"] = None
-        event["days_since_air_date"] = None
     if reason == "low_rating_count":
         assert detail.air_date is not None
         assert detail.rating_total is not None
         event.update(
             {
+                "rating_count": detail.rating_total,
+                "air_date": detail.air_date.isoformat(),
+                "days_since_air_date": (evaluation_date - detail.air_date).days,
                 "threshold": "rating_count < 30",
                 "protection_days": "> 7 days",
             }
@@ -1654,8 +1650,6 @@ def _auto_blacklist_event(
                 "target_quarter": _quarter_label(target_quarter),
                 "quarter_end": quarter_end.isoformat(),
                 "days_after_quarter_end": (evaluation_date - quarter_end).days,
-                "rating_threshold": 30,
-                "rating_missing": detail.rating_total is None,
                 "protection_days": "> 7 days after quarter end",
             }
         )

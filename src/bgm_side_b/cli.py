@@ -509,17 +509,22 @@ def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:
 
 def _auto_blacklist_line(item: dict[str, object]) -> str:
     """Render a compact automatic exclusion event with its stable reason."""
+    if item.get("reason") == "insufficient_airing_information":
+        line = (
+            "AUTO BLACKLISTED "
+            f"{item['subject_id']}: {item['title']}"
+        )
+        line += (
+            f" reason={item['reason']}"
+            f" issue={item['issue_code']}"
+        )
+        return line
     line = (
         "AUTO BLACKLISTED "
         f"{item['subject_id']}: {item['title']} "
         f"({item.get('days_since_air_date')} days, "
         f"ratings={item['rating_count']})"
     )
-    if item.get("reason") == "unresolved_cold_candidate":
-        line += (
-            f" reason={item['reason']}"
-            f" issue={item['issue_code']}"
-        )
     return line
 
 

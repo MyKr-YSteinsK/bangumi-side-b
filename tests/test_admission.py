@@ -225,8 +225,8 @@ def test_unresolved_cold_allowlist_contains_only_evidence_missing_issues() -> No
     assert all(is_conflict_review(code) for code in CONFLICT_REVIEW_ISSUES)
 
 
-@pytest.mark.parametrize("rating_count", (None, 0, 29))
-def test_unresolved_cold_rule_accepts_missing_and_strictly_low_ratings(
+@pytest.mark.parametrize("rating_count", (None, 0, 29, 30, 500))
+def test_unresolved_cold_rule_ignores_rating_count_and_requires_maturity(
     rating_count: int | None,
 ) -> None:
     quarter = Quarter(2026, 4)
@@ -237,20 +237,11 @@ def test_unresolved_cold_rule_accepts_missing_and_strictly_low_ratings(
         rating_count,
         date(2026, 7, 8),
     )
-
-
-@pytest.mark.parametrize(
-    ("rating_count", "evaluation_date"),
-    ((30, date(2026, 7, 8)), (29, date(2026, 7, 7)), (None, date(2026, 7, 7))),
-)
-def test_unresolved_cold_rule_protects_threshold_and_maturity_boundaries(
-    rating_count: int | None, evaluation_date: date
-) -> None:
     assert not should_auto_blacklist_unresolved_cold(
         TV_QUARTER_DATE_UNRESOLVED,
         Quarter(2026, 4),
         rating_count,
-        evaluation_date,
+        date(2026, 7, 7),
     )
 
 

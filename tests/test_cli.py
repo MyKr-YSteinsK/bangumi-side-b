@@ -380,14 +380,12 @@ def test_sync_summary_exposes_unresolved_cold_blacklist_reason() -> None:
         {
             "subject_id": 659091,
             "title": "冷门电影",
-            "days_since_air_date": None,
-            "rating_count": None,
-            "reason": "unresolved_cold_candidate",
+            "reason": "insufficient_airing_information",
             "issue_code": "MOVIE_DATE_UNRESOLVED",
         }
     ) == (
-        "AUTO BLACKLISTED 659091: 冷门电影 (None days, ratings=None) "
-        "reason=unresolved_cold_candidate issue=MOVIE_DATE_UNRESOLVED"
+        "AUTO BLACKLISTED 659091: 冷门电影 "
+        "reason=insufficient_airing_information issue=MOVIE_DATE_UNRESOLVED"
     )
 
 

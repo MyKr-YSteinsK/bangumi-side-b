@@ -188,6 +188,13 @@ class _PreparedSubject:
 
 
 @dataclass(frozen=True)
+class _EpisodeCountResolution:
+    value: int | None
+    source: str
+    warning: str | None = None
+
+
+@dataclass(frozen=True)
 class _ContinuingReconciliation:
     """Complete externally gathered evidence for one target-quarter replacement."""
 
@@ -836,6 +843,8 @@ class ArchiveSynchronizer:
         decision: object,
         existing: SubjectSnapshot | None,
         review_scope: Quarter,
+        *,
+        episode_count: int | None = None,
     ) -> _PreparedSubject:
         assert isinstance(decision, AdmissionDecision)
         assert decision.media_format is not None
@@ -864,7 +873,7 @@ class ArchiveSynchronizer:
                 decision.media_format,
                 detail.air_date,
                 _end_date(detail.infobox),
-                _episode_count(detail),
+                _episode_count(detail) if episode_count is None else episode_count,
                 detail.rating_score,
                 detail.rating_total,
                 decision.japanese,
@@ -1656,17 +1665,35 @@ def _external_review(
     }
 
 
+def _resolve_episode_count(
+    detail: SubjectDetail, *, registry_count: object = None
+) -> _EpisodeCountResolution:
+    canonical = [
+        positive
+        for value in (detail.total_episodes, detail.eps)
+        if (positive := _strict_positive_integer(value)) is not None
+    ]
+    infobox = [
+        positive
+        for item in detail.infobox
+        if item.key == "话数"
+        and (positive := _strict_positive_integer(item.value)) is not None
+    ]
+    trusted = set(canonical) | set(infobox)
+    if len(trusted) > 1:
+        return _EpisodeCountResolution(None, "conflict", "episode_count_conflict")
+    if canonical:
+        return _EpisodeCountResolution(canonical[0], "subject_structured")
+    if infobox:
+        return _EpisodeCountResolution(infobox[0], "infobox")
+    registry = _strict_positive_integer(registry_count)
+    if registry is not None:
+        return _EpisodeCountResolution(registry, "episode_registry")
+    return _EpisodeCountResolution(None, "unknown")
+
+
 def _episode_count(detail: SubjectDetail) -> int | None:
-    for value in (detail.total_episodes, detail.eps):
-        positive = _strict_positive_integer(value)
-        if positive is not None:
-            return positive
-    for item in detail.infobox:
-        if item.key == "话数":
-            positive = _strict_positive_integer(item.value)
-            if positive is not None:
-                return positive
-    return None
+    return _resolve_episode_count(detail).value
 
 
 def _strict_positive_integer(value: object) -> int | None:

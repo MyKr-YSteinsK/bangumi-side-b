@@ -12,6 +12,23 @@ python -m pip install -e ".[dev]"
 程序版本直接来自源码。普通代码修改不需要为了版本读取而重新执行
 editable install；安装包元数据只会在 `bgmb doctor` 中作为环境提示显示。
 
+## 版本决策与 Release impact
+
+每份 Plan 或 bugfix 的完成报告都要明确写出 `Release impact`、推荐版本和理由：
+
+- `none`：纯测试、内部重构、CI 调整或不影响用户行为的文档维护；版本保持不变，
+  不 publish。
+- `version-only`：极小的用户可见修复（例如局部文案或显示错误）；提升 patch，
+  更新 CHANGELOG 与 Settings，但不自动执行 `release publish`。
+- `full-release / patch`：数据正确性、同步、季度归属、PWA 离线或页面可用性等
+  核心修复；提升 patch，并在 Plan 明确包含发布阶段或用户明确授权后正式 publish。
+- `full-release / minor`：明显的新用户功能或一批累计的重要行为变化；提升 minor，
+  同样只在明确授权的发布流程中 publish。
+
+普通开发提交不得顺手发布 Pages。只有完整 Plan 的集成验证、普通分支 push、CI
+精确 SHA 校验和 `release prepare` 全部通过后，才能按明确授权执行
+`release publish`；报告中的推荐版本必须与源码单一版本号和 Settings 构建结果一致。
+
 ## 日常检查
 
 ```powershell

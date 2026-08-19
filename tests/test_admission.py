@@ -21,7 +21,6 @@ from bgm_side_b.admission import (
     admit_subject,
     is_conflict_review,
     is_unresolved_cold_review,
-    quarter_end_date,
     should_auto_blacklist_unresolved_cold,
 )
 from bgm_side_b.api import ApiTag, SubjectDetail
@@ -225,37 +224,19 @@ def test_unresolved_cold_allowlist_contains_only_evidence_missing_issues() -> No
     assert all(is_conflict_review(code) for code in CONFLICT_REVIEW_ISSUES)
 
 
-@pytest.mark.parametrize("rating_count", (None, 0, 29, 30, 500))
-def test_unresolved_cold_rule_ignores_rating_count_and_requires_maturity(
-    rating_count: int | None,
+@pytest.mark.parametrize(
+    "issue_code",
+    tuple(sorted(UNRESOLVED_COLD_REVIEW_ISSUES)),
+)
+def test_unresolved_cold_rule_blacklists_allowlisted_issues_immediately(
+    issue_code: str,
 ) -> None:
-    quarter = Quarter(2026, 4)
-    assert quarter_end_date(quarter) == date(2026, 6, 30)
-    assert should_auto_blacklist_unresolved_cold(
-        MOVIE_DATE_UNRESOLVED,
-        quarter,
-        rating_count,
-        date(2026, 7, 8),
-    )
-    assert not should_auto_blacklist_unresolved_cold(
-        TV_QUARTER_DATE_UNRESOLVED,
-        Quarter(2026, 4),
-        rating_count,
-        date(2026, 7, 7),
-    )
+    assert should_auto_blacklist_unresolved_cold(issue_code)
 
 
-def test_unresolved_cold_rule_requires_allowlisted_issue_and_target_quarter() -> None:
-    evaluation_date = date(2026, 7, 8)
-    assert not should_auto_blacklist_unresolved_cold(
-        DISCOVERY_DATE_MISMATCH,
-        Quarter(2026, 4),
-        0,
-        evaluation_date,
-    )
-    assert not should_auto_blacklist_unresolved_cold(
-        MOVIE_DATE_UNRESOLVED, None, 0, evaluation_date
-    )
+def test_unresolved_cold_rule_requires_allowlisted_issue() -> None:
+    assert not should_auto_blacklist_unresolved_cold(DISCOVERY_DATE_MISMATCH)
+    assert not should_auto_blacklist_unresolved_cold(DISCOVERY_MEDIA_CONFLICT)
 
 
 def test_manual_override_wins_only_after_scope_and_japanese_admission() -> None:

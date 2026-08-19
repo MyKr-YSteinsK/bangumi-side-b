@@ -30,8 +30,8 @@ JAPANESE_CLASSIFICATION_UNRESOLVED: Final = "JAPANESE_CLASSIFICATION_UNRESOLVED"
 SEARCH_ONLY_MEDIA_UNRESOLVED: Final = "SEARCH_ONLY_MEDIA_UNRESOLVED"
 _UNSUPPORTED_MEDIA_PLATFORMS: Final = frozenset({"WEB", "OVA", "OAD"})
 
-# Only evidence-missing REVIEWs may participate in the mature-quarter cold
-# candidate rule.  Conflict and classification REVIEWs remain human-only.
+# Only evidence-missing REVIEWs may participate in the immediate cold cleanup
+# rule. Conflict and classification REVIEWs remain human-only.
 UNRESOLVED_COLD_REVIEW_ISSUES: Final = frozenset(
     {
         TV_QUARTER_BOUNDARY,
@@ -60,31 +60,9 @@ def is_conflict_review(issue_code: str) -> bool:
     return issue_code in CONFLICT_REVIEW_ISSUES
 
 
-def quarter_end_date(quarter: Quarter) -> date:
-    """Return the final calendar day covered by an archive quarter."""
-    if quarter.month == 1:
-        return date(quarter.year, 3, 31)
-    if quarter.month == 4:
-        return date(quarter.year, 6, 30)
-    if quarter.month == 7:
-        return date(quarter.year, 9, 30)
-    return date(quarter.year, 12, 31)
-
-
-def should_auto_blacklist_unresolved_cold(
-    issue_code: str,
-    target_quarter: Quarter | None,
-    rating_count: int | None,
-    evaluation_date: date,
-) -> bool:
-    """Apply the mature-quarter information-insufficiency rule.
-
-    ``rating_count`` remains in the narrow predicate signature for compatibility
-    with existing callers, but is intentionally not part of this decision.
-    """
-    if not is_unresolved_cold_review(issue_code) or target_quarter is None:
-        return False
-    return (evaluation_date - quarter_end_date(target_quarter)).days > 7
+def should_auto_blacklist_unresolved_cold(issue_code: str) -> bool:
+    """Apply the immediate information-insufficiency rule."""
+    return is_unresolved_cold_review(issue_code)
 
 
 class AdmissionStatus(StrEnum):

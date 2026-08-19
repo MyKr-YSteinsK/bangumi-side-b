@@ -37,8 +37,8 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 范围的增量 build。局部失败或中断不会把未验证资料标记为完整。
 
 同步在确认 Anime、日本、TV/MOVIE 基础范围后，还会应用两条自动永久冷门规则：可靠首播超过 7 天且
-评分人数少于 30；或明确 allowlist 中的缺失证据型 REVIEW 在目标季度结束超过 7 天，与评分人数无关。
-第二条规则只处理信息不足的 allowlist issue；季度未成熟、目标季度不明和冲突型 REVIEW 都不会自动排除。
+评分人数少于 30；或明确 allowlist 中的信息不足型 REVIEW 立即自动排除，与目标季度成熟度和评分人数无关。
+第二条规则只处理信息不足的 allowlist issue；冲突型 REVIEW 不会自动排除。
 命中作品会写入 `config/bangumi.toml` 的
 `auto_excluded_subject_ids`，同时记录标题注释和审计证据，并在本次同步中跳过季度归属、REVIEW、
 封面和站点输出。评分人数后来上涨也不会自动恢复。
@@ -46,7 +46,7 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 自动黑名单是永久状态。只有人工从 `auto_excluded_subject_ids` 删除对应 ID 后，作品才有机会在
 后续 sync 中重新评估。人工 `excluded_subject_ids` 与自动列表来源不同，均应保留配置中的现有注释。
 同步报告会分别显示人工命中、历史自动命中和本次新增自动拉黑数量，并在 `new_auto_by_reason` 中
-区分可靠首播低评分和成熟季度未决冷门两类原因。
+区分可靠首播低评分和信息不足型未决冷门两类原因。
 
 Browse/Search 只发现候选，正式 subject facts 会再通过 canonical detail 验证。集数只接受可靠
 正整数；`0`、缺失、负数和无效文本都显示为未知，只有精确 Infobox `话数` 的纯数字值可以作为

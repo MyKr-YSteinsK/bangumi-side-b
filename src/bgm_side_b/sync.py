@@ -22,7 +22,6 @@ from bgm_side_b.admission import (
     admit_subject,
     is_conflict_review,
     is_unresolved_cold_review,
-    quarter_end_date,
     quarter_for_date,
     should_auto_blacklist_unresolved_cold,
 )
@@ -481,12 +480,7 @@ class ArchiveSynchronizer:
                 unresolved_cold = _persisted_unresolved_cold_review(decision)
                 if unresolved_cold is not None:
                     issue_code, target_quarter = unresolved_cold
-                    if should_auto_blacklist_unresolved_cold(
-                        issue_code,
-                        target_quarter,
-                        detail.rating_total,
-                        self.evaluation_date,
-                    ):
+                    if should_auto_blacklist_unresolved_cold(issue_code):
                         try:
                             added = self._record_auto_blacklist(
                                 detail,
@@ -515,12 +509,7 @@ class ArchiveSynchronizer:
                 external_cold = _external_unresolved_cold_review(decision, quarter)
                 if external_cold is not None:
                     issue_code, target_quarter = external_cold
-                    if should_auto_blacklist_unresolved_cold(
-                        issue_code,
-                        target_quarter,
-                        detail.rating_total,
-                        self.evaluation_date,
-                    ):
+                    if should_auto_blacklist_unresolved_cold(issue_code):
                         try:
                             added = self._record_auto_blacklist(
                                 detail,
@@ -1563,8 +1552,8 @@ def _eligible_for_auto_blacklist(decision: AdmissionDecision) -> bool:
 
 def _persisted_unresolved_cold_review(
     decision: AdmissionDecision,
-) -> tuple[str, Quarter] | None:
-    """Return one explicit cold-review issue when its target is unambiguous."""
+) -> tuple[str, Quarter | None] | None:
+    """Return an explicit information-insufficiency issue for cleanup."""
     if (
         decision.status is not AdmissionStatus.REVIEW
         or decision.media_format not in {MediaFormat.TV, MediaFormat.MOVIE}
@@ -1580,11 +1569,9 @@ def _persisted_unresolved_cold_review(
     ):
         return None
     target_quarters = {issue.candidate_quarter for issue in decision.reviews}
-    if len(target_quarters) != 1:
-        return None
-    target_quarter = next(iter(target_quarters))
-    if target_quarter is None:
-        return None
+    target_quarter = (
+        next(iter(target_quarters)) if len(target_quarters) == 1 else None
+    )
     return decision.reviews[0].issue_code, target_quarter
 
 
@@ -1642,17 +1629,9 @@ def _auto_blacklist_event(
         )
     else:
         assert issue_code is not None
-        assert target_quarter is not None
-        quarter_end = quarter_end_date(target_quarter)
-        event.update(
-            {
-                "issue_code": issue_code,
-                "target_quarter": _quarter_label(target_quarter),
-                "quarter_end": quarter_end.isoformat(),
-                "days_after_quarter_end": (evaluation_date - quarter_end).days,
-                "protection_days": "> 7 days after quarter end",
-            }
-        )
+        event["issue_code"] = issue_code
+        if target_quarter is not None:
+            event["target_quarter"] = _quarter_label(target_quarter)
     return event
 
 

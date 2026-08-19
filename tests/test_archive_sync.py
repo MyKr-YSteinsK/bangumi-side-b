@@ -390,7 +390,7 @@ def test_auto_blacklist_protection_and_rating_threshold_keep_subject(
     )
 
 
-def test_auto_blacklist_does_not_guess_missing_air_date_or_rating_count(
+def test_auto_blacklist_keeps_rule_a_strict_and_rule_b_immediate(
     tmp_path: Path,
 ) -> None:
     settings_path = _auto_settings_path(tmp_path)
@@ -414,15 +414,20 @@ def test_auto_blacklist_does_not_guess_missing_air_date_or_rating_count(
     run = sync.run(SyncScope(QUARTER, QUARTER))
 
     assert run.exit_code == 0
-    assert run.quarters[0].auto_blacklisted == ()
-    assert repository.get_subject_facts(650003) is not None
+    result = run.quarters[0]
+    assert [item["subject_id"] for item in result.auto_blacklisted] == [650003]
+    assert result.auto_blacklisted[0]["reason"] == (
+        "insufficient_airing_information"
+    )
+    assert "rating_count" not in result.auto_blacklisted[0]
+    assert repository.get_subject_facts(650003) is None
     assert repository.get_subject_facts(650004) is not None
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
-        frozenset()
+        frozenset({650003})
     )
 
 
-def test_mature_unresolved_movie_review_is_auto_blacklisted_and_cleaned(
+def test_unresolved_movie_review_is_auto_blacklisted_immediately_and_cleaned(
     tmp_path: Path,
 ) -> None:
     settings_path = _auto_settings_path(tmp_path)
@@ -442,7 +447,7 @@ def test_mature_unresolved_movie_review_is_auto_blacklisted_and_cleaned(
         api,
         DiscoveryBatch((_candidate(659091, MediaFormat.MOVIE),)),
         settings_path=settings_path,
-        evaluation_date=date(2026, 8, 18),
+        evaluation_date=date(2026, 4, 1),
     )
     _store_existing(
         repository,
@@ -474,11 +479,12 @@ def test_mature_unresolved_movie_review_is_auto_blacklisted_and_cleaned(
     )
     assert result.auto_blacklisted[0]["issue_code"] == MOVIE_DATE_UNRESOLVED
     assert result.auto_blacklisted[0]["target_quarter"] == "2026-04"
-    assert result.auto_blacklisted[0]["quarter_end"] == "2026-06-30"
-    assert result.auto_blacklisted[0]["days_after_quarter_end"] == 49
     assert "rating_count" not in result.auto_blacklisted[0]
     assert "rating_threshold" not in result.auto_blacklisted[0]
     assert "rating_missing" not in result.auto_blacklisted[0]
+    assert "quarter_end" not in result.auto_blacklisted[0]
+    assert "days_after_quarter_end" not in result.auto_blacklisted[0]
+    assert "protection_days" not in result.auto_blacklisted[0]
     assert repository.get_subject_facts(659091) is None
     assert not (covers / "659091.webp").exists()
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
@@ -486,7 +492,7 @@ def test_mature_unresolved_movie_review_is_auto_blacklisted_and_cleaned(
     )
 
 
-def test_mature_search_only_cold_reviews_are_blacklisted_without_storage(
+def test_search_only_cold_reviews_are_blacklisted_immediately_without_storage(
     tmp_path: Path,
 ) -> None:
     settings_path = _auto_settings_path(tmp_path)
@@ -518,7 +524,7 @@ def test_mature_search_only_cold_reviews_are_blacklisted_without_storage(
         api,
         DiscoveryBatch(candidates),
         settings_path=settings_path,
-        evaluation_date=date(2026, 7, 8),
+        evaluation_date=date(2026, 4, 1),
     )
 
     run = sync.run(SyncScope(QUARTER, QUARTER))
@@ -545,7 +551,7 @@ def test_mature_search_only_cold_reviews_are_blacklisted_without_storage(
     }
 
 
-def test_search_only_cold_rule_keeps_unmatured_review(
+def test_search_only_cold_rule_blacklists_before_quarter_end(
     tmp_path: Path,
 ) -> None:
     settings_path = _auto_settings_path(tmp_path)
@@ -572,18 +578,21 @@ def test_search_only_cold_rule_keeps_unmatured_review(
         api,
         DiscoveryBatch((candidate,)),
         settings_path=settings_path,
-        evaluation_date=date(2026, 7, 7),
+        evaluation_date=date(2026, 4, 1),
     )
 
     run = sync.run(SyncScope(QUARTER, QUARTER))
 
     result = run.quarters[0]
     assert run.exit_code == 0
-    assert result.auto_blacklisted == ()
-    assert result.external_reviews[0]["subject_id"] == subject_id
+    assert result.auto_blacklisted[0]["subject_id"] == subject_id
+    assert result.auto_blacklisted[0]["reason"] == (
+        "insufficient_airing_information"
+    )
+    assert result.external_reviews == ()
     assert repository.get_subject_facts(subject_id) is None
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
-        frozenset()
+        frozenset({subject_id})
     )
 
 
@@ -631,12 +640,9 @@ def test_conflict_review_is_never_cold_blacklisted(
     )
 
 
-@pytest.mark.parametrize(
-    ("evaluation_date", "blacklisted"),
-    ((date(2026, 10, 7), False), (date(2026, 10, 8), True)),
-)
-def test_tv_quarter_date_unresolved_616616_uses_target_quarter_maturity(
-    tmp_path: Path, evaluation_date: date, blacklisted: bool
+@pytest.mark.parametrize("rating_count", (None, 0, 500))
+def test_tv_quarter_date_unresolved_616616_blacklists_immediately(
+    tmp_path: Path, rating_count: int | None
 ) -> None:
     settings_path = _auto_settings_path(tmp_path)
     target_quarter = Quarter(2026, 7)
@@ -653,7 +659,7 @@ def test_tv_quarter_date_unresolved_616616_uses_target_quarter_maturity(
             subject_id: _detail(
                 subject_id,
                 air_date=None,
-                rating_count=500,
+                rating_count=rating_count,
                 cover=None,
             )
         }
@@ -663,7 +669,7 @@ def test_tv_quarter_date_unresolved_616616_uses_target_quarter_maturity(
         api,
         DiscoveryBatch((candidate,)),
         settings_path=settings_path,
-        evaluation_date=evaluation_date,
+        evaluation_date=date(2026, 7, 1),
     )
     _store_existing(
         repository,
@@ -684,17 +690,9 @@ def test_tv_quarter_date_unresolved_616616_uses_target_quarter_maturity(
         SyncScope(target_quarter, target_quarter, refresh_existing=True)
     ).quarters[0]
 
-    assert bool(result.auto_blacklisted) is blacklisted
-    if blacklisted:
-        assert result.auto_blacklisted[0]["subject_id"] == subject_id
-        assert result.reviews == ()
-    else:
-        assert result.auto_blacklisted == ()
-        assert result.persisted_review_count == 1
-        assert (
-            repository.list_review_issues(target_quarter)[0].issue.issue_code
-            == TV_QUARTER_DATE_UNRESOLVED
-        )
+    assert result.auto_blacklisted[0]["subject_id"] == subject_id
+    assert result.reviews == ()
+    assert repository.list_review_issues(target_quarter) == ()
 
 
 def test_date_conflict_is_not_blacklisted_by_existing_low_rating_rule(
@@ -1449,9 +1447,10 @@ def test_search_failure_does_not_block_stable_browse_premiere_sync(
     assert repository.get_sync_state(QUARTER).facts_status == FACTS_COMPLETE  # type: ignore[union-attr]
 
 
-def test_search_only_media_does_not_enter_normal_premiere_sync(
+def test_search_only_media_is_immediately_blacklisted_without_normal_sync(
     tmp_path: Path,
 ) -> None:
+    settings_path = _auto_settings_path(tmp_path)
     api = FakeApi({101: _detail(101), 202: _detail(202, platform="")})
     search_only = DiscoveredSubject(
         202,
@@ -1465,7 +1464,8 @@ def test_search_only_media_does_not_enter_normal_premiere_sync(
         api,
         DiscoveryBatch((_candidate(101, MediaFormat.TV),)),
         DiscoveryBatch((search_only,)),
-        evaluation_date=date(2026, 7, 7),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 1),
     )
 
     run = sync.run(SyncScope(QUARTER, QUARTER))
@@ -1473,11 +1473,18 @@ def test_search_only_media_does_not_enter_normal_premiere_sync(
     assert run.exit_code == 0
     result = run.quarters[0]
     assert result.facts_status == FACTS_COMPLETE
-    assert len(result.external_reviews) == 1
+    assert result.auto_blacklisted[0]["subject_id"] == 202
+    assert result.auto_blacklisted[0]["reason"] == (
+        "insufficient_airing_information"
+    )
+    assert result.external_reviews == ()
     assert repository.get_subject_facts(202) is None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset({202})
+    )
     report = json.loads(run.report_path.read_text(encoding="utf-8"))
     assert report["review_count"] == 0
-    assert report["external_review_count"] == 1
+    assert report["external_review_count"] == 0
     assert report["error_count"] == 0
 
 

@@ -24,6 +24,10 @@
     return Number.isFinite(number) ? number.toFixed(1) : "—";
   }
 
+  function hasEpisodeCount(value) {
+    return typeof value === "number" && Number.isInteger(value) && value > 0;
+  }
+
   function readPageSize(storage = window.localStorage) {
     try {
       const value = Number(storage.getItem(PAGE_SIZE_KEY));
@@ -280,6 +284,7 @@
     PAGE_SIZE_KEY,
     normalize,
     formatRating,
+    hasEpisodeCount,
     readPageSize,
     writePageSize,
     createState,
@@ -760,7 +765,7 @@
     const facts = [
       record.quarter ? ["播出季度", record.quarter] : null,
       record.premiere_quarter ? ["首播季度", record.premiere_quarter] : null,
-      record.episode_count !== null && record.episode_count !== undefined ? ["集数", record.episode_count] : null,
+      archive.hasEpisodeCount(record.episode_count) ? ["集数", record.episode_count] : null,
       record.air_date ? ["播出日期", record.air_date] : null,
       record.end_date ? ["结束日期", record.end_date] : null,
       ["评分", archive.formatRating(record.score ?? record.rating_score), "detail-score"],
@@ -1355,7 +1360,7 @@
     content.append(original);
     const metadata = document.createElement("span");
     metadata.className = "subject-row__meta";
-    metadata.textContent = [record.media, record.episode_count ? `${record.episode_count}话` : "", record.air_date || "", archive.sourceLabel(record.source), record.quarter || ""]
+    metadata.textContent = [record.media, archive.hasEpisodeCount(record.episode_count) ? `${record.episode_count}话` : "", record.air_date || "", archive.sourceLabel(record.source), record.quarter || ""]
       .filter(Boolean).join(" · ");
     content.append(metadata);
     const tagList = document.createElement("span");
@@ -1603,7 +1608,7 @@
     const facts = [
       record.quarter ? ["当前季度", record.quarter] : null,
       record.premiere_quarter ? ["首播季度", record.premiere_quarter] : null,
-      record.episode_count !== null && record.episode_count !== undefined ? ["集数", record.episode_count] : null,
+      archive.hasEpisodeCount(record.episode_count) ? ["集数", record.episode_count] : null,
       record.air_date ? ["播出日期", record.air_date] : null,
       record.end_date ? ["结束日期", record.end_date] : null,
       ["评分", archive.formatRating(record.score ?? record.rating_score), "detail-score"],

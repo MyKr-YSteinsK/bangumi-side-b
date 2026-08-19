@@ -697,7 +697,7 @@ def test_detail_omits_missing_facts_and_uses_safe_fallback_labels(
     record["cover"] = None
     record["cover_url"] = None
     record["source"] = "unknown"
-    record["episode_count"] = None
+    record["episode_count"] = 0
     page = chromium.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8000)
     page.route(
@@ -758,7 +758,8 @@ def test_rating_format_is_consistent_in_lists_and_details(
 
     _open_quarter(page, site_server, (1440, 900))
     page.wait_for_function(
-        "document.querySelector('[data-results-summary]')?.textContent.includes('1 / 1')"
+        "document.querySelector('[data-results-summary]')?.textContent.includes("
+        "'1 / 1')"
     )
     row = page.locator('[data-subject-id="101"]')
     assert row.locator(".subject-row__score b").inner_text() == "8.0"

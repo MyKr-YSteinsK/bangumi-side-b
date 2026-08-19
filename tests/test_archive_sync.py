@@ -1389,6 +1389,30 @@ def test_canonical_detail_episode_count_is_persisted_after_partial_discovery(
     assert run.quarters[0].canonical_detail_requests == 1
 
 
+def test_bgm_571784_episode_count_survives_sync_and_repository(tmp_path: Path) -> None:
+    fixture = json.loads(
+        (ROOT / "tests" / "fixtures" / "api" / "subject-571784.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    api = FakeApi({571784: SubjectDetail.from_payload(fixture)})
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch(
+            (_candidate(571784, MediaFormat.TV, date(2026, 7, 9)),)
+        ),
+    )
+
+    quarter = Quarter(2026, 7)
+    run = sync.run(SyncScope(quarter, quarter))
+
+    facts = repository.get_subject_facts(571784)
+    assert run.exit_code == 0
+    assert facts is not None and facts.subject.episode_count == 12
+    assert run.quarters[0].episode_source_counts == (("subject_structured", 1),)
+
+
 def test_unknown_canonical_episode_count_uses_bounded_registry_fallback(
     tmp_path: Path,
 ) -> None:

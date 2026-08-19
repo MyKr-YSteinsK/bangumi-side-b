@@ -38,6 +38,13 @@ def unified_site(tmp_path: Path) -> Iterator[Path]:
     yield tmp_path / "dist" / "site"
 
 
+@pytest.fixture
+def unified_site_571784(tmp_path: Path) -> Iterator[Path]:
+    builder, _ = _build_fixture(tmp_path, primary_subject_id=571784)
+    builder.build()
+    yield tmp_path / "dist" / "site"
+
+
 class BrowserHarness:
     def __init__(self, context: BrowserContext) -> None:
         self.context = context
@@ -66,6 +73,23 @@ def site_server(unified_site: Path) -> Iterator[str]:
     handler = functools.partial(
         http.server.SimpleHTTPRequestHandler,
         directory=str(unified_site),
+    )
+    server = _server(handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.fixture
+def site_server_571784(unified_site_571784: Path) -> Iterator[str]:
+    handler = functools.partial(
+        http.server.SimpleHTTPRequestHandler,
+        directory=str(unified_site_571784),
     )
     server = _server(handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -715,6 +739,20 @@ def test_detail_omits_missing_facts_and_uses_safe_fallback_labels(
     assert "来源未知" in detail.inner_text()
     assert "集数" not in detail.inner_text()
     assert detail.evaluate("node => node.scrollWidth <= node.clientWidth")
+
+
+def test_bgm_571784_detail_renders_twelve_episodes(
+    chromium: BrowserContext,
+    site_server_571784: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server_571784, (390, 844))
+    page.locator('[data-subject-id="571784"] [data-open-subject]').click()
+    detail = page.locator("[data-detail-panel]")
+    assert "集数" in detail.inner_text()
+    assert "12" in detail.inner_text()
+    assert "集数 0" not in detail.inner_text()
 
 
 def test_rating_format_is_consistent_in_lists_and_details(

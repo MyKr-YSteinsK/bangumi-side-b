@@ -16,6 +16,11 @@ RE_ZERO = json.loads(
         encoding="utf-8"
     )
 )
+RE_571784 = json.loads(
+    (ROOT / "tests" / "fixtures" / "api" / "subject-571784.json").read_text(
+        encoding="utf-8"
+    )
+)
 
 
 def _detail(
@@ -37,6 +42,15 @@ def test_bgm_547888_canonical_detail_has_eleven_episodes() -> None:
     assert detail.total_episodes == 11
     assert detail.eps == 11
     assert _episode_count(detail) == 11
+
+
+def test_bgm_571784_fixture_resolves_twelve_planned_episodes() -> None:
+    detail = SubjectDetail.from_payload(RE_571784)
+
+    assert detail.subject_id == 571784
+    assert detail.total_episodes == 12
+    assert detail.eps == 12
+    assert _resolve_episode_count(detail).value == 12
 
 
 @pytest.mark.parametrize(

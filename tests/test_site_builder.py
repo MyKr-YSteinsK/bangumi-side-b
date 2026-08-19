@@ -97,16 +97,18 @@ def _subject(
     )
 
 
-def _build_fixture(tmp_path: Path) -> tuple[UnifiedSiteBuilder, Database]:
+def _build_fixture(
+    tmp_path: Path, *, primary_subject_id: int = 101
+) -> tuple[UnifiedSiteBuilder, Database]:
     workspace = tmp_path / "workspace"
     database = Database(workspace / "data" / "archive.sqlite3")
     database.initialize()
     covers = workspace / "covers"
     covers.mkdir(parents=True)
     cover_bytes = _valid_cover_bytes()
-    (covers / "101.webp").write_bytes(cover_bytes)
+    (covers / f"{primary_subject_id}.webp").write_bytes(cover_bytes)
     cover = CoverRecord(
-        "https://example.invalid/101",
+        f"https://example.invalid/{primary_subject_id}",
         "large",
         hashlib.sha256(cover_bytes).hexdigest(),
         9,
@@ -115,7 +117,7 @@ def _build_fixture(tmp_path: Path) -> tuple[UnifiedSiteBuilder, Database]:
     )
     repository = SubjectRepository(database)
     april = _subject(
-        101,
+        primary_subject_id,
         MediaFormat.TV,
         Quarter(2026, 4),
         cover=cover,
@@ -204,6 +206,23 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert second.patch.written == ()
     assert second.dirty.skipped_quarters == ("2026-04", "2026-07")
     assert first.report_path.is_file()
+
+
+def test_bgm_571784_episode_count_survives_projection_and_site_build(
+    tmp_path: Path,
+) -> None:
+    builder, database = _build_fixture(tmp_path, primary_subject_id=571784)
+
+    builder.build()
+
+    quarter = json.loads(
+        (tmp_path / "dist" / "site" / "data" / "quarters" / "2026-07.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    records = quarter["tv"]["continuing"]
+    record = next(item for item in records if item["subject_id"] == 571784)
+    assert record["episode_count"] == 12
 
 
 def test_build_rejects_malformed_changelog_instead_of_dropping_release_data(

@@ -18,6 +18,12 @@
       .toLocaleLowerCase();
   }
 
+  function formatRating(value) {
+    if (value === null || value === undefined || value === "") return "—";
+    const number = Number(value);
+    return Number.isFinite(number) ? number.toFixed(1) : "—";
+  }
+
   function readPageSize(storage = window.localStorage) {
     try {
       const value = Number(storage.getItem(PAGE_SIZE_KEY));
@@ -273,6 +279,7 @@
     SORTS,
     PAGE_SIZE_KEY,
     normalize,
+    formatRating,
     readPageSize,
     writePageSize,
     createState,
@@ -756,7 +763,7 @@
       record.episode_count !== null && record.episode_count !== undefined ? ["集数", record.episode_count] : null,
       record.air_date ? ["播出日期", record.air_date] : null,
       record.end_date ? ["结束日期", record.end_date] : null,
-      ["评分", record.score ?? record.rating_score ?? "—", "detail-score"],
+      ["评分", archive.formatRating(record.score ?? record.rating_score), "detail-score"],
       record.rating_count !== null && record.rating_count !== undefined ? ["评分人数", record.rating_count] : null,
       ["来源", archive.sourceLabel(record.source)],
     ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");
@@ -1364,7 +1371,7 @@
     const score = document.createElement("span");
     score.className = "subject-row__score";
     const scoreValue = document.createElement("b");
-    scoreValue.textContent = record.score === null || record.score === undefined ? "—" : Number(record.score).toFixed(1);
+    scoreValue.textContent = archive.formatRating(record.score ?? record.rating_score);
     const count = document.createElement("small");
     count.textContent = record.rating_count === null || record.rating_count === undefined ? "—" : String(record.rating_count);
     score.append(scoreValue, count);
@@ -1599,7 +1606,7 @@
       record.episode_count !== null && record.episode_count !== undefined ? ["集数", record.episode_count] : null,
       record.air_date ? ["播出日期", record.air_date] : null,
       record.end_date ? ["结束日期", record.end_date] : null,
-      ["评分", record.score ?? "—", "detail-score"],
+      ["评分", archive.formatRating(record.score ?? record.rating_score), "detail-score"],
       record.rating_count !== null && record.rating_count !== undefined ? ["评分人数", record.rating_count] : null,
       ["来源", archive.sourceLabel(record.source)],
     ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");

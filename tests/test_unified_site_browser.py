@@ -717,6 +717,71 @@ def test_detail_omits_missing_facts_and_uses_safe_fallback_labels(
     assert detail.evaluate("node => node.scrollWidth <= node.clientWidth")
 
 
+def test_rating_format_is_consistent_in_lists_and_details(
+    chromium: BrowserContext,
+    site_server: str,
+    unified_site: Path,
+) -> None:
+    quarter = json.loads(
+        (unified_site / "data" / "quarters" / "2026-07.json").read_text("utf-8")
+    )
+    for group in (quarter["tv"]["premiere"], quarter["tv"]["continuing"]):
+        for record in group:
+            if record["subject_id"] == 101:
+                record["rating_score"] = 7
+
+    catalog = json.loads(
+        (unified_site / "data" / "catalog" / "2026.json").read_text("utf-8")
+    )
+    for record in catalog["records"]:
+        if record["id"] == 101:
+            record["score"] = 7
+
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/quarters/2026-07.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(quarter),
+        ),
+    )
+    page.route(
+        "**/data/catalog/2026.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(catalog),
+        ),
+    )
+
+    _open_quarter(page, site_server, (1440, 900))
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes('1 / 1')"
+    )
+    row = page.locator('[data-subject-id="101"]')
+    assert row.locator(".subject-row__score b").inner_text() == "8.0"
+    row.locator("[data-open-subject]").click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    detail = page.locator("[data-detail-panel]")
+    assert detail.locator(".detail-score").inner_text() == "7.0"
+    detail.locator("[data-detail-close]").click()
+    row.locator("[data-open-subject]").click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    assert page.locator("[data-detail-panel] .detail-score").inner_text() == "7.0"
+
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+    )
+    archive_row = page.locator('[data-subject-id="101"][data-quarter="2026-07"]')
+    assert archive_row.locator(".subject-row__score b").inner_text() == "7.0"
+    archive_row.locator("[data-open-subject]").click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    assert page.locator("[data-detail-panel] .detail-score").inner_text() == "7.0"
+
+
 def _facet_record(
     base: dict[str, object], subject_id: int, source: str, tag: str
 ) -> dict[str, object]:

@@ -37,9 +37,9 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 范围的增量 build。局部失败或中断不会把未验证资料标记为完整。
 
 同步在确认 Anime、日本、TV/MOVIE 基础范围后，还会应用两条自动永久冷门规则：可靠首播超过 7 天且
-评分人数少于 30；或明确 allowlist 中的缺失证据型 REVIEW 在目标季度结束超过 7 天，且评分人数少于
-30 或缺失。第二条规则中 missing rating 才作为 low-signal；季度未成熟、30 人及以上、目标季度不明
-和冲突型 REVIEW 都不会自动排除。命中作品会写入 `config/bangumi.toml` 的
+评分人数少于 30；或明确 allowlist 中的缺失证据型 REVIEW 在目标季度结束超过 7 天，与评分人数无关。
+第二条规则只处理信息不足的 allowlist issue；季度未成熟、目标季度不明和冲突型 REVIEW 都不会自动排除。
+命中作品会写入 `config/bangumi.toml` 的
 `auto_excluded_subject_ids`，同时记录标题注释和审计证据，并在本次同步中跳过季度归属、REVIEW、
 封面和站点输出。评分人数后来上涨也不会自动恢复。
 

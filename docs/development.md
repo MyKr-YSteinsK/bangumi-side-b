@@ -57,10 +57,10 @@ viewport 并在面板内部滚动；767px 及以下隐藏 master context rail，
 至少覆盖 1199、1024、900、768、767、390 和 360 宽度，并检查无横向溢出。
 
 同步还会在基础 Anime、日本、TV/MOVIE 范围确认后检查两条自动冷门规则：A）可靠首播日期超过 7 天且
-评分人数少于 30；B）明确 allowlist 中的缺失证据型 REVIEW，目标季度结束超过 7 天且评分人数少于
-30 或缺失。B 中的 missing rating 才是 low-signal；冲突型 REVIEW、季度未成熟或评分人数达到 30
-仍保留 REVIEW。命中项会永久写入 `auto_excluded_subject_ids`，并在同一次同步中停止季度归属、
-REVIEW 和封面处理。评分人数后来上涨不会自动恢复；需要人工删除配置中的自动 ID 后再重新 sync。
+评分人数少于 30；B）明确 allowlist 中的缺失证据型 REVIEW，目标季度结束超过 7 天，与评分人数无关。
+冲突型 REVIEW、季度未成熟或目标季度不明确仍保留 REVIEW。命中项会永久写入
+`auto_excluded_subject_ids`，并在同一次同步中停止季度归属、REVIEW 和封面处理。评分人数后来上涨不会
+自动恢复；需要人工删除配置中的自动 ID 后再重新 sync。
 日常裁决流程仍是：
 
 ```powershell
@@ -70,7 +70,7 @@ bgmb review YEAR QUARTER_MONTH
 ```
 
 同步报告的黑名单汇总分别记录人工命中、历史自动命中和本次新增自动拉黑，并用
-`new_auto_by_reason` 区分 `low_rating_count` 与 `unresolved_cold_candidate`；三者之和必须等于
+`new_auto_by_reason` 区分 `low_rating_count` 与 `insufficient_airing_information`；三者之和必须等于
 黑名单总命中数。
 
 Browse/Search 返回的字段只用于候选发现；最终标题、日期、集数、Infobox、tags、来源和图片事实

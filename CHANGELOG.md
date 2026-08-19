@@ -19,8 +19,8 @@
 - 收敛来源与集数事实：加入经实际数据验证的精确 source tags；只接受正整数集数，严格回退 Infobox `话数`，旧 `0` 在 public projection 中表现为未知。
 - 统一 REVIEW 口径：sync summary、`bgmb review YEAR QUARTER_MONTH` 与 `audit` 只统计带季度作用域且已持久化的 REVIEW；无作用域和 Search-only findings 单独报告。
 - 同步报告增加 bounded 来源计数与 known/unknown 集数聚合，便于审计 unknown / legacy zero 的原因而不泄漏原始 API 响应。
-- 新增成熟季度未决冷门自动淘汰：明确 allowlist 中的缺失日期、媒体或季度证据型 REVIEW，在季度结束超过 7 天且评分人数少于 30 或缺失时永久写入自动黑名单；冲突 REVIEW、未成熟季度和 30 人及以上仍保留人工裁决。
-- 同步审计报告增加 `unresolved_cold_candidate` 与 `low_rating_count` 原因维度；Search-only 冷门候选不会创建 SQLite 作品或封面，也不会污染 external REVIEW。
+- 新增成熟季度未决冷门自动淘汰：明确 allowlist 中的信息不足型 REVIEW，在季度结束超过 7 天且与评分人数无关时永久写入自动黑名单；冲突 REVIEW、未成熟季度和目标季度不明仍保留人工裁决。
+- 同步审计报告增加 `insufficient_airing_information` 与 `low_rating_count` 原因维度；Search-only 冷门候选不会创建 SQLite 作品或封面，也不会污染 external REVIEW。
 
 ## 0.2.0 - 2026-08-13
 

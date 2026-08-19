@@ -231,6 +231,42 @@ def test_legacy_zero_episode_count_projects_as_unknown(tmp_path: Path) -> None:
     assert projection.to_dict()["tv"]["premiere"][0]["episode_count"] is None
 
 
+def test_tv_episode_quality_gate_reports_unknown_without_public_zero(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    database = Database(workspace / "archive.sqlite3")
+    database.initialize()
+    repository = SubjectRepository(database)
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection,
+            _snapshot(571784, MediaFormat.TV, premiere=Quarter(2026, 7)),
+        )
+        repository.replace_subject_snapshot(
+            connection,
+            _snapshot(586941, MediaFormat.TV, premiere=Quarter(2026, 7)),
+        )
+        connection.execute("UPDATE subjects SET episode_count = 0 WHERE id = 586941")
+
+    facts = ArchiveFactsReader(database, workspace).read()
+    projection = project_quarter(facts, Quarter(2026, 7), _rules(), workspace)
+    records = projection.tv_premiere
+    quality = {
+        "tv_total": len(records),
+        "episode_known": sum(item.episode_count is not None for item in records),
+        "episode_unknown": sum(item.episode_count is None for item in records),
+        "episode_zero": sum(item.episode_count == 0 for item in records),
+    }
+
+    assert quality == {
+        "tv_total": 2,
+        "episode_known": 1,
+        "episode_unknown": 1,
+        "episode_zero": 0,
+    }
+
+
 def test_large_archive_read_avoids_parameter_limits_and_caches_quarter_groups(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

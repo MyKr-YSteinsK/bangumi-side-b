@@ -305,6 +305,46 @@ class BangumiApiClient:
                 dates.append(airdate)
         return tuple(sorted(dates))
 
+    def get_main_episode_count(self, subject_id: int) -> int | None:
+        """Return a verified contiguous planned main-episode count, if available.
+
+        This is deliberately a single bounded registry read.  A paged ``total``
+        is accepted only when the response contains the complete ``1..N`` main
+        sequence, so current-row counts or partial pages remain unknown.
+        """
+        if subject_id <= 0:
+            raise ValueError("subject id must be positive")
+        payload = self._request_json(
+            "/episodes",
+            {
+                "subject_id": subject_id,
+                "type": 0,
+                "limit": 200,
+                "offset": 0,
+            },
+            request_label="episode-count",
+        )
+        data = payload.get("data")
+        total = _optional_integer(payload.get("total"))
+        if not isinstance(data, list) or total is None or total <= 0:
+            return None
+        if total > 200 or len(data) != total:
+            return None
+        numbers: list[int] = []
+        for item in data:
+            if (
+                not isinstance(item, Mapping)
+                or _optional_integer(item.get("type")) != 0
+            ):
+                return None
+            number = _positive_episode_number(item.get("ep"))
+            if number is None:
+                return None
+            numbers.append(number)
+        if set(numbers) != set(range(1, total + 1)):
+            return None
+        return total
+
     def fetch_image(self, url: str, *, max_bytes: int) -> ImageResponse:
         """Fetch a bounded HTTP(S) image while preserving no response diagnostics."""
         parsed = urlsplit(url)
@@ -547,6 +587,14 @@ def _optional_number(value: Any) -> float | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
     return None
+
+
+def _positive_episode_number(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not value > 0 or int(value) != value:
+        return None
+    return int(value)
 
 
 def _optional_date(value: Any) -> date | None:

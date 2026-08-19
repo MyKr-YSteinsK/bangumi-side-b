@@ -1389,6 +1389,37 @@ def test_canonical_detail_episode_count_is_persisted_after_partial_discovery(
     assert run.quarters[0].canonical_detail_requests == 1
 
 
+def test_unknown_canonical_episode_count_uses_bounded_registry_fallback(
+    tmp_path: Path,
+) -> None:
+    class FallbackApi(FakeApi):
+        def __init__(self, details: dict[int, SubjectDetail]) -> None:
+            super().__init__(details)
+            self.episode_count_calls: list[int] = []
+
+        def get_main_episode_count(self, subject_id: int) -> int | None:
+            self.episode_count_calls.append(subject_id)
+            return 6
+
+    detail = replace(_detail(547889), eps=0, total_episodes=0)
+    api = FallbackApi({547889: detail})
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(547889, MediaFormat.TV),)),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    facts = repository.get_subject_facts(547889)
+    assert run.exit_code == 0
+    assert facts is not None and facts.subject.episode_count == 6
+    assert api.episode_count_calls == [547889]
+    assert run.quarters[0].episode_source_counts == (("episode_registry", 1),)
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    assert report["episode_count_sources"] == {"episode_registry": 1}
+
+
 def test_unscoped_persisted_review_findings_are_not_reported_as_quarter_queue(
     tmp_path: Path,
 ) -> None:

@@ -157,6 +157,7 @@ class QuarterSyncResult:
     source_counts: tuple[tuple[str, int], ...] = ()
     episode_known: int = 0
     episode_unknown: int = 0
+    episode_source_counts: tuple[tuple[str, int], ...] = ()
     legacy_zero_written: int = 0
 
 
@@ -372,6 +373,8 @@ class ArchiveSynchronizer:
         overrides: Mapping[int, QuarterOverride],
         prior: QuarterSyncState | None,
     ) -> QuarterSyncResult:
+        episode_source_counts: Counter[str] = Counter()
+        episode_warnings: list[dict[str, str]] = []
         self.reporter.stage(
             stage="discovery",
             message="发现 TV/MOVIE 候选",
@@ -569,8 +572,55 @@ class ArchiveSynchronizer:
                             }
                         )
                         continue
+                    episode_resolution = _resolve_episode_count(detail)
+                    if episode_resolution.source == "unknown":
+                        get_episode_count = getattr(
+                            self.api, "get_main_episode_count", None
+                        )
+                        if callable(get_episode_count):
+                            try:
+                                registry_count = get_episode_count(candidate.subject_id)
+                            except BangumiApiError as error:
+                                episode_warnings.append(
+                                    {
+                                        "code": "episode_count_fallback",
+                                        "summary": (
+                                            f"episode registry unavailable for subject "
+                                            f"{candidate.subject_id}: {error.summary}"
+                                        ),
+                                    }
+                                )
+                            except (TypeError, ValueError):
+                                episode_warnings.append(
+                                    {
+                                        "code": "episode_count_fallback",
+                                        "summary": (
+                                            f"episode registry response invalid for "
+                                            f"subject {candidate.subject_id}"
+                                        ),
+                                    }
+                                )
+                            else:
+                                episode_resolution = _resolve_episode_count(
+                                    detail, registry_count=registry_count
+                                )
+                    episode_source_counts[episode_resolution.source] += 1
+                    if episode_resolution.warning is not None:
+                        episode_warnings.append(
+                            {
+                                "code": episode_resolution.warning,
+                                "summary": (
+                                    f"conflicting episode counts for subject "
+                                    f"{candidate.subject_id}; stored as unknown"
+                                ),
+                            }
+                        )
                     prepared_subject = self._prepare_subject(
-                        detail, decision, existing, quarter
+                        detail,
+                        decision,
+                        existing,
+                        quarter,
+                        episode_count=episode_resolution.value,
                     )
                 except ValueError:
                     errors.append(
@@ -777,6 +827,7 @@ class ArchiveSynchronizer:
         warnings = tuple(
             [
                 *discovery_warnings,
+                *episode_warnings,
                 *premiere_conflict_warnings,
                 *cleanup_warnings,
                 *cover_warnings,
@@ -835,6 +886,7 @@ class ArchiveSynchronizer:
             source_counts=source_counts,
             episode_known=episode_known,
             episode_unknown=episode_unknown,
+            episode_source_counts=tuple(sorted(episode_source_counts.items())),
         )
 
     def _prepare_subject(
@@ -1240,6 +1292,7 @@ class ArchiveSynchronizer:
         existing_auto_blacklisted: int = 0,
         auto_blacklisted: tuple[dict[str, object], ...] = (),
         canonical_detail_requests: int = 0,
+        episode_source_counts: tuple[tuple[str, int], ...] = (),
     ) -> QuarterSyncResult:
         with self.repository.transaction() as connection:
             self.repository.write_sync_state(
@@ -1273,6 +1326,7 @@ class ArchiveSynchronizer:
             existing_auto_blacklisted=existing_auto_blacklisted,
             canonical_detail_requests=canonical_detail_requests,
             persisted_review_count=persisted_review_count,
+            episode_source_counts=episode_source_counts,
         )
 
     def _sync_covers(
@@ -1369,6 +1423,7 @@ class ArchiveSynchronizer:
         new_auto_by_reason: Counter[str] = Counter()
         episode_known = 0
         episode_unknown = 0
+        episode_source_totals: Counter[str] = Counter()
         legacy_zero_written = 0
         for item in serialized:
             source_totals.update(item["source_counts"])
@@ -1376,6 +1431,7 @@ class ArchiveSynchronizer:
             episode = item["episode_count"]
             episode_known += episode["known"]
             episode_unknown += episode["unknown"]
+            episode_source_totals.update(item.get("episode_count_sources", {}))
             legacy_zero_written += episode["legacy_zero_written"]
         payload = {
             "scope": scope.label,
@@ -1410,6 +1466,7 @@ class ArchiveSynchronizer:
                 "unknown": episode_unknown,
                 "legacy_zero_written": legacy_zero_written,
             },
+            "episode_count_sources": dict(sorted(episode_source_totals.items())),
             "review_count": sum(
                 item["persisted_review_count"] for item in serialized
             ),
@@ -1811,6 +1868,7 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
             "unknown": result.episode_unknown,
             "legacy_zero_written": result.legacy_zero_written,
         },
+        "episode_count_sources": dict(result.episode_source_counts),
         "reviews": [
             {
                 "subject_id": issue.details.get("subject_id"),

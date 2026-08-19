@@ -114,6 +114,54 @@ def test_main_episode_airdates_ignore_supplemental_entries() -> None:
     assert _client(handler).get_main_episode_airdates(101) == ()
 
 
+def test_main_episode_count_accepts_only_a_complete_contiguous_main_sequence() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "total": 3,
+                "limit": 200,
+                "offset": 0,
+                "data": [
+                    {"type": 0, "ep": 1},
+                    {"type": 0, "ep": 2},
+                    {"type": 0, "ep": 3, "airdate": "2026-09-01"},
+                ],
+            },
+        )
+
+    assert _client(handler).get_main_episode_count(571784) == 3
+    assert requests[0].url.params["type"] == "0"
+    assert requests[0].url.params["limit"] == "200"
+    assert requests[0].url.params["offset"] == "0"
+
+
+def test_main_episode_count_rejects_partial_or_non_main_registry_data() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params["subject_id"] == "101":
+            return httpx.Response(
+                200,
+                json={
+                    "total": 3,
+                    "data": [{"type": 0, "ep": 1}, {"type": 0, "ep": 2}],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "total": 2,
+                "data": [{"type": 0, "ep": 1}, {"type": 1, "ep": 2}],
+            },
+        )
+
+    client = _client(handler)
+    assert client.get_main_episode_count(101) is None
+    assert client.get_main_episode_count(102) is None
+
+
 def test_browse_queries_tv_and_movie_months_and_merges_provenance() -> None:
     pages = {
         (3, 1): [],

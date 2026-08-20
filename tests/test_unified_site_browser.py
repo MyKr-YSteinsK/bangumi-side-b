@@ -288,6 +288,24 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     assert not page.locator('[data-changelog-release="0.1.3"]').evaluate(
         "node => node.open"
     )
+    assert page.locator(".settings-section h2").all_text_contents() == [
+        "离线季度",
+        "下载任务",
+        "批量下载",
+        "存储与应用",
+        "高级诊断",
+        "更新日志",
+    ]
+    page.wait_for_function(
+        "document.querySelector('[data-settings-app]')?.textContent"
+        ".includes('Service Worker')"
+    )
+    assert "Service Worker" not in page.locator(
+        '[aria-labelledby="settings-offline-title"]'
+    ).inner_text()
+    assert "Service Worker" in page.locator(
+        '[aria-labelledby="settings-diagnostics-title"]'
+    ).inner_text()
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     assert not any("CHANGELOG" in url or "github.com" in url for url in requests)
 

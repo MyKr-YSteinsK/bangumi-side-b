@@ -2230,7 +2230,7 @@ def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_byte
     assert failed["staging"]["revision"] == "updated-quarter-revision"
     page.wait_for_function(
         "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
-        "?.textContent.includes('已离线 · 更新未完成')"
+        "?.textContent.includes('更新未完成')"
     )
     assert page.locator('[data-offline-quarter="2026-07"]').get_by_role(
         "button", name="继续更新"
@@ -2782,7 +2782,7 @@ def test_settings_reports_storage_and_controls_quarter_downloads(
     page.wait_for_function(
         "document.querySelectorAll('[data-offline-quarter]').length === 2"
     )
-    for heading in ("应用", "存储", "离线档案", "下载队列"):
+    for heading in ("离线季度", "下载任务", "批量下载", "存储与应用", "高级诊断"):
         assert page.get_by_role("heading", name=heading).is_visible()
     assert page.locator("select").count() == 0
     assert page.get_by_text("2.0 KiB").is_visible()
@@ -2813,15 +2813,77 @@ def test_settings_reports_storage_and_controls_quarter_downloads(
     page.evaluate("window.dispatchEvent(new CustomEvent('bsb:pwa-state'))")
     page.wait_for_function(
         "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
-        "?.textContent.includes('已离线')"
+        "?.textContent.includes('已下载')"
     )
-    assert july.get_by_role("button", name="移除").is_visible()
+    july.get_by_role("button", name="…").click()
+    assert july.get_by_role("button", name="移除离线资料").is_visible()
     page.on("dialog", lambda dialog: dialog.accept())
-    july.get_by_role("button", name="移除").click()
+    july.get_by_role("button", name="移除离线资料").click()
     page.wait_for_function(
         "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
         "?.textContent.includes('未下载')"
     )
+    context.close()
+
+
+def test_settings_progress_keeps_selector_identity_focus_and_skips_storage_refresh(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    context.add_init_script(
+        """
+        window.__estimateCalls = 0;
+        Object.defineProperty(navigator, "storage", {
+          configurable: true,
+          value: {
+            estimate: async () => {
+              window.__estimateCalls += 1;
+              return { usage: 1024, quota: 8192 };
+            },
+            persisted: async () => false,
+          },
+        });
+        """
+    )
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function(
+        "document.querySelector('[data-queue-kind] .select-trigger') !== null"
+    )
+    selector = page.locator("[data-settings-selector]")
+    selector.evaluate("node => { node.dataset.identityMarker = 'stable'; }")
+    trigger = page.locator("[data-queue-kind] .select-trigger")
+    trigger.press("Enter")
+    assert page.locator('[data-queue-kind] [role="listbox"]').is_visible()
+    estimate_calls = page.evaluate("window.__estimateCalls")
+    generation = page.evaluate(
+        "async () => { const queue = await window.BsbPwa.enqueue(['2026-07']); "
+        "await window.BsbPwa.pauseQueue(); return queue.generation; }"
+    )
+    page.evaluate(
+        "async () => { const cache = await caches.open('bsb-meta-v1'); "
+        "const request = new Request(new URL('../__bsb_meta__/queue.json', "
+        "location.href)); "
+        "const queue = await (await cache.match(request)).json(); "
+        "queue.current = '2026-07'; "
+        "await cache.put(request, new Response(JSON.stringify(queue), "
+        "{headers: {'Content-Type': 'application/json'}})); }"
+    )
+    update_result = page.evaluate(
+        "async generation => window.BsbPwa.__updateQuarterDownloadState("
+        "'2026-07', generation, () => ({progress: {quarter: '2026-07', "
+        "verified_resources: 3, total_resources: 10, verified_bytes: 30, "
+        "total_bytes: 100}}))",
+        generation,
+    )
+    assert update_result["progress"]["verified_resources"] == 3
+    page.wait_for_function(
+        "document.querySelector('[data-queue-progress]')?.textContent.includes('30%')"
+    )
+    assert selector.get_attribute("data-identity-marker") == "stable"
+    assert page.locator('[data-queue-kind] [role="listbox"]').is_visible()
+    assert page.evaluate("window.__estimateCalls") == estimate_calls
     context.close()
 
 
@@ -3032,7 +3094,7 @@ def test_quarter_page_offline_action_tracks_download_and_confirmed_remove(
     _wait_for_queue(page, 1)
     page.wait_for_function(
         "document.querySelector('[data-mobile-quarter-offline-status]')"
-        "?.textContent.includes('已离线')"
+        "?.textContent.includes('已下载')"
     )
     assert control.get_by_role("button", name="移除离线缓存").is_visible()
     page.on("dialog", lambda dialog: dialog.accept())
@@ -3077,7 +3139,7 @@ def test_downloaded_quarter_is_complete_offline_and_undownloaded_redirects(
     page.goto(f"{pwa_server}/settings/index.html")
     assert page.get_by_role("heading", name="设置").is_visible()
     assert page.locator('[data-offline-quarter="2026-07"]').get_by_text(
-        "已离线"
+        "已下载"
     ).is_visible()
 
     page.goto(f"{pwa_server}/2026-04/index.html")

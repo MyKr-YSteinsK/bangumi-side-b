@@ -411,10 +411,23 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .offline-quarter strong { font-family: var(--font-mono); font-size: .82rem; }
 .offline-quarter span { color: var(--accent-ink); font-size: .72rem; }
 .offline-quarter small { color: var(--ink-muted); font-size: .68rem; grid-column: 1 / -1; }
+.offline-quarter__actions { align-items: center; position: relative; }
+.offline-quarter__menu { background: var(--surface-overlay); border: 1px solid var(--border-strong); border-radius: var(--radius-control); box-shadow: var(--shadow-popover); display: grid; gap: .25rem; min-width: 9rem; padding: .35rem; position: absolute; right: 0; top: calc(100% + .25rem); z-index: 5; }
+.offline-quarter__menu[hidden] { display: none; }
+.offline-quarter__menu .button { justify-content: flex-start; text-decoration: none; width: 100%; }
 .queue-status > p { color: var(--ink-muted); font-family: var(--font-mono); font-size: .72rem; margin: 0 0 .6rem; }
 .queue-status > p strong { color: var(--ink); }
+.queue-status { min-height: 8.5rem; }
+.queue-progress { min-height: 4.2rem; }
+.queue-progress__label { align-items: baseline; display: flex; justify-content: space-between; }
+.queue-progress__label span { color: var(--accent-ink); font-family: var(--font-mono); font-size: .8rem; font-weight: 700; }
+.queue-progress progress { accent-color: var(--accent); display: block; height: .65rem; margin: .25rem 0 .35rem; width: 100%; }
+.queue-progress p { color: var(--ink-muted); font-family: var(--font-mono); font-size: .7rem; margin: 0; }
 .queue-actions { display: flex; flex-wrap: wrap; gap: .45rem; }
-.queue-errors { border-top: 1px solid var(--rule); color: var(--accent-ink); font-size: .72rem; list-style: none; margin: .8rem 0; padding: .6rem 0 0; }
+.queue-errors { border-top: 1px solid var(--rule); color: var(--accent-ink); font-size: .72rem; margin: .8rem 0; padding: .6rem 0 0; }
+.queue-errors summary { cursor: pointer; font-weight: 650; }
+.queue-errors ul { margin: .45rem 0 0; padding-left: 1.1rem; }
+.queue-failure { color: var(--accent-ink) !important; font-weight: 650; }
 .button { background: var(--paper-raised); border: 1px solid var(--rule-strong); border-radius: 2px; color: var(--ink); cursor: pointer; font-size: .72rem; min-height: 2rem; padding: .3rem .65rem; }
 .button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-ink); }
 .button--ink { background: var(--ink); border-color: var(--ink); color: var(--paper-raised); }

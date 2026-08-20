@@ -298,7 +298,7 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
     page = (tmp_path / "dist" / "site" / "settings" / "index.html").read_text(
         "utf-8"
     )
-    assert "05 / CHANGELOG" in page
+    assert "06 / CHANGELOG" in page
     assert "当前程序版本</dt><dd>0.3.1" in page
     assert 'data-changelog-release="unreleased" open' in page
     assert 'data-changelog-release="0.3.1" open' in page

@@ -99,6 +99,7 @@ auto_excluded_subject_ids = [
     696005, # 【アニメーションMV】燦然燃焼 - Omaru Polka（Original）
     696007, # コンティニュー - NEE
     696644, # KA Esuma文库《草原的光辉》动画CM
+    696681, # 【共鳴のアルカソング】スポットPV
 ]
 
 [sync]

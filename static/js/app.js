@@ -554,6 +554,121 @@
   }
 })();
 
+/* Standalone-only detail edge navigation.  Normal Safari keeps ownership of
+   its native history gesture; the app gesture is deliberately opt-in. */
+(() => {
+  "use strict";
+
+  function isStandalone() {
+    return window.navigator.standalone === true
+      || window.matchMedia?.("(display-mode: standalone)").matches === true;
+  }
+
+  function bind({ root, panel, onComplete }) {
+    if (!root || !panel) return () => {};
+    let pointerId = null;
+    let startX = 0;
+    let startY = 0;
+    let dragging = false;
+
+    const setState = (value) => {
+      root.dataset.detailGesture = value;
+      panel.dataset.detailGesture = value;
+    };
+    const resetTransform = () => {
+      panel.style.removeProperty("transform");
+      panel.style.removeProperty("will-change");
+    };
+    const cancel = () => {
+      try {
+        if (pointerId !== null && panel.hasPointerCapture?.(pointerId)) {
+          panel.releasePointerCapture(pointerId);
+        }
+      } catch {
+        // Synthetic browser regression events do not own a real pointer.
+      }
+      pointerId = null;
+      dragging = false;
+      resetTransform();
+      setState("canceled");
+    };
+    const finish = () => {
+      try {
+        if (pointerId !== null && panel.hasPointerCapture?.(pointerId)) {
+          panel.releasePointerCapture(pointerId);
+        }
+      } catch {
+        // Synthetic browser regression events do not own a real pointer.
+      }
+      pointerId = null;
+      dragging = false;
+      resetTransform();
+      setState("completed");
+      onComplete?.();
+    };
+    const onPointerDown = (event) => {
+      if (!isStandalone() || panel.hidden || pointerId !== null || event.isPrimary === false) return;
+      const edge = 32 + (parseFloat(getComputedStyle(document.documentElement)
+        .getPropertyValue("--safe-area-left")) || 0);
+      if (event.clientX > edge) return;
+      pointerId = event.pointerId;
+      startX = event.clientX;
+      startY = event.clientY;
+      dragging = false;
+      try {
+        panel.setPointerCapture?.(pointerId);
+      } catch {
+        // Synthetic browser regression events are still valid gesture input.
+      }
+      setState("pending");
+    };
+    const onPointerMove = (event) => {
+      if (event.pointerId !== pointerId) return;
+      const dx = event.clientX - startX;
+      const dy = event.clientY - startY;
+      if (!dragging) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        if (dx <= 0 || Math.abs(dy) >= Math.abs(dx)) {
+          cancel();
+          return;
+        }
+        dragging = true;
+        panel.style.willChange = "transform";
+        setState("dragging");
+      }
+      if (dx <= 0 || Math.abs(dy) > Math.abs(dx)) {
+        cancel();
+        return;
+      }
+      panel.style.transform = `translateX(${Math.min(dx, window.innerWidth)}px)`;
+      event.preventDefault();
+    };
+    const onPointerUp = (event) => {
+      if (event.pointerId !== pointerId) return;
+      if (!dragging) {
+        cancel();
+        return;
+      }
+      const dx = event.clientX - startX;
+      if (dx >= Math.max(100, window.innerWidth * 0.3)) finish();
+      else cancel();
+    };
+    panel.addEventListener("pointerdown", onPointerDown);
+    panel.addEventListener("pointermove", onPointerMove, { passive: false });
+    panel.addEventListener("pointerup", onPointerUp);
+    panel.addEventListener("pointercancel", cancel);
+    setState("idle");
+    return () => {
+      panel.removeEventListener("pointerdown", onPointerDown);
+      panel.removeEventListener("pointermove", onPointerMove);
+      panel.removeEventListener("pointerup", onPointerUp);
+      panel.removeEventListener("pointercancel", cancel);
+    };
+  }
+
+  window.BsbDetailGesture = Object.freeze({ bind, isStandalone });
+})();
+
 (() => {
   "use strict";
 
@@ -580,6 +695,7 @@
   let payload = null;
   let loadError = false;
   let pageSizeControl = null;
+  let detailHistoryEntry = false;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -592,11 +708,14 @@
     return `#bgm-${record.id}`;
   }
 
-  function setHash(record, replace) {
+  function setHash(record, replace, detailEntry = false) {
     const url = new URL(window.location.href);
     url.hash = record ? hashFor(record) : "";
-    if (replace) window.history.replaceState({}, "", url);
-    else window.history.pushState({}, "", url);
+    const historyState = record && detailEntry
+      ? { bsbDetailEntry: true, bsbDetailKey: record.key }
+      : {};
+    if (replace) window.history.replaceState(historyState, "", url);
+    else window.history.pushState(historyState, "", url);
   }
 
   function pageSizeSelect() {
@@ -809,6 +928,7 @@
   }
 
   function clearSelection(removeHash = false) {
+    detailHistoryEntry = false;
     state.selectedSubjectId = null;
     state.selectedOccurrence = null;
     state.workspaceMode = "scope";
@@ -833,15 +953,8 @@
   function restoreListScroll() {
     if (window.innerWidth >= 768 || !state.listScrollTop) return;
     const target = state.listScrollTop;
-    const apply = () => window.scrollTo({ top: target, behavior: "auto" });
-    apply();
-    let frames = 0;
-    const retry = () => {
-      apply();
-      if (frames++ < 5) requestAnimationFrame(retry);
-    };
-    requestAnimationFrame(retry);
-    window.setTimeout(apply, 120);
+    window.scrollTo({ top: target, behavior: "auto" });
+    requestAnimationFrame(() => window.scrollTo({ top: target, behavior: "auto" }));
   }
 
   function closeFilterAndRestoreFocus(applyDraft = false) {
@@ -872,7 +985,7 @@
       ["来源", archive.sourceLabel(record.source)],
     ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");
     return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button>
-      <p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}</p>
+      <p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}${record.appearance === "continuing" ? ' <span class="detail-appearance-badge">续播</span>' : ""}</p>
       <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>
       ${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}
       <p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
@@ -888,24 +1001,52 @@
     if (!record) return;
     if (window.innerWidth < 768 && state.workspaceMode !== "detail") state.listScrollTop = window.scrollY;
     const hadSelection = state.selectedOccurrence !== null;
+    const nextDetailHistoryEntry = hadSelection
+      ? detailHistoryEntry
+      : replace
+        ? window.history.state?.bsbDetailEntry === true
+        : true;
     state.selectedSubjectId = record.id;
     state.selectedOccurrence = record.key;
     state.workspaceMode = "detail";
-    if (hadSelection) setHash(record, true);
-    else setHash(record, replace);
+    quarterRoot.dataset.detailGesture = "idle";
+    detailPanel?.setAttribute("data-detail-gesture", "idle");
+    if (hadSelection) setHash(record, true, nextDetailHistoryEntry);
+    else setHash(record, replace, nextDetailHistoryEntry);
+    detailHistoryEntry = nextDetailHistoryEntry;
     if (detailPanel) {
       detailPanel.innerHTML = detailHtml(record);
       detailPanel.hidden = false;
-      detailPanel.querySelector("[data-detail-close]")?.addEventListener("click", () => {
-        clearSelection(true);
-        render();
-        focusRecordTrigger(record.key);
-        restoreListScroll();
-      });
+      detailPanel.querySelector("[data-detail-close]")?.addEventListener("click", () => closeDetail(record.key));
       detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(record));
       detailPanel.scrollTop = 0;
     }
     render();
+  }
+
+  function closeDetail(recordKey) {
+    const currentHash = window.location.hash === hashFor({ id: state.selectedSubjectId });
+    if (detailHistoryEntry && currentHash) {
+      detailHistoryEntry = false;
+      clearSelection(false);
+      render();
+      focusRecordTrigger(recordKey);
+      restoreListScroll();
+      window.history.back();
+      return;
+    }
+    clearSelection(true);
+    render();
+    focusRecordTrigger(recordKey);
+    restoreListScroll();
+  }
+
+  function bindDetailGesture() {
+    window.BsbDetailGesture?.bind({
+      root: quarterRoot,
+      panel: detailPanel,
+      onComplete: () => closeDetail(state.selectedOccurrence),
+    });
   }
 
   function openLightbox(record) {
@@ -925,7 +1066,13 @@
   function openHash() {
     const match = window.location.hash.match(/^#bgm-(\d+)$/);
     if (!match || !records.length) {
-      if (!match && state.selectedOccurrence !== null) { clearSelection(false); render(); }
+      if (!match && state.selectedOccurrence !== null) {
+        const previousKey = state.selectedOccurrence;
+        clearSelection(false);
+        render();
+        focusRecordTrigger(previousKey);
+        restoreListScroll();
+      }
       if (!match && state.selectedOccurrence === null) restoreListScroll();
       return;
     }
@@ -1051,6 +1198,7 @@
     window.addEventListener("resize", () => render());
     window.addEventListener("popstate", openHash);
     window.addEventListener("hashchange", openHash);
+    bindDetailGesture();
   }
 
   function renderFilterPanel() {
@@ -1256,6 +1404,7 @@
   let loadError = false;
   let yearControl = null;
   let pageSizeControl = null;
+  let detailHistoryEntry = false;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -1263,6 +1412,16 @@
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+
+  function setDetailHash(record, replace, detailEntry = false) {
+    const url = new URL(window.location.href);
+    url.hash = record ? `#bgm-${record.id}` : "";
+    const historyState = record && detailEntry
+      ? { bsbDetailEntry: true, bsbDetailKey: record.key }
+      : {};
+    if (replace) window.history.replaceState(historyState, "", url);
+    else window.history.pushState(historyState, "", url);
+  }
 
   function setScopeUrl(kind, value, replace = false) {
     const url = new URL(window.location.href);
@@ -1569,14 +1728,13 @@
   }
 
   function clearSelection(removeHash = false) {
+    detailHistoryEntry = false;
     detailRequest += 1;
     state.selectedSubjectId = null;
     state.selectedOccurrence = null;
     state.workspaceMode = "scope";
     if (removeHash) {
-      const url = new URL(window.location.href);
-      url.hash = "";
-      window.history.replaceState({}, "", url);
+      setDetailHash(null, true);
     }
   }
 
@@ -1598,15 +1756,8 @@
   function restoreListScroll() {
     if (window.innerWidth >= 768 || !state.listScrollTop) return;
     const target = state.listScrollTop;
-    const apply = () => window.scrollTo({ top: target, behavior: "auto" });
-    apply();
-    let frames = 0;
-    const retry = () => {
-      apply();
-      if (frames++ < 5) requestAnimationFrame(retry);
-    };
-    requestAnimationFrame(retry);
-    window.setTimeout(apply, 120);
+    window.scrollTo({ top: target, behavior: "auto" });
+    requestAnimationFrame(() => window.scrollTo({ top: target, behavior: "auto" }));
   }
 
   function renderRows(result) {
@@ -1764,7 +1915,7 @@
       record.rating_count !== null && record.rating_count !== undefined ? ["评分人数", record.rating_count] : null,
       ["来源", archive.sourceLabel(record.source)],
     ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");
-    return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button><p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}</p>
+    return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button><p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}${record.appearance === "continuing" ? ' <span class="detail-appearance-badge">续播</span>' : ""}</p>
       <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}<p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
       <dl class="detail-facts">${facts}</dl>
       ${record.appearance === "continuing" ? `<p class="detail-continuing">当前归档：续播${record.premiere_quarter ? ` · 首播 ${esc(record.premiere_quarter)}` : ""}</p>` : ""}
@@ -1793,14 +1944,19 @@
     if (window.innerWidth < 768 && state.workspaceMode !== "detail") state.listScrollTop = window.scrollY;
     const request = ++detailRequest;
     const hadSelection = state.selectedOccurrence !== null;
+    const nextDetailHistoryEntry = hadSelection
+      ? detailHistoryEntry
+      : replace
+        ? window.history.state?.bsbDetailEntry === true
+        : true;
     state.selectedSubjectId = record.id;
     state.selectedOccurrence = record.key;
     state.workspaceMode = "detail";
-    const url = new URL(window.location.href);
-    url.hash = `#bgm-${record.id}`;
-    if (hadSelection) window.history.replaceState({}, "", url);
-    else if (!replace) window.history.pushState({}, "", url);
-    else window.history.replaceState({}, "", url);
+    root.dataset.detailGesture = "idle";
+    selectors.detailPanel?.setAttribute("data-detail-gesture", "idle");
+    if (hadSelection) setDetailHash(record, true, nextDetailHistoryEntry);
+    else setDetailHash(record, replace, nextDetailHistoryEntry);
+    detailHistoryEntry = nextDetailHistoryEntry;
     if (selectors.detailPanel) {
       selectors.detailPanel.innerHTML = '<p class="workspace-panel__code">DETAIL</p><p class="loading-state">正在读取季度详情…</p>';
       selectors.detailPanel.scrollTop = 0;
@@ -1811,12 +1967,7 @@
       if (request !== detailRequest || state.selectedOccurrence !== record.key) return;
       if (selectors.detailPanel) {
         selectors.detailPanel.innerHTML = detailHtml(detail);
-        selectors.detailPanel.querySelector("[data-detail-close]")?.addEventListener("click", () => {
-          clearSelection(true);
-          render();
-          focusRecordTrigger(record.key);
-          restoreListScroll();
-        });
+        selectors.detailPanel.querySelector("[data-detail-close]")?.addEventListener("click", () => closeDetail(record.key));
         selectors.detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(detail));
       }
     } catch {
@@ -1827,12 +1978,40 @@
     }
   }
 
+  function closeDetail(recordKey) {
+    const currentHash = window.location.hash === `#bgm-${state.selectedSubjectId}`;
+    if (detailHistoryEntry && currentHash) {
+      detailHistoryEntry = false;
+      clearSelection(false);
+      render();
+      focusRecordTrigger(recordKey);
+      restoreListScroll();
+      window.history.back();
+      return;
+    }
+    clearSelection(true);
+    render();
+    focusRecordTrigger(recordKey);
+    restoreListScroll();
+  }
+
+  function bindDetailGesture() {
+    window.BsbDetailGesture?.bind({
+      root,
+      panel: selectors.detailPanel,
+      onComplete: () => closeDetail(state.selectedOccurrence),
+    });
+  }
+
   async function openHash() {
     const match = window.location.hash.match(/^#bgm-(\d+)$/);
     if (!match || !records.length) {
       if (!match && state.selectedOccurrence !== null) {
+        const previousKey = state.selectedOccurrence;
         clearSelection(false);
         render();
+        focusRecordTrigger(previousKey);
+        restoreListScroll();
       }
       if (!match && state.selectedOccurrence === null) restoreListScroll();
       return;
@@ -2114,6 +2293,7 @@
     window.addEventListener("popstate", () => { void restoreArchiveLocation(); });
     window.addEventListener("hashchange", openHash);
     window.addEventListener("resize", () => render());
+    bindDetailGesture();
   }
 
   async function setScope(kind, value, push = true) {

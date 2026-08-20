@@ -363,7 +363,7 @@ def test_quarter_shell_is_usable_across_plan16_viewports(
     )
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     if viewport[0] < 768:
-        assert metrics["masterDisplay"] == "none"
+        assert metrics["masterDisplay"] == "block"
         assert metrics["workspace"] >= metrics["width"] - 2
     else:
         assert metrics["masterDisplay"] == "block"
@@ -402,7 +402,7 @@ def test_archive_shell_is_usable_at_plan39_boundaries(
     )
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     if viewport[0] < 768:
-        assert metrics["masterDisplay"] == "none"
+        assert metrics["masterDisplay"] == "block"
         assert metrics["workspace"] >= metrics["width"] - 2
     else:
         assert metrics["masterDisplay"] == "block"
@@ -443,7 +443,7 @@ def test_plan39_responsive_visual_acceptance(
     if viewport[0] < 768:
         assert layout.locator(".master-pane").evaluate(
             "node => getComputedStyle(node).display"
-        ) == "none"
+        ) == "block"
         assert workspace.bounding_box()["width"] >= layout.bounding_box()["width"] - 2
     else:
         assert workspace.bounding_box()["width"] >= 300
@@ -572,7 +572,7 @@ def test_mobile_scope_detail_and_filter_use_single_pane_workspace(
     page.locator('[data-subject-id="101"] [data-open-subject]').click()
     page.wait_for_selector('[data-detail-panel]:not([hidden])')
     assert root.get_attribute("data-workspace-mode") == "detail"
-    assert master.evaluate("node => getComputedStyle(node).display") == "none"
+    assert master.evaluate("node => getComputedStyle(node).display") == "block"
     assert workspace.bounding_box()["width"] >= layout.bounding_box()["width"] - 2
 
     page.get_by_role("button", name="返回结果").click()
@@ -731,13 +731,150 @@ def test_mobile_detail_is_full_width_and_restores_list_scroll(
     workspace = page.locator("[data-quarter-layout] .workspace")
     assert page.locator("[data-quarter-layout] .master-pane").evaluate(
         "node => getComputedStyle(node).display"
-    ) == "none"
+    ) == "block"
     assert workspace.bounding_box()["width"] >= layout.bounding_box()["width"] - 2
     assert page.get_by_role("button", name="返回结果").is_visible()
     page.get_by_role("button", name="返回结果").click()
     page.wait_for_function(
         "target => Math.abs(window.scrollY - target) <= 2", arg=saved_scroll
     )
+
+
+def test_mobile_detail_is_fixed_keeps_list_identity_and_unifies_history(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 393, "height": 852})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server, (393, 852))
+    page.locator("[data-quarter-layout] .master-pane").evaluate(
+        "node => { node.dataset.identityMarker = 'kept'; "
+        "node.style.minHeight = '2400px'; }"
+    )
+    target = page.locator('[data-subject-id="101"] [data-open-subject]')
+    target.scroll_into_view_if_needed()
+    saved_scroll = page.evaluate("window.scrollY")
+    target.click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    metrics = page.locator("[data-detail-panel]").evaluate(
+        "node => ({position: getComputedStyle(node.parentElement).position, "
+        "height: node.getBoundingClientRect().height, viewport: innerHeight, "
+        "safeTop: getComputedStyle(document.documentElement)"
+        ".getPropertyValue('--safe-area-top'), "
+        "meta: document.querySelector('meta[name=viewport]').content, "
+        "listMarker: document.querySelector('.master-pane').dataset.identityMarker, "
+        "bodyScroll: scrollY})"
+    )
+    assert metrics["position"] == "fixed"
+    assert metrics["height"] >= metrics["viewport"] - 2
+    assert metrics["listMarker"] == "kept"
+    assert metrics["bodyScroll"] == saved_scroll
+    assert metrics["meta"].endswith("viewport-fit=cover")
+    assert metrics["safeTop"]
+
+    page.go_back()
+    page.wait_for_function(
+        "document.querySelector('[data-page=quarter][data-archive-app]')"
+        "?.dataset.workspaceMode === 'scope'"
+    )
+    assert "#bgm-" not in page.url
+    page.go_forward()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    assert "#bgm-101" in page.url
+    page.get_by_role("button", name="返回结果").click()
+    page.wait_for_function(
+        "document.querySelector('[data-detail-panel]')?.hidden === true"
+    )
+    assert "#bgm-" not in page.url
+    page.wait_for_function(
+        "target => Math.abs(window.scrollY - target) <= 2", arg=saved_scroll
+    )
+
+
+def test_mobile_detail_direct_hash_close_fallback_and_own_scroll(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 393, "height": 852})
+    page.set_default_timeout(8000)
+    page.goto(f"{site_server}/2026-07/index.html#bgm-101")
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    page.locator("[data-detail-panel]").evaluate(
+        "node => { node.scrollTop = 240; return node.scrollTop; }"
+    )
+    detail_scroll = page.locator("[data-detail-panel]").evaluate(
+        "node => node.scrollTop"
+    )
+    body_scroll = page.evaluate("window.scrollY")
+    assert page.locator("[data-detail-panel]").evaluate(
+        "node => node.scrollHeight > node.clientHeight"
+    )
+    page.locator("[data-detail-panel] [data-detail-close]").click()
+    page.wait_for_function(
+        "document.querySelector('[data-detail-panel]')?.hidden === true"
+    )
+    assert "#bgm-" not in page.url
+    assert page.evaluate("window.scrollY") == body_scroll
+    assert detail_scroll > 0
+
+
+def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 393, "height": 852})
+    page.set_default_timeout(8000)
+    page.add_init_script(
+        """
+        (() => {
+          const nativeMatchMedia = window.matchMedia.bind(window);
+          window.matchMedia = query => query === '(display-mode: standalone)'
+              ? {matches: true, media: query, onchange: null,
+                 addListener() {}, removeListener() {}, addEventListener() {},
+                 removeEventListener() {}, dispatchEvent() {return false;}}
+            : nativeMatchMedia(query);
+        })();
+        """
+    )
+    page.emulate_media(reduced_motion="reduce")
+    _open_quarter(page, site_server, (393, 852))
+    page.locator('[data-subject-id="101"] [data-open-subject]').click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    detail = page.locator("[data-detail-panel]")
+    detail_scroll = detail.evaluate(
+        "node => { node.scrollTop = Math.min(180, "
+        "node.scrollHeight - node.clientHeight); return node.scrollTop; }"
+    )
+    gesture = """
+    ({id, points}) => {
+      const node = document.querySelector('[data-detail-panel]');
+      const fire = (type, point) => node.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, pointerId: id, isPrimary: true,
+        clientX: point[0], clientY: point[1], pointerType: 'touch',
+        buttons: type === 'pointerup' ? 0 : 1
+      }));
+      fire('pointerdown', points[0]);
+      points.slice(1, -1).forEach(point => fire('pointermove', point));
+      fire('pointerup', points.at(-1));
+    }
+    """
+    page.evaluate(gesture, {"id": 11, "points": [[10, 360], [68, 360], [68, 360]]})
+    assert detail.get_attribute("data-detail-gesture") == "canceled"
+    assert detail.is_visible()
+    assert detail.evaluate("node => node.scrollTop") == detail_scroll
+
+    page.evaluate(gesture, {"id": 12, "points": [[10, 360], [40, 430], [40, 430]]})
+    assert detail.get_attribute("data-detail-gesture") == "canceled"
+    assert detail.is_visible()
+
+    page.evaluate(
+        gesture, {"id": 13, "points": [[10, 360], [150, 360], [150, 360]]}
+    )
+    page.wait_for_function(
+        "document.querySelector('[data-detail-panel]')?.hidden === true"
+    )
+    assert detail.get_attribute("data-detail-gesture") == "completed"
+    assert "#bgm-" not in page.url
 
 
 def test_mobile_archive_filter_workspace_is_full_width(

@@ -60,10 +60,12 @@ Quarter 与 Archive 的长分页共用紧凑窗口：始终保留首尾页与当
 
 所有页面由统一 builder 生成同一套原生 HTML shell：skip link、档案栏、品牌、季度标识、主内容和页脚保持一致，不存在第二套模板或前端输出。
 
-Settings 在 01 / APP、02 / STORAGE、03 / OFFLINE ARCHIVE、04 / DOWNLOAD QUEUE 之后保留
-05 / CHANGELOG。更新日志使用原生 `<details>` / `<summary>`：尚未发布（有内容时）与当前
+Settings 按 01 / 离线季度、02 / 下载任务、03 / 批量下载、04 / 存储与应用、05 / 高级诊断、
+06 / CHANGELOG 排列。更新日志使用原生 `<details>` / `<summary>`：尚未发布（有内容时）与当前
 程序版本默认展开，较早版本默认折叠；长条目可换行，内容直接写入静态 HTML，手机宽度不新增
 横向滚动。版本号来自源码单一事实源，缺少对应 release 时只显示版本号，不伪造 release。
+
+移动端 Quarter / Archive 采用两列、2:3 封面优先卡片；季度页连续展示结果，Archive 保留自己的分页。详情在移动端是覆盖视口的全屏层，筛选是带草稿状态和安全区内边距的 bottom sheet；返回会恢复列表位置。`viewport-fit=cover` 配合统一 safe-area 变量保护 header、详情、sheet、toast 和底部操作，`prefers-reduced-motion` 会把回弹和非必要过渡压缩到近乎即时。
 
 页脚说明资料归属及“无运行时远程请求”。每个可交互元素需要可见的 `:focus-visible`；无数据、缺图、无评分、长标题等状态都有稳定的文档流位置，不用伪造事实填补。
 

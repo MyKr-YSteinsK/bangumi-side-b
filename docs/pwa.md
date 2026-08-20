@@ -63,6 +63,22 @@ confirmed remove action for `INCOMPLETE`, `UPDATE_INCOMPLETE`, and
 progress record, then garbage-collects only content that no remaining shell or
 quarter references.
 
+## Settings interaction contract
+
+Downloading is a nonblocking page task. Progress ticks update the current queue
+row and, when needed, its quarter status; they do not rerender every Settings
+section. Metadata notifications carry scopes so app, storage, quarter, queue,
+and selector areas can refresh independently. A coalescing scheduler and
+revision token prevent an older asynchronous read from replacing newer DOM.
+Selectors, menus, and the user's focus remain mounted while unrelated progress
+changes arrive.
+
+The ordinary UI uses `未下载`, `下载中 N%`, `已暂停`, `等待网络`, `下载未完成`,
+`已下载`, and `有更新`. Service Worker capability details and raw incomplete
+state names remain in the advanced diagnostics area. Pause, continue, cancel,
+retry, and online resume are explicit queue actions; cancel does not remove a
+verified quarter, and an interrupted update keeps the active version available.
+
 ## Content lifecycle invariants
 
 Content GC is reference-safe across windows and the Service Worker. A quarter is

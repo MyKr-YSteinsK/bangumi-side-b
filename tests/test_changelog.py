@@ -20,7 +20,7 @@ def test_changelog_model_preserves_releases_groups_and_utf8_order() -> None:
 - <b>不执行</b>
 - 中文条目
 
-## 0.2.0 - 2026-08-13
+## 0.4.0 - 2026-08-21
 
 ### 新增
 
@@ -36,11 +36,11 @@ def test_changelog_model_preserves_releases_groups_and_utf8_order() -> None:
     assert document.preamble == ("说明段落",)
     assert [release.heading for release in document.releases] == [
         "尚未发布",
-        "0.2.0 - 2026-08-13",
+        "0.4.0 - 2026-08-21",
         "0.1.0",
     ]
     assert document.unreleased is document.releases[0]
-    assert document.release_for_version("0.2.0").date == "2026-08-13"
+    assert document.release_for_version("0.4.0").date == "2026-08-21"
     assert document.release_for_version("0.1.0").date is None
     section = document.releases[0].blocks[0]
     assert section.title == "修复"

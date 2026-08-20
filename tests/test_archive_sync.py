@@ -1413,6 +1413,28 @@ def test_bgm_571784_episode_count_survives_sync_and_repository(tmp_path: Path) -
     assert run.quarters[0].episode_source_counts == (("subject_structured", 1),)
 
 
+def test_sync_persists_eps_when_episode_registry_total_is_lower(
+    tmp_path: Path,
+) -> None:
+    detail = replace(_detail(990001), total_episodes=8)
+    api = FakeApi({990001: detail})
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(990001, MediaFormat.TV),)),
+    )
+
+    quarter = Quarter(2026, 4)
+    run = sync.run(SyncScope(quarter, quarter))
+
+    facts = repository.get_subject_facts(990001)
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    assert run.exit_code == 0
+    assert facts is not None and facts.subject.episode_count == 12
+    assert run.quarters[0].episode_source_counts == (("subject_structured", 1),)
+    assert report["episode_count_sources"] == {"subject_structured": 1}
+
+
 def test_unknown_canonical_episode_count_uses_bounded_registry_fallback(
     tmp_path: Path,
 ) -> None:

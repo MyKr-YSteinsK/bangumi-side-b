@@ -1,7 +1,7 @@
 /* Unified Bangumi Side B service worker. */
 "use strict";
 
-const BSB_SHELL_REVISION = "138addbf9c556deb6bcfac4aec28cc12ab4fe4cd0f1d9f4a0875186751d89bc7";
+const BSB_SHELL_REVISION = "dcaf4675991dce0e5e2c5ae66fd9bc51e0589d511b3b0f93a27f5887a1b82a97";
 const CONTENT_CACHE = "bsb-content-v1";
 const RUNTIME_CACHE = "bsb-runtime-v1";
 const META_CACHE = "bsb-meta-v1";

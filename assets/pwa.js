@@ -42,6 +42,7 @@
       .join("");
   const quarterMutations = new Map();
   const watchedRegistrations = new WeakSet();
+  const SETTINGS_AREAS = Object.freeze(["app", "storage", "quarter", "queue", "selector"]);
   try {
     if (typeof BroadcastChannel === "function") stateChannel = new BroadcastChannel(STATE_CHANNEL_NAME);
   } catch {
@@ -103,21 +104,41 @@
         headers: { "Content-Type": "application/json; charset=utf-8" },
       }),
     );
-    notify();
+    notify({ areas: metaAreas(name), name });
   }
 
   async function deleteMeta(name) {
     const cache = await caches.open(META_CACHE);
     await assertFallbackQueueMutationLock(cache);
     await cache.delete(metaRequest(name));
-    notify();
+    notify({ areas: metaAreas(name), name });
   }
 
-  function notify(broadcast = true) {
+  function metaAreas(name) {
+    if (name === QUEUE_META) return ["queue", "quarter"];
+    if (name?.startsWith("progress/")) return ["queue", "quarter"];
+    if (name?.startsWith("quarters/")) return ["quarter", "storage"];
+    if (name?.startsWith("shell")) return ["app"];
+    return [...SETTINGS_AREAS];
+  }
+
+  function normalizeNotify(value) {
+    if (!value || typeof value !== "object") return { areas: [...SETTINGS_AREAS] };
+    const areas = Array.isArray(value.areas)
+      ? value.areas.filter((area) => SETTINGS_AREAS.includes(area))
+      : [...SETTINGS_AREAS];
+    return { ...value, areas: areas.length ? [...new Set(areas)] : [...SETTINGS_AREAS] };
+  }
+
+  function notify(eventOrBroadcast = true, broadcast = true) {
+    const event = typeof eventOrBroadcast === "boolean"
+      ? normalizeNotify(null)
+      : normalizeNotify(eventOrBroadcast);
+    if (typeof eventOrBroadcast === "boolean") broadcast = eventOrBroadcast;
     renderUpdateNotice();
-    window.dispatchEvent(new CustomEvent("bsb:pwa-state"));
-    for (const listener of listeners) listener();
-    if (broadcast) stateChannel?.postMessage({ type: "state-changed" });
+    window.dispatchEvent(new CustomEvent("bsb:pwa-state", { detail: event }));
+    for (const listener of listeners) listener(event);
+    if (broadcast) stateChannel?.postMessage({ type: "state-changed", ...event });
   }
 
   function subscribe(listener) {
@@ -1140,7 +1161,7 @@
 
   stateChannel?.addEventListener("message", async (event) => {
     if (event.data?.type !== "state-changed") return;
-    notify(false);
+    notify({ areas: event.data.areas, reason: "cross-tab" }, false);
     const queue = await readQueue();
     if (["downloading", "waiting-network"].includes(queue.state)) runQueue();
   });
@@ -1321,7 +1342,7 @@
       if (registration.waiting && navigator.serviceWorker.controller) {
         updateRegistration = registration;
         document.documentElement.dataset.pwaUpdateAvailable = "true";
-        notify();
+        notify({ areas: ["app"], reason: "app-update" });
       }
     };
     inspect();
@@ -1371,12 +1392,12 @@
   async function startServiceWorkerRegistration() {
     if (!supported()) {
       capabilityState = "unsupported";
-      notify();
+      notify({ areas: ["app", "quarter", "queue", "selector"], reason: "capability" });
       return null;
     }
     capabilityState = "registering";
     registrationError = null;
-    notify();
+    notify({ areas: ["app", "quarter", "queue", "selector"], reason: "capability" });
     try {
       const workerUrl = new URL("../sw.js", scriptUrl);
       const scopeUrl = new URL("../", scriptUrl);
@@ -1389,14 +1410,14 @@
       if (!serviceWorkerRegistration.active) throw new Error("Service Worker inactive");
       capabilityState = "ready";
       registrationError = null;
-      notify();
+      notify({ areas: ["app", "quarter", "queue", "selector"], reason: "capability" });
       await restoreQueue();
       return serviceWorkerRegistration;
     } catch (error) {
       serviceWorkerRegistration = null;
       capabilityState = "registration-failed";
       registrationError = shortError(error);
-      notify();
+      notify({ areas: ["app", "quarter", "queue", "selector"], reason: "capability" });
       try {
         await parkQueueForServiceWorker();
       } catch {
@@ -1452,7 +1473,7 @@
     installPrompt = null;
     await prompt.prompt();
     const result = await prompt.userChoice;
-    notify();
+    notify({ areas: ["app"], reason: "install" });
     return result;
   }
 
@@ -1460,6 +1481,63 @@
   let knownOfflineQuarters = [];
   let persistenceResult = null;
   const settingsSelection = { kind: "current", year: "", from: "", to: "" };
+  const settingsDirty = new Set();
+  const settingsWaiters = [];
+  let settingsRevision = 0;
+  let settingsRenderScheduled = false;
+  let settingsRenderActive = false;
+
+  function settingsRoot() {
+    return document.querySelector("[data-pwa-settings]");
+  }
+
+  function settingsAreas(value) {
+    if (!value) return new Set(SETTINGS_AREAS);
+    const values = Array.isArray(value) ? value : value.areas;
+    if (!Array.isArray(values)) return new Set(SETTINGS_AREAS);
+    return new Set(values.filter((area) => SETTINGS_AREAS.includes(area)));
+  }
+
+  function scheduleSettingsRender() {
+    if (settingsRenderScheduled || settingsRenderActive) return;
+    settingsRenderScheduled = true;
+    const schedule = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 0));
+    schedule(() => { void flushSettingsRender(); });
+  }
+
+  async function flushSettingsRender() {
+    settingsRenderScheduled = false;
+    settingsRenderActive = true;
+    const root = settingsRoot();
+    const areas = new Set(settingsDirty);
+    settingsDirty.clear();
+    const revision = settingsRevision;
+    if (root && areas.size) {
+      await Promise.all([
+        areas.has("app") ? renderAppSettings(root.querySelector("[data-settings-app]"), revision) : null,
+        areas.has("storage") ? renderStorageSettings(root.querySelector("[data-settings-storage]"), revision) : null,
+        areas.has("quarter") ? renderQuarterSettings(root.querySelector("[data-settings-quarters]"), revision) : null,
+        areas.has("queue") ? renderQueue(root.querySelector("[data-settings-queue]"), revision) : null,
+      ]);
+      if (revision === settingsRevision && areas.has("selector")) {
+        renderQueueSelector(root.querySelector("[data-settings-selector]"));
+      }
+    }
+    settingsRenderActive = false;
+    if (settingsDirty.size) {
+      scheduleSettingsRender();
+      return;
+    }
+    const waiters = settingsWaiters.splice(0);
+    waiters.forEach((resolve) => resolve());
+  }
+
+  function renderSettings(areas = SETTINGS_AREAS) {
+    for (const area of settingsAreas(areas)) settingsDirty.add(area);
+    settingsRevision += 1;
+    scheduleSettingsRender();
+    return new Promise((resolve) => settingsWaiters.push(resolve));
+  }
 
   function escapeHtml(value) {
     return String(value ?? "")
@@ -1524,7 +1602,7 @@
     return labels;
   }
 
-  async function renderAppSettings(container) {
+  async function renderAppSettings(container, revision = settingsRevision) {
     if (!container) return;
     const hasSupport = supported();
     const controlled = Boolean(navigator.serviceWorker?.controller);
@@ -1532,6 +1610,7 @@
     const retryHtml = capabilityState === "registration-failed"
       ? `<p class="settings-note">${escapeHtml(registrationError || "Service Worker registration failed")}</p><button type="button" class="button button--ink" data-retry-service-worker>重试离线能力</button>`
       : "";
+    if (revision !== settingsRevision) return;
     container.innerHTML = `
       <dl class="settings-facts">
         <div><dt>PWA</dt><dd>${hasSupport ? "supported" : "unavailable"}</dd></div>
@@ -1543,17 +1622,17 @@
     `;
     container.querySelector("[data-install-app]")?.addEventListener("click", async () => {
       await promptInstall();
-      renderSettings();
+      await renderSettings(["app"]);
     });
     container.querySelector("[data-retry-service-worker]")?.addEventListener("click", async (event) => {
       const button = event.currentTarget;
       button.disabled = true;
       await retryServiceWorkerRegistration();
-      await renderSettings();
+      await renderSettings(["app"]);
     });
   }
 
-  async function renderStorageSettings(container) {
+  async function renderStorageSettings(container, revision = settingsRevision) {
     if (!container) return;
     let estimate = null;
     let persisted = "unsupported";
@@ -1569,6 +1648,7 @@
     } catch {
       persisted = "unsupported";
     }
+    if (revision !== settingsRevision) return;
     const estimateHtml = estimate
       ? `<dl class="settings-facts"><div><dt>Usage</dt><dd>${formatBytes(estimate.usage)}</dd></div><div><dt>Quota</dt><dd>${formatBytes(estimate.quota)}</dd></div></dl>`
       : '<p class="settings-note">浏览器未提供存储估算</p>';
@@ -1579,17 +1659,17 @@
       } catch {
         persistenceResult = "unsupported";
       }
-      renderSettings();
+      await renderSettings(["storage"]);
     });
   }
 
   function statusLabel(status) {
     return {
       NONE: "未下载",
-      INCOMPLETE: "INCOMPLETE",
-      COMPLETE: "已离线",
+      INCOMPLETE: "下载未完成",
+      COMPLETE: "已下载",
       UPDATE_AVAILABLE: "有更新",
-      UPDATE_INCOMPLETE: "已离线 · 更新未完成",
+      UPDATE_INCOMPLETE: "更新未完成",
     }[status] || "未下载";
   }
 
@@ -1607,7 +1687,7 @@
     return {
       NONE: "下载",
       INCOMPLETE: "继续",
-      COMPLETE: "移除",
+      COMPLETE: "…",
       UPDATE_AVAILABLE: "更新",
       UPDATE_INCOMPLETE: "继续更新",
     }[status] || "下载";
@@ -1629,12 +1709,13 @@
     return `移除 ${quarter} 的离线缓存？`;
   }
 
-  async function renderQuarterSettings(container) {
+  async function renderQuarterSettings(container, revision = settingsRevision) {
     if (!container) return;
     const states = await listQuarterStates();
     knownOfflineQuarters = states.map((state) => state.quarter);
     const stateByQuarter = new Map(states.map((state) => [state.quarter, state]));
     const labels = displayOfflineQuarterLabels();
+    if (revision !== settingsRevision) return;
     if (!labels.length) {
       container.innerHTML = '<p class="settings-note">当前没有可公开季度。</p>';
       return;
@@ -1648,9 +1729,16 @@
         : canDownload ? actionLabel(view.status) : "离线不可用";
       const removable = ["INCOMPLETE", "UPDATE_AVAILABLE", "UPDATE_INCOMPLETE"]
         .includes(view.status);
+      const completeMenu = view.status === "COMPLETE"
+        ? `<div class="offline-quarter__menu" data-quarter-menu hidden>
+            <a class="button" href="../${quarter}/index.html">查看季度</a>
+            <button type="button" class="button" data-quarter-check>检查更新</button>
+            <button type="button" class="button" data-quarter-remove>移除离线资料</button>
+          </div>`
+        : "";
       return `<article class="offline-quarter" data-offline-quarter="${quarter}">
         <div><strong>${quarter}</strong><span>${statusLabel(view.status)}</span>${state.error ? `<small>${escapeHtml(state.error)}</small>` : ""}</div>
-        <div class="offline-quarter__actions"><button type="button" class="button" data-quarter-action="${action}" ${view.status !== "COMPLETE" && !canDownload ? "disabled" : ""}>${action}</button>${removable ? `<button type="button" class="button" data-quarter-remove>${removeLabel(view.status)}</button>` : ""}</div>
+        <div class="offline-quarter__actions"><button type="button" class="button" data-quarter-action="${action}" aria-haspopup="${view.status === "COMPLETE" ? "menu" : "false"}" ${view.status !== "COMPLETE" && !canDownload ? "disabled" : ""}>${action}</button>${completeMenu}${view.status !== "COMPLETE" && removable ? `<button type="button" class="button" data-quarter-remove>${removeLabel(view.status)}</button>` : ""}</div>
       </article>`;
     }).join("")}</div>`;
     container.querySelectorAll("[data-offline-quarter]").forEach((row) => {
@@ -1658,17 +1746,25 @@
       const state = stateByQuarter.get(quarter) || initialQuarterState(quarter);
       const view = quarterView(state);
       row.querySelector("[data-quarter-action]")?.addEventListener("click", async () => {
-        try {
-          if (view.status === "COMPLETE") {
-            if (!window.confirm(`移除 ${quarter} 的离线缓存？`)) return;
-            await removeQuarter(quarter);
-          } else {
-            await enqueue([quarter]);
+        if (view.status === "COMPLETE") {
+          const menu = row.querySelector("[data-quarter-menu]");
+          const button = row.querySelector("[data-quarter-action]");
+          if (menu) {
+            menu.hidden = !menu.hidden;
+            button?.setAttribute("aria-expanded", String(!menu.hidden));
           }
+          return;
+        }
+        try {
+          await enqueue([quarter]);
         } catch (error) {
           window.alert(shortError(error));
         }
-        renderSettings();
+        await renderSettings(["quarter", "queue"]);
+      });
+      row.querySelector("[data-quarter-check]")?.addEventListener("click", async () => {
+        await detectUpdates();
+        await renderSettings(["quarter"]);
       });
       row.querySelector("[data-quarter-remove]")?.addEventListener("click", async () => {
         if (!window.confirm(removeConfirmation(quarter, view.status))) return;
@@ -1677,7 +1773,7 @@
         } catch (error) {
           window.alert(shortError(error));
         }
-        renderSettings();
+        await renderSettings(["quarter"]);
       });
     });
   }
@@ -1713,7 +1809,7 @@
       value: settingsSelection.kind,
       onChange: (value) => {
         settingsSelection.kind = value;
-        renderSettings();
+        renderSettings(["selector"]);
       },
     }));
     controls.push(window.BsbListbox?.create(container.querySelector("[data-queue-year-value]"), {
@@ -1722,7 +1818,7 @@
       value: settingsSelection.year,
       onChange: (value) => {
         settingsSelection.year = value;
-        renderSettings();
+        renderSettings(["selector"]);
       },
     }));
     controls.push(window.BsbListbox?.create(container.querySelector("[data-queue-from]"), {
@@ -1731,7 +1827,7 @@
       value: settingsSelection.from,
       onChange: (value) => {
         settingsSelection.from = value;
-        renderSettings();
+        renderSettings(["selector"]);
       },
     }));
     controls.push(window.BsbListbox?.create(container.querySelector("[data-queue-to]"), {
@@ -1740,19 +1836,20 @@
       value: settingsSelection.to,
       onChange: (value) => {
         settingsSelection.to = value;
-        renderSettings();
+        renderSettings(["selector"]);
       },
     }));
     container.__bsbListboxDestroyers = controls.filter(Boolean).map((control) => control.destroy);
     container.querySelector("[data-start-queue]")?.addEventListener("click", async () => {
       await enqueue(selectedQueueLabels());
-      renderSettings();
+      await renderSettings(["queue", "quarter"]);
     });
   }
 
-  async function renderQueue(container) {
+  async function renderQueue(container, revision = settingsRevision) {
     if (!container) return;
     const queue = await currentQueue();
+    if (revision !== settingsRevision) return;
     const progress = queue.progress;
     const succeeded = queue.succeeded || queue.completed || [];
     const failed = queue.failed || [];
@@ -1764,10 +1861,32 @@
       "waiting-service-worker": "等待离线能力",
       cancelled: "已取消",
     }[queue.state] || queue.state;
+    const progressTotal = progress?.total_bytes || progress?.total_resources || 0;
+    const progressCompleted = progress?.total_bytes
+      ? progress.verified_bytes
+      : progress?.verified_resources || 0;
+    const progressPercent = progressTotal
+      ? Math.min(100, Math.floor((progressCompleted / progressTotal) * 100))
+      : 0;
+    const progressHtml = progress
+      ? `<div class="queue-progress" data-queue-progress>
+          <div class="queue-progress__label"><strong>${queue.current || "下载任务"}</strong><span>${progressPercent}%</span></div>
+          <progress max="100" value="${progressPercent}" aria-label="下载进度">${progressPercent}%</progress>
+          <p>${progress.verified_resources} / ${progress.total_resources} 个资源<br>${formatBytes(progress.verified_bytes)} / ${formatBytes(progress.total_bytes)}</p>
+        </div>`
+      : `<div class="queue-progress queue-progress--empty" data-queue-progress><p>当前没有进行中的下载任务。</p></div>`;
+    const failureHtml = queue.errors.length
+      ? `<p class="queue-failure">下载未完成 · 已保存 ${progressPercent}%</p>`
+      : "";
+    const errorsHtml = queue.errors.length
+      ? `<details class="queue-errors"><summary>查看错误详情（${queue.errors.length}）</summary><ul>${queue.errors.map((error) => `<li><strong>${escapeHtml(error.quarter)}</strong> · ${escapeHtml(error.stage)} · ${escapeHtml(error.summary)}</li>`).join("")}</ul></details>`
+      : "";
     container.innerHTML = `<div class="queue-status">
       <p><strong>${stateLabel}</strong>${queue.current ? ` · ${queue.current}` : ""}</p>
-      ${progress ? `<p>${progress.verified_resources} / ${progress.total_resources} resources<br>${formatBytes(progress.verified_bytes)} / ${formatBytes(progress.total_bytes)}<br>成功 ${succeeded.length} · 失败 ${failed.length} / ${queue.labels.length} quarters</p>` : `<p>成功 ${succeeded.length} · 失败 ${failed.length} / ${queue.labels.length} quarters</p>`}
-      ${queue.errors.length ? `<ul class="queue-errors">${queue.errors.map((error) => `<li><strong>${escapeHtml(error.quarter)}</strong> · ${escapeHtml(error.stage)} · ${escapeHtml(error.summary)}</li>`).join("")}</ul>` : ""}
+      ${progressHtml}
+      <p>成功 ${succeeded.length} · 失败 ${failed.length} / ${queue.labels.length} 个季度</p>
+      ${failureHtml}
+      ${errorsHtml}
       <div class="queue-actions">
         ${["downloading", "waiting-network"].includes(queue.state) ? '<button type="button" class="button" data-queue-pause>暂停</button>' : ""}
         ${queue.state === "paused" ? '<button type="button" class="button button--ink" data-queue-resume>继续</button>' : ""}
@@ -1778,23 +1897,11 @@
     container.querySelector("[data-queue-cancel]")?.addEventListener("click", cancelQueue);
   }
 
-  async function renderSettings() {
-    const root = document.querySelector("[data-pwa-settings]");
-    if (!root) return;
-    await Promise.all([
-      renderAppSettings(root.querySelector("[data-settings-app]")),
-      renderStorageSettings(root.querySelector("[data-settings-storage]")),
-      renderQuarterSettings(root.querySelector("[data-settings-quarters]")),
-      renderQueue(root.querySelector("[data-settings-queue]")),
-    ]);
-    renderQueueSelector(root.querySelector("[data-settings-selector]"));
-  }
-
   async function initializeSettings() {
     const root = document.querySelector("[data-pwa-settings]");
     if (!root) return;
     await loadArchiveIndex(root.dataset.archiveIndexUrl);
-    subscribe(renderSettings);
+    subscribe((event) => renderSettings(event));
     await renderSettings();
     await detectUpdates();
   }
@@ -1821,10 +1928,16 @@
   }
 
   async function renderQuarterOfflineControl() {
-    const root = document.querySelector("[data-quarter-offline]");
+    const root = document.querySelector(
+      "[data-mobile-quarter-offline], [data-quarter-offline]",
+    );
     if (!root) return;
-    const status = root.querySelector("[data-quarter-offline-status]");
-    const actions = root.querySelector("[data-quarter-offline-actions]");
+    const status = root.querySelector(
+      "[data-mobile-quarter-offline-status], [data-quarter-offline-status]",
+    );
+    const actions = root.querySelector(
+      "[data-mobile-quarter-offline-actions], [data-quarter-offline-actions]",
+    );
     const quarter = root.dataset.quarter;
     if (!supported()) {
       status.textContent = "当前浏览器不支持离线下载；在线浏览仍可正常使用。";
@@ -1909,7 +2022,7 @@
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     installPrompt = event;
-    notify();
+    notify({ areas: ["app"], reason: "install" });
   });
 
   window.addEventListener("online", async () => {
@@ -1918,7 +2031,7 @@
     if (settings) await detectUpdates();
     const queue = await currentQueue();
     if (queue.state === "waiting-network") await resumeQueue();
-    notify();
+    notify({ areas: ["app", "quarter", "queue", "selector"], reason: "online" });
   });
   window.addEventListener("offline", async () => {
     await updateQueue((queue) => (
@@ -1926,13 +2039,13 @@
         ? { ...queue, state: "waiting-network" }
         : queue
     ));
-    notify();
+    notify({ areas: ["app", "quarter", "queue", "selector"], reason: "offline" });
   });
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.addEventListener("controllerchange", () => {
       if (refreshRequested) window.location.reload();
-      else notify();
+      else notify({ areas: ["app"], reason: "controller-change" });
     });
     window.addEventListener("load", async () => {
       await getOrStartServiceWorkerRegistration().catch(() => null);

@@ -98,6 +98,7 @@ auto_excluded_subject_ids = [
     695700, # 「Fate/Grand Order展 -星見の回廊-」オープニングシアター
     696005, # 【アニメーションMV】燦然燃焼 - Omaru Polka（Original）
     696007, # コンティニュー - NEE
+    696644, # KA Esuma文库《草原的光辉》动画CM
 ]
 
 [sync]

@@ -54,6 +54,7 @@
       query: "",
       filterOptionQuery: "",
       filters: { sources: [], tags: [], sections: [] },
+      draftFilters: null,
       sort: "score-desc",
       page: 1,
       pageSize: readPageSize(),
@@ -644,7 +645,8 @@
   }
 
   function renderRows(result) {
-    const visible = new Set(result.pageRecords.map((record) => record.key));
+    const visibleRecords = window.innerWidth < 768 ? result.all : result.pageRecords;
+    const visible = new Set(visibleRecords.map((record) => record.key));
     const position = new Map(result.all.map((record, index) => [record.key, index + 1]));
     for (const row of rows) {
       const record = recordByKey.get(row.dataset.recordKey);
@@ -666,13 +668,24 @@
       const counter = section.querySelector("[data-section-count]");
       if (counter) counter.textContent = String(count).padStart(2, "0");
     }
-    if (summary) summary.textContent = `${result.total} / ${records.filter((record) => record.media === (state.media === "movie" ? "MOVIE" : "TV")).length} 部 · 第 ${result.page} / ${result.pageCount} 页`;
+    if (summary) {
+      const total = records.filter(
+        (record) => record.media === (state.media === "movie" ? "MOVIE" : "TV"),
+      ).length;
+      summary.textContent = window.innerWidth < 768
+        ? `${result.total} / ${total} 部`
+        : `${result.total} / ${total} 部 · 第 ${result.page} / ${result.pageCount} 页`;
+    }
     if (noResults) noResults.hidden = result.total !== 0;
   }
 
   function renderPager(result) {
     if (!pager) return;
     pager.replaceChildren();
+    if (window.innerWidth < 768) {
+      pager.hidden = true;
+      return;
+    }
     if (result.pageCount <= 1) {
       pager.hidden = true;
       return;
@@ -767,6 +780,34 @@
     return state.filters.sources.length + state.filters.tags.length + state.filters.sections.length;
   }
 
+  function cloneFilters(filters) {
+    return {
+      sources: [...(filters.sources || [])],
+      tags: [...(filters.tags || [])],
+      sections: [...(filters.sections || [])],
+    };
+  }
+
+  function isMobileFilter() {
+    return window.innerWidth < 768;
+  }
+
+  function beginFilterDraft() {
+    state.draftFilters = isMobileFilter() ? cloneFilters(state.filters) : null;
+  }
+
+  function discardFilterDraft() {
+    state.draftFilters = null;
+  }
+
+  function applyFilterDraft() {
+    if (!state.draftFilters) return;
+    state.filters = state.draftFilters;
+    state.draftFilters = null;
+    state.page = 1;
+    clearSelection(true);
+  }
+
   function clearSelection(removeHash = false) {
     state.selectedSubjectId = null;
     state.selectedOccurrence = null;
@@ -803,7 +844,9 @@
     window.setTimeout(apply, 120);
   }
 
-  function closeFilterAndRestoreFocus() {
+  function closeFilterAndRestoreFocus(applyDraft = false) {
+    if (applyDraft) applyFilterDraft();
+    else discardFilterDraft();
     closeFilter();
     render();
     quarterRoot.querySelector("[data-filter-toggle]")?.focus();
@@ -910,6 +953,7 @@
     quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
       button.addEventListener("click", () => {
         state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv";
+        discardFilterDraft();
         archive.normalizeFiltersForMedia(state, records);
         state.page = 1;
         clearSelection(true);
@@ -983,9 +1027,10 @@
     });
     quarterRoot.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
       if (state.workspaceMode === "filter") {
-        closeFilter();
+        closeFilterAndRestoreFocus(false);
       } else {
         if (window.innerWidth < 768) state.listScrollTop = window.scrollY;
+        beginFilterDraft();
         state.workspaceMode = "filter";
       }
       renderFilterPanel();
@@ -1003,23 +1048,26 @@
     rows.forEach((row) => row.querySelector("[data-open-subject]")?.addEventListener("click", () => {
       selectRecord(recordByKey.get(row.dataset.recordKey));
     }));
+    window.addEventListener("resize", () => render());
     window.addEventListener("popstate", openHash);
     window.addEventListener("hashchange", openHash);
   }
 
   function renderFilterPanel() {
     if (!filterPanel) return;
-    const options = archive.filterOptionMetadata(records, state);
+    const panelFilters = state.draftFilters || state.filters;
+    const panelState = { ...state, filters: panelFilters };
+    const options = archive.filterOptionMetadata(records, panelState);
     filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button></div><h2>筛选资料</h2><p class="filter-workspace-summary" data-filter-workspace-summary></p><div class="active-filter-strip filter-workspace-active" data-filter-workspace-active hidden></div><button type="button" class="text-button filter-workspace-clear" data-filter-workspace-clear>清除全部筛选</button><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
-    const result = archive.applyPipeline(records, state);
+    const result = archive.applyPipeline(records, panelState);
     const workspaceSummary = filterPanel.querySelector("[data-filter-workspace-summary]");
     if (workspaceSummary) workspaceSummary.textContent = `当前结果 ${result.total} 部`;
     const workspaceActive = filterPanel.querySelector("[data-filter-workspace-active]");
     const activeValues = [
       ...(state.query ? [{ label: `搜索：${state.query}`, type: "query", value: state.query }] : []),
-      ...state.filters.sources.map((value) => ({ label: `来源：${archive.sourceLabel(value)}`, type: "sources", value })),
-      ...state.filters.tags.map((value) => ({ label: `标签：${value}`, type: "tags", value })),
-      ...state.filters.sections.map((value) => ({ label: `分区：${archive.appearanceLabel(value)}`, type: "sections", value })),
+      ...panelFilters.sources.map((value) => ({ label: `来源：${archive.sourceLabel(value)}`, type: "sources", value })),
+      ...panelFilters.tags.map((value) => ({ label: `标签：${value}`, type: "tags", value })),
+      ...panelFilters.sections.map((value) => ({ label: `分区：${archive.appearanceLabel(value)}`, type: "sections", value })),
     ];
     if (workspaceActive) {
       workspaceActive.hidden = activeValues.length === 0;
@@ -1033,11 +1081,13 @@
             state.query = "";
             if (search) search.value = "";
           } else {
-            state.filters[item.type] = state.filters[item.type].filter((value) => value !== item.value);
+            panelFilters[item.type] = panelFilters[item.type].filter((value) => value !== item.value);
           }
-          state.page = 1;
-          state.workspaceMode = "filter";
-          render();
+          if (!state.draftFilters) {
+            state.page = 1;
+            state.workspaceMode = "filter";
+            render();
+          }
           renderFilterPanel();
         });
         workspaceActive.append(button);
@@ -1049,13 +1099,19 @@
       workspaceClear.addEventListener("click", () => {
         state.query = "";
         state.filterOptionQuery = "";
-        state.filters = { sources: [], tags: [], sections: [] };
+        if (state.draftFilters) {
+          state.draftFilters = { sources: [], tags: [], sections: [] };
+        } else {
+          state.filters = { sources: [], tags: [], sections: [] };
+        }
         if (search) search.value = "";
-        state.page = 1;
-        clearSelection(true);
         state.workspaceMode = "filter";
-        render();
         renderFilterPanel();
+        if (!state.draftFilters) {
+          state.page = 1;
+          clearSelection(true);
+          render();
+        }
       });
     }
     const optionSearch = filterPanel.querySelector("[data-filter-option-search]");
@@ -1097,12 +1153,15 @@
         input.checked = selected;
         input.setAttribute("aria-label", shown);
         input.addEventListener("change", () => {
-          state.filters[group] = input.checked
-            ? [...state.filters[group], value]
-            : state.filters[group].filter((item) => item !== value);
-          state.page = 1;
-          state.workspaceMode = "filter";
-          render();
+          const target = state.draftFilters || state.filters;
+          target[group] = input.checked
+            ? [...target[group], value]
+            : target[group].filter((item) => item !== value);
+          if (!state.draftFilters) {
+            state.page = 1;
+            state.workspaceMode = "filter";
+            render();
+          }
           renderFilterPanel();
           const replacement = [...filterPanel.querySelectorAll("[data-filter-group]")]
             .find((candidate) => candidate.dataset.filterGroup === group
@@ -1124,11 +1183,11 @@
     applyButton.dataset.filterClose = "true";
     applyButton.textContent = `返回结果 · ${result.total} 部`;
     applyButton.setAttribute("aria-label", `返回结果，当前 ${result.total} 部`);
-    applyButton.addEventListener("click", closeFilterAndRestoreFocus);
+    applyButton.addEventListener("click", () => closeFilterAndRestoreFocus(true));
     filterPanel.append(applyButton);
     filterPanel.querySelector("[data-filter-close]")?.addEventListener(
       "click",
-      closeFilterAndRestoreFocus,
+      () => closeFilterAndRestoreFocus(false),
     );
   }
 
@@ -1550,13 +1609,6 @@
     window.setTimeout(apply, 120);
   }
 
-  function closeFilterAndRestoreFocus() {
-    closeFilter();
-    render();
-    root.querySelector("[data-filter-toggle]")?.focus();
-    restoreListScroll();
-  }
-
   function renderRows(result) {
     buildLists(result);
     rows.forEach((row) => {
@@ -1659,6 +1711,39 @@
 
   function filterCount() {
     return state.filters.sources.length + state.filters.tags.length + state.filters.sections.length;
+  }
+
+  function cloneFilters(filters) {
+    return {
+      sources: [...(filters.sources || [])],
+      tags: [...(filters.tags || [])],
+      sections: [...(filters.sections || [])],
+    };
+  }
+
+  function beginFilterDraft() {
+    state.draftFilters = window.innerWidth < 768 ? cloneFilters(state.filters) : null;
+  }
+
+  function discardFilterDraft() {
+    state.draftFilters = null;
+  }
+
+  function applyFilterDraft() {
+    if (!state.draftFilters) return;
+    state.filters = state.draftFilters;
+    state.draftFilters = null;
+    state.page = 1;
+    clearSelection(true);
+  }
+
+  function closeFilterAndRestoreFocus(applyDraft = false) {
+    if (applyDraft) applyFilterDraft();
+    else discardFilterDraft();
+    closeFilter();
+    render();
+    root.querySelector("[data-filter-toggle]")?.focus();
+    restoreListScroll();
   }
 
   function detailHtml(record) {
@@ -1769,17 +1854,19 @@
 
   function renderFilterPanel() {
     if (!selectors.filterPanel) return;
-    const options = archive.filterOptionMetadata(records, state);
+    const panelFilters = state.draftFilters || state.filters;
+    const panelState = { ...state, filters: panelFilters };
+    const options = archive.filterOptionMetadata(records, panelState);
     selectors.filterPanel.innerHTML = `<div class="filter-panel__head"><p class="workspace-panel__code">FILTER WORKSPACE</p><button type="button" class="detail-close" data-filter-close aria-label="关闭筛选"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button></div><h2>筛选资料</h2><p class="filter-workspace-summary" data-filter-workspace-summary></p><div class="active-filter-strip filter-workspace-active" data-filter-workspace-active hidden></div><button type="button" class="text-button filter-workspace-clear" data-filter-workspace-clear>清除全部筛选</button><label class="filter-option-search"><span class="sr-only">搜索筛选选项</span><input type="search" data-filter-option-search placeholder="搜索选项名称"></label>`;
-    const result = archive.applyPipeline(records, state);
+    const result = archive.applyPipeline(records, panelState);
     const workspaceSummary = selectors.filterPanel.querySelector("[data-filter-workspace-summary]");
     if (workspaceSummary) workspaceSummary.textContent = `当前结果 ${result.total} 部`;
     const workspaceActive = selectors.filterPanel.querySelector("[data-filter-workspace-active]");
     const activeValues = [
       ...(state.query ? [{ label: `搜索：${state.query}`, type: "query", value: state.query }] : []),
-      ...state.filters.sources.map((value) => ({ label: `来源：${archive.sourceLabel(value)}`, type: "sources", value })),
-      ...state.filters.tags.map((value) => ({ label: `标签：${value}`, type: "tags", value })),
-      ...state.filters.sections.map((value) => ({ label: `分区：${archive.appearanceLabel(value)}`, type: "sections", value })),
+      ...panelFilters.sources.map((value) => ({ label: `来源：${archive.sourceLabel(value)}`, type: "sources", value })),
+      ...panelFilters.tags.map((value) => ({ label: `标签：${value}`, type: "tags", value })),
+      ...panelFilters.sections.map((value) => ({ label: `分区：${archive.appearanceLabel(value)}`, type: "sections", value })),
     ];
     if (workspaceActive) {
       workspaceActive.hidden = activeValues.length === 0;
@@ -1793,11 +1880,13 @@
             state.query = "";
             if (selectors.search) selectors.search.value = "";
           } else {
-            state.filters[item.type] = state.filters[item.type].filter((value) => value !== item.value);
+            panelFilters[item.type] = panelFilters[item.type].filter((value) => value !== item.value);
           }
-          state.page = 1;
-          state.workspaceMode = "filter";
-          render();
+          if (!state.draftFilters) {
+            state.page = 1;
+            state.workspaceMode = "filter";
+            render();
+          }
           renderFilterPanel();
         });
         workspaceActive.append(button);
@@ -1809,13 +1898,19 @@
       workspaceClear.addEventListener("click", () => {
         state.query = "";
         state.filterOptionQuery = "";
-        state.filters = { sources: [], tags: [], sections: [] };
+        if (state.draftFilters) {
+          state.draftFilters = { sources: [], tags: [], sections: [] };
+        } else {
+          state.filters = { sources: [], tags: [], sections: [] };
+        }
         if (selectors.search) selectors.search.value = "";
-        state.page = 1;
-        clearSelection(true);
         state.workspaceMode = "filter";
-        render();
         renderFilterPanel();
+        if (!state.draftFilters) {
+          state.page = 1;
+          clearSelection(true);
+          render();
+        }
       });
     }
     const optionSearch = selectors.filterPanel.querySelector("[data-filter-option-search]");
@@ -1857,10 +1952,13 @@
         input.checked = selected;
         input.setAttribute("aria-label", shown);
         input.addEventListener("change", () => {
-          state.filters[group] = input.checked ? [...state.filters[group], value] : state.filters[group].filter((item) => item !== value);
-          state.page = 1;
-          state.workspaceMode = "filter";
-          render();
+          const target = state.draftFilters || state.filters;
+          target[group] = input.checked ? [...target[group], value] : target[group].filter((item) => item !== value);
+          if (!state.draftFilters) {
+            state.page = 1;
+            state.workspaceMode = "filter";
+            render();
+          }
           renderFilterPanel();
           const replacement = [...selectors.filterPanel.querySelectorAll("[data-filter-group]")]
             .find((candidate) => candidate.dataset.filterGroup === group
@@ -1881,11 +1979,11 @@
     apply.className = "filter-apply-mobile button button--ink";
     apply.textContent = `返回结果 · ${result.total} 部`;
     apply.setAttribute("aria-label", `返回结果，当前 ${result.total} 部`);
-    apply.addEventListener("click", closeFilterAndRestoreFocus);
+    apply.addEventListener("click", () => closeFilterAndRestoreFocus(true));
     selectors.filterPanel.append(apply);
     selectors.filterPanel.querySelector("[data-filter-close]")?.addEventListener(
       "click",
-      closeFilterAndRestoreFocus,
+      () => closeFilterAndRestoreFocus(false),
     );
   }
 
@@ -1906,11 +2004,12 @@
       });
     }
     selectors.search?.addEventListener("input", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); });
-    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
+    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
     root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
-      if (state.workspaceMode === "filter") closeFilter();
+      if (state.workspaceMode === "filter") closeFilterAndRestoreFocus(false);
       else {
         if (window.innerWidth < 768) state.listScrollTop = window.scrollY;
+        beginFilterDraft();
         state.workspaceMode = "filter";
       }
       renderFilterPanel();
@@ -2014,6 +2113,7 @@
     }));
     window.addEventListener("popstate", () => { void restoreArchiveLocation(); });
     window.addEventListener("hashchange", openHash);
+    window.addEventListener("resize", () => render());
   }
 
   async function setScope(kind, value, push = true) {
@@ -2024,6 +2124,7 @@
     state.page = 1;
     state.query = "";
     state.filters = { sources: [], tags: [], sections: [] };
+    discardFilterDraft();
     if (selectors.search) selectors.search.value = "";
     clearSelection(false);
     if (push) setScopeUrl(kind, normalized);

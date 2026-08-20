@@ -905,6 +905,37 @@ html { line-height: 1.65; }
   }
   .detail-close__back { display: inline; font-size: .78rem; }
   .detail-close > span:first-child { display: none; }
+
+  /* Plan 46 Phase 2: cover-first result cards. */
+  .quarter-page .archive-intro--quarter { border-top: 0; display: block; padding: .45rem 0 .4rem; }
+  .quarter-page .archive-intro--quarter .archive-intro__code,
+  .quarter-page .archive-intro--quarter .archive-intro__summary { display: none; }
+  .quarter-page .archive-intro--quarter h1 { font-size: 1.25rem; letter-spacing: -.02em; margin: 0; }
+  .quarter-page .result-list, .archive-page .result-list { gap: .55rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .quarter-page .subject-row, .archive-page .subject-row { border: 1px solid var(--border-default); border-radius: var(--radius-control); overflow: hidden; }
+  .quarter-page .subject-row__open, .archive-page .subject-row__open { align-items: stretch; display: flex; flex-direction: column; gap: 0; min-height: 100%; padding: 0; position: relative; }
+  .quarter-page .subject-row__sequence, .archive-page .subject-row__sequence { display: none; }
+  .quarter-page .subject-row__cover, .archive-page .subject-row__cover { aspect-ratio: 2 / 3; border: 0; display: block; height: auto; width: 100%; }
+  .quarter-page .subject-row__cover img, .archive-page .subject-row__cover img { height: 100%; width: 100%; }
+  .quarter-page .subject-row__content, .archive-page .subject-row__content { gap: .18rem; padding: .5rem .5rem .25rem; }
+  .quarter-page .subject-row__title, .archive-page .subject-row__title { font-size: .82rem; line-height: 1.3; white-space: normal; }
+  .quarter-page .subject-row__original, .archive-page .subject-row__original { font-size: .64rem; }
+  .quarter-page .subject-row__meta, .archive-page .subject-row__meta { font-size: .57rem; line-height: 1.35; white-space: normal; }
+  .quarter-page .subject-row__tags, .archive-page .subject-row__tags { display: none; }
+  .quarter-page .subject-row__appearance-badge, .archive-page .subject-row__appearance-badge { font-size: .58rem; }
+  .quarter-page .subject-row__score, .archive-page .subject-row__score { align-items: baseline; display: flex; justify-content: space-between; min-width: 0; padding: .15rem .5rem .55rem; }
+  .quarter-page .subject-row__score b, .archive-page .subject-row__score b { font-size: .86rem; }
+  .quarter-page .subject-row__score small, .archive-page .subject-row__score small { font-size: .56rem; }
+  .quarter-page .pager, .quarter-page .page-size { display: none; }
+  .quarter-page[data-workspace-mode="filter"] .workspace,
+  .archive-page[data-workspace-mode="filter"] .workspace { background: var(--surface-overlay); border: 1px solid var(--border-strong); border-radius: var(--radius-popover) var(--radius-popover) 0 0; bottom: 0; box-shadow: var(--shadow-dialog); left: 0; max-height: min(92dvh, 42rem); min-height: 0; overflow: auto; position: fixed; right: 0; top: auto; width: 100%; z-index: 40; }
+  .quarter-page[data-workspace-mode="filter"] .workspace-panel,
+  .archive-page[data-workspace-mode="filter"] .workspace-panel { height: auto; max-height: min(92dvh, 42rem); min-height: 0; padding: .8rem .85rem calc(.8rem + env(safe-area-inset-bottom)); }
+  .quarter-page[data-workspace-mode="filter"] .filter-panel__head,
+  .archive-page[data-workspace-mode="filter"] .filter-panel__head { position: sticky; top: -.8rem; z-index: 1; }
+  .quarter-page[data-workspace-mode="filter"] .filter-apply-mobile,
+  .archive-page[data-workspace-mode="filter"] .filter-apply-mobile { margin-bottom: env(safe-area-inset-bottom); }
+  .quarter-page .quarter-sheet { bottom: 0; left: 0; margin: 0; max-height: min(88dvh, 42rem); overflow: auto; position: fixed; right: 0; z-index: 40; }
 }
 
 @media (prefers-reduced-motion: reduce) {

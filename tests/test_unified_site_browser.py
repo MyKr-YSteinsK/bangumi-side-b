@@ -52,6 +52,17 @@ def unified_site_mixed(tmp_path: Path) -> Iterator[Path]:
     yield tmp_path / "dist" / "site"
 
 
+@pytest.fixture
+def unified_site_many(tmp_path: Path) -> Iterator[Path]:
+    builder, _ = _build_fixture(
+        tmp_path,
+        include_same_quarter_tv=True,
+        extra_same_quarter_tv=24,
+    )
+    builder.build()
+    yield tmp_path / "dist" / "site"
+
+
 class BrowserHarness:
     def __init__(self, context: BrowserContext) -> None:
         self.context = context
@@ -126,6 +137,23 @@ def site_server_mixed(unified_site_mixed: Path) -> Iterator[str]:
         server.server_close()
 
 
+@pytest.fixture
+def site_server_many(unified_site_many: Path) -> Iterator[str]:
+    handler = functools.partial(
+        http.server.SimpleHTTPRequestHandler,
+        directory=str(unified_site_many),
+    )
+    server = _server(handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
 def _open_quarter(page: Page, root: str, viewport: tuple[int, int]) -> None:
     page.set_viewport_size({"width": viewport[0], "height": viewport[1]})
     page.goto(f"{root}/2026-07/index.html")
@@ -168,6 +196,36 @@ def test_quarter_tv_appearances_share_one_list_and_static_navigation(
     page.locator("[data-mobile-menu-toggle]").click()
     assert page.locator("[data-mobile-menu]").is_visible()
     assert page.get_by_role("link", name="离线与设置").is_visible()
+
+
+@pytest.mark.parametrize("viewport", [(393, 852), (390, 844), (360, 800), (430, 932)])
+def test_mobile_quarter_is_cover_first_and_continuous(
+    chromium: BrowserContext,
+    site_server_many: str,
+    viewport: tuple[int, int],
+) -> None:
+    page = chromium.new_page(viewport={"width": viewport[0], "height": viewport[1]})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server_many, viewport)
+    tv_rows = page.locator('[data-list-section="tv"] .subject-row')
+    assert tv_rows.count() == 26
+    assert page.locator(
+        '[data-list-section="tv"] .subject-row:not([hidden])'
+    ).count() == 26
+    assert page.locator("[data-pager]").is_hidden()
+    assert page.locator("[data-page-size]").evaluate(
+        "node => getComputedStyle(node.parentElement).display"
+    ) == "none"
+    columns = page.locator('[data-list-section="tv"] .result-list').evaluate(
+        "node => getComputedStyle(node).gridTemplateColumns"
+    )
+    assert len(columns.split()) == 2
+    cover = tv_rows.first.locator(".subject-row__cover")
+    assert cover.evaluate("node => getComputedStyle(node).display") == "block"
+    box = cover.bounding_box()
+    assert box is not None and abs((box["width"] / box["height"]) - (2 / 3)) < 0.08
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    assert tv_rows.first.locator("[data-open-subject]").bounding_box()["height"] >= 44
 
 
 def test_quarter_detail_movie_history_and_lightbox(
@@ -287,6 +345,12 @@ def test_quarter_shell_is_usable_across_plan16_viewports(
     page = chromium.new_page(viewport={"width": viewport[0], "height": viewport[1]})
     page.set_default_timeout(8000)
     _open_quarter(page, site_server, viewport)
+    if viewport[0] < 768:
+        cover = page.locator('[data-subject-id="101"] .subject-row__cover')
+        assert cover.evaluate("node => getComputedStyle(node).display") == "block"
+        box = cover.bounding_box()
+        assert box is not None
+        assert abs((box["width"] / box["height"]) - (2 / 3)) < 0.08
     page.locator('[data-subject-id="101"] [data-open-subject]').click()
     page.wait_for_selector('[data-detail-panel]:not([hidden])')
     page.wait_for_timeout(300)
@@ -310,10 +374,6 @@ def test_quarter_shell_is_usable_across_plan16_viewports(
     )
     assert layout
     assert page.locator("[data-detail-panel]").is_visible()
-    if viewport[0] < 768:
-        assert page.locator('[data-subject-id="101"] .subject-row__cover').evaluate(
-            "node => getComputedStyle(node).display"
-        ) == "none"
 
 
 @pytest.mark.parametrize(
@@ -417,7 +477,9 @@ def test_mobile_controls_have_touch_targets_and_reduced_motion(
         ".search-field input",
     )
     for selector in selectors:
-        assert page.locator(selector).first.bounding_box()["height"] >= 44
+        box = page.locator(selector).first.bounding_box()
+        if box is not None:
+            assert box["height"] >= 44
     assert page.locator(".workspace-panel--scope").evaluate(
         "node => parseFloat(getComputedStyle(node).transitionDuration) <= 0.001"
     )
@@ -590,6 +652,61 @@ def test_mobile_filter_workspace_keeps_facets_active_filters_and_scroll(
     page.wait_for_function(
         "target => Math.abs(window.scrollY - target) <= 2", arg=saved_scroll
     )
+
+
+def test_mobile_filter_draft_requires_apply_and_cancel_preserves_results(
+    chromium: BrowserContext,
+    site_server_mixed: str,
+    unified_site_mixed: Path,
+) -> None:
+    payload = json.loads(
+        (unified_site_mixed / "data" / "quarters" / "2026-07.json").read_text(
+            "utf-8"
+        )
+    )
+    payload["tv"]["continuing"] = [
+        _facet_record(
+            payload["tv"]["continuing"][0], 101, "shared-source", "shared-tag"
+        )
+    ]
+    payload["tv"]["premiere"] = [
+        _facet_record(
+            payload["tv"]["premiere"][0], 303, "tv-only-source", "tv-only-tag"
+        )
+    ]
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/quarters/2026-07.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        ),
+    )
+    _open_quarter(page, site_server_mixed, (390, 844))
+    assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
+    assert page.locator(
+        '[data-list-section="tv"] .subject-row:not([hidden])'
+    ).count() == 2
+
+    page.locator("[data-filter-toggle]").click()
+    page.get_by_label("tv-only-source").check()
+    assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
+    assert page.locator(
+        '[data-list-section="tv"] .subject-row:not([hidden])'
+    ).count() == 2
+    assert page.locator("[data-filter-workspace-summary]").inner_text().endswith("1 部")
+    page.get_by_role("button", name="关闭筛选").click()
+    assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
+
+    page.locator("[data-filter-toggle]").click()
+    page.get_by_label("tv-only-source").check()
+    page.get_by_role("button", name="返回结果").click()
+    assert "1 / 2" in page.locator("[data-results-summary]").inner_text()
+    assert page.locator(
+        '[data-list-section="tv"] .subject-row:not([hidden])'
+    ).count() == 1
 
 
 def test_mobile_detail_is_full_width_and_restores_list_scroll(

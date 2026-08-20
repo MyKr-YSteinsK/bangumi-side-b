@@ -102,6 +102,7 @@ def _build_fixture(
     *,
     primary_subject_id: int = 101,
     include_same_quarter_tv: bool = False,
+    extra_same_quarter_tv: int = 0,
 ) -> tuple[UnifiedSiteBuilder, Database]:
     workspace = tmp_path / "workspace"
     database = Database(workspace / "data" / "archive.sqlite3")
@@ -133,6 +134,11 @@ def _build_fixture(
         repository.replace_subject_snapshot(connection, april)
         if include_same_quarter_tv:
             repository.replace_subject_snapshot(connection, july_tv)
+        for subject_id in range(304, 304 + max(0, extra_same_quarter_tv)):
+            repository.replace_subject_snapshot(
+                connection,
+                _subject(subject_id, MediaFormat.TV, Quarter(2026, 7)),
+            )
         repository.replace_subject_snapshot(connection, movie)
         repository.write_sync_state(
             connection,

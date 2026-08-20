@@ -93,7 +93,9 @@ bgmb review YEAR QUARTER_MONTH
 Browse/Search 返回的字段只用于候选发现；最终标题、日期、集数、Infobox、tags、来源和图片事实
 必须来自 canonical subject detail。同步报告还提供 bounded `source_counts`、`episode_count`
 （known/unknown/legacy_zero_written）和 `canonical_detail_requests` 聚合，不保存原始 API 响应。
-集数 `0` 不表示零集：只持久化正整数，严格的 Infobox `话数` fallback 仍不可得时保持 unknown。
+`episode_count` 只表示作品计划正片总话数：`eps` 是首要 subject-level 事实；Bangumi 的
+`total_episodes` 只是当前数据库 episode row 数量，不参与计划总话数判定。集数 `0` 不表示零集：
+只持久化正整数，严格的 Infobox `话数` 或完整连续主线 registry fallback 不可得时保持 unknown。
 
 同步 summary 与 `bgmb review YEAR QUARTER_MONTH` 使用同一 scoped persisted REVIEW 定义。
 只有实际写入 `subject_review_issues` 且带目标季度的行才称为 `persisted REVIEW`；无季度作用域的

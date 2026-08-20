@@ -185,10 +185,12 @@ appearance 表：TV 最多一个 premiere、可以有多个 continuing，Movie �
 
 `subject_quarters` 保存 `(subject_id, year, quarter_month, appearance_kind)`；TV 最多一个
 premiere、可以有多个 continuing，Movie 只有一个 premiere。季度来源明确区分
-automatic/manual；未确认时允许没有季度行。SQLite 不保存单集记录，也不从任何列表推断总集数，
-只保存上游明确提供的单一集数字段。总集数优先使用 canonical detail 的可靠正整数
-`total_episodes` / `eps`；`0`、负数、缺失和无效值均表示 unknown。canonical 字段不可用时，
-只能严格读取 Infobox 精确键 `话数` 的正整数或纯数字字符串，不解析“11话”等自然语言，也不估算集数。
+automatic/manual；未确认时允许没有季度行。SQLite 不保存单集记录，也不把当前已播或已建立的
+章节行数当作计划总数，只保存经契约验证的计划正片总话数。`episode_count` 的语义是作品计划
+正片总话数：canonical detail 的正整数 `eps` 是首要事实；`total_episodes` 只表示 Bangumi
+数据库当前的 episode row 数量，属于诊断事实，不参与计划总话数判定。`0`、负数、缺失和无效值
+均表示 unknown。`eps` 不可用时，只能严格读取 Infobox 精确键 `话数` 的正整数或纯数字字符串，
+或使用完整且连续的主线 episode registry 验证结果；不解析“11话”等自然语言，也不估算集数。
 旧 SQLite 中的 `episode_count = 0` 在仓储和 public projection 中均表现为 unknown，不回写旧库。
 
 只登记通过过滤作品的唯一最终封面元数据；相对路径固定由 Subject ID 派生为

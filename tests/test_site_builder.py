@@ -251,6 +251,12 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
 
 - <b>escaped</b>
 
+## 0.3.1 - 2026-08-20
+
+### 修复
+
+- current patch
+
 ## 0.3.0 - 2026-08-19
 
 ### 新增
@@ -269,9 +275,10 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
         "utf-8"
     )
     assert "05 / CHANGELOG" in page
-    assert "当前程序版本</dt><dd>0.3.0" in page
+    assert "当前程序版本</dt><dd>0.3.1" in page
     assert 'data-changelog-release="unreleased" open' in page
-    assert 'data-changelog-release="0.3.0" open' in page
+    assert 'data-changelog-release="0.3.1" open' in page
+    assert 'data-changelog-release="0.3.0" open' not in page
     assert 'data-changelog-release="0.1.0"' in page
     assert 'data-changelog-release="0.1.0" open' not in page
     assert "&lt;b&gt;escaped&lt;/b&gt;" in page

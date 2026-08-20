@@ -48,9 +48,11 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 同步报告会分别显示人工命中、历史自动命中和本次新增自动拉黑数量，并在 `new_auto_by_reason` 中
 区分可靠首播低评分和信息不足型未决冷门两类原因。
 
-Browse/Search 只发现候选，正式 subject facts 会再通过 canonical detail 验证。集数只接受可靠
-正整数；`0`、缺失、负数和无效文本都显示为未知，只有精确 Infobox `话数` 的纯数字值可以作为
-严格 fallback，不会从简介、季度长度或已播章节估算。
+Browse/Search 只发现候选，正式 subject facts 会再通过 canonical detail 验证。`episode_count`
+只表示作品计划正片总话数，优先使用 canonical detail 的 `eps`；Bangumi 的 `total_episodes`
+只是当前数据库 episode row 数量，不等同于计划总话数。`0`、缺失、负数和无效文本都显示为未知，
+只有精确 Infobox `话数` 的纯数字值或完整连续主线 registry 可以作为严格 fallback，不会从简介、
+季度长度或已播章节估算。
 
 同步报告中的来源和集数是 bounded aggregate。`source_counts` 统计已持久化季度事实，
 `episode_count` 区分 known、unknown 与 legacy zero，`canonical_detail_requests` 记录本次正式

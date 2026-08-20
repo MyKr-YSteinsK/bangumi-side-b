@@ -687,7 +687,16 @@ class UnifiedSiteBuilder:
             generated(
                 f"{label}/index.html",
                 "quarter-html",
-                lambda quarter=quarter: _quarter_html(quarter, revisions),
+                lambda quarter=quarter: _quarter_html(
+                    quarter,
+                    revisions,
+                    tuple(
+                        str(item.get("quarter"))
+                        for item in archive.quarters
+                        if isinstance(item, Mapping)
+                        and isinstance(item.get("quarter"), str)
+                    ),
+                ),
                 label in quarter_dirty or dirty.shared_dirty,
             )
             generated(
@@ -1460,13 +1469,80 @@ def _changelog_items_html(items: tuple[ChangelogItem, ...]) -> str:
     return "".join(rendered)
 
 
+def _quarter_navigation(current: str, available: tuple[str, ...]) -> str:
+    labels = tuple(sorted(set(available) | {current}))
+    index = labels.index(current)
+    previous = labels[index - 1] if index else None
+    following = labels[index + 1] if index + 1 < len(labels) else None
+
+    def item(label: str | None, relation: str) -> str:
+        if label is None:
+            return (
+                f'<span class="quarter-nav__item is-disabled" '
+                f'data-quarter-{relation} aria-disabled="true">—</span>'
+            )
+        return (
+            f'<a class="quarter-nav__item" data-quarter-{relation} '
+            f'href="../{html.escape(label, quote=True)}/index.html">'
+            f'<span aria-hidden="true">{"‹" if relation == "prev" else "›"}</span>'
+            f'<strong>{html.escape(label)}</strong></a>'
+        )
+
+    years = sorted({label[:4] for label in labels}, reverse=True)
+    year_groups: list[str] = []
+    for year in years:
+        slots: list[str] = []
+        for month in ("01", "04", "07", "10"):
+            label = f"{year}-{month}"
+            if label in labels:
+                current_attr = ' aria-current="page"' if label == current else ""
+                slots.append(
+                    f'<a class="quarter-sheet__slot is-available" '
+                    f'data-quarter-option="{html.escape(label, quote=True)}" '
+                    f'href="../{html.escape(label, quote=True)}/index.html"{current_attr}>'
+                    f'{html.escape(month)}</a>'
+                )
+            else:
+                slots.append(
+                    f'<span class="quarter-sheet__slot is-disabled" '
+                    f'data-quarter-option="{html.escape(label, quote=True)}" '
+                    f'aria-disabled="true">{html.escape(month)}</span>'
+                )
+        year_groups.append(
+            f'<div class="quarter-sheet__year"><strong>{html.escape(year)}</strong>'
+            f'<div class="quarter-sheet__slots">{"".join(slots)}</div></div>'
+        )
+
+    return (
+        '<nav class="quarter-nav" data-quarter-nav aria-label="季度快速切换">'
+        '<span class="quarter-nav__label">QUARTER</span><div class="quarter-nav__items">'
+        f'{item(previous, "prev")}'
+        f'<button type="button" class="quarter-nav__item is-current" '
+        'data-quarter-selector aria-expanded="false" aria-controls="quarter-sheet">'
+        f'<strong>{html.escape(current)}</strong><span aria-hidden="true">⌄</span></button>'
+        f'{item(following, "next")}</div>'
+        '<div class="quarter-sheet" id="quarter-sheet" data-quarter-sheet hidden '
+        'role="dialog" aria-label="选择季度"><div class="quarter-sheet__head">'
+        f'<strong>公开季度 · 当前 {html.escape(current)}</strong>'
+        '<button type="button" class="quarter-sheet__close" data-quarter-sheet-close '
+        'aria-label="关闭季度选择">×</button></div>'
+        f'<div class="quarter-sheet__years">{"".join(year_groups)}</div></div></nav>'
+    )
+
+
 def _quarter_html(
-    quarter: QuarterProjection, revisions: Mapping[str, str]
+    quarter: QuarterProjection,
+    revisions: Mapping[str, str],
+    available_quarters: tuple[str, ...] = (),
 ) -> bytes:
     label = html.escape(quarter.quarter)
     sections = (
-        ("tv", "premiere", "本季度新番", quarter.tv_premiere),
-        ("tv", "continuing", "跨季度续播", quarter.tv_continuing),
+        (
+            "tv",
+            "all",
+            "电视节目",
+            (*quarter.tv_premiere, *quarter.tv_continuing),
+        ),
         ("movie", "premiere", "剧场版", quarter.movie_premiere),
     )
     rendered = "".join(
@@ -1480,7 +1556,13 @@ def _quarter_html(
         "continuing": len(quarter.tv_continuing),
     }
     body = (
-        _site_header("../index.html", "../archive/index.html", "../settings/index.html", f"QUARTER / {quarter.quarter}")
+        _site_header(
+            "../index.html",
+            "../archive/index.html",
+            "../settings/index.html",
+            f"QUARTER / {quarter.quarter}",
+            quarter=quarter.quarter,
+        )
         + f'<main id="main-content" tabindex="-1" class="quarter-page season-{html.escape(quarter.quarter[-2:])}" '
         f'data-archive-app data-page="quarter" data-quarter="{label}" data-workspace-mode="scope" '
         f'data-data-url="../data/quarters/{label}.json" data-site-root="../" '
@@ -1490,11 +1572,8 @@ def _quarter_html(
         f'<p class="archive-intro__code">QUARTER / {label}</p><div>'
         f'<h1>{label[:4]}<span>—</span>{label[-2:]}</h1>'
         '<p class="archive-intro__summary">日本播出档案 · 已核验资料</p></div></section>'
-        f'<section class="quarter-offline" data-quarter-offline data-quarter="{label}" '
-        'aria-label="季度离线状态"><div><p class="quarter-offline__code">OFFLINE / QUARTER</p>'
-        '<p data-quarter-offline-status>正在读取离线状态…</p></div>'
-        '<div class="quarter-offline__actions" data-quarter-offline-actions></div></section>'
-        '<section class="archive-layout" data-quarter-layout>'
+        + _quarter_navigation(quarter.quarter, available_quarters)
+        + '<section class="archive-layout" data-quarter-layout>'
         '<section class="master-pane" aria-label="Quarter results">'
         '<div class="browser-controls">'
         '<div class="mode-switch" role="tablist" aria-label="媒体类型">'
@@ -1577,6 +1656,12 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
     rating_count = value.get("rating_count")
     air_date = str(value.get("air_date") or "")
     cover_html = _cover_markup(cover, sequence, subject_id)
+    appearance_badge = (
+        '<span class="subject-row__appearance-badge" '
+        'data-appearance-badge="continuing">续播</span>'
+        if appearance == "continuing"
+        else ""
+    )
     tags_html = "".join(f'<span class="tag">{html.escape(str(tag))}</span>' for tag in tags[:2])
     return (
         f'<article class="subject-row" role="listitem" data-subject-id="{subject_id}" '
@@ -1592,7 +1677,7 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
         f'aria-expanded="false">'
         f'<span class="subject-row__sequence" aria-hidden="true">{sequence:03d}</span>'
         f'{cover_html}<span class="subject-row__content"><strong class="subject-row__title">'
-        f'{html.escape(preferred)}</strong>'
+        f'{html.escape(preferred)}</strong>{appearance_badge}'
         f'<span class="subject-row__original">{html.escape(original)}</span>'
         f'<span class="subject-row__meta">{html.escape(media)}'
         f'{(" · " + html.escape(str(value.get("episode_count")) + "话") if value.get("episode_count") else "")}'
@@ -1618,7 +1703,23 @@ def _cover_markup(cover: object, sequence: int, subject_id: int) -> str:
     )
 
 
-def _site_header(home_href: str, archive_href: str, settings_href: str, code: str) -> str:
+def _site_header(
+    home_href: str,
+    archive_href: str,
+    settings_href: str,
+    code: str,
+    *,
+    quarter: str | None = None,
+) -> str:
+    offline = ""
+    if quarter:
+        offline = (
+            f'<section class="mobile-menu__offline" data-mobile-quarter-offline '
+            f'data-quarter="{html.escape(quarter, quote=True)}" '
+            'aria-label="季度离线状态"><p class="mobile-menu__offline-code">OFFLINE</p>'
+            '<p data-mobile-quarter-offline-status>正在读取离线状态…</p>'
+            '<div data-mobile-quarter-offline-actions></div></section>'
+        )
     return (
         '<header class="site-header"><div class="site-header__rule">'
         '<p>Bangumi Side B / 日本播出档案</p>'
@@ -1626,7 +1727,16 @@ def _site_header(home_href: str, archive_href: str, settings_href: str, code: st
         f'<a class="brand" href="{html.escape(home_href, quote=True)}">Bangumi Side B</a>'
         '<nav class="site-nav" aria-label="主导航">'
         f'<a href="{html.escape(archive_href, quote=True)}">Archive</a>'
-        f'<a href="{html.escape(settings_href, quote=True)}">Settings</a></nav></div></header>'
+        f'<a href="{html.escape(settings_href, quote=True)}">Settings</a></nav>'
+        '<button type="button" class="mobile-menu-toggle" data-mobile-menu-toggle '
+        'aria-expanded="false" aria-controls="mobile-menu">菜单</button>'
+        '<div class="mobile-menu" id="mobile-menu" data-mobile-menu hidden>'
+        '<nav class="mobile-menu__links" aria-label="次级导航">'
+        f'<a href="{html.escape(archive_href, quote=True)}">Archive</a>'
+        f'<a href="{html.escape(settings_href + "#settings-offline-title", quote=True)}">离线与设置</a>'
+        f'<a href="{html.escape(settings_href + "#settings-changelog-title", quote=True)}">更新日志</a>'
+        f'<a href="{html.escape(settings_href + "#settings-app-title", quote=True)}">关于</a>'
+        f'</nav>{offline}</div></div></header>'
     )
 
 
@@ -1650,7 +1760,7 @@ def _page(
     class_attr = f' class="{html.escape(body_class, quote=True)}"' if body_class else ""
     content = (
         "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
         f'<meta name="theme-color" content="{_THEME_COLOR}">'
         f"<title>{html.escape(title)}</title>"
         f'<link rel="manifest" href="{manifest_href}">'

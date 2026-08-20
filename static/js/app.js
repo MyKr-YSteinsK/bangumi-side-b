@@ -497,6 +497,62 @@
   window.BsbListbox = Object.freeze({ create });
 })();
 
+/* Lightweight static navigation controls shared by every generated page. */
+(() => {
+  "use strict";
+
+  const menu = document.querySelector("[data-mobile-menu]");
+  const menuToggle = document.querySelector("[data-mobile-menu-toggle]");
+  if (menu && menuToggle) {
+    const closeMenu = (restoreFocus = false) => {
+      menu.hidden = true;
+      menuToggle.setAttribute("aria-expanded", "false");
+      if (restoreFocus) menuToggle.focus();
+    };
+    menuToggle.addEventListener("click", () => {
+      const opening = menu.hidden;
+      menu.hidden = !opening;
+      menuToggle.setAttribute("aria-expanded", String(opening));
+      if (opening) menu.querySelector("a, button")?.focus();
+    });
+    menu.addEventListener("click", (event) => {
+      if (event.target instanceof HTMLAnchorElement) closeMenu();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !menu.hidden) {
+        event.preventDefault();
+        closeMenu(true);
+      }
+    });
+  }
+
+  const quarterToggle = document.querySelector("[data-quarter-selector]");
+  const quarterSheet = document.querySelector("[data-quarter-sheet]");
+  if (quarterToggle && quarterSheet) {
+    const closeSheet = (restoreFocus = false) => {
+      quarterSheet.hidden = true;
+      quarterToggle.setAttribute("aria-expanded", "false");
+      if (restoreFocus) quarterToggle.focus();
+    };
+    quarterToggle.addEventListener("click", () => {
+      const opening = quarterSheet.hidden;
+      quarterSheet.hidden = !opening;
+      quarterToggle.setAttribute("aria-expanded", String(opening));
+      if (opening) quarterSheet.querySelector("a, button")?.focus();
+    });
+    quarterSheet.querySelector("[data-quarter-sheet-close]")?.addEventListener(
+      "click",
+      () => closeSheet(true),
+    );
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !quarterSheet.hidden) {
+        event.preventDefault();
+        closeSheet(true);
+      }
+    });
+  }
+})();
+
 (() => {
   "use strict";
 
@@ -605,7 +661,7 @@
       const appearance = section.dataset.appearanceSection;
       const count = result.all.filter((record) =>
         (record.media === (media === "movie" ? "MOVIE" : "TV"))
-        && record.appearance === appearance).length;
+        && (appearance === "all" || record.appearance === appearance)).length;
       section.hidden = state.media !== media || count === 0;
       const counter = section.querySelector("[data-section-count]");
       if (counter) counter.textContent = String(count).padStart(2, "0");
@@ -1354,6 +1410,13 @@
     title.className = "subject-row__title";
     title.textContent = record.preferred_title || "—";
     content.append(title);
+    if (record.appearance === "continuing") {
+      const badge = document.createElement("span");
+      badge.className = "subject-row__appearance-badge";
+      badge.dataset.appearanceBadge = "continuing";
+      badge.textContent = "续播";
+      content.append(badge);
+    }
     const original = document.createElement("span");
     original.className = "subject-row__original";
     original.textContent = record.original_title || "";
@@ -1391,15 +1454,16 @@
     selectors.list.replaceChildren();
     const positions = new Map(result.all.map((record, index) => [record.key, index + 1]));
     const groups = [
-      ["tv", "premiere", "本季度新番"],
-      ["tv", "continuing", "跨季度续播"],
+      ["tv", "all", "电视节目"],
       ["movie", "premiere", "剧场版"],
     ];
     groups.forEach(([media, appearance, title]) => {
       const allValues = result.all.filter((record) =>
-        record.media === (media === "movie" ? "MOVIE" : "TV") && record.appearance === appearance);
+        record.media === (media === "movie" ? "MOVIE" : "TV")
+        && (appearance === "all" || record.appearance === appearance));
       const pageValues = result.pageRecords.filter((record) =>
-        record.media === (media === "movie" ? "MOVIE" : "TV") && record.appearance === appearance);
+        record.media === (media === "movie" ? "MOVIE" : "TV")
+        && (appearance === "all" || record.appearance === appearance));
       const section = document.createElement("section");
       section.className = "result-section";
       section.dataset.listSection = media;

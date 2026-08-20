@@ -1821,10 +1821,16 @@
   }
 
   async function renderQuarterOfflineControl() {
-    const root = document.querySelector("[data-quarter-offline]");
+    const root = document.querySelector(
+      "[data-mobile-quarter-offline], [data-quarter-offline]",
+    );
     if (!root) return;
-    const status = root.querySelector("[data-quarter-offline-status]");
-    const actions = root.querySelector("[data-quarter-offline-actions]");
+    const status = root.querySelector(
+      "[data-mobile-quarter-offline-status], [data-quarter-offline-status]",
+    );
+    const actions = root.querySelector(
+      "[data-mobile-quarter-offline-actions], [data-quarter-offline-actions]",
+    );
     const quarter = root.dataset.quarter;
     if (!supported()) {
       status.textContent = "当前浏览器不支持离线下载；在线浏览仍可正常使用。";

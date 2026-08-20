@@ -469,12 +469,14 @@ def test_service_worker_registration_failure_keeps_online_page_and_blocks_downlo
     state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
     assert state["status"] == "NONE"
     quarter = context.new_page()
+    quarter.set_viewport_size({"width": 390, "height": 844})
     quarter.goto(f"{pwa_server}/2026-07/index.html")
+    quarter.get_by_role("button", name="菜单").click()
     quarter.wait_for_function(
-        "document.querySelector('[data-quarter-offline-actions] a') !== null"
+        "document.querySelector('[data-mobile-quarter-offline-actions] a') !== null"
     )
     assert (
-        quarter.locator('[data-quarter-offline-actions] a').get_attribute("href")
+        quarter.locator('[data-mobile-quarter-offline-actions] a').get_attribute("href")
         == "../settings/index.html"
     )
     context.close()
@@ -3021,20 +3023,22 @@ def test_quarter_page_offline_action_tracks_download_and_confirmed_remove(
 ) -> None:
     context = chromium.new_context()
     page = context.new_page()
+    page.set_viewport_size({"width": 390, "height": 844})
     page.goto(f"{pwa_server}/2026-07/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
-    control = page.locator("[data-quarter-offline]")
+    page.get_by_role("button", name="菜单").click()
+    control = page.locator("[data-mobile-quarter-offline]")
     control.get_by_role("button", name="下载当前季度供离线使用").click()
     _wait_for_queue(page, 1)
     page.wait_for_function(
-        "document.querySelector('[data-quarter-offline-status]')"
+        "document.querySelector('[data-mobile-quarter-offline-status]')"
         "?.textContent.includes('已离线')"
     )
     assert control.get_by_role("button", name="移除离线缓存").is_visible()
     page.on("dialog", lambda dialog: dialog.accept())
     control.get_by_role("button", name="移除离线缓存").click()
     page.wait_for_function(
-        "document.querySelector('[data-quarter-offline-status]')"
+        "document.querySelector('[data-mobile-quarter-offline-status]')"
         "?.textContent.includes('未下载')"
     )
     context.close()

@@ -98,7 +98,10 @@ def _subject(
 
 
 def _build_fixture(
-    tmp_path: Path, *, primary_subject_id: int = 101
+    tmp_path: Path,
+    *,
+    primary_subject_id: int = 101,
+    include_same_quarter_tv: bool = False,
 ) -> tuple[UnifiedSiteBuilder, Database]:
     workspace = tmp_path / "workspace"
     database = Database(workspace / "data" / "archive.sqlite3")
@@ -123,10 +126,13 @@ def _build_fixture(
         cover=cover,
         continuing=Quarter(2026, 7),
     )
+    july_tv = _subject(303, MediaFormat.TV, Quarter(2026, 7))
     movie = _subject(202, MediaFormat.MOVIE, Quarter(2026, 7))
     now = datetime.now(UTC).isoformat()
     with repository.transaction() as connection:
         repository.replace_subject_snapshot(connection, april)
+        if include_same_quarter_tv:
+            repository.replace_subject_snapshot(connection, july_tv)
         repository.replace_subject_snapshot(connection, movie)
         repository.write_sync_state(
             connection,
@@ -186,9 +192,21 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     )
     assert [item["subject_id"] for item in july["tv"]["continuing"]] == [101]
     assert [item["subject_id"] for item in july["movie"]["premiere"]] == [202]
-    assert 'src="../covers/101.webp?v=' in (
-        site / "2026-07" / "index.html"
-    ).read_text("utf-8")
+    july_html = (site / "2026-07" / "index.html").read_text("utf-8")
+    assert 'src="../covers/101.webp?v=' in july_html
+    assert july_html.count('data-list-section="tv"') == 1
+    assert july_html.count('data-list-section="movie"') == 1
+    assert 'data-appearance-section="continuing"' not in july_html
+    assert 'data-appearance-badge="continuing">续播</span>' in july_html
+    assert 'data-quarter-prev href="../2026-04/index.html"' in july_html
+    assert 'data-quarter-next aria-disabled="true"' in july_html
+    assert 'data-quarter-option="2026-04"' in july_html
+    assert 'data-quarter-option="2026-07"' in july_html
+    assert 'data-quarter-option="2026-01"' in july_html
+    assert 'data-mobile-menu-toggle' in july_html
+    assert 'data-mobile-quarter-offline' in july_html
+    assert 'data-quarter-offline' not in july_html
+    assert 'viewport-fit=cover' in july_html
     assert [path.name for path in (site / "covers").glob("*.webp")] == [
         "101.webp"
     ]

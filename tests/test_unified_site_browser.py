@@ -45,6 +45,13 @@ def unified_site_571784(tmp_path: Path) -> Iterator[Path]:
     yield tmp_path / "dist" / "site"
 
 
+@pytest.fixture
+def unified_site_mixed(tmp_path: Path) -> Iterator[Path]:
+    builder, _ = _build_fixture(tmp_path, include_same_quarter_tv=True)
+    builder.build()
+    yield tmp_path / "dist" / "site"
+
+
 class BrowserHarness:
     def __init__(self, context: BrowserContext) -> None:
         self.context = context
@@ -102,6 +109,23 @@ def site_server_571784(unified_site_571784: Path) -> Iterator[str]:
         server.server_close()
 
 
+@pytest.fixture
+def site_server_mixed(unified_site_mixed: Path) -> Iterator[str]:
+    handler = functools.partial(
+        http.server.SimpleHTTPRequestHandler,
+        directory=str(unified_site_mixed),
+    )
+    server = _server(handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
 def _open_quarter(page: Page, root: str, viewport: tuple[int, int]) -> None:
     page.set_viewport_size({"width": viewport[0], "height": viewport[1]})
     page.goto(f"{root}/2026-07/index.html")
@@ -109,6 +133,41 @@ def _open_quarter(page: Page, root: str, viewport: tuple[int, int]) -> None:
     page.wait_for_function(
         "document.querySelector('[data-results-summary]')?.textContent.includes(' / ')"
     )
+
+
+def test_quarter_tv_appearances_share_one_list_and_static_navigation(
+    chromium: BrowserContext,
+    site_server_mixed: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server_mixed, (390, 844))
+
+    assert page.locator('[data-list-section="tv"]').count() == 1
+    assert page.locator('[data-list-section="movie"]').count() == 1
+    assert page.locator('[data-list-section="tv"] .subject-row').count() == 2
+    assert page.locator('[data-appearance-badge="continuing"]').count() == 1
+    assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
+
+    page.locator("[data-filter-toggle]").click()
+    page.get_by_label("首播").check()
+    page.get_by_role("button", name="返回结果").click()
+    assert "1 / 2" in page.locator("[data-results-summary]").inner_text()
+
+    assert page.locator("[data-quarter-prev]").get_attribute("href") == (
+        "../2026-04/index.html"
+    )
+    assert page.locator("[data-quarter-next]").get_attribute("aria-disabled") == "true"
+    page.locator("[data-quarter-selector]").click()
+    assert page.locator("[data-quarter-sheet]").is_visible()
+    assert page.locator('[data-quarter-option="2026-04"]').is_visible()
+    assert page.locator('[data-quarter-option="2026-01"]').get_attribute(
+        "aria-disabled"
+    ) == "true"
+
+    page.locator("[data-mobile-menu-toggle]").click()
+    assert page.locator("[data-mobile-menu]").is_visible()
+    assert page.get_by_role("link", name="离线与设置").is_visible()
 
 
 def test_quarter_detail_movie_history_and_lightbox(
@@ -131,7 +190,8 @@ def test_quarter_detail_movie_history_and_lightbox(
     assert "结束日期" not in detail
 
     page.locator('[data-media-mode="movie"]').click()
-    assert page.locator('[data-appearance-section="continuing"]').is_hidden()
+    assert page.locator('[data-list-section="tv"]').is_hidden()
+    assert page.locator('[data-list-section="movie"]').is_visible()
     assert "1 / 1" in page.locator("[data-results-summary]").inner_text()
     page.locator('[data-subject-id="202"] [data-open-subject]').click()
     page.wait_for_selector('[data-detail-panel]:not([hidden])')

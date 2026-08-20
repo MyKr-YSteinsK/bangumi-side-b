@@ -1,0 +1,11 @@
+{
+  "id": 990001,
+  "type": 2,
+  "name": "Synthetic episode-count semantics fixture",
+  "name_cn": "合计集数语义合成夹具",
+  "date": "2026-07-01",
+  "platform": "TV",
+  "eps": 12,
+  "total_episodes": 8,
+  "infobox": []
+}

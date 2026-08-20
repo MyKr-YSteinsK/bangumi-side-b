@@ -1725,22 +1725,25 @@ def _external_review(
 def _resolve_episode_count(
     detail: SubjectDetail, *, registry_count: object = None
 ) -> _EpisodeCountResolution:
-    canonical = [
-        positive
-        for value in (detail.total_episodes, detail.eps)
-        if (positive := _strict_positive_integer(value)) is not None
-    ]
+    """Resolve the planned main-episode count from bounded trusted evidence.
+
+    ``eps`` is the subject-level planned-count fact.  Bangumi's
+    ``total_episodes`` reports the number of episode rows currently present in
+    its database, so it is diagnostic only and must not create a planned-count
+    conflict or fill an otherwise unknown value.
+    """
+    eps = _strict_positive_integer(detail.eps)
     infobox = [
         positive
         for item in detail.infobox
         if item.key == "话数"
         and (positive := _strict_positive_integer(item.value)) is not None
     ]
-    trusted = set(canonical) | set(infobox)
+    trusted = ({eps} if eps is not None else set()) | set(infobox)
     if len(trusted) > 1:
         return _EpisodeCountResolution(None, "conflict", "episode_count_conflict")
-    if canonical:
-        return _EpisodeCountResolution(canonical[0], "subject_structured")
+    if eps is not None:
+        return _EpisodeCountResolution(eps, "subject_structured")
     if infobox:
         return _EpisodeCountResolution(infobox[0], "infobox")
     registry = _strict_positive_integer(registry_count)

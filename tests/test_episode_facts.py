@@ -21,6 +21,11 @@ RE_571784 = json.loads(
         encoding="utf-8"
     )
 )
+RE_MISMATCH = json.loads(
+    (
+        ROOT / "tests" / "fixtures" / "api" / "subject-episode-count-mismatch.json"
+    ).read_text(encoding="utf-8")
+)
 
 
 def _detail(
@@ -51,6 +56,18 @@ def test_bgm_571784_fixture_resolves_twelve_planned_episodes() -> None:
     assert detail.total_episodes == 12
     assert detail.eps == 12
     assert _resolve_episode_count(detail).value == 12
+
+
+def test_eps_wins_when_bangumi_episode_row_count_differs() -> None:
+    detail = SubjectDetail.from_payload(RE_MISMATCH)
+
+    result = _resolve_episode_count(detail)
+
+    assert (result.value, result.source, result.warning) == (
+        12,
+        "subject_structured",
+        None,
+    )
 
 
 @pytest.mark.parametrize(
@@ -88,8 +105,7 @@ def test_episode_count_resolver_reports_canonical_and_infobox_sources() -> None:
 @pytest.mark.parametrize(
     ("total", "eps", "infobox"),
     (
-        (12, 13, ()),
-        (12, 0, (("话数", "13"),)),
+        (0, 12, (("话数", "13"),)),
     ),
 )
 def test_episode_count_conflicts_fail_closed(
@@ -104,8 +120,25 @@ def test_episode_count_conflicts_fail_closed(
     )
 
 
+@pytest.mark.parametrize("total", (8, 20))
+def test_total_episodes_never_overrides_positive_eps(total: int) -> None:
+    result = _resolve_episode_count(_detail(total=total, eps=12))
+
+    assert (result.value, result.source, result.warning) == (
+        12,
+        "subject_structured",
+        None,
+    )
+
+
+def test_total_episodes_alone_is_not_a_planned_count() -> None:
+    result = _resolve_episode_count(_detail(total=8))
+
+    assert (result.value, result.source, result.warning) == (None, "unknown", None)
+
+
 def test_episode_registry_is_only_a_fallback_after_missing_trusted_facts() -> None:
-    result = _resolve_episode_count(_detail(), registry_count=12)
+    result = _resolve_episode_count(_detail(total=8), registry_count=12)
 
     assert (result.value, result.source, result.warning) == (
         12,

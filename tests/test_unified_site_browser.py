@@ -879,6 +879,24 @@ def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
         "node => { node.scrollTop = Math.min(180, "
         "node.scrollHeight - node.clientHeight); return node.scrollTop; }"
     )
+    page.evaluate(
+        """() => document.querySelector('[data-detail-panel]').dispatchEvent(
+          new PointerEvent('pointerdown', {
+            bubbles: true, cancelable: true, pointerId: 10, isPrimary: true,
+            clientX: 10, clientY: 360, pointerType: 'touch', buttons: 1
+          })
+        )"""
+    )
+    assert detail.get_attribute("data-detail-gesture") == "possible-drag"
+    page.evaluate(
+        """() => document.querySelector('[data-detail-panel]').dispatchEvent(
+          new PointerEvent('pointerup', {
+            bubbles: true, cancelable: true, pointerId: 10, isPrimary: true,
+            clientX: 10, clientY: 360, pointerType: 'touch', buttons: 0
+          })
+        )"""
+    )
+    assert detail.get_attribute("data-detail-gesture") == "cancel"
     gesture = """
     ({id, points}) => {
       const node = document.querySelector('[data-detail-panel]');
@@ -893,12 +911,42 @@ def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
     }
     """
     page.evaluate(gesture, {"id": 11, "points": [[10, 360], [68, 360], [68, 360]]})
-    assert detail.get_attribute("data-detail-gesture") == "canceled"
+    assert detail.get_attribute("data-detail-gesture") == "cancel"
     assert detail.is_visible()
     assert detail.evaluate("node => node.scrollTop") == detail_scroll
 
+    page.evaluate(
+        """() => document.querySelector('[data-detail-panel]').dispatchEvent(
+          new PointerEvent('pointerdown', {
+            bubbles: true, cancelable: true, pointerId: 14, isPrimary: true,
+            clientX: 10, clientY: 360, pointerType: 'touch', buttons: 1
+          })
+        )"""
+    )
+    page.evaluate(
+        """() => document.querySelector('[data-detail-panel]').dispatchEvent(
+          new PointerEvent('pointermove', {
+            bubbles: true, cancelable: true, pointerId: 14, isPrimary: true,
+            clientX: 90, clientY: 360, pointerType: 'touch', buttons: 1
+          })
+        )"""
+    )
+    assert detail.get_attribute("data-detail-gesture") == "dragging"
+    assert page.evaluate(
+        "getComputedStyle(document.documentElement).overflow"
+    ) == "hidden"
+    page.evaluate(
+        """() => document.querySelector('[data-detail-panel]').dispatchEvent(
+          new PointerEvent('pointerup', {
+            bubbles: true, cancelable: true, pointerId: 14, isPrimary: true,
+            clientX: 90, clientY: 360, pointerType: 'touch', buttons: 0
+          })
+        )"""
+    )
+    assert detail.get_attribute("data-detail-gesture") == "cancel"
+
     page.evaluate(gesture, {"id": 12, "points": [[10, 360], [40, 430], [40, 430]]})
-    assert detail.get_attribute("data-detail-gesture") == "canceled"
+    assert detail.get_attribute("data-detail-gesture") == "cancel"
     assert detail.is_visible()
 
     page.evaluate(
@@ -907,7 +955,7 @@ def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
     page.wait_for_function(
         "document.querySelector('[data-detail-panel]')?.hidden === true"
     )
-    assert detail.get_attribute("data-detail-gesture") == "completed"
+    assert detail.get_attribute("data-detail-gesture") == "commit"
     assert "#bgm-" not in page.url
 
 

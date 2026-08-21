@@ -569,9 +569,11 @@
     let pointerId = null;
     let startX = 0;
     let startY = 0;
-    let dragging = false;
+    let gestureState = "idle";
+    let backgroundLock = null;
 
     const setState = (value) => {
+      gestureState = value;
       root.dataset.detailGesture = value;
       panel.dataset.detailGesture = value;
     };
@@ -579,7 +581,7 @@
       panel.style.removeProperty("transform");
       panel.style.removeProperty("will-change");
     };
-    const cancel = () => {
+    const releasePointer = () => {
       try {
         if (pointerId !== null && panel.hasPointerCapture?.(pointerId)) {
           panel.releasePointerCapture(pointerId);
@@ -588,51 +590,73 @@
         // Synthetic browser regression events do not own a real pointer.
       }
       pointerId = null;
-      dragging = false;
+    };
+    const lockBackground = () => {
+      if (backgroundLock) return;
+      backgroundLock = {
+        scrollTop: window.scrollY,
+        htmlOverflow: document.documentElement.style.overflow,
+        bodyOverscroll: document.body.style.overscrollBehavior,
+      };
+      document.documentElement.style.overflow = "hidden";
+      document.body.style.overscrollBehavior = "none";
+      panel.style.touchAction = "none";
+    };
+    const unlockBackground = () => {
+      if (!backgroundLock) return;
+      const lock = backgroundLock;
+      backgroundLock = null;
+      document.documentElement.style.overflow = lock.htmlOverflow;
+      document.body.style.overscrollBehavior = lock.bodyOverscroll;
+      panel.style.removeProperty("touch-action");
+      if (window.scrollY !== lock.scrollTop) {
+        window.scrollTo({ top: lock.scrollTop, behavior: "auto" });
+      }
+    };
+    const cancel = () => {
+      if (gestureState !== "possible-drag" && gestureState !== "dragging") return;
+      releasePointer();
       resetTransform();
-      setState("canceled");
+      unlockBackground();
+      setState("cancel");
     };
     const finish = () => {
-      try {
-        if (pointerId !== null && panel.hasPointerCapture?.(pointerId)) {
-          panel.releasePointerCapture(pointerId);
-        }
-      } catch {
-        // Synthetic browser regression events do not own a real pointer.
-      }
-      pointerId = null;
-      dragging = false;
+      if (gestureState !== "dragging") return;
+      releasePointer();
       resetTransform();
-      setState("completed");
+      unlockBackground();
+      setState("commit");
       onComplete?.();
     };
     const onPointerDown = (event) => {
-      if (!isStandalone() || panel.hidden || pointerId !== null || event.isPrimary === false) return;
+      if (!isStandalone() || panel.hidden || pointerId !== null
+        || (gestureState === "possible-drag" || gestureState === "dragging")
+        || event.isPrimary === false) return;
       const edge = 32 + (parseFloat(getComputedStyle(document.documentElement)
         .getPropertyValue("--safe-area-left")) || 0);
       if (event.clientX > edge) return;
       pointerId = event.pointerId;
       startX = event.clientX;
       startY = event.clientY;
-      dragging = false;
+      setState("possible-drag");
       try {
         panel.setPointerCapture?.(pointerId);
       } catch {
         // Synthetic browser regression events are still valid gesture input.
       }
-      setState("pending");
     };
     const onPointerMove = (event) => {
-      if (event.pointerId !== pointerId) return;
+      if (event.pointerId !== pointerId
+        || (gestureState !== "possible-drag" && gestureState !== "dragging")) return;
       const dx = event.clientX - startX;
       const dy = event.clientY - startY;
-      if (!dragging) {
+      if (gestureState === "possible-drag") {
         if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
         if (dx <= 0 || Math.abs(dy) >= Math.abs(dx)) {
           cancel();
           return;
         }
-        dragging = true;
+        lockBackground();
         panel.style.willChange = "transform";
         setState("dragging");
       }
@@ -645,10 +669,11 @@
     };
     const onPointerUp = (event) => {
       if (event.pointerId !== pointerId) return;
-      if (!dragging) {
+      if (gestureState === "possible-drag") {
         cancel();
         return;
       }
+      if (gestureState !== "dragging") return;
       const dx = event.clientX - startX;
       if (dx >= Math.max(100, window.innerWidth * 0.3)) finish();
       else cancel();
@@ -663,6 +688,9 @@
       panel.removeEventListener("pointermove", onPointerMove);
       panel.removeEventListener("pointerup", onPointerUp);
       panel.removeEventListener("pointercancel", cancel);
+      releasePointer();
+      resetTransform();
+      unlockBackground();
     };
   }
 

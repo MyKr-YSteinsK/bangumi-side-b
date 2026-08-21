@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from bgm_side_b.build.site_builder import BuildError, UnifiedSiteBuilder
+from bgm_side_b.build.site_builder import BuildError, UnifiedSiteBuilder, _subject_row
 from bgm_side_b.config import load_tag_rules
 from bgm_side_b.database import Database
 from bgm_side_b.domain import (
@@ -230,6 +230,24 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert second.patch.written == ()
     assert second.dirty.skipped_quarters == ("2026-04", "2026-07")
     assert first.report_path.is_file()
+
+
+def test_subject_row_keeps_missing_score_missing_instead_of_zero() -> None:
+    row = _subject_row(
+        {
+            "id": 999,
+            "preferred_title": "No rating",
+            "media": "TV",
+            "appearance": "premiere",
+            "score": None,
+            "rating_count": None,
+        },
+        1,
+    )
+
+    assert 'data-score=""' in row
+    assert "<b>—</b>" in row
+    assert "0.0" not in row
 
 
 def test_bgm_571784_episode_count_survives_projection_and_site_build(

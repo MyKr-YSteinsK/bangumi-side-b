@@ -1589,6 +1589,8 @@
     article.dataset.source = record.source || "";
     article.dataset.tags = record.allowed_tags.join("|");
     article.dataset.quarter = record.quarter || "";
+    const ratingScore = record.score ?? record.rating_score;
+    article.dataset.score = ratingScore === null || ratingScore === undefined ? "" : String(ratingScore);
     const button = document.createElement("button");
     button.type = "button";
     button.className = "subject-row__open";

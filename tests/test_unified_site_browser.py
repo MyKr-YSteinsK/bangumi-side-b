@@ -224,6 +224,15 @@ def test_mobile_quarter_is_cover_first_and_continuous(
     assert cover.evaluate("node => getComputedStyle(node).display") == "block"
     box = cover.bounding_box()
     assert box is not None and abs((box["width"] / box["height"]) - (2 / 3)) < 0.08
+    score = tv_rows.first.locator(".subject-row__score")
+    score_style = score.evaluate("node => getComputedStyle(node)")
+    assert score_style["position"] == "absolute"
+    score_box = score.bounding_box()
+    assert score_box is not None and score_box["y"] <= box["y"] + 12
+    assert score_box["x"] + score_box["width"] <= box["x"] + box["width"] + 1
+    assert tv_rows.first.locator(".subject-row__score small").evaluate(
+        "node => Number.parseFloat(getComputedStyle(node).opacity) < 1"
+    )
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
     assert tv_rows.first.locator("[data-open-subject]").bounding_box()["height"] >= 44
 

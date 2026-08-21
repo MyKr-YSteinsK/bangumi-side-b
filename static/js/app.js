@@ -3,7 +3,9 @@
   "use strict";
 
   const PAGE_SIZE_KEY = "bsb-archive-page-size";
+  const VIEW_MODE_KEY = "bsb-browse-view-mode";
   const PAGE_SIZES = Object.freeze([20, 40, 60, 100]);
+  const VIEW_MODES = Object.freeze(["grid", "list"]);
   const SORTS = Object.freeze({
     "score-desc": "评分：高到低",
     "score-asc": "评分：低到高",
@@ -47,6 +49,25 @@
     return size;
   }
 
+  function readViewMode(storage = window.localStorage) {
+    try {
+      const value = storage.getItem(VIEW_MODE_KEY);
+      return VIEW_MODES.includes(value) ? value : "grid";
+    } catch {
+      return "grid";
+    }
+  }
+
+  function writeViewMode(value, storage = window.localStorage) {
+    const mode = VIEW_MODES.includes(value) ? value : "grid";
+    try {
+      storage.setItem(VIEW_MODE_KEY, mode);
+    } catch {
+      // Private browsing can reject localStorage; the in-memory state still works.
+    }
+    return mode;
+  }
+
   function createState(overrides = {}) {
     const state = {
       media: "tv",
@@ -58,6 +79,7 @@
       sort: "score-desc",
       page: 1,
       pageSize: readPageSize(),
+      viewMode: readViewMode(),
       selectedSubjectId: null,
       selectedOccurrence: null,
       workspaceMode: "scope",
@@ -75,6 +97,7 @@
       : PAGE_SIZES[0];
     state.sort = SORTS[state.sort] ? state.sort : "score-desc";
     state.media = state.media === "movie" ? "movie" : "tv";
+    state.viewMode = VIEW_MODES.includes(state.viewMode) ? state.viewMode : "grid";
     return state;
   }
 
@@ -281,13 +304,17 @@
 
   const api = Object.freeze({
     PAGE_SIZES,
+    VIEW_MODES,
     SORTS,
     PAGE_SIZE_KEY,
+    VIEW_MODE_KEY,
     normalize,
     formatRating,
     hasEpisodeCount,
     readPageSize,
     writePageSize,
+    readViewMode,
+    writeViewMode,
     createState,
     recordKey,
     asRecord,
@@ -900,6 +927,7 @@
 
   function render() {
     if (loadError) return;
+    quarterRoot.dataset.viewMode = state.viewMode;
     const result = archive.applyPipeline(records, state);
     state.page = result.page;
     renderRows(result);
@@ -914,6 +942,9 @@
     if (sortButton) sortButton.textContent = archive.SORTS[state.sort];
     quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
       button.setAttribute("aria-selected", String(button.dataset.mediaMode === state.media));
+    });
+    quarterRoot.querySelectorAll("[data-view-mode]").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.viewMode === state.viewMode));
     });
     const filterButton = quarterRoot.querySelector("[data-filter-toggle]");
     if (filterButton) {
@@ -1134,6 +1165,13 @@
         clearSelection(true);
         renderFilterPanel();
         render();
+      });
+    });
+    quarterRoot.querySelectorAll("[data-view-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.viewMode = archive.writeViewMode(button.dataset.viewMode);
+        render();
+        button.focus();
       });
     });
     const sortButton = quarterRoot.querySelector("[data-sort-toggle]");
@@ -1867,6 +1905,7 @@
 
   function render() {
     if (loadError) return;
+    root.dataset.viewMode = state.viewMode;
     const result = archive.applyPipeline(records, state);
     state.page = result.page;
     renderRows(result);
@@ -1881,6 +1920,9 @@
     if (sortButton) sortButton.textContent = archive.SORTS[state.sort];
     root.querySelectorAll("[data-media-mode]").forEach((button) => {
       button.setAttribute("aria-selected", String(button.dataset.mediaMode === state.media));
+    });
+    root.querySelectorAll("[data-view-mode]").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.viewMode === state.viewMode));
     });
     const filterButton = root.querySelector("[data-filter-toggle]");
     if (filterButton) {
@@ -2214,6 +2256,7 @@
     }
     selectors.search?.addEventListener("input", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); });
     root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
+    root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => { state.viewMode = archive.writeViewMode(button.dataset.viewMode); render(); button.focus(); }));
     root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
       if (state.workspaceMode === "filter") closeFilterAndRestoreFocus(false);
       else {

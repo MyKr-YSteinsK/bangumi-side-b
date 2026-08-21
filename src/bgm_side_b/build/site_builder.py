@@ -1299,7 +1299,7 @@ def _root_html(revisions: Mapping[str, str]) -> bytes:
 def _archive_html(revisions: Mapping[str, str]) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "ARCHIVE")
-        + '<main id="main-content" tabindex="-1" class="archive-page" data-archive-app data-page="archive" data-workspace-mode="scope" '
+        + '<main id="main-content" tabindex="-1" class="archive-page" data-archive-app data-page="archive" data-workspace-mode="scope" data-view-mode="grid" '
         'data-archive-index-url="../data/archive-index.json" data-site-root="../">'
         '<section class="archive-intro">'
         '<p class="archive-intro__code">ARCHIVE / INDEX</p>'
@@ -1338,7 +1338,10 @@ def _archive_html(revisions: Mapping[str, str]) -> bytes:
         '<input type="search" data-search placeholder="搜索标题、别名或 Bangumi ID" autocomplete="off"></label>'
         '<button type="button" class="control-button" data-filter-toggle aria-expanded="false" aria-controls="filter-panel">筛选 <span data-filter-count></span></button>'
         '<button type="button" class="control-button" data-sort-toggle aria-haspopup="menu" aria-expanded="false" aria-controls="sort-popover">评分：高到低</button>'
-        '<span class="page-size"><span class="sr-only">每页数量</span><div data-page-size aria-label="每页数量"></div></span></div>'
+        '<span class="page-size"><span class="sr-only">每页数量</span><div data-page-size aria-label="每页数量"></div></span>'
+        '<div class="view-switch" role="group" aria-label="结果视图">'
+        '<button type="button" data-view-mode="grid" aria-pressed="true">GRID</button>'
+        '<button type="button" data-view-mode="list" aria-pressed="false">LIST</button></div></div>'
         '<div class="sort-popover" id="sort-popover" data-sort-popover role="menu" aria-label="排序" hidden></div>'
         '<div class="active-filter-strip" data-active-filters hidden></div>'
         '<p class="results-summary" data-results-summary></p>'
@@ -1567,7 +1570,7 @@ def _quarter_html(
             quarter=quarter.quarter,
         )
         + f'<main id="main-content" tabindex="-1" class="quarter-page season-{html.escape(quarter.quarter[-2:])}" '
-        f'data-archive-app data-page="quarter" data-quarter="{label}" data-workspace-mode="scope" '
+        f'data-archive-app data-page="quarter" data-quarter="{label}" data-workspace-mode="scope" data-view-mode="grid" '
         f'data-data-url="../data/quarters/{label}.json" data-site-root="../" '
         f'data-count-tv="{counts["tv"]}" data-count-movie="{counts["movie"]}" '
         f'data-count-premiere="{counts["premiere"]}" data-count-continuing="{counts["continuing"]}">'
@@ -1586,7 +1589,10 @@ def _quarter_html(
         '<input type="search" data-search placeholder="搜索标题、别名或 Bangumi ID" autocomplete="off"></label>'
         '<button type="button" class="control-button" data-filter-toggle aria-expanded="false" aria-controls="filter-panel">筛选 <span data-filter-count></span></button>'
         '<button type="button" class="control-button" data-sort-toggle aria-haspopup="menu" aria-expanded="false" aria-controls="sort-popover">评分：高到低</button>'
-        '<span class="page-size"><span class="sr-only">每页数量</span><div data-page-size aria-label="每页数量"></div></span></div>'
+        '<span class="page-size"><span class="sr-only">每页数量</span><div data-page-size aria-label="每页数量"></div></span>'
+        '<div class="view-switch" role="group" aria-label="结果视图">'
+        '<button type="button" data-view-mode="grid" aria-pressed="true">GRID</button>'
+        '<button type="button" data-view-mode="list" aria-pressed="false">LIST</button></div></div>'
         '<div class="sort-popover" id="sort-popover" data-sort-popover role="menu" aria-label="排序" hidden></div>'
         '<div class="active-filter-strip" data-active-filters hidden></div>'
         '<p class="results-summary" data-results-summary></p>'

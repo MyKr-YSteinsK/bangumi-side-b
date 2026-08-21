@@ -213,6 +213,10 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert 'data-mobile-quarter-offline' in july_html
     assert 'data-quarter-offline' not in july_html
     assert 'viewport-fit=cover' in july_html
+    assert 'data-view-mode="grid"' in july_html
+    assert 'aria-label="结果视图"' in july_html
+    assert 'data-view-mode="grid"' in archive_html
+    assert 'aria-label="结果视图"' in archive_html
     assert [path.name for path in (site / "covers").glob("*.webp")] == [
         "101.webp"
     ]

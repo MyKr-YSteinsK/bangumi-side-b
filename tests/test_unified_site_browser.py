@@ -237,6 +237,94 @@ def test_mobile_quarter_is_cover_first_and_continuous(
     assert tv_rows.first.locator("[data-open-subject]").bounding_box()["height"] >= 44
 
 
+def test_grid_list_view_switch_persists_and_preserves_detail(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server, (390, 844))
+    root = page.locator('[data-page="quarter"][data-archive-app]')
+    switch = page.locator(".view-switch")
+    assert root.get_attribute("data-view-mode") == "grid"
+    assert switch.locator('[data-view-mode="grid"]').get_attribute(
+        "aria-pressed"
+    ) == "true"
+
+    switch.locator('[data-view-mode="list"]').click()
+    assert root.get_attribute("data-view-mode") == "list"
+    assert page.evaluate("localStorage.getItem('bsb-browse-view-mode')") == "list"
+    assert len(
+        page.locator('[data-list-section="tv"] .result-list').evaluate(
+            "node => getComputedStyle(node).gridTemplateColumns"
+        ).split()
+    ) == 1
+    list_cover = page.locator('[data-list-section="tv"] .subject-row__cover').first
+    list_cover_box = list_cover.bounding_box()
+    assert list_cover_box is not None and list_cover_box["width"] < 80
+    assert page.locator('[data-list-section="tv"] .subject-row__score').first.evaluate(
+        "node => getComputedStyle(node).position"
+    ) == "static"
+
+    page.locator('[data-subject-id="101"] [data-open-subject]').click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    assert root.get_attribute("data-view-mode") == "list"
+    page.locator("[data-detail-panel] [data-detail-close]").click()
+    page.reload()
+    page.wait_for_selector(".subject-row")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes(' / ')"
+    )
+    assert root.get_attribute("data-view-mode") == "list"
+
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+    )
+    archive_root = page.locator('[data-page="archive"][data-archive-app]')
+    assert archive_root.get_attribute("data-view-mode") == "list"
+    archive_cover = page.locator(
+        '[data-subject-id="101"][data-quarter="2026-07"] .subject-row__cover'
+    ).first
+    archive_cover_box = archive_cover.bounding_box()
+    assert archive_cover_box is not None and archive_cover_box["width"] < 80
+    page.locator('[data-page="archive"] [data-view-mode="grid"]').click()
+    assert archive_root.get_attribute("data-view-mode") == "grid"
+    page.reload()
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+    )
+    assert archive_root.get_attribute("data-view-mode") == "grid"
+
+
+def test_desktop_grid_list_view_switch_changes_density(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server, (1440, 900))
+    root = page.locator('[data-page="quarter"][data-archive-app]')
+    result_list = page.locator('[data-list-section="tv"] .result-list')
+
+    def column_count() -> int:
+        columns = result_list.evaluate(
+            "node => getComputedStyle(node).gridTemplateColumns"
+        )
+        return len(columns.split())
+
+    assert root.get_attribute("data-view-mode") == "grid"
+    assert column_count() >= 2
+    page.locator('[data-view-mode="list"]').click()
+    assert column_count() == 1
+    cover = page.locator(
+        '[data-list-section="tv"] .subject-row__cover'
+    ).first.bounding_box()
+    assert cover is not None and cover["width"] == 52
+    page.locator('[data-view-mode="grid"]').click()
+    assert column_count() >= 2
+
+
 def test_quarter_detail_movie_history_and_lightbox(
     chromium: BrowserContext,
     site_server: str,

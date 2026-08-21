@@ -3,7 +3,9 @@
   "use strict";
 
   const PAGE_SIZE_KEY = "bsb-archive-page-size";
+  const VIEW_MODE_KEY = "bsb-browse-view-mode";
   const PAGE_SIZES = Object.freeze([20, 40, 60, 100]);
+  const VIEW_MODES = Object.freeze(["grid", "list"]);
   const SORTS = Object.freeze({
     "score-desc": "评分：高到低",
     "score-asc": "评分：低到高",
@@ -47,6 +49,25 @@
     return size;
   }
 
+  function readViewMode(storage = window.localStorage) {
+    try {
+      const value = storage.getItem(VIEW_MODE_KEY);
+      return VIEW_MODES.includes(value) ? value : "grid";
+    } catch {
+      return "grid";
+    }
+  }
+
+  function writeViewMode(value, storage = window.localStorage) {
+    const mode = VIEW_MODES.includes(value) ? value : "grid";
+    try {
+      storage.setItem(VIEW_MODE_KEY, mode);
+    } catch {
+      // Private browsing can reject localStorage; the in-memory state still works.
+    }
+    return mode;
+  }
+
   function createState(overrides = {}) {
     const state = {
       media: "tv",
@@ -58,6 +79,7 @@
       sort: "score-desc",
       page: 1,
       pageSize: readPageSize(),
+      viewMode: readViewMode(),
       selectedSubjectId: null,
       selectedOccurrence: null,
       workspaceMode: "scope",
@@ -75,6 +97,7 @@
       : PAGE_SIZES[0];
     state.sort = SORTS[state.sort] ? state.sort : "score-desc";
     state.media = state.media === "movie" ? "movie" : "tv";
+    state.viewMode = VIEW_MODES.includes(state.viewMode) ? state.viewMode : "grid";
     return state;
   }
 
@@ -281,13 +304,17 @@
 
   const api = Object.freeze({
     PAGE_SIZES,
+    VIEW_MODES,
     SORTS,
     PAGE_SIZE_KEY,
+    VIEW_MODE_KEY,
     normalize,
     formatRating,
     hasEpisodeCount,
     readPageSize,
     writePageSize,
+    readViewMode,
+    writeViewMode,
     createState,
     recordKey,
     asRecord,
@@ -569,9 +596,11 @@
     let pointerId = null;
     let startX = 0;
     let startY = 0;
-    let dragging = false;
+    let gestureState = "idle";
+    let backgroundLock = null;
 
     const setState = (value) => {
+      gestureState = value;
       root.dataset.detailGesture = value;
       panel.dataset.detailGesture = value;
     };
@@ -579,7 +608,7 @@
       panel.style.removeProperty("transform");
       panel.style.removeProperty("will-change");
     };
-    const cancel = () => {
+    const releasePointer = () => {
       try {
         if (pointerId !== null && panel.hasPointerCapture?.(pointerId)) {
           panel.releasePointerCapture(pointerId);
@@ -588,51 +617,73 @@
         // Synthetic browser regression events do not own a real pointer.
       }
       pointerId = null;
-      dragging = false;
+    };
+    const lockBackground = () => {
+      if (backgroundLock) return;
+      backgroundLock = {
+        scrollTop: window.scrollY,
+        htmlOverflow: document.documentElement.style.overflow,
+        bodyOverscroll: document.body.style.overscrollBehavior,
+      };
+      document.documentElement.style.overflow = "hidden";
+      document.body.style.overscrollBehavior = "none";
+      panel.style.touchAction = "none";
+    };
+    const unlockBackground = () => {
+      if (!backgroundLock) return;
+      const lock = backgroundLock;
+      backgroundLock = null;
+      document.documentElement.style.overflow = lock.htmlOverflow;
+      document.body.style.overscrollBehavior = lock.bodyOverscroll;
+      panel.style.removeProperty("touch-action");
+      if (window.scrollY !== lock.scrollTop) {
+        window.scrollTo({ top: lock.scrollTop, behavior: "auto" });
+      }
+    };
+    const cancel = () => {
+      if (gestureState !== "possible-drag" && gestureState !== "dragging") return;
+      releasePointer();
       resetTransform();
-      setState("canceled");
+      unlockBackground();
+      setState("cancel");
     };
     const finish = () => {
-      try {
-        if (pointerId !== null && panel.hasPointerCapture?.(pointerId)) {
-          panel.releasePointerCapture(pointerId);
-        }
-      } catch {
-        // Synthetic browser regression events do not own a real pointer.
-      }
-      pointerId = null;
-      dragging = false;
+      if (gestureState !== "dragging") return;
+      releasePointer();
       resetTransform();
-      setState("completed");
+      unlockBackground();
+      setState("commit");
       onComplete?.();
     };
     const onPointerDown = (event) => {
-      if (!isStandalone() || panel.hidden || pointerId !== null || event.isPrimary === false) return;
+      if (!isStandalone() || panel.hidden || pointerId !== null
+        || (gestureState === "possible-drag" || gestureState === "dragging")
+        || event.isPrimary === false) return;
       const edge = 32 + (parseFloat(getComputedStyle(document.documentElement)
         .getPropertyValue("--safe-area-left")) || 0);
       if (event.clientX > edge) return;
       pointerId = event.pointerId;
       startX = event.clientX;
       startY = event.clientY;
-      dragging = false;
+      setState("possible-drag");
       try {
         panel.setPointerCapture?.(pointerId);
       } catch {
         // Synthetic browser regression events are still valid gesture input.
       }
-      setState("pending");
     };
     const onPointerMove = (event) => {
-      if (event.pointerId !== pointerId) return;
+      if (event.pointerId !== pointerId
+        || (gestureState !== "possible-drag" && gestureState !== "dragging")) return;
       const dx = event.clientX - startX;
       const dy = event.clientY - startY;
-      if (!dragging) {
+      if (gestureState === "possible-drag") {
         if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
         if (dx <= 0 || Math.abs(dy) >= Math.abs(dx)) {
           cancel();
           return;
         }
-        dragging = true;
+        lockBackground();
         panel.style.willChange = "transform";
         setState("dragging");
       }
@@ -645,10 +696,11 @@
     };
     const onPointerUp = (event) => {
       if (event.pointerId !== pointerId) return;
-      if (!dragging) {
+      if (gestureState === "possible-drag") {
         cancel();
         return;
       }
+      if (gestureState !== "dragging") return;
       const dx = event.clientX - startX;
       if (dx >= Math.max(100, window.innerWidth * 0.3)) finish();
       else cancel();
@@ -663,6 +715,9 @@
       panel.removeEventListener("pointermove", onPointerMove);
       panel.removeEventListener("pointerup", onPointerUp);
       panel.removeEventListener("pointercancel", cancel);
+      releasePointer();
+      resetTransform();
+      unlockBackground();
     };
   }
 
@@ -872,6 +927,7 @@
 
   function render() {
     if (loadError) return;
+    quarterRoot.dataset.viewMode = state.viewMode;
     const result = archive.applyPipeline(records, state);
     state.page = result.page;
     renderRows(result);
@@ -886,6 +942,9 @@
     if (sortButton) sortButton.textContent = archive.SORTS[state.sort];
     quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
       button.setAttribute("aria-selected", String(button.dataset.mediaMode === state.media));
+    });
+    quarterRoot.querySelectorAll("[data-view-mode]").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.viewMode === state.viewMode));
     });
     const filterButton = quarterRoot.querySelector("[data-filter-toggle]");
     if (filterButton) {
@@ -984,8 +1043,8 @@
       record.rating_count !== null && record.rating_count !== undefined ? ["评分人数", record.rating_count] : null,
       ["来源", archive.sourceLabel(record.source)],
     ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");
-    return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button>
-      <p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}${record.appearance === "continuing" ? ' <span class="detail-appearance-badge">续播</span>' : ""}</p>
+    return `<div class="detail-head"><div class="detail-topbar" role="navigation" aria-label="详情导航"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span class="detail-close__icon" aria-hidden="true">←</span><span class="detail-close__back">返回结果</span></button>
+      <p class="workspace-panel__code detail-topbar__context">${esc(record.media)} / ${esc(record.appearance)}${record.appearance === "continuing" ? ' <span class="detail-appearance-badge">续播</span>' : ""}</p></div>
       <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>
       ${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}
       <p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
@@ -1106,6 +1165,13 @@
         clearSelection(true);
         renderFilterPanel();
         render();
+      });
+    });
+    quarterRoot.querySelectorAll("[data-view-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.viewMode = archive.writeViewMode(button.dataset.viewMode);
+        render();
+        button.focus();
       });
     });
     const sortButton = quarterRoot.querySelector("[data-sort-toggle]");
@@ -1589,6 +1655,8 @@
     article.dataset.source = record.source || "";
     article.dataset.tags = record.allowed_tags.join("|");
     article.dataset.quarter = record.quarter || "";
+    const ratingScore = record.score ?? record.rating_score;
+    article.dataset.score = ratingScore === null || ratingScore === undefined ? "" : String(ratingScore);
     const button = document.createElement("button");
     button.type = "button";
     button.className = "subject-row__open";
@@ -1837,6 +1905,7 @@
 
   function render() {
     if (loadError) return;
+    root.dataset.viewMode = state.viewMode;
     const result = archive.applyPipeline(records, state);
     state.page = result.page;
     renderRows(result);
@@ -1851,6 +1920,9 @@
     if (sortButton) sortButton.textContent = archive.SORTS[state.sort];
     root.querySelectorAll("[data-media-mode]").forEach((button) => {
       button.setAttribute("aria-selected", String(button.dataset.mediaMode === state.media));
+    });
+    root.querySelectorAll("[data-view-mode]").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.viewMode === state.viewMode));
     });
     const filterButton = root.querySelector("[data-filter-toggle]");
     if (filterButton) {
@@ -1915,7 +1987,7 @@
       record.rating_count !== null && record.rating_count !== undefined ? ["评分人数", record.rating_count] : null,
       ["来源", archive.sourceLabel(record.source)],
     ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");
-    return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button><p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}${record.appearance === "continuing" ? ' <span class="detail-appearance-badge">续播</span>' : ""}</p>
+    return `<div class="detail-head"><div class="detail-topbar" role="navigation" aria-label="详情导航"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span class="detail-close__icon" aria-hidden="true">←</span><span class="detail-close__back">返回结果</span></button><p class="workspace-panel__code detail-topbar__context">${esc(record.media)} / ${esc(record.appearance)}${record.appearance === "continuing" ? ' <span class="detail-appearance-badge">续播</span>' : ""}</p></div>
       <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}<p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
       <dl class="detail-facts">${facts}</dl>
       ${record.appearance === "continuing" ? `<p class="detail-continuing">当前归档：续播${record.premiere_quarter ? ` · 首播 ${esc(record.premiere_quarter)}` : ""}</p>` : ""}
@@ -2184,6 +2256,7 @@
     }
     selectors.search?.addEventListener("input", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); });
     root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
+    root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => { state.viewMode = archive.writeViewMode(button.dataset.viewMode); render(); button.focus(); }));
     root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
       if (state.workspaceMode === "filter") closeFilterAndRestoreFocus(false);
       else {

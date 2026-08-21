@@ -3138,9 +3138,11 @@ def test_downloaded_quarter_is_complete_offline_and_undownloaded_redirects(
     assert "1 / 1" in page.locator("[data-results-summary]").inner_text()
     page.goto(f"{pwa_server}/settings/index.html")
     assert page.get_by_role("heading", name="设置").is_visible()
-    assert page.locator('[data-offline-quarter="2026-07"]').get_by_text(
+    downloaded = page.locator('[data-offline-quarter="2026-07"]').get_by_text(
         "已下载"
-    ).is_visible()
+    )
+    downloaded.wait_for(state="visible")
+    assert downloaded.is_visible()
 
     page.goto(f"{pwa_server}/2026-04/index.html")
     page.wait_for_url(f"{pwa_server}/settings/index.html")

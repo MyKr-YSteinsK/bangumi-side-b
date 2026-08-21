@@ -25,6 +25,8 @@ Bangumi 数据或依赖业务后端。
 
 - 唯一派生站点是 `dist/site/`，本地预览与 Pages 使用同一棵树；
 - 季度页把 TV 首播与续播放进同一连续列表（以“续播”标识区分），Movie 独立浏览；同源 JSON 承载详情 payload；
+- Quarter 与 Archive 支持 Grid / List 两种浏览视图；List 保留小封面并提高标题、日期和来源的信息密度，选择会在本地浏览器中持久化；
+- 移动端详情使用紧凑返回顶栏；浏览器 history 与 standalone PWA 左缘右滑共用同一返回路径，取消手势不会移动背景列表；
 - `build` 完全离线，使用确定性投影、指纹和增量 patch，不复制完整站点快照；
 - `sync` 事实提交成功后自动增量构建，失败或未完成事实不会覆盖 last-known-good；
 - `release publish` 是明确的 release 动作，不会调用 sync 或 build；正式发布源始终是

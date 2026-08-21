@@ -4,6 +4,19 @@
 
 ## 尚未发布
 
+## 0.5.0 - 2026-08-22
+
+### 新增
+
+- Quarter 与 Archive 增加 Grid / List 浏览视图切换；Grid 保持封面优先，List 保留小封面并提供更高密度的标题、原名、日期、来源和评分信息。
+- 视图选择使用 `bsb-browse-view-mode` 写入浏览器 localStorage，刷新、切换季度或进入 Archive 后继续保持。
+
+### 修复
+
+- 移动端卡片评分固定在封面右上角，缺失评分不再伪造 `0.0`；标题、原名和元信息行预留稳定高度。
+- 移动端详情改为安全区内紧凑返回顶栏，保留 hash/history 返回与焦点/滚动恢复。
+- standalone PWA 详情右滑返回改为显式 possible-drag / dragging / cancel / commit 状态机，拖动期间冻结背景列表，取消与提交都不会重复触发 history。
+
 ## 0.4.0 - 2026-08-21
 
 ### 新增

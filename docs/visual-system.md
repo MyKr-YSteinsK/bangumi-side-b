@@ -52,6 +52,8 @@ Listbox 在桌面锚定触发器，在接近视口边缘时保持可见；移动
 
 Quarter 与 Archive 的长分页共用紧凑窗口：始终保留首尾页与当前页上下文，缺口使用不可交互的省略号，不随历史页数线性增加页码按钮。
 
+Quarter 与 Archive 的结果工具栏共用轻量的 Grid / List segmented control。Grid 在移动端使用两列封面卡片，在桌面使用响应式卡片网格；List 在所有宽度保留小封面，并把标题、原名、日期、来源和评分压缩为高密度行。模式只改变展示层，不重置搜索、筛选、排序、分页、详情 hash 或 history；偏好使用 `bsb-browse-view-mode` 写入 localStorage，缺失或不可写时回退到 Grid。
+
 基础控件在 1920、1440、1280、1199、1024、900、768、767、390 和 360 宽度下保持可用：桌面工具栏使用紧凑网格，窄屏转为可换行布局，搜索和选择器不压缩到不可读；可触控控件至少 44px 高，页面不产生新的横向滚动。Plan 39 进一步将 Quarter / Archive 的桌面 master/detail/filter 工作区延伸到可用 viewport，高度内容在工作区内部滚动；767px 及以下详情与筛选改为不保留 context rail 的单栏全宽工作区。
 
 筛选工作区使用 context-aware counts 和可换行 chip cloud。计数会保留当前搜索与其它维度的约束，当前维度自身按未选条件计算；已选项、零结果项和键盘焦点均保持可见层级。移动端筛选面板同时提供活动筛选、清除全部、当前结果数和返回结果，不把实时筛选伪装成提交型 Apply。
@@ -65,7 +67,7 @@ Settings 按 01 / 离线季度、02 / 下载任务、03 / 批量下载、04 / �
 程序版本默认展开，较早版本默认折叠；长条目可换行，内容直接写入静态 HTML，手机宽度不新增
 横向滚动。版本号来自源码单一事实源，缺少对应 release 时只显示版本号，不伪造 release。
 
-移动端 Quarter / Archive 采用两列、2:3 封面优先卡片；季度页连续展示结果，Archive 保留自己的分页。详情在移动端是覆盖视口的全屏层，筛选是带草稿状态和安全区内边距的 bottom sheet；返回会恢复列表位置。`viewport-fit=cover` 配合统一 safe-area 变量保护 header、详情、sheet、toast 和底部操作，`prefers-reduced-motion` 会把回弹和非必要过渡压缩到近乎即时。
+移动端 Quarter / Archive 的 Grid 采用两列、2:3 封面优先卡片，List 采用保留小封面的高密度行；季度页连续展示结果，Archive 保留自己的分页。详情在移动端是覆盖视口的全屏层，顶部为安全区内的紧凑返回箭头，筛选是带草稿状态和安全区内边距的 bottom sheet；返回会恢复列表位置。standalone PWA 左缘右滑只在水平拖动确认后移动详情层，背景列表保持冻结，取消或 commit 都不会重复触发 history。`viewport-fit=cover` 配合统一 safe-area 变量保护 header、详情、sheet、toast 和底部操作，`prefers-reduced-motion` 会把回弹和非必要过渡压缩到近乎即时。
 
 页脚说明资料归属及“无运行时远程请求”。每个可交互元素需要可见的 `:focus-visible`；无数据、缺图、无评分、长标题等状态都有稳定的文档流位置，不用伪造事实填补。
 

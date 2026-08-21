@@ -1903,6 +1903,10 @@
     await loadArchiveIndex(root.dataset.archiveIndexUrl);
     subscribe((event) => renderSettings(event));
     await renderSettings();
+    // Startup capability/queue notifications can supersede the first render
+    // before its selector area is committed. Render the selector once after
+    // the initial settings barrier so it cannot remain on the loading shell.
+    renderQueueSelector(root.querySelector("[data-settings-selector]"));
     await detectUpdates();
   }
 

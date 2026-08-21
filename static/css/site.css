@@ -635,6 +635,11 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
   width: var(--control-height-touch);
 }
 .detail-close__back { display: none; }
+.detail-topbar { align-items: center; display: flex; gap: .55rem; min-height: 2.25rem; }
+.detail-topbar .detail-close { flex: 0 0 auto; float: none; min-width: 2.25rem; padding: 0 .55rem; width: auto; }
+.detail-topbar .detail-close__icon { display: inline; font-size: 1rem; line-height: 1; }
+.detail-topbar .detail-close__back { display: inline; font-size: .76rem; }
+.detail-topbar__context { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .detail-close:hover, .subject-drawer__close:hover { background: var(--surface-selected); border-color: var(--accent); color: var(--accent-ink); }
 .lightbox-close:hover { background: rgb(255 255 255 / 14%); border-color: white; }
@@ -890,15 +895,21 @@ html { line-height: 1.65; }
     min-height: calc(100dvh - 7rem);
     padding: .75rem 0;
   }
-  .archive-page[data-workspace-mode="detail"] .detail-close,
-  .quarter-page[data-workspace-mode="detail"] .detail-close {
-    float: none;
-    height: auto;
-    justify-content: flex-start;
-    width: auto;
+  .archive-page[data-workspace-mode="detail"] .detail-topbar,
+  .quarter-page[data-workspace-mode="detail"] .detail-topbar { gap: .4rem; }
+  .archive-page[data-workspace-mode="detail"] .detail-topbar .detail-close,
+  .quarter-page[data-workspace-mode="detail"] .detail-topbar .detail-close {
+    height: var(--control-height-touch);
+    justify-content: center;
+    padding: 0;
+    width: var(--control-height-touch);
   }
-  .detail-close__back { display: inline; font-size: .78rem; }
-  .detail-close > span:first-child { display: none; }
+  .archive-page[data-workspace-mode="detail"] .detail-topbar .detail-close__back,
+  .quarter-page[data-workspace-mode="detail"] .detail-topbar .detail-close__back { display: none; }
+  .archive-page[data-workspace-mode="detail"] .detail-topbar .detail-close > span:first-child,
+  .quarter-page[data-workspace-mode="detail"] .detail-topbar .detail-close > span:first-child { display: inline; }
+  .archive-page[data-workspace-mode="detail"] .detail-topbar__context,
+  .quarter-page[data-workspace-mode="detail"] .detail-topbar__context { font-size: .62rem; }
 
   /* Plan 46 Phase 3: detail is a fixed viewport layer while the result list
      stays mounted underneath it for deterministic history/gesture return. */

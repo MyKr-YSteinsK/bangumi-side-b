@@ -984,8 +984,8 @@
       record.rating_count !== null && record.rating_count !== undefined ? ["评分人数", record.rating_count] : null,
       ["来源", archive.sourceLabel(record.source)],
     ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");
-    return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button>
-      <p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}${record.appearance === "continuing" ? ' <span class="detail-appearance-badge">续播</span>' : ""}</p>
+    return `<div class="detail-head"><div class="detail-topbar" role="navigation" aria-label="详情导航"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span class="detail-close__icon" aria-hidden="true">←</span><span class="detail-close__back">返回结果</span></button>
+      <p class="workspace-panel__code detail-topbar__context">${esc(record.media)} / ${esc(record.appearance)}${record.appearance === "continuing" ? ' <span class="detail-appearance-badge">续播</span>' : ""}</p></div>
       <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>
       ${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}
       <p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
@@ -1917,7 +1917,7 @@
       record.rating_count !== null && record.rating_count !== undefined ? ["评分人数", record.rating_count] : null,
       ["来源", archive.sourceLabel(record.source)],
     ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");
-    return `<div class="detail-head"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span aria-hidden="true">×</span><span class="detail-close__back">返回结果</span></button><p class="workspace-panel__code">${esc(record.media)} / ${esc(record.appearance)}${record.appearance === "continuing" ? ' <span class="detail-appearance-badge">续播</span>' : ""}</p>
+    return `<div class="detail-head"><div class="detail-topbar" role="navigation" aria-label="详情导航"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span class="detail-close__icon" aria-hidden="true">←</span><span class="detail-close__back">返回结果</span></button><p class="workspace-panel__code detail-topbar__context">${esc(record.media)} / ${esc(record.appearance)}${record.appearance === "continuing" ? ' <span class="detail-appearance-badge">续播</span>' : ""}</p></div>
       <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}<p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
       <dl class="detail-facts">${facts}</dl>
       ${record.appearance === "continuing" ? `<p class="detail-continuing">当前归档：续播${record.premiere_quarter ? ` · 首播 ${esc(record.premiere_quarter)}` : ""}</p>` : ""}

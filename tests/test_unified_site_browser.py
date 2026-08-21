@@ -601,6 +601,13 @@ def test_mobile_scope_detail_and_filter_use_single_pane_workspace(
     assert root.get_attribute("data-workspace-mode") == "detail"
     assert master.evaluate("node => getComputedStyle(node).display") == "block"
     assert workspace.bounding_box()["width"] >= layout.bounding_box()["width"] - 2
+    topbar = page.locator("[data-detail-panel] .detail-topbar")
+    assert topbar.get_attribute("aria-label") == "详情导航"
+    assert topbar.locator(".detail-close__icon").inner_text() == "←"
+    assert topbar.locator(".detail-close__back").evaluate(
+        "node => getComputedStyle(node).display"
+    ) == "none"
+    assert topbar.locator(".detail-topbar__context").inner_text().startswith("TV")
 
     page.get_by_role("button", name="返回结果").click()
     assert root.get_attribute("data-workspace-mode") == "scope"

@@ -1490,6 +1490,7 @@
   let yearControl = null;
   let pageSizeControl = null;
   let detailHistoryEntry = false;
+  let detailGesture = null;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")

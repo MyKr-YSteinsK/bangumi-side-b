@@ -1664,6 +1664,13 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
     score_label = "—" if score is None else f"{float(score):.1f}"
     rating_count = value.get("rating_count")
     air_date = str(value.get("air_date") or "")
+    grid_air_date = (
+        air_date[5:]
+        if isinstance(item, SubjectProjection) and len(air_date) >= 10
+        else air_date[2:]
+        if len(air_date) >= 10
+        else air_date
+    )
     cover_html = _cover_markup(cover, sequence, subject_id)
     appearance_badge = (
         '<span class="subject-row__appearance-badge" '
@@ -1672,6 +1679,24 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
         else ""
     )
     tags_html = "".join(f'<span class="tag">{html.escape(str(tag))}</span>' for tag in tags[:2])
+    metadata_parts = [
+        media,
+        f"{value.get('episode_count')}话" if value.get("episode_count") else "",
+        air_date,
+        source_label,
+        quarter if quarter and not isinstance(item, SubjectProjection) else "",
+    ]
+    grid_metadata_parts = [
+        media,
+        f"{value.get('episode_count')}话" if value.get("episode_count") else "",
+        grid_air_date,
+        source_label,
+        quarter if quarter and not isinstance(item, SubjectProjection) else "",
+    ]
+    metadata_html = " · ".join(str(part) for part in metadata_parts if part)
+    grid_metadata_html = " · ".join(
+        str(part) for part in grid_metadata_parts if part
+    )
     return (
         f'<article class="subject-row" role="listitem" data-subject-id="{subject_id}" '
         f'data-record-key="{html.escape(record_key, quote=True)}" data-media="{media.lower()}" '
@@ -1688,11 +1713,10 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
         f'{cover_html}<span class="subject-row__content"><strong class="subject-row__title">'
         f'{html.escape(preferred)}</strong>{appearance_badge}'
         f'<span class="subject-row__original">{html.escape(original)}</span>'
-        f'<span class="subject-row__meta">{html.escape(media)}'
-        f'{(" · " + html.escape(str(value.get("episode_count")) + "话") if value.get("episode_count") else "")}'
-        f'{(" · " + html.escape(air_date) if air_date else "")}'
-        f'{(" · " + html.escape(source_label) if source_label else "")}'
-        f'{(" · " + html.escape(quarter) if quarter and not isinstance(item, SubjectProjection) else "")}</span>'
+        f'<span class="subject-row__meta">'
+        f'<span class="subject-row__meta-full">{html.escape(metadata_html)}</span>'
+        f'<span class="subject-row__meta-grid" aria-hidden="true">'
+        f'{html.escape(grid_metadata_html)}</span></span>'
         f'<span class="subject-row__tags">{tags_html}</span></span>'
         f'<span class="subject-row__score"><b>{score_label}</b>'
         f'<small>{html.escape(str(rating_count)) if rating_count is not None else "—"}</small></span>'

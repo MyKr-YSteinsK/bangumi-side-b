@@ -321,6 +321,7 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .subject-row__title { display: block; font-size: .94rem; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subject-row__original { color: var(--ink-muted); display: block; font-size: .7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subject-row__meta { color: var(--ink-muted); display: block; font-family: var(--font-mono); font-size: .63rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subject-row__meta-grid { display: none; }
 .subject-row__tags { display: flex; gap: .25rem; overflow: hidden; }
 .subject-row__tags .tag { font-size: .58rem; padding: .12rem .3rem; white-space: nowrap; }
 .subject-row__score { align-self: center; display: grid; gap: .1rem; justify-items: end; min-width: 3.5rem; }
@@ -1041,6 +1042,12 @@ html { line-height: 1.65; }
   .quarter-page .subject-row__title, .archive-page .subject-row__title { display: -webkit-box; font-size: .82rem; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.3; min-height: 2.2rem; overflow: hidden; white-space: normal; }
   .quarter-page .subject-row__original, .archive-page .subject-row__original { font-size: .64rem; min-height: 1rem; }
   .quarter-page .subject-row__meta, .archive-page .subject-row__meta { font-size: .57rem; line-height: 1.35; min-height: 1.3rem; white-space: normal; }
+  .quarter-page[data-view-mode="grid"] .subject-row__meta,
+  .archive-page[data-view-mode="grid"] .subject-row__meta { letter-spacing: -.025em; text-overflow: clip; white-space: nowrap; }
+  .quarter-page[data-view-mode="grid"] .subject-row__meta-full,
+  .archive-page[data-view-mode="grid"] .subject-row__meta-full { display: none; }
+  .quarter-page[data-view-mode="grid"] .subject-row__meta-grid,
+  .archive-page[data-view-mode="grid"] .subject-row__meta-grid { display: inline; }
   .quarter-page .subject-row__tags, .archive-page .subject-row__tags { display: none; }
   .quarter-page .subject-row__appearance-badge, .archive-page .subject-row__appearance-badge { font-size: .58rem; left: .45rem; position: absolute; top: .45rem; z-index: 2; }
   .quarter-page .subject-row__score, .archive-page .subject-row__score { align-items: end; background: color-mix(in srgb, var(--surface-overlay) 92%, transparent); border: 1px solid var(--border-default); border-radius: var(--radius-small); display: grid; gap: .05rem; justify-items: end; min-width: 2.7rem; padding: .18rem .32rem; pointer-events: none; position: absolute; right: .45rem; top: .45rem; z-index: 2; }

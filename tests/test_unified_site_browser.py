@@ -237,6 +237,55 @@ def test_mobile_quarter_is_cover_first_and_continuous(
     assert tv_rows.first.locator("[data-open-subject]").bounding_box()["height"] >= 44
 
 
+@pytest.mark.parametrize("viewport", [(360, 800), (390, 844), (393, 852), (430, 932)])
+def test_mobile_grid_metadata_is_compact_and_one_line(
+    chromium: BrowserContext,
+    site_server_many: str,
+    viewport: tuple[int, int],
+) -> None:
+    page = chromium.new_page(viewport={"width": viewport[0], "height": viewport[1]})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server_many, viewport)
+
+    metadata = page.locator(
+        '[data-list-section="tv"] .subject-row__meta'
+    ).first
+    assert metadata.locator(".subject-row__meta-full").is_hidden()
+    assert metadata.locator(".subject-row__meta-grid").is_visible()
+    details = metadata.evaluate(
+        "node => ({whiteSpace: getComputedStyle(node).whiteSpace, "
+        "textOverflow: getComputedStyle(node).textOverflow, "
+        "scrollHeight: node.scrollHeight, clientHeight: node.clientHeight})"
+    )
+    assert details["whiteSpace"] == "nowrap"
+    assert details["textOverflow"] == "clip"
+    assert details["scrollHeight"] <= details["clientHeight"] + 1
+    assert "2026-" not in metadata.locator(".subject-row__meta-grid").inner_text()
+
+
+def test_archive_grid_keeps_full_date_for_list_and_desktop_grid(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 430, "height": 932})
+    page.set_default_timeout(8000)
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_selector('[data-page="archive"] .subject-row')
+    metadata = page.locator('[data-page="archive"] .subject-row__meta').first
+    assert metadata.locator(".subject-row__meta-full").is_hidden()
+    assert metadata.locator(".subject-row__meta-grid").is_visible()
+    assert "26-" in metadata.locator(".subject-row__meta-grid").inner_text()
+
+    page.locator('[data-page="archive"] [data-view-mode="list"]').click()
+    assert metadata.locator(".subject-row__meta-full").is_visible()
+    assert metadata.locator(".subject-row__meta-grid").is_hidden()
+
+    page.set_viewport_size({"width": 1024, "height": 768})
+    page.locator('[data-page="archive"] [data-view-mode="grid"]').click()
+    assert metadata.locator(".subject-row__meta-full").is_visible()
+    assert metadata.locator(".subject-row__meta-grid").is_hidden()
+
+
 def test_grid_list_view_switch_persists_and_preserves_detail(
     chromium: BrowserContext,
     site_server: str,

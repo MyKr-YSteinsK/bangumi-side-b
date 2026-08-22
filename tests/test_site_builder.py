@@ -14,6 +14,7 @@ import pytest
 from PIL import Image
 
 from bgm_side_b.build.site_builder import BuildError, UnifiedSiteBuilder, _subject_row
+from bgm_side_b.build.site_projection import SubjectProjection
 from bgm_side_b.config import load_tag_rules
 from bgm_side_b.database import Database
 from bgm_side_b.domain import (
@@ -252,6 +253,70 @@ def test_subject_row_keeps_missing_score_missing_instead_of_zero() -> None:
     assert 'data-score=""' in row
     assert "<b>—</b>" in row
     assert "0.0" not in row
+
+
+@pytest.mark.parametrize(
+    ("media", "source", "air_date", "grid_date"),
+    [
+        ("MOVIE", "视觉小说", "2026-07-02", "26-07-02"),
+        ("TV", "轻小说", "2026-07-14", "26-07-14"),
+    ],
+)
+def test_subject_row_exposes_compact_archive_grid_metadata(
+    media: str, source: str, air_date: str, grid_date: str
+) -> None:
+    row = _subject_row(
+        {
+            "id": 999,
+            "preferred_title": "Compact metadata",
+            "media": media,
+            "appearance": "premiere",
+            "quarter": "2026-07",
+            "air_date": air_date,
+            "source": source,
+        },
+        1,
+    )
+
+    assert (
+        f'<span class="subject-row__meta-full">{media} · {air_date} · '
+        f'{source} · 2026-07</span>'
+    ) in row
+    assert (
+        f'<span class="subject-row__meta-grid" aria-hidden="true">{media} · '
+        f'{grid_date} · {source} · 2026-07</span>'
+    ) in row
+
+
+def test_subject_row_exposes_compact_quarter_grid_date() -> None:
+    quarter = SubjectProjection(
+        101,
+        "中文 101",
+        "Original 101",
+        (),
+        "TV",
+        12,
+        "2026-07-02",
+        None,
+        8.0,
+        10,
+        "原创",
+        (),
+        None,
+        None,
+        None,
+        "premiere",
+        "2026-07",
+        None,
+        "https://bgm.tv/subject/101",
+    )
+    row = _subject_row(quarter, 1)
+
+    assert 'class="subject-row__meta-full">TV · 12话 · 2026-07-02 · 原创' in row
+    assert (
+        'class="subject-row__meta-grid" aria-hidden="true">'
+        "TV · 12话 · 07-02 · 原创" in row
+    )
 
 
 def test_bgm_571784_episode_count_survives_projection_and_site_build(

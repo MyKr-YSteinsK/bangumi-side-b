@@ -591,7 +591,7 @@
       || window.matchMedia?.("(display-mode: standalone)").matches === true;
   }
 
-  function bind({ root, panel, onComplete }) {
+  function bind({ root, panel, surface = panel, onComplete }) {
     if (!root || !panel) return () => {};
     let pointerId = null;
     let startX = 0;
@@ -605,8 +605,8 @@
       panel.dataset.detailGesture = value;
     };
     const resetTransform = () => {
-      panel.style.removeProperty("transform");
-      panel.style.removeProperty("will-change");
+      surface.style.removeProperty("transform");
+      surface.style.removeProperty("will-change");
     };
     const releasePointer = () => {
       try {
@@ -623,19 +623,29 @@
       backgroundLock = {
         scrollTop: window.scrollY,
         htmlOverflow: document.documentElement.style.overflow,
+        bodyOverflow: document.body.style.overflow,
         bodyOverscroll: document.body.style.overscrollBehavior,
       };
       document.documentElement.style.overflow = "hidden";
+      document.body.style.overflow = "hidden";
       document.body.style.overscrollBehavior = "none";
+    };
+    const lockGesture = () => {
+      lockBackground();
       panel.style.touchAction = "none";
+      surface.style.willChange = "transform";
+    };
+    const unlockGesture = () => {
+      panel.style.removeProperty("touch-action");
     };
     const unlockBackground = () => {
       if (!backgroundLock) return;
       const lock = backgroundLock;
       backgroundLock = null;
       document.documentElement.style.overflow = lock.htmlOverflow;
+      document.body.style.overflow = lock.bodyOverflow;
       document.body.style.overscrollBehavior = lock.bodyOverscroll;
-      panel.style.removeProperty("touch-action");
+      unlockGesture();
       if (window.scrollY !== lock.scrollTop) {
         window.scrollTo({ top: lock.scrollTop, behavior: "auto" });
       }
@@ -644,14 +654,14 @@
       if (gestureState !== "possible-drag" && gestureState !== "dragging") return;
       releasePointer();
       resetTransform();
-      unlockBackground();
+      unlockGesture();
       setState("cancel");
     };
     const finish = () => {
       if (gestureState !== "dragging") return;
       releasePointer();
       resetTransform();
-      unlockBackground();
+      unlockGesture();
       setState("commit");
       onComplete?.();
     };
@@ -678,20 +688,19 @@
       const dx = event.clientX - startX;
       const dy = event.clientY - startY;
       if (gestureState === "possible-drag") {
-        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
         if (dx <= 0 || Math.abs(dy) >= Math.abs(dx)) {
           cancel();
           return;
         }
-        lockBackground();
-        panel.style.willChange = "transform";
+        lockGesture();
         setState("dragging");
       }
       if (dx <= 0 || Math.abs(dy) > Math.abs(dx)) {
         cancel();
         return;
       }
-      panel.style.transform = `translateX(${Math.min(dx, window.innerWidth)}px)`;
+      surface.style.transform = `translateX(${Math.min(dx, window.innerWidth)}px)`;
       event.preventDefault();
     };
     const onPointerUp = (event) => {
@@ -710,15 +719,19 @@
     panel.addEventListener("pointerup", onPointerUp);
     panel.addEventListener("pointercancel", cancel);
     setState("idle");
-    return () => {
+    const cleanup = () => {
       panel.removeEventListener("pointerdown", onPointerDown);
       panel.removeEventListener("pointermove", onPointerMove);
       panel.removeEventListener("pointerup", onPointerUp);
       panel.removeEventListener("pointercancel", cancel);
       releasePointer();
       resetTransform();
+      unlockGesture();
       unlockBackground();
     };
+    cleanup.lockBackground = lockBackground;
+    cleanup.unlockBackground = unlockBackground;
+    return cleanup;
   }
 
   window.BsbDetailGesture = Object.freeze({ bind, isStandalone });
@@ -751,6 +764,7 @@
   let loadError = false;
   let pageSizeControl = null;
   let detailHistoryEntry = false;
+  let detailGesture = null;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -987,6 +1001,7 @@
   }
 
   function clearSelection(removeHash = false) {
+    detailGesture?.unlockBackground?.();
     detailHistoryEntry = false;
     state.selectedSubjectId = null;
     state.selectedOccurrence = null;
@@ -1058,7 +1073,10 @@
 
   function selectRecord(record, replace = false) {
     if (!record) return;
-    if (window.innerWidth < 768 && state.workspaceMode !== "detail") state.listScrollTop = window.scrollY;
+    if (window.innerWidth < 768 && state.workspaceMode !== "detail") {
+      state.listScrollTop = window.scrollY;
+      detailGesture?.lockBackground?.();
+    }
     const hadSelection = state.selectedOccurrence !== null;
     const nextDetailHistoryEntry = hadSelection
       ? detailHistoryEntry
@@ -1101,11 +1119,12 @@
   }
 
   function bindDetailGesture() {
-    window.BsbDetailGesture?.bind({
+    detailGesture = window.BsbDetailGesture?.bind({
       root: quarterRoot,
       panel: detailPanel,
+      surface: quarterRoot.querySelector(".workspace"),
       onComplete: () => closeDetail(state.selectedOccurrence),
-    });
+    }) || null;
   }
 
   function openLightbox(record) {
@@ -1471,6 +1490,7 @@
   let yearControl = null;
   let pageSizeControl = null;
   let detailHistoryEntry = false;
+  let detailGesture = null;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -1643,6 +1663,11 @@
     return [];
   }
 
+  function compactGridDate(value) {
+    const text = String(value || "");
+    return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text.slice(2) : text;
+  }
+
   function createRow(record, sequence) {
     const article = document.createElement("article");
     article.className = "subject-row";
@@ -1709,8 +1734,16 @@
     content.append(original);
     const metadata = document.createElement("span");
     metadata.className = "subject-row__meta";
-    metadata.textContent = [record.media, archive.hasEpisodeCount(record.episode_count) ? `${record.episode_count}话` : "", record.air_date || "", archive.sourceLabel(record.source), record.quarter || ""]
+    const metadataFull = document.createElement("span");
+    metadataFull.className = "subject-row__meta-full";
+    metadataFull.textContent = [record.media, archive.hasEpisodeCount(record.episode_count) ? `${record.episode_count}话` : "", record.air_date || "", archive.sourceLabel(record.source), record.quarter || ""]
       .filter(Boolean).join(" · ");
+    const metadataGrid = document.createElement("span");
+    metadataGrid.className = "subject-row__meta-grid";
+    metadataGrid.setAttribute("aria-hidden", "true");
+    metadataGrid.textContent = [record.media, archive.hasEpisodeCount(record.episode_count) ? `${record.episode_count}话` : "", compactGridDate(record.air_date), archive.sourceLabel(record.source), record.quarter || ""]
+      .filter(Boolean).join(" · ");
+    metadata.append(metadataFull, metadataGrid);
     content.append(metadata);
     const tagList = document.createElement("span");
     tagList.className = "subject-row__tags";
@@ -1796,6 +1829,7 @@
   }
 
   function clearSelection(removeHash = false) {
+    detailGesture?.unlockBackground?.();
     detailHistoryEntry = false;
     detailRequest += 1;
     state.selectedSubjectId = null;
@@ -2013,7 +2047,10 @@
 
   async function selectRecord(record, replace = false) {
     if (!record) return;
-    if (window.innerWidth < 768 && state.workspaceMode !== "detail") state.listScrollTop = window.scrollY;
+    if (window.innerWidth < 768 && state.workspaceMode !== "detail") {
+      state.listScrollTop = window.scrollY;
+      detailGesture?.lockBackground?.();
+    }
     const request = ++detailRequest;
     const hadSelection = state.selectedOccurrence !== null;
     const nextDetailHistoryEntry = hadSelection
@@ -2068,11 +2105,12 @@
   }
 
   function bindDetailGesture() {
-    window.BsbDetailGesture?.bind({
+    detailGesture = window.BsbDetailGesture?.bind({
       root,
       panel: selectors.detailPanel,
+      surface: selectors.detailPanel?.closest(".workspace"),
       onComplete: () => closeDetail(state.selectedOccurrence),
-    });
+    }) || null;
   }
 
   async function openHash() {

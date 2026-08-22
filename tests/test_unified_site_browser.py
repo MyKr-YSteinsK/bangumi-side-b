@@ -940,6 +940,16 @@ def test_mobile_detail_is_fixed_keeps_list_identity_and_unifies_history(
     assert metrics["height"] >= metrics["viewport"] - 2
     assert metrics["listMarker"] == "kept"
     assert metrics["bodyScroll"] == saved_scroll
+    assert metrics["bodyScroll"] == page.evaluate("window.scrollY")
+    assert (
+        page.evaluate("getComputedStyle(document.documentElement).overflow")
+        == "hidden"
+    )
+    assert page.evaluate("getComputedStyle(document.body).overflow") == "hidden"
+    assert page.locator("[data-quarter-layout] .master-pane").evaluate(
+        "node => ({visibility: getComputedStyle(node).visibility, "
+        "pointerEvents: getComputedStyle(node).pointerEvents})"
+    ) == {"visibility": "visible", "pointerEvents": "none"}
     assert metrics["meta"].endswith("viewport-fit=cover")
     assert metrics["safeTop"]
 
@@ -989,6 +999,68 @@ def test_mobile_detail_direct_hash_close_fallback_and_own_scroll(
     assert detail_scroll > 0
 
 
+def test_mobile_short_detail_locks_document_and_long_detail_scrolls_own_panel(
+    chromium: BrowserContext,
+    site_server: str,
+    unified_site: Path,
+) -> None:
+    payload = json.loads(
+        (unified_site / "data" / "quarters" / "2026-07.json").read_text("utf-8")
+    )
+    record = payload["tv"]["continuing"][0]
+    record.update(
+        {"display_summary": None, "aliases": [], "allowed_tags": [], "end_date": None}
+    )
+    page = chromium.new_page(viewport={"width": 393, "height": 852})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/quarters/2026-07.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        ),
+    )
+    _open_quarter(page, site_server, (393, 852))
+    page.locator("[data-quarter-layout] .master-pane").evaluate(
+        "node => { node.style.minHeight = '2400px'; node.style.paddingTop = '900px'; }"
+    )
+    target = page.locator('[data-subject-id="101"] [data-open-subject]')
+    target.scroll_into_view_if_needed()
+    saved_scroll = page.evaluate("window.scrollY")
+    target.click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    detail = page.locator("[data-detail-panel]")
+    assert detail.evaluate("node => node.scrollHeight <= node.clientHeight + 2")
+    page.mouse.wheel(0, 500)
+    assert page.evaluate("window.scrollY") == saved_scroll
+    assert detail.evaluate("node => node.scrollTop") == 0
+    page.get_by_role("button", name="返回结果").click()
+    page.wait_for_function(
+        "target => Math.abs(window.scrollY - target) <= 2", arg=saved_scroll
+    )
+
+    record["display_summary"] = "长简介 " * 600
+    _open_quarter(page, site_server, (393, 852))
+    page.locator("[data-quarter-layout] .master-pane").evaluate(
+        "node => { node.style.minHeight = '2400px'; node.style.paddingTop = '900px'; }"
+    )
+    target = page.locator('[data-subject-id="101"] [data-open-subject]')
+    target.scroll_into_view_if_needed()
+    saved_scroll = page.evaluate("window.scrollY")
+    target.click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    detail = page.locator("[data-detail-panel]")
+    assert detail.evaluate("node => node.scrollHeight > node.clientHeight")
+    detail.evaluate("node => { node.scrollTop = 240; }")
+    assert detail.evaluate("node => node.scrollTop > 0")
+    assert page.evaluate("window.scrollY") == saved_scroll
+    page.get_by_role("button", name="返回结果").click()
+    page.wait_for_function(
+        "target => Math.abs(window.scrollY - target) <= 2", arg=saved_scroll
+    )
+
+
 def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
     chromium: BrowserContext,
     site_server: str,
@@ -1012,6 +1084,13 @@ def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
     page.locator('[data-subject-id="101"] [data-open-subject]').click()
     page.wait_for_selector('[data-detail-panel]:not([hidden])')
     detail = page.locator("[data-detail-panel]")
+    surface = page.locator("[data-quarter-layout] .workspace")
+    master = page.locator("[data-quarter-layout] .master-pane")
+    saved_scroll = page.evaluate("window.scrollY")
+    assert (
+        page.evaluate("getComputedStyle(document.documentElement).overflow")
+        == "hidden"
+    )
     detail_scroll = detail.evaluate(
         "node => { node.scrollTop = Math.min(180, "
         "node.scrollHeight - node.clientHeight); return node.scrollTop; }"
@@ -1051,6 +1130,36 @@ def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
     assert detail.get_attribute("data-detail-gesture") == "cancel"
     assert detail.is_visible()
     assert detail.evaluate("node => node.scrollTop") == detail_scroll
+
+    for gesture_id, delta in enumerate((10, 20, 30, 50), start=20):
+        page.evaluate(
+            """({id, delta}) => {
+              const node = document.querySelector('[data-detail-panel]');
+              const event = (type, x) => node.dispatchEvent(new PointerEvent(type, {
+                bubbles: true, cancelable: true, pointerId: id, isPrimary: true,
+                clientX: x, clientY: 360, pointerType: 'touch',
+                buttons: type === 'pointerup' ? 0 : 1
+              }));
+              event('pointerdown', 10);
+              event('pointermove', 10 + delta);
+            }""",
+            {"id": gesture_id, "delta": delta},
+        )
+        assert detail.get_attribute("data-detail-gesture") == "dragging"
+        assert surface.evaluate("node => node.style.transform")
+        assert detail.evaluate("node => node.style.transform") == ""
+        assert master.evaluate("node => getComputedStyle(node).visibility") == "visible"
+        page.evaluate(
+            """({id, delta}) => document.querySelector('[data-detail-panel]')
+              .dispatchEvent(new PointerEvent('pointerup', {
+                bubbles: true, cancelable: true, pointerId: id, isPrimary: true,
+                clientX: 10 + delta, clientY: 360, pointerType: 'touch', buttons: 0
+              }))""",
+            {"id": gesture_id, "delta": delta},
+        )
+        assert detail.get_attribute("data-detail-gesture") == "cancel"
+        assert detail.evaluate("node => node.scrollTop") == detail_scroll
+        assert page.evaluate("window.scrollY") == saved_scroll
 
     page.evaluate(
         """() => document.querySelector('[data-detail-panel]').dispatchEvent(

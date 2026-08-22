@@ -26,6 +26,18 @@ def test_changelog_model_preserves_releases_groups_and_utf8_order() -> None:
 
 - 第一项
 
+## 0.1.3 - 2026-08-07
+
+历史版本日期
+
+## 0.1.2 - 2026-08-01
+
+历史版本日期
+
+## 0.1.1 - 2026-08-01
+
+历史版本日期
+
 ## 0.1.0
 
 旧版本短段落
@@ -37,15 +49,21 @@ def test_changelog_model_preserves_releases_groups_and_utf8_order() -> None:
     assert [release.heading for release in document.releases] == [
         "尚未发布",
         "0.4.0 - 2026-08-21",
+        "0.1.3 - 2026-08-07",
+        "0.1.2 - 2026-08-01",
+        "0.1.1 - 2026-08-01",
         "0.1.0",
     ]
     assert document.unreleased is document.releases[0]
     assert document.release_for_version("0.4.0").date == "2026-08-21"
+    assert document.release_for_version("0.1.3").date == "2026-08-07"
+    assert document.release_for_version("0.1.2").date == "2026-08-01"
+    assert document.release_for_version("0.1.1").date == "2026-08-01"
     assert document.release_for_version("0.1.0").date is None
     section = document.releases[0].blocks[0]
     assert section.title == "修复"
     assert [item.text for item in section.items] == ["<b>不执行</b>", "中文条目"]
-    old_item = document.releases[2].blocks[0]
+    old_item = document.release_for_version("0.1.0").blocks[0]
     assert old_item.kind == "paragraph"
     assert old_item.text == "旧版本短段落"
 

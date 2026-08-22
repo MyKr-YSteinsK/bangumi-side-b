@@ -368,10 +368,10 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .filter-option[hidden] { display: none; }
 .filter-option input { accent-color: var(--accent); }
 .filter-apply-mobile { display: block; margin-top: 1.25rem; width: 100%; }
-.cover-lightbox { background: rgb(23 32 29 / 92%); border: 0; height: 84dvh; max-height: 84dvh; max-width: 86vw; padding: 3rem 1rem 1rem; width: 86vw; }
-.cover-lightbox::backdrop { background: rgb(23 32 29 / 74%); }
-.cover-lightbox img { display: block; height: 100%; margin: 0 auto; max-width: 100%; object-fit: contain; width: auto; }
-.lightbox-close { background: transparent; border: 1px solid rgb(255 255 255 / 60%); color: white; cursor: pointer; font-size: 1.2rem; height: 2rem; position: absolute; right: .7rem; top: .7rem; width: 2rem; }
+.cover-lightbox { background: transparent; border: 0; box-sizing: border-box; height: auto; max-height: 92dvh; max-width: 94vw; min-width: 0; padding: calc(2.75rem + var(--safe-area-top)) calc(.7rem + var(--safe-area-right)) calc(.7rem + var(--safe-area-bottom)) calc(.7rem + var(--safe-area-left)); width: auto; }
+.cover-lightbox::backdrop { background: rgb(23 32 29 / 62%); }
+.cover-lightbox img { display: block; height: auto; margin: 0 auto; max-height: 90dvh; max-width: 92vw; object-fit: contain; width: auto; }
+.lightbox-close { align-items: center; background: transparent; border: 1px solid rgb(255 255 255 / 60%); border-radius: 50%; color: white; cursor: pointer; display: inline-flex; font-size: 1.2rem; height: 44px; justify-content: center; line-height: 1; padding: 0; position: absolute; right: calc(.4rem + var(--safe-area-right)); top: calc(.4rem + var(--safe-area-top)); width: 44px; }
 .loading-state { color: var(--ink-muted); font-family: var(--font-mono); font-size: .72rem; }
 
 .pwa-update-notice { align-items: center; background: var(--ink); color: var(--paper-raised); display: flex; font-size: .78rem; gap: 1rem; justify-content: center; left: 0; padding: calc(.45rem + var(--safe-area-top)) calc(1rem + var(--safe-area-right)) .45rem calc(1rem + var(--safe-area-left)); position: sticky; right: 0; top: 0; z-index: 20; }
@@ -490,7 +490,7 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
   .archive-range { align-items: start; display: grid; grid-template-columns: auto 1fr; }
   .archive-range__shortcuts { grid-column: 1 / -1; }
   .archive-range [data-range-apply] { grid-column: 1 / -1; }
-  .cover-lightbox { height: 82dvh; max-height: 82dvh; max-width: 88vw; width: 88vw; }
+  .cover-lightbox { max-height: 92dvh; max-width: 94vw; }
   .filter-apply-mobile { bottom: .7rem; position: sticky; }
   .settings-section { gap: .7rem; grid-template-columns: 1fr; padding: 1.1rem 0; }
   .settings-section > header { align-items: baseline; display: flex; gap: .6rem; }

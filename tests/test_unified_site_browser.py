@@ -484,6 +484,48 @@ def test_desktop_detail_workspace_uses_viewport_height_and_internal_scroll(
     assert page.locator(".cover-lightbox").count() == 0
 
 
+@pytest.mark.parametrize("viewport", [(393, 852), (430, 932), (844, 390)])
+def test_cover_lightbox_is_transparent_large_and_safe_area_ready(
+    chromium: BrowserContext,
+    site_server: str,
+    viewport: tuple[int, int],
+) -> None:
+    page = chromium.new_page(viewport={"width": viewport[0], "height": viewport[1]})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server, viewport)
+    page.locator('[data-subject-id="101"] [data-open-subject]').click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    page.locator("[data-detail-panel] [data-lightbox]").click()
+    page.wait_for_selector(".cover-lightbox", state="visible")
+    metrics = page.locator(".cover-lightbox").evaluate(
+        "node => { const style = getComputedStyle(node); "
+        "const backdrop = getComputedStyle(node, '::backdrop'); "
+        "const image = node.querySelector('img'); "
+        "const close = node.querySelector('.lightbox-close'); "
+        "return {background: style.backgroundColor, border: style.borderWidth, "
+        "maxWidth: style.maxWidth, maxHeight: style.maxHeight, "
+        "imageMaxWidth: getComputedStyle(image).maxWidth, "
+        "imageMaxHeight: getComputedStyle(image).maxHeight, "
+        "objectFit: getComputedStyle(image).objectFit, "
+        "backdrop: backdrop.backgroundColor, "
+        "closeWidth: close.getBoundingClientRect().width, "
+        "closeHeight: close.getBoundingClientRect().height}; }"
+    )
+    assert metrics["background"] in {"rgba(0, 0, 0, 0)", "transparent"}
+    assert metrics["border"] == "0px"
+    assert metrics["maxWidth"] != "86vw"
+    assert metrics["maxHeight"] != "84dvh"
+    assert metrics["imageMaxWidth"] != "100%"
+    assert metrics["objectFit"] == "contain"
+    assert metrics["backdrop"].startswith("rgba(")
+    assert "0.62" in metrics["backdrop"] or "0.619608" in metrics["backdrop"]
+    assert metrics["closeWidth"] >= 44
+    assert metrics["closeHeight"] >= 44
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    page.locator(".cover-lightbox .lightbox-close").click()
+    assert page.locator(".cover-lightbox").count() == 0
+
+
 @pytest.mark.parametrize(
     "viewport",
     [

@@ -1132,11 +1132,12 @@
     if (!cover) return;
     const dialog = document.createElement("dialog");
     dialog.className = "cover-lightbox";
-    dialog.innerHTML = `<button type="button" class="lightbox-close" aria-label="关闭封面">×</button><img src="../${esc(String(cover))}" alt="${esc(record.preferred_title)}">`;
+    dialog.setAttribute("aria-label", `查看 ${record.preferred_title} 封面`);
+    dialog.innerHTML = `<img src="../${esc(String(cover))}" alt="${esc(record.preferred_title)}">`;
     document.body.append(dialog);
     const close = () => { dialog.close(); dialog.remove(); };
-    dialog.querySelector("button").addEventListener("click", close);
     dialog.addEventListener("click", (event) => { if (event.target === dialog) close(); });
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); close(); });
     dialog.addEventListener("close", () => dialog.remove(), { once: true });
     dialog.showModal();
   }
@@ -2036,11 +2037,12 @@
     if (!cover) return;
     const dialog = document.createElement("dialog");
     dialog.className = "cover-lightbox";
-    dialog.innerHTML = `<button type="button" class="lightbox-close" aria-label="关闭封面">×</button><img src="../${esc(String(cover))}" alt="${esc(record.preferred_title)}">`;
+    dialog.setAttribute("aria-label", `查看 ${record.preferred_title} 封面`);
+    dialog.innerHTML = `<img src="../${esc(String(cover))}" alt="${esc(record.preferred_title)}">`;
     document.body.append(dialog);
     const close = () => { dialog.close(); dialog.remove(); };
-    dialog.querySelector("button").addEventListener("click", close);
     dialog.addEventListener("click", (event) => { if (event.target === dialog) close(); });
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); close(); });
     dialog.addEventListener("close", () => dialog.remove(), { once: true });
     dialog.showModal();
   }

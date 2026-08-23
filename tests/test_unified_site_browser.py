@@ -421,7 +421,14 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.goto(f"{site_server}/settings/index.html")
     page.wait_for_selector('[data-changelog-release="unreleased"]')
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.get_by_text("0.5.1", exact=True).is_visible()
+    assert page.locator(".settings-about").get_by_text("0.5.1", exact=True).is_visible()
+    assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
+    assert page.get_by_text("作者", exact=True).is_visible()
+    assert page.get_by_text("MyKr", exact=True).is_visible()
+    assert "Settings · Bangumi Side B｜MyKr" == page.title()
+    assert page.locator(".site-footer").get_by_text(
+        "Bangumi Side B · MyKr", exact=True
+    ).is_visible()
     assert not page.locator('[data-changelog-release="unreleased"]').evaluate(
         "node => node.open"
     )
@@ -480,7 +487,13 @@ def test_desktop_detail_workspace_uses_viewport_height_and_internal_scroll(
     page.locator("[data-detail-panel] [data-lightbox]").click()
     page.wait_for_selector(".cover-lightbox", state="attached")
     assert "?v=" in page.locator(".cover-lightbox img").get_attribute("src")
-    page.locator(".cover-lightbox .lightbox-close").click()
+    assert page.locator(".cover-lightbox .lightbox-close").count() == 0
+    assert page.locator(".cover-lightbox").get_attribute(
+        "aria-label"
+    ) == "查看 中文 101 封面"
+    page.locator(".cover-lightbox img").click()
+    assert page.locator(".cover-lightbox").count() == 1
+    page.keyboard.press("Escape")
     assert page.locator(".cover-lightbox").count() == 0
 
 
@@ -501,15 +514,16 @@ def test_cover_lightbox_is_transparent_large_and_safe_area_ready(
         "node => { const style = getComputedStyle(node); "
         "const backdrop = getComputedStyle(node, '::backdrop'); "
         "const image = node.querySelector('img'); "
-        "const close = node.querySelector('.lightbox-close'); "
         "return {background: style.backgroundColor, border: style.borderWidth, "
         "maxWidth: style.maxWidth, maxHeight: style.maxHeight, "
         "imageMaxWidth: getComputedStyle(image).maxWidth, "
         "imageMaxHeight: getComputedStyle(image).maxHeight, "
         "objectFit: getComputedStyle(image).objectFit, "
         "backdrop: backdrop.backgroundColor, "
-        "closeWidth: close.getBoundingClientRect().width, "
-        "closeHeight: close.getBoundingClientRect().height}; }"
+        "closeCount: node.querySelectorAll('.lightbox-close').length, "
+        "dialogBox: node.getBoundingClientRect().toJSON(), "
+        "imageBox: image.getBoundingClientRect().toJSON(), "
+        "viewport: {width: window.innerWidth, height: window.innerHeight}}; }"
     )
     assert metrics["background"] in {"rgba(0, 0, 0, 0)", "transparent"}
     assert metrics["border"] == "0px"
@@ -519,10 +533,20 @@ def test_cover_lightbox_is_transparent_large_and_safe_area_ready(
     assert metrics["objectFit"] == "contain"
     assert metrics["backdrop"].startswith("rgba(")
     assert "0.62" in metrics["backdrop"] or "0.619608" in metrics["backdrop"]
-    assert metrics["closeWidth"] >= 44
-    assert metrics["closeHeight"] >= 44
+    assert metrics["closeCount"] == 0
+    dialog_box = metrics["dialogBox"]
+    image_box = metrics["imageBox"]
+    viewport_box = metrics["viewport"]
+    assert abs(
+        (image_box["x"] + image_box["width"] / 2) - viewport_box["width"] / 2
+    ) <= 2
+    assert abs(
+        (image_box["y"] + image_box["height"] / 2) - viewport_box["height"] / 2
+    ) <= 2
+    assert dialog_box["width"] >= viewport_box["width"] - 2
+    assert dialog_box["height"] >= viewport_box["height"] - 2
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
-    page.locator(".cover-lightbox .lightbox-close").click()
+    page.locator(".cover-lightbox").click(position={"x": 2, "y": 2})
     assert page.locator(".cover-lightbox").count() == 0
 
 

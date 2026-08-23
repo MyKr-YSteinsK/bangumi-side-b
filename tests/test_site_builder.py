@@ -200,6 +200,12 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert [item["subject_id"] for item in july["tv"]["continuing"]] == [101]
     assert [item["subject_id"] for item in july["movie"]["premiere"]] == [202]
     july_html = (site / "2026-07" / "index.html").read_text("utf-8")
+    settings_html = (site / "settings" / "index.html").read_text("utf-8")
+    assert "Bangumi Side B · MyKr" in july_html
+    assert "2026-07 · Bangumi Side B｜MyKr" in july_html
+    assert "Bangumi Side B｜MyKr" in settings_html
+    assert 'id="settings-app-title"' in settings_html
+    assert "<dd>MyKr</dd>" in settings_html
     assert 'src="../covers/101.webp?v=' in july_html
     assert july_html.count('data-list-section="tv"') == 1
     assert july_html.count('data-list-section="movie"') == 1

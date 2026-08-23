@@ -368,10 +368,9 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .filter-option[hidden] { display: none; }
 .filter-option input { accent-color: var(--accent); }
 .filter-apply-mobile { display: block; margin-top: 1.25rem; width: 100%; }
-.cover-lightbox { background: transparent; border: 0; box-sizing: border-box; height: auto; max-height: 92dvh; max-width: 94vw; min-width: 0; padding: calc(2.75rem + var(--safe-area-top)) calc(.7rem + var(--safe-area-right)) calc(.7rem + var(--safe-area-bottom)) calc(.7rem + var(--safe-area-left)); width: auto; }
+.cover-lightbox { align-items: center; background: transparent; border: 0; box-sizing: border-box; display: flex; height: 100dvh; justify-content: center; max-height: none; max-width: none; min-width: 0; padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom) var(--safe-area-left); width: 100vw; }
 .cover-lightbox::backdrop { background: rgb(23 32 29 / 62%); }
-.cover-lightbox img { display: block; height: auto; margin: 0 auto; max-height: 90dvh; max-width: 92vw; object-fit: contain; width: auto; }
-.lightbox-close { align-items: center; background: transparent; border: 1px solid rgb(255 255 255 / 60%); border-radius: 50%; color: white; cursor: pointer; display: inline-flex; font-size: 1.2rem; height: 44px; justify-content: center; line-height: 1; padding: 0; position: absolute; right: calc(.4rem + var(--safe-area-right)); top: calc(.4rem + var(--safe-area-top)); width: 44px; }
+.cover-lightbox img { display: block; height: auto; max-height: 90dvh; max-width: 92vw; object-fit: contain; width: auto; }
 .loading-state { color: var(--ink-muted); font-family: var(--font-mono); font-size: .72rem; }
 
 .pwa-update-notice { align-items: center; background: var(--ink); color: var(--paper-raised); display: flex; font-size: .78rem; gap: 1rem; justify-content: center; left: 0; padding: calc(.45rem + var(--safe-area-top)) calc(1rem + var(--safe-area-right)) .45rem calc(1rem + var(--safe-area-left)); position: sticky; right: 0; top: 0; z-index: 20; }
@@ -384,6 +383,9 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .settings-section { display: grid; gap: clamp(1rem, 3vw, 3rem); grid-template-columns: minmax(9rem, .28fr) 1fr; padding: 1.5rem 0; }
 .settings-section + .settings-section { border-top: 1px solid var(--rule); }
 .settings-section > header p { color: var(--accent-ink); font-family: var(--font-mono); font-size: .66rem; font-weight: 700; letter-spacing: .1em; margin: 0; }
+.settings-about { border-bottom: 1px solid var(--rule); margin-bottom: 1rem; padding-bottom: 1rem; }
+.settings-about__code { color: var(--ink-muted); font-family: var(--font-mono); font-size: .66rem; letter-spacing: .1em; margin: 0 0 .35rem; }
+.settings-about h3 { font-size: 1rem; margin: 0 0 .7rem; }
 .settings-section > header h2 { font-size: 1.1rem; margin: .25rem 0; }
 .settings-facts { border-bottom: 1px solid var(--rule); border-top: 1px solid var(--rule); margin: 0 0 1rem; }
 .settings-facts div { align-items: baseline; display: flex; gap: 1rem; justify-content: space-between; padding: .42rem 0; }
@@ -490,7 +492,6 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
   .archive-range { align-items: start; display: grid; grid-template-columns: auto 1fr; }
   .archive-range__shortcuts { grid-column: 1 / -1; }
   .archive-range [data-range-apply] { grid-column: 1 / -1; }
-  .cover-lightbox { max-height: 92dvh; max-width: 94vw; }
   .filter-apply-mobile { bottom: .7rem; position: sticky; }
   .settings-section { gap: .7rem; grid-template-columns: 1fr; padding: 1.1rem 0; }
   .settings-section > header { align-items: baseline; display: flex; gap: .6rem; }
@@ -655,7 +656,7 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
   color: var(--accent-ink);
 }
 
-.detail-close, .lightbox-close, .subject-drawer__close {
+.detail-close, .subject-drawer__close {
   align-items: center;
   border-radius: var(--radius-control);
   display: inline-flex;
@@ -672,7 +673,6 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .detail-topbar__context { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .detail-close:hover, .subject-drawer__close:hover { background: var(--surface-selected); border-color: var(--accent); color: var(--accent-ink); }
-.lightbox-close:hover { background: rgb(255 255 255 / 14%); border-color: white; }
 
 .select-control { min-width: 0; position: relative; }
 .select-trigger {

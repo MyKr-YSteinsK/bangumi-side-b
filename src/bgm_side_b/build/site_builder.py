@@ -1279,9 +1279,10 @@ def _root_html(revisions: Mapping[str, str]) -> bytes:
         '<main class="root-entry" data-root-fallback hidden><p>当前无法读取季度索引。</p>'
         '<p><a href="archive/index.html">打开 Archive</a> · '
         '<a href="settings/index.html">打开 Settings</a></p></main>'
+        '<footer class="site-footer"><p>Bangumi Side B · MyKr</p><p>日本播出档案 · 离线可用</p></footer>'
     )
     return _page(
-        "Bangumi Side B",
+        "Bangumi Side B｜MyKr",
         body,
         "assets/app.css",
         "assets/app.js",
@@ -1353,10 +1354,10 @@ def _archive_html(revisions: Mapping[str, str]) -> bytes:
         '<section class="workspace-panel" id="detail-panel" data-detail-panel hidden></section>'
         '<section class="workspace-panel" id="filter-panel" data-filter-panel hidden></section>'
         '</aside></div></section></main>'
-        '<footer class="site-footer"><p>事实来自已核验的本地 Archive；此页面只读取同源静态文件。</p></footer>'
+        '<footer class="site-footer"><p>Bangumi Side B · MyKr</p><p>事实来自已核验的本地 Archive；此页面只读取同源静态文件。</p></footer>'
     )
     return _page(
-        "Archive · Bangumi Side B",
+        "Archive · Bangumi Side B｜MyKr",
         body,
         "../assets/app.css",
         "../assets/app.js",
@@ -1394,17 +1395,22 @@ def _settings_html(
         '<div data-settings-storage><p class="loading-state">正在读取浏览器存储…</p></div></section>'
         '<section class="settings-section" aria-labelledby="settings-diagnostics-title">'
         '<header><p>05 / ADVANCED DIAGNOSTICS</p><h2 id="settings-diagnostics-title">高级诊断</h2></header>'
-        '<div data-settings-app><p class="loading-state">正在读取离线能力状态…</p></div></section>'
+        '<div><section class="settings-about" aria-labelledby="settings-app-title">'
+        '<p class="settings-about__code">ABOUT</p><h3 id="settings-app-title">关于 Bangumi Side B</h3>'
+        '<dl class="settings-facts"><div><dt>产品</dt><dd>Bangumi Side B｜MyKr</dd></div>'
+        '<div><dt>作者</dt><dd>MyKr</dd></div>'
+        f'<div><dt>版本</dt><dd>{html.escape(app_version)}</dd></div></dl></section>'
+        '<div data-settings-app><p class="loading-state">正在读取离线能力状态…</p></div></div></section>'
         '<section class="settings-section" aria-labelledby="settings-changelog-title">'
         '<header><p>06 / CHANGELOG</p><h2 id="settings-changelog-title">更新日志</h2></header>'
         f'<div class="settings-changelog"><dl class="settings-facts">'
         f'<div><dt>当前程序版本</dt><dd>{html.escape(app_version)}</dd></div></dl>'
         f'{_changelog_releases_html(changelog, app_version)}</div></section>'
         '</div></main>'
-        '<footer class="site-footer"><p>离线下载仅使用当前站点的同源、逐文件校验资源。</p></footer>'
+        '<footer class="site-footer"><p>Bangumi Side B · MyKr</p><p>离线下载仅使用当前站点的同源、逐文件校验资源。</p></footer>'
     )
     return _page(
-        "Settings · Bangumi Side B",
+        "Settings · Bangumi Side B｜MyKr",
         body,
         "../assets/app.css",
         "../assets/app.js",
@@ -1604,10 +1610,10 @@ def _quarter_html(
         '<section class="workspace-panel" id="detail-panel" data-detail-panel hidden></section>'
         '<section class="workspace-panel" id="filter-panel" data-filter-panel hidden></section>'
         '</aside></section></main>'
-        '<footer class="site-footer"><p>数据来自已核验的本地 Archive；运行时只读取同源静态文件。</p></footer>'
+        '<footer class="site-footer"><p>Bangumi Side B · MyKr</p><p>数据来自已核验的本地 Archive；运行时只读取同源静态文件。</p></footer>'
     )
     return _page(
-        f"{quarter.quarter} · Bangumi Side B",
+        f"{quarter.quarter} · Bangumi Side B｜MyKr",
         body,
         "../assets/app.css",
         "../assets/app.js",

@@ -1440,7 +1440,9 @@ def _changelog_releases_html(changelog: ChangelogDocument) -> str:
         rendered.append(
             f'<details class="settings-changelog__milestone" '
             f'data-changelog-milestone="{html.escape(milestone.label, quote=True)}">'
-            f'<summary>{html.escape(milestone.label)}</summary>'
+            f'<summary><span>{html.escape(milestone.label)}</span>'
+            f'<time datetime="{html.escape(milestone.date, quote=True)}">'
+            f'{html.escape(milestone.date)}</time></summary>'
             f'<div class="settings-changelog__milestone-releases">{children}</div>'
             "</details>"
         )

@@ -246,7 +246,9 @@ def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
     page.locator("[data-mobile-menu-toggle]").click()
     page.keyboard.press("Escape")
     assert not page.locator("[data-mobile-menu]").is_visible()
-    assert page.locator("[data-mobile-menu-toggle]").get_attribute("aria-expanded") == "false"
+    assert page.locator("[data-mobile-menu-toggle]").get_attribute(
+        "aria-expanded"
+    ) == "false"
 
     page.locator("[data-sort-toggle]").click()
     assert page.locator("[data-sort-popover]").is_visible()
@@ -587,9 +589,9 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.on("request", lambda request: requests.append(request.url))
 
     page.goto(f"{site_server}/settings/index.html")
-    page.wait_for_selector('[data-changelog-release="0.6.5"]')
+    page.wait_for_selector('[data-changelog-release="0.6.6"]')
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.locator(".settings-about").get_by_text("0.6.5", exact=True).is_visible()
+    assert page.locator(".settings-about").get_by_text("0.6.6", exact=True).is_visible()
     assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
     assert page.get_by_text("作者", exact=True).is_visible()
     assert page.get_by_text("MyKr", exact=True).is_visible()
@@ -597,18 +599,24 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     assert page.locator(".site-footer").get_by_text(
         "Bangumi Side B · MyKr", exact=True
     ).is_visible()
-    assert page.locator('[data-changelog-release="0.6.5"]').evaluate(
+    assert page.locator('[data-changelog-release="0.6.6"]').evaluate(
         "node => node.tagName"
     ) == "SECTION"
     assert page.locator('[data-changelog-milestone="0.6"]').count() == 1
     assert not page.locator('[data-changelog-milestone="0.6"]').evaluate(
         "node => node.open"
     )
+    assert page.locator('[data-changelog-milestone="0.6"] time').get_attribute(
+        "datetime"
+    ) == "2026-08-23"
     assert page.locator('[data-changelog-release="0.6.0"]').count() == 1
     assert not page.locator('[data-changelog-milestone="0.2"]').evaluate(
         "node => node.open"
     )
-    assert page.locator('[data-changelog-milestone="0.1"]').count() == 0
+    assert page.locator('[data-changelog-milestone="0.1"]').count() == 1
+    assert page.locator('[data-changelog-milestone="0.1"] time').get_attribute(
+        "datetime"
+    ) == "2026-07-29"
     assert page.locator(".settings-section h2").all_text_contents() == [
         "离线季度",
         "下载任务",
@@ -2493,7 +2501,10 @@ def test_result_motion_cancels_rapid_reentry_without_view_transition(
             (count, node) => count + node.getAnimations().length, 0
           );
           const second = window.BsbArchive.withResultMotion(
-            'rapid-reentry', root, () => { mutations += 1; list.append(...nodes.reverse()); }
+            'rapid-reentry', root, () => {
+              mutations += 1;
+              list.append(...nodes.reverse());
+            }
           );
           document.startViewTransition = original;
           return {
@@ -2545,9 +2556,13 @@ def test_browse_operations_keep_light_background_without_root_transition(
               };
               return {
                 calls: window.__viewTransitionCalls,
-                htmlBackground: getComputedStyle(document.documentElement).backgroundColor,
+                htmlBackground: getComputedStyle(
+                  document.documentElement
+                ).backgroundColor,
                 bodyBackground: getComputedStyle(document.body).backgroundColor,
-                blackOverlay: [...document.body.querySelectorAll('*')].some(coversViewport),
+                blackOverlay: [...document.body.querySelectorAll('*')].some(
+                  coversViewport
+                ),
               };
             }"""
         )

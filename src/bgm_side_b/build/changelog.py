@@ -95,6 +95,7 @@ class ChangelogMilestone:
     """One ``major.minor`` window and its concrete releases."""
 
     label: str
+    date: str
     releases: tuple[ChangelogRelease, ...]
 
     @property
@@ -161,9 +162,20 @@ def group_releases_for_settings(
             if release_version_tuple(release.version) <= current
             and (previous is None or release_version_tuple(release.version) > previous)
         )
+        anchor = next(
+            release
+            for release in milestone_releases
+            if release.version == milestone.version
+        )
+        if anchor.date is None:
+            raise ChangelogError(
+                f"milestone {current[0]}.{current[1]} requires a dated "
+                f"{anchor.version} release"
+            )
         groups.append(
             ChangelogMilestone(
                 f"{current[0]}.{current[1]}",
+                anchor.date,
                 releases,
             )
         )
@@ -244,9 +256,14 @@ def parse_changelog(text: str) -> ChangelogDocument:
             version = match.group("version")
             if any(release.version == version for release in releases):
                 raise ChangelogError(f"duplicate release heading: {heading}")
+            date = match.group("date")
+            if date is None and release_version_tuple(version) >= (0, 6, 1):
+                raise ChangelogError(
+                    f"release {version} requires a YYYY-MM-DD date"
+                )
             current_heading = heading
             current_version = version
-            current_date = match.group("date")
+            current_date = date
             continue
         if current_heading is None:
             if stripped:

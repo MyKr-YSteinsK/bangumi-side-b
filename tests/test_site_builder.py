@@ -398,7 +398,7 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
 
 - current
 
-## 0.1.0
+## 0.1.0 - 2026-07-29
 
 - history
 """,
@@ -410,12 +410,13 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
         "utf-8"
     )
     assert "06 / CHANGELOG" in page
-    assert "当前程序版本</dt><dd>0.6.5" in page
+    assert "当前程序版本</dt><dd>0.6.6" in page
     assert 'data-changelog-release="0.6.3"' in page
     assert '<details class="settings-changelog__release"' not in page
     assert 'data-changelog-release="0.6.2"' in page
     assert 'data-changelog-milestone="0.6"' in page
     assert 'data-changelog-milestone="0.6" open' not in page
+    assert '<time datetime="2026-08-22">2026-08-22</time>' in page
     assert 'data-changelog-release="0.3.0"' in page
     child = page.split('data-changelog-milestone="0.6"', 1)[1]
     assert 'data-changelog-release="0.6.0"' in child

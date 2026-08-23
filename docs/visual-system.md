@@ -67,12 +67,18 @@ Settings 按 01 / 离线季度、02 / 下载任务、03 / 批量下载、04 / �
 程序版本默认展开，较早版本默认折叠；长条目可换行，内容直接写入静态 HTML，手机宽度不新增
 横向滚动。版本号来自源码单一事实源，缺少对应 release 时只显示版本号，不伪造 release。
 
-移动端 Quarter / Archive 的 Grid 采用两列、2:3 封面优先卡片，元信息分别使用 `MM-DD` / `YY-MM-DD` 紧凑日期并保持单行；List 采用保留小封面的高密度行，继续显示完整日期。季度页连续展示结果，Archive 保留自己的分页。详情在移动端是覆盖视口的全屏层，打开即冻结背景文档和已布局的 master list，顶部为安全区内的紧凑返回箭头，筛选是带草稿状态和安全区内边距的 bottom sheet；短详情不制造无效滚动，长详情只滚动自身，返回会恢复列表位置。standalone PWA 左缘右滑只在水平拖动确认后移动完整 foreground detail surface，背景列表保持冻结，起始小距离、取消或 commit 都不会切换底层 visibility 或重复触发 history。海报 Lightbox 使用透明 dialog、页面级半透明 backdrop、contain 原图和安全区内 44px 关闭按钮。`viewport-fit=cover` 配合统一 safe-area 变量保护 header、详情、sheet、toast、Lightbox 和底部操作，`prefers-reduced-motion` 会把回弹和非必要过渡压缩到近乎即时。
+移动端 Quarter / Archive 的 Grid 采用两列、2:3 封面优先卡片，元信息分别使用 `MM-DD` / `YY-MM-DD` 紧凑日期并保持单行；List 采用保留小封面的高密度行，继续显示完整日期。季度页连续展示结果，Archive 保留自己的分页。详情在移动端是覆盖视口的全屏层，打开即冻结背景文档和已布局的 master list，顶部为安全区内的紧凑返回箭头，筛选是带草稿状态和安全区内边距的 bottom sheet；短详情不制造无效滚动，长详情只滚动自身，返回会恢复列表位置。standalone PWA 左缘右滑只在水平拖动确认后移动完整 foreground detail surface，背景列表保持冻结，起始小距离、取消或 commit 都不会切换底层 visibility 或重复触发 history。海报 Lightbox 使用透明 dialog、页面级半透明 backdrop 和 contain 原图，不提供可见关闭按钮，点击遮罩或按 Escape 退出，点击海报本身不会关闭。`viewport-fit=cover` 配合统一 safe-area 变量保护 header、详情、sheet、toast、Lightbox 和底部操作，`prefers-reduced-motion` 会把回弹和非必要过渡压缩到近乎即时。
 
 页脚说明资料归属及“无运行时远程请求”。每个可交互元素需要可见的 `:focus-visible`；无数据、缺图、无评分、长标题等状态都有稳定的文档流位置，不用伪造事实填补。
 
 ## 动效与无障碍
 
 普通交互使用 `--motion-fast` 或 `--motion-standard` 自然减速过渡：卡片 hover 最多上移 2px，边线变色而非厚阴影。抽屉、菜单和更新提示才使用浮层阴影。无持续动画、3D 翻转或视差。`prefers-reduced-motion: reduce` 把位移、缩放和非必要过渡压缩到近乎即时。
+
+## 浏览连续性
+
+Quarter 与 Archive 的 TV 结果使用同一条真实 DOM 序列，排序按当前 pipeline 结果移动已有作品节点，不重新创建重复卡片。排序浮层使用固定定位锚定触发按钮，打开和关闭不改变结果列表几何位置；Grid / List 只改变展示层，作品节点身份基于 subject、季度和 appearance 保持稳定。
+
+页面在支持 CSS View Transitions 的同源浏览器中为站点头部、季度导航和结果区域提供渐进式过渡；运行时只使用一个很薄的 `withBrowseTransition(reason, mutate)` 包装器，API 不可用时回退到同步 DOM 更新。新季度首屏最多 10 项使用一次性的 190ms 渐入与 22ms 间隔，排序和筛选不使用长 stagger。`prefers-reduced-motion: reduce` 会跳过 View Transition 和 stagger，但不跳过状态更新。
 
 CSS 不加载远程字体或 CDN。运行时 JavaScript 只处理页面交互、PWA 缓存与下载，并请求构建生成的同源 JSON 和静态资源；不能读取 SQLite、访问 Bangumi 或其它远程业务 API、载入远程图片或埋点。

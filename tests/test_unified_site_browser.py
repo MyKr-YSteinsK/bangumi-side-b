@@ -349,6 +349,69 @@ def test_grid_list_view_switch_persists_and_preserves_detail(
 
 
 @pytest.mark.parametrize("mode", ["list", "grid"])
+def test_browse_continuity_keeps_mode_across_sort_filter_quarter_and_back(
+    chromium: BrowserContext,
+    site_server_mixed: str,
+    mode: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    page.add_init_script(
+        "if (!sessionStorage.getItem('bsb-test-view-reset')) { "
+        "localStorage.removeItem('bsb-browse-view-mode'); "
+        "sessionStorage.setItem('bsb-test-view-reset', '1'); }"
+    )
+    _open_quarter(page, site_server_mixed, (390, 844))
+    root = page.locator('[data-page="quarter"][data-archive-app]')
+    if mode == "list":
+        page.locator('[data-view-mode="list"]').click()
+    assert root.get_attribute("data-view-mode") == mode
+
+    page.locator("[data-quarter-layout] .master-pane").evaluate(
+        "node => { node.style.minHeight = '1800px'; }"
+    )
+    page.locator("[data-sort-toggle]").scroll_into_view_if_needed()
+    saved_scroll = page.evaluate("window.scrollY")
+    page.locator("[data-sort-toggle]").click()
+    page.get_by_role("menuitemradio", name="评分：低到高").click()
+    assert root.get_attribute("data-view-mode") == mode
+    assert abs(page.evaluate("window.scrollY") - saved_scroll) <= 1
+    columns = page.locator('[data-list-section="tv"] .result-list').evaluate(
+        "node => getComputedStyle(node).gridTemplateColumns"
+    )
+    assert len(columns.split()) == (1 if mode == "list" else 2)
+
+    page.locator("[data-filter-toggle]").click()
+    page.get_by_label("续播").check()
+    page.get_by_role("button", name="返回结果").click()
+    assert page.locator(
+        '[data-list-section="tv"] .subject-row:not([hidden])'
+    ).count() == 1
+    page.locator("[data-filter-toggle]").click()
+    page.locator("[data-filter-workspace-clear]").click()
+    page.get_by_role("button", name="返回结果").click()
+    assert page.locator(
+        '[data-list-section="tv"] .subject-row:not([hidden])'
+    ).count() == 2
+
+    page.locator("[data-quarter-prev]").click()
+    page.wait_for_url("**/2026-04/index.html")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes(' / ')"
+    )
+    next_root = page.locator('[data-page="quarter"][data-archive-app]')
+    assert next_root.get_attribute("data-view-mode") == mode
+    page.go_back()
+    page.wait_for_url("**/2026-07/index.html")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes(' / ')"
+    )
+    assert page.locator('[data-page="quarter"][data-archive-app]').get_attribute(
+        "data-view-mode"
+    ) == mode
+
+
+@pytest.mark.parametrize("mode", ["list", "grid"])
 def test_saved_view_mode_applies_before_delayed_app_bundle(
     chromium: BrowserContext,
     site_server: str,

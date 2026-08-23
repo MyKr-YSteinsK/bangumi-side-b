@@ -12,6 +12,7 @@
     "rating-count-desc": "评分人数：多到少",
     "rating-count-asc": "评分人数：少到多",
   });
+  let activeBrowseTransition = null;
 
   function normalize(value) {
     return String(value ?? "")
@@ -241,25 +242,42 @@
   function withBrowseTransition(reason, mutate) {
     void reason;
     if (typeof mutate !== "function") return undefined;
-    if (typeof document.startViewTransition === "function" && !prefersReducedMotion()) {
-      let mutated = false;
-      const run = () => {
-        if (mutated) return undefined;
-        mutated = true;
-        return mutate();
-      };
-      const transition = document.startViewTransition(() => run());
-      // The native update callback is normally deferred by one frame.  Run
-      // the state mutation now as well so controls retain their synchronous
-      // semantics; the guarded callback still supplies the VT update phase.
-      run();
-      // View-transition pseudo-elements can otherwise capture pointer input
-      // for the full animation window in some embedded/headless Chromium
-      // builds.  The row-level CSS fallback keeps the interaction responsive.
-      transition.skipTransition?.();
-      return transition;
+    let mutated = false;
+    const runMutation = () => {
+      if (mutated) return undefined;
+      mutated = true;
+      return mutate();
+    };
+    if (typeof document.startViewTransition !== "function" || prefersReducedMotion()) {
+      return runMutation();
     }
-    return mutate();
+    if (activeBrowseTransition) {
+      try {
+        activeBrowseTransition.skipTransition?.();
+      } finally {
+        activeBrowseTransition = null;
+      }
+    }
+    let transition;
+    try {
+      transition = document.startViewTransition(() => runMutation());
+    } catch (error) {
+      if (mutated) throw error;
+      // An API-level failure happens before the update callback.  The
+      // mutation remains the authoritative synchronous fallback.
+      return runMutation();
+    }
+    if (!transition) {
+      return mutated ? transition : runMutation();
+    }
+    activeBrowseTransition = transition;
+    const clearActive = () => {
+      if (activeBrowseTransition === transition) activeBrowseTransition = null;
+    };
+    if (transition.finished && typeof transition.finished.then === "function") {
+      transition.finished.then(clearActive, clearActive);
+    }
+    return transition;
   }
 
   function subjectTransitionName(record) {

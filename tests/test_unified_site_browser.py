@@ -69,6 +69,10 @@ class BrowserHarness:
 
     def new_page(self, *, viewport: dict[str, int] | None = None) -> Page:
         page = self.context.new_page()
+        # Keep interaction assertions deterministic while native View
+        # Transition tests opt into motion explicitly below.  The production
+        # bundle still follows the browser's actual media preference.
+        page.emulate_media(reduced_motion="reduce")
         if viewport is not None:
             page.set_viewport_size(viewport)
         return page
@@ -528,7 +532,7 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.goto(f"{site_server}/settings/index.html")
     page.wait_for_selector('[data-changelog-release="unreleased"]')
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.locator(".settings-about").get_by_text("0.6.0", exact=True).is_visible()
+    assert page.locator(".settings-about").get_by_text("0.6.1", exact=True).is_visible()
     assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
     assert page.get_by_text("作者", exact=True).is_visible()
     assert page.get_by_text("MyKr", exact=True).is_visible()
@@ -539,7 +543,7 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     assert not page.locator('[data-changelog-release="unreleased"]').evaluate(
         "node => node.open"
     )
-    assert page.locator('[data-changelog-release="0.6.0"]').evaluate(
+    assert page.locator('[data-changelog-release="0.6.1"]').evaluate(
         "node => node.open"
     )
     assert not page.locator('[data-changelog-release="0.2.0"]').evaluate(
@@ -2333,6 +2337,7 @@ def test_browse_transition_helper_has_fallback_identity_and_stagger_limit(
     page = chromium.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8000)
     _open_quarter(page, site_server_many, (390, 844))
+    page.emulate_media(reduced_motion="no-preference")
     identity = page.locator('[data-subject-id="101"]').first.evaluate(
         "node => node.style.viewTransitionName"
     )
@@ -2402,6 +2407,77 @@ def test_browse_transition_helper_has_fallback_identity_and_stagger_limit(
         "mutated": 1,
         "resultIsUndefined": True,
         "entering": 0,
+    }
+
+
+def test_browse_transition_helper_uses_native_update_and_recovers_from_errors(
+    chromium: BrowserContext,
+    site_server_many: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    _open_quarter(page, site_server_many, (390, 844))
+    page.emulate_media(reduced_motion="no-preference")
+    result = page.evaluate(
+        """() => {
+          const original = document.startViewTransition;
+          const callbacks = [];
+          const transitions = [];
+          document.startViewTransition = (callback) => {
+            const transition = {
+              skips: 0,
+              skipTransition() { this.skips += 1; },
+              finished: {
+                then(resolve) { transition.settle = resolve; },
+              },
+              settle() {},
+            };
+            callbacks.push(callback);
+            transitions.push(transition);
+            return transition;
+          };
+          let mutations = 0;
+          const first = window.BsbArchive.withBrowseTransition(
+            'normal', () => { mutations += 1; }
+          );
+          const beforeCallback = mutations;
+          const normalSkips = transitions[0].skips;
+          callbacks[0]();
+          callbacks[0]();
+          const second = window.BsbArchive.withBrowseTransition(
+            'rapid-reentry', () => { mutations += 1; }
+          );
+          callbacks[1]();
+          callbacks[1]();
+          transitions[1].settle();
+          document.startViewTransition = () => { throw new Error('unsupported'); };
+          let fallbackMutations = 0;
+          const fallback = window.BsbArchive.withBrowseTransition(
+            'api-error', () => { fallbackMutations += 1; }
+          );
+          document.startViewTransition = original;
+          return {
+            beforeCallback,
+            normalSkips,
+            firstSkips: transitions[0].skips,
+            secondSkips: transitions[1].skips,
+            mutations,
+            fallbackMutations,
+            firstCreated: first === transitions[0],
+            secondCreated: second === transitions[1],
+            fallbackIsUndefined: fallback === undefined,
+          };
+        }"""
+    )
+    assert result == {
+        "beforeCallback": 0,
+        "normalSkips": 0,
+        "firstSkips": 1,
+        "secondSkips": 0,
+        "mutations": 2,
+        "fallbackMutations": 1,
+        "firstCreated": True,
+        "secondCreated": True,
+        "fallbackIsUndefined": True,
     }
 
 

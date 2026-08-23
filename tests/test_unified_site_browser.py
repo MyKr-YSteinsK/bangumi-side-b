@@ -245,11 +245,13 @@ def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
     page.wait_for_function(
         """() => {
           const menu = document.querySelector("[data-mobile-menu]");
-          return menu
-            && menu.dataset.menuOpen === "false"
-            && !menu.matches(":popover-open");
+          if (!menu) return true;
+          return menu.dataset.menuMode === "popover"
+            ? !menu.matches(":popover-open")
+            : menu.dataset.menuOpen === "false";
         }"""
     )
+    page.locator("[data-mobile-menu]").wait_for(state="hidden")
     assert not page.locator("[data-mobile-menu]").is_visible()
     page.locator("[data-mobile-menu-toggle]").click()
     page.keyboard.press("Escape")

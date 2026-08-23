@@ -225,6 +225,9 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert 'data-quarter-option="2026-07"' in july_html
     assert 'data-quarter-option="2026-01"' in july_html
     assert 'data-mobile-menu-toggle' in july_html
+    assert 'data-mobile-menu ' in july_html
+    assert 'data-menu-open="false"' in july_html
+    assert 'popover="auto"' in july_html
     assert 'data-mobile-quarter-offline' in july_html
     assert 'data-quarter-offline' not in july_html
     assert 'viewport-fit=cover' in july_html
@@ -405,7 +408,7 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
         "utf-8"
     )
     assert "06 / CHANGELOG" in page
-    assert "当前程序版本</dt><dd>0.6.3" in page
+    assert "当前程序版本</dt><dd>0.6.4" in page
     assert 'data-changelog-release="0.6.3"' in page
     assert '<details class="settings-changelog__release"' not in page
     assert 'data-changelog-release="0.6.2"' in page

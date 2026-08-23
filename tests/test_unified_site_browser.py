@@ -205,6 +205,63 @@ def test_quarter_tv_appearances_share_one_list_and_static_navigation(
 
 
 @pytest.mark.parametrize("viewport", [(393, 852), (390, 844), (360, 800), (430, 932)])
+def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
+    chromium: BrowserContext,
+    site_server_mixed: str,
+    viewport: tuple[int, int],
+) -> None:
+    page = chromium.new_page(viewport={"width": viewport[0], "height": viewport[1]})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server_mixed, viewport)
+
+    page.locator("[data-mobile-menu-toggle]").click()
+    assert page.locator("[data-mobile-menu]").is_visible()
+    overlay = page.locator("[data-mobile-menu]").evaluate(
+        """menu => {
+          const rect = menu.getBoundingClientRect();
+          const x = Math.round(rect.left + rect.width / 2);
+          const y = Math.round(rect.top + rect.height / 2);
+          const hit = document.elementFromPoint(x, y);
+          const style = getComputedStyle(menu);
+          return {
+            mode: menu.dataset.menuMode,
+            open: menu.dataset.menuOpen,
+            position: style.position,
+            background: style.backgroundColor,
+            withinViewport: rect.left >= 0 && rect.right <= innerWidth
+              && rect.top >= 0 && rect.bottom <= innerHeight,
+            hitMenu: hit === menu || menu.contains(hit),
+          };
+        }"""
+    )
+    assert overlay["mode"] in {"popover", "fallback"}
+    assert overlay["open"] == "true"
+    assert overlay["position"] == "fixed"
+    assert overlay["background"] not in {"transparent", "rgba(0, 0, 0, 0)"}
+    assert overlay["withinViewport"]
+    assert overlay["hitMenu"]
+
+    page.mouse.click(2, 2)
+    assert not page.locator("[data-mobile-menu]").is_visible()
+    page.locator("[data-mobile-menu-toggle]").click()
+    page.keyboard.press("Escape")
+    assert not page.locator("[data-mobile-menu]").is_visible()
+    assert page.locator("[data-mobile-menu-toggle]").get_attribute("aria-expanded") == "false"
+
+    page.locator("[data-sort-toggle]").click()
+    assert page.locator("[data-sort-popover]").is_visible()
+    page.locator("[data-mobile-menu-toggle]").click()
+    assert page.locator("[data-mobile-menu]").is_visible()
+    assert not page.locator("[data-sort-popover]").is_visible()
+
+    page.locator("[data-quarter-selector]").click()
+    assert page.locator("[data-quarter-sheet]").is_visible()
+    page.locator("[data-mobile-menu-toggle]").click()
+    assert page.locator("[data-mobile-menu]").is_visible()
+    assert not page.locator("[data-quarter-sheet]").is_visible()
+
+
+@pytest.mark.parametrize("viewport", [(393, 852), (390, 844), (360, 800), (430, 932)])
 def test_mobile_quarter_is_cover_first_and_continuous(
     chromium: BrowserContext,
     site_server_many: str,

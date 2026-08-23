@@ -635,26 +635,117 @@
   const menu = document.querySelector("[data-mobile-menu]");
   const menuToggle = document.querySelector("[data-mobile-menu-toggle]");
   if (menu && menuToggle) {
-    const closeMenu = (restoreFocus = false) => {
-      menu.hidden = true;
-      menuToggle.setAttribute("aria-expanded", "false");
-      if (restoreFocus) menuToggle.focus();
+    let useNativePopover = typeof menu.showPopover === "function"
+      && typeof menu.hidePopover === "function";
+    let restoreFocusOnClose = false;
+    menu.dataset.menuMode = useNativePopover ? "popover" : "fallback";
+
+    const isOpen = () => useNativePopover
+      ? menu.matches(":popover-open")
+      : menu.dataset.menuOpen === "true";
+    const setOpenState = (open) => {
+      menu.dataset.menuOpen = String(open);
+      menuToggle.setAttribute("aria-expanded", String(open));
     };
+    const clearMenuPosition = () => {
+      for (const property of ["top", "right", "max-width", "max-height"]) {
+        menu.style.removeProperty(property);
+      }
+    };
+    const positionMenu = () => {
+      if (!isOpen()) return;
+      const anchor = menuToggle.getBoundingClientRect();
+      const viewportPadding = 8;
+      const right = Math.max(viewportPadding, window.innerWidth - anchor.right);
+      const maxWidth = Math.max(0, window.innerWidth - viewportPadding * 2);
+      const maxHeight = Math.max(0, window.innerHeight - viewportPadding * 2);
+      menu.style.right = `${Math.round(right)}px`;
+      menu.style.maxWidth = `${Math.round(maxWidth)}px`;
+      menu.style.maxHeight = `${Math.round(maxHeight)}px`;
+      const height = menu.getBoundingClientRect().height;
+      const below = anchor.bottom + 8;
+      const top = below + height <= window.innerHeight - viewportPadding
+        ? below
+        : Math.max(viewportPadding, anchor.top - height - 8);
+      menu.style.top = `${Math.round(top)}px`;
+    };
+    const closeCompetingSurfaces = () => {
+      document.dispatchEvent(new Event("bsb-mobile-menu-open"));
+      document.querySelectorAll('[data-filter-toggle][aria-expanded="true"]')
+        .forEach((button) => button.click());
+    };
+    const closeMenu = (restoreFocus = false) => {
+      restoreFocusOnClose = restoreFocus;
+      if (useNativePopover && isOpen()) {
+        try {
+          menu.hidePopover();
+          setOpenState(false);
+          clearMenuPosition();
+          if (restoreFocus) menuToggle.focus();
+        } catch {
+          useNativePopover = false;
+          menu.dataset.menuMode = "fallback";
+          setOpenState(false);
+          clearMenuPosition();
+          if (restoreFocus) menuToggle.focus();
+        }
+      } else {
+        setOpenState(false);
+        clearMenuPosition();
+        if (restoreFocus) menuToggle.focus();
+      }
+    };
+    const openMenu = () => {
+      closeCompetingSurfaces();
+      if (useNativePopover) {
+        try {
+          menu.showPopover();
+        } catch {
+          useNativePopover = false;
+          menu.dataset.menuMode = "fallback";
+          setOpenState(true);
+        }
+      } else {
+        setOpenState(true);
+      }
+      setOpenState(true);
+      positionMenu();
+      requestAnimationFrame(positionMenu);
+      menu.querySelector("a, button")?.focus();
+    };
+    menu.addEventListener("toggle", (event) => {
+      const open = event.newState === "open";
+      setOpenState(open);
+      if (open) {
+        positionMenu();
+        requestAnimationFrame(positionMenu);
+      } else {
+        clearMenuPosition();
+        if (restoreFocusOnClose) menuToggle.focus();
+        restoreFocusOnClose = false;
+      }
+    });
+    menuToggle.addEventListener("pointerdown", (event) => event.stopPropagation());
     menuToggle.addEventListener("click", () => {
-      const opening = menu.hidden;
-      menu.hidden = !opening;
-      menuToggle.setAttribute("aria-expanded", String(opening));
-      if (opening) menu.querySelector("a, button")?.focus();
+      if (isOpen()) closeMenu();
+      else openMenu();
     });
     menu.addEventListener("click", (event) => {
       if (event.target instanceof HTMLAnchorElement) closeMenu();
     });
+    document.addEventListener("pointerdown", (event) => {
+      if (isOpen() && !menu.contains(event.target) && event.target !== menuToggle) {
+        closeMenu();
+      }
+    });
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !menu.hidden) {
+      if (event.key === "Escape" && isOpen()) {
         event.preventDefault();
         closeMenu(true);
       }
     });
+    window.addEventListener("resize", positionMenu, { passive: true });
+    window.addEventListener("scroll", positionMenu, { passive: true });
   }
 
   const quarterToggle = document.querySelector("[data-quarter-selector]");
@@ -672,6 +763,7 @@
       if (opening) document.dispatchEvent(new Event("bsb-quarter-sheet-open"));
       if (opening) quarterSheet.querySelector("a, button")?.focus();
     });
+    document.addEventListener("bsb-mobile-menu-open", () => closeSheet());
     quarterSheet.querySelector("[data-quarter-sheet-close]")?.addEventListener(
       "click",
       () => closeSheet(true),
@@ -1405,6 +1497,7 @@
       }
     });
     document.addEventListener("bsb-quarter-sheet-open", () => closeSortPopover());
+    document.addEventListener("bsb-mobile-menu-open", () => closeSortPopover());
     window.addEventListener("scroll", () => closeSortPopover(), { passive: true });
     quarterRoot.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
       closeSortPopover();
@@ -2574,6 +2667,7 @@
       }
     });
     document.addEventListener("bsb-quarter-sheet-open", () => closeSortPopover());
+    document.addEventListener("bsb-mobile-menu-open", () => closeSortPopover());
     window.addEventListener("scroll", () => closeSortPopover(), { passive: true });
     root.querySelector("[data-clear-all]")?.addEventListener("click", () => archive.withBrowseTransition("clear-filter", () => { state.query = ""; state.filterOptionQuery = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); }));
     root.querySelectorAll("[data-scope-choice]").forEach((button) => button.addEventListener("click", () => {

@@ -241,6 +241,12 @@ def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
     assert overlay["withinViewport"]
     assert overlay["hitMenu"]
 
+    # Allow native top-layer hit testing to settle before the real outside click.
+    page.wait_for_function(
+        """() => new Promise(resolve => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        })"""
+    )
     page.mouse.click(2, 2)
     page.wait_for_function(
         """() => {

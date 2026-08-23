@@ -23,7 +23,7 @@ Each Phase must:
 1. finish independently;
 2. run focused validation;
 3. review `git diff` and `git status`;
-4. create one focused commit;
+4. Each implementation Phase with tracked changes must create one focused commit;
 5. continue without waiting for routine confirmation.
 
 Before each Phase commit, record the commit's `Version impact` as exactly one of

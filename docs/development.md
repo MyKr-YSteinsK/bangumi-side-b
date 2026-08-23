@@ -60,8 +60,11 @@ bgmb serve --open
 也不发布。成功 bind 后 CLI 打印 loopback URL 和 Ctrl+C 退出提示；默认不打开浏览器，
 只有 `--open` 才请求系统默认浏览器，启动失败仅报告 warning。release prepare 属于后续发布生命周期。
 
-Settings 的 05 / CHANGELOG 是 build-time 静态 HTML：builder 读取仓库 `CHANGELOG.md` 与
+Settings 的 06 / CHANGELOG 是 build-time 静态 HTML：builder 读取仓库 `CHANGELOG.md` 与
 源码单一版本号，严格 escape 文本后写入 `settings/index.html`；运行时不 fetch changelog。
+Settings 的 milestone `x.y` 日期严格来自对应的 concrete `x.y.0` release 日期，不从 child patch、
+Pages 发布批次或构建时间推导；`0.6.1` 及之后的 version-bearing CHANGELOG 条目必须有明确的
+`YYYY-MM-DD` 日期，历史 anchor 也必须能从仓库证据恢复，否则 build 直接报告错误。
 `bgmb audit` 的 `数据库总作品` 是全库 unique subject 数，季度条目统计按
 TV premiere / TV continuing / Movie premiere appearance 分解。
 
@@ -75,6 +78,11 @@ viewport 并在面板内部滚动；767px 及以下隐藏 master context rail，
 单栏全宽工作区。筛选面板展示上下文计数、可换行 chip、活动筛选、清除全部和当前
 结果数；返回结果会保留搜索、筛选、排序、分页和可恢复的列表滚动位置。响应式验收
 至少覆盖 1199、1024、900、768、767、390 和 360 宽度，并检查无横向溢出。
+
+移动主菜单优先使用 native Popover top layer；不支持时使用 fixed fallback，并以明确的 nav
+overlay layer 高于普通 control/sheet、低于 detail。排序、季度和筛选浮层与主菜单互斥。
+浏览结果动效只作用于可见作品节点，不启用 root 或跨文档 View Transition；所有操作都必须在
+reduced-motion 与快速重复操作下保持最终状态确定。
 
 同步还会在基础 Anime、日本、TV/MOVIE 范围确认后检查两条自动冷门规则：A）可靠首播日期超过 7 天且
 评分人数少于 30；B）明确 allowlist 中的信息不足型 REVIEW 立即自动排除，与季度成熟度和评分人数无关。

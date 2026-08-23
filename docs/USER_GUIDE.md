@@ -112,8 +112,10 @@ bgmb serve --open
 `serve` 只提供已有 `dist/site`，不读 SQLite、不 build、不同步也不发布。
 
 Settings 页面包含直接构建进 `settings/index.html` 的 05 / CHANGELOG：显示当前程序版本、
-尚未发布内容和当前版本 release；历史 release 默认折叠。它离线可读，不会运行时请求 GitHub
-或读取外部 CHANGELOG 文件。
+最新里程碑之前尚未收口的 patch 会以 standalone release 直接显示；已经完成的
+`major.minor.0` 版本会作为默认收起的 milestone group，展开后直接显示该开发窗口内的
+concrete child releases。页面只使用一层折叠，child release 不能再单独折叠。日志离线可读，
+不会运行时请求 GitHub 或读取外部 CHANGELOG 文件。
 
 Settings 的用户入口按“离线季度、下载任务、批量下载、存储与应用、高级诊断、更新日志”排列。
 下载任务在页面后台以非阻塞方式运行；进度只更新任务和必要的季度状态，不会重建整个 Settings、关闭打开的选择器或抢走焦点。普通状态显示“未下载、下载中、已暂停、等待网络、下载未完成、已下载、有更新”，Service Worker 和 `INCOMPLETE` 等技术状态只在高级诊断中显示。

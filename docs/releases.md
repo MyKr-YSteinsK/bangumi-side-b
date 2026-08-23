@@ -1,5 +1,19 @@
 # Release 元数据
 
+## 应用程序版本与 Pages 批次
+
+应用程序版本（例如 `0.6.3`）来自源码 Git 历史和
+`src/bgm_side_b/_version.py`，并在 version-bearing commit 中与 concrete
+`CHANGELOG.md` 条目一起变化。它是 Settings 和正式源码当前程序版本的语义。
+
+Pages 发布批次版本（例如 `release: YYYY.MM.DD.N`）只来自远端 `gh-pages`
+提交消息，用于标识一次站点 publication。它不是应用程序版本，也不参与运行时
+PWA 或 build identity。
+
+一次 Pages publish 可以把一次 Plan 中多个已 push 的应用版本一起发布；正式站点
+只显示最终 source 的当前程序版本。普通 source push 不会自动发布 Pages，只有明确
+执行 `bgmb release publish` 才会改变 `gh-pages`。
+
 正式候选是当前经过校验的 `dist/site` 文件树。候选 identity 的 schema、source commit、
 artifact count、total bytes 和 content hash 都来自实际文件；content hash 排除 workspace、
 报告、时间戳和绝对路径，只使用排序后的相对路径、文件 SHA-256 与大小。

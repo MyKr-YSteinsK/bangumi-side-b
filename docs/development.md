@@ -12,18 +12,21 @@ python -m pip install -e ".[dev]"
 程序版本直接来自源码。普通代码修改不需要为了版本读取而重新执行
 editable install；安装包元数据只会在 `bgmb doctor` 中作为环境提示显示。
 
-## 版本决策与 Release impact
+## Version impact 与提交规则
 
-每份 Plan 或 bugfix 的完成报告都要明确写出 `Release impact`、推荐版本和理由：
+每个 Phase commit 前都要记录一次 `Version impact`：`none`、`patch`、`minor`
+或 `major`，并按实际用户可见影响选择，而不是按 Plan 数量或发布动作机械递增。
 
-- `none`：纯测试、内部重构、CI 调整或不影响用户行为的文档维护；版本保持不变，
-  不 publish。
-- `version-only`：极小的用户可见修复（例如局部文案或显示错误）；提升 patch，
-  更新 CHANGELOG 与 Settings，但不自动执行 `release publish`。
-- `full-release / patch`：数据正确性、同步、季度归属、PWA 离线或页面可用性等
-  核心修复；提升 patch，并在 Plan 明确包含发布阶段或用户明确授权后正式 publish。
-- `full-release / minor`：明显的新用户功能或一批累计的重要行为变化；提升 minor，
-  同样只在明确授权的发布流程中 publish。
+- `none`：纯测试、内部重构、CI 或不影响用户行为的文档维护；不改版本号和 CHANGELOG release。
+- `patch`：局部 bugfix、正确性修复、可靠性提升或小型用户可见改善。
+- `minor`：完整的新能力或明显改变主要使用方式的产品里程碑。
+- `major`：产品定位、核心兼容契约或底层架构发生大范围不兼容变化。
+
+`patch`、`minor`、`major` 都是 version-bearing commit，必须把实际代码变更、
+`src/bgm_side_b/_version.py`、对应 concrete `CHANGELOG.md` 条目和必要测试放在同一
+commit。纯测试和文档 commit 不升版本。一个 Plan 可以形成多个应用版本，但只在
+Plan 完成并通过 integrated validation 后统一普通 push；不会因为准备 publish 再生成
+额外版本。
 
 普通开发提交不得顺手发布 Pages。只有完整 Plan 的集成验证、普通分支 push、CI
 精确 SHA 校验和 `release prepare` 全部通过后，才能按明确授权执行

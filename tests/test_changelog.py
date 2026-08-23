@@ -96,6 +96,13 @@ def test_changelog_rejects_unreleased_sections() -> None:
         parse_changelog("# Changelog\n\n## 尚未发布\n\n- item\n")
 
 
+def test_changelog_rejects_duplicate_concrete_versions() -> None:
+    with pytest.raises(ChangelogError, match="duplicate release heading"):
+        parse_changelog(
+            "# Changelog\n\n## 0.6.0\n\n- first\n\n## 0.6.0\n\n- duplicate\n"
+        )
+
+
 def test_settings_grouping_keeps_new_patches_standalone_until_next_milestone() -> None:
     document = parse_changelog(
         """# Changelog

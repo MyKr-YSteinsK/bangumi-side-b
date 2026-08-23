@@ -412,6 +412,9 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
     assert 'data-changelog-milestone="0.6"' in page
     assert 'data-changelog-milestone="0.6" open' not in page
     assert 'data-changelog-release="0.3.0"' in page
+    child = page.split('data-changelog-milestone="0.6"', 1)[1]
+    assert 'data-changelog-release="0.6.0"' in child
+    assert '<details class="settings-changelog__release"' not in child
     assert 'data-changelog-release="0.1.0"' in page
     assert 'data-changelog-release="0.1.0" open' not in page
     assert "&lt;b&gt;escaped&lt;/b&gt;" in page

@@ -26,6 +26,18 @@ Each Phase must:
 4. create one focused commit;
 5. continue without waiting for routine confirmation.
 
+Before each Phase commit, record the commit's `Version impact` as exactly one of
+`none`, `patch`, `minor`, or `major`. A `patch`, `minor`, or `major` commit is
+version-bearing and must include the product change, `src/bgm_side_b/_version.py`,
+the matching concrete `CHANGELOG.md` release entry, and its required tests in
+the same commit. Pure tests, documentation, CI, or non-user-visible maintenance
+use `none` and do not bump the version.
+
+Version numbers belong to the commit's actual product impact. Do not create a
+mechanical version bump merely because a Plan is ending or a publish is about to
+run. One Plan may contain multiple concrete application versions; push them once
+at the Plan boundary after integrated validation.
+
 Each completed Phase must only create its focused commit; do not push at a Phase boundary.
 
 After the entire Plan is complete and integrated validation passes, Codex must run one ordinary `git push` to the current branch's configured upstream. If push is rejected, authentication fails, a non-fast-forward occurs, or the upstream is abnormal, mark the Plan `BLOCKED` and do not report `PASS`.

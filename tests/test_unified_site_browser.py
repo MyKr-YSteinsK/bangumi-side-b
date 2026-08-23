@@ -2263,6 +2263,85 @@ def test_archive_tv_sort_reuses_rows_without_duplicate_nodes(
     ).get_attribute("data-identity") == "archive-stable"
 
 
+def test_browse_transition_helper_has_fallback_identity_and_stagger_limit(
+    chromium: BrowserContext,
+    site_server_many: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server_many, (390, 844))
+    identity = page.locator('[data-subject-id="101"]').first.evaluate(
+        "node => node.style.viewTransitionName"
+    )
+    assert identity.startswith("subject-101-2026-07-")
+    assert page.locator("header.site-header").evaluate(
+        "node => getComputedStyle(node).viewTransitionName"
+    ) == "site-header"
+    assert page.locator(".quarter-nav").evaluate(
+        "node => getComputedStyle(node).viewTransitionName"
+    ) == "quarter-navigation"
+
+    fallback = page.evaluate(
+        """() => {
+          const original = document.startViewTransition;
+          let mutated = 0;
+          document.startViewTransition = undefined;
+          const result = window.BsbArchive.withBrowseTransition(
+            'fallback', () => { mutated += 1; }
+          );
+          document.startViewTransition = original;
+          document.querySelectorAll('.subject-row').forEach(
+            (row) => row.classList.remove('is-entering')
+          );
+          window.BsbArchive.playEntranceStagger(
+            document.querySelector('[data-page="quarter"]'), 12
+          );
+          return {
+            mutated,
+            resultIsUndefined: result === undefined,
+            entering: document.querySelectorAll('.subject-row.is-entering').length,
+          };
+        }"""
+    )
+    assert fallback == {
+        "mutated": 1,
+        "resultIsUndefined": True,
+        "entering": 10,
+    }
+
+    page.emulate_media(reduced_motion="reduce")
+    reduced = page.evaluate(
+        """() => {
+          const original = document.startViewTransition;
+          let called = 0;
+          let mutated = 0;
+          document.startViewTransition = () => { called += 1; };
+          const result = window.BsbArchive.withBrowseTransition(
+            'reduced', () => { mutated += 1; }
+          );
+          document.startViewTransition = original;
+          document.querySelectorAll('.subject-row').forEach(
+            (row) => row.classList.remove('is-entering')
+          );
+          window.BsbArchive.playEntranceStagger(
+            document.querySelector('[data-page="quarter"]')
+          );
+          return {
+            called,
+            mutated,
+            resultIsUndefined: result === undefined,
+            entering: document.querySelectorAll('.subject-row.is-entering').length,
+          };
+        }"""
+    )
+    assert reduced == {
+        "called": 0,
+        "mutated": 1,
+        "resultIsUndefined": True,
+        "entering": 0,
+    }
+
+
 def test_archive_lazy_loads_and_reuses_selected_quarter_details(
     chromium: BrowserContext,
     site_server: str,

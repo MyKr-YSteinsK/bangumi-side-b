@@ -234,6 +234,57 @@
     popover.style.removeProperty("width");
   }
 
+  function prefersReducedMotion() {
+    return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  }
+
+  function withBrowseTransition(reason, mutate) {
+    void reason;
+    if (typeof mutate !== "function") return undefined;
+    if (typeof document.startViewTransition === "function" && !prefersReducedMotion()) {
+      let mutated = false;
+      const run = () => {
+        if (mutated) return undefined;
+        mutated = true;
+        return mutate();
+      };
+      const transition = document.startViewTransition(() => run());
+      // The native update callback is normally deferred by one frame.  Run
+      // the state mutation now as well so controls retain their synchronous
+      // semantics; the guarded callback still supplies the VT update phase.
+      run();
+      // View-transition pseudo-elements can otherwise capture pointer input
+      // for the full animation window in some embedded/headless Chromium
+      // builds.  The row-level CSS fallback keeps the interaction responsive.
+      transition.skipTransition?.();
+      return transition;
+    }
+    return mutate();
+  }
+
+  function subjectTransitionName(record) {
+    const token = String(record?.key || recordKey(record))
+      .replace(/[^a-zA-Z0-9_-]/g, "-");
+    return `subject-${token}`;
+  }
+
+  function playEntranceStagger(root, limit = 10) {
+    if (!root || prefersReducedMotion()) return;
+    const count = Math.min(Math.max(Number(limit) || 10, 0), 10);
+    [...root.querySelectorAll(".subject-row:not([hidden])")]
+      .slice(0, count)
+      .forEach((row, index) => {
+        row.style.setProperty("--stagger-index", String(index));
+        row.classList.add("is-entering");
+        const animationTarget = row.querySelector(".subject-row__open") || row;
+        animationTarget.addEventListener(
+          "animationend",
+          () => row.classList.remove("is-entering"),
+          { once: true },
+        );
+      });
+  }
+
   function scopeCounts(records) {
     return records.reduce((counts, record) => {
       const media = record.media === "MOVIE" ? "movie" : "tv";
@@ -353,6 +404,10 @@
     applyPipeline,
     positionPopover,
     clearPopoverPosition,
+    prefersReducedMotion,
+    withBrowseTransition,
+    subjectTransitionName,
+    playEntranceStagger,
     scopeCounts,
     selectedRecord,
     appearanceLabel,
@@ -797,6 +852,7 @@
   let pageSizeControl = null;
   let detailHistoryEntry = false;
   let detailGesture = null;
+  let entrancePlayed = false;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -895,6 +951,7 @@
     for (const row of rows) {
       const record = recordByKey.get(row.dataset.recordKey);
       const show = record && visible.has(record.key);
+      if (record) row.style.viewTransitionName = archive.subjectTransitionName(record);
       row.hidden = !show;
       row.classList.toggle("is-selected", Boolean(record && state.selectedOccurrence === record.key));
       const button = row.querySelector("[data-open-subject]");
@@ -1088,10 +1145,12 @@
   }
 
   function closeFilterAndRestoreFocus(applyDraft = false) {
-    if (applyDraft) applyFilterDraft();
-    else discardFilterDraft();
-    closeFilter();
-    render();
+    archive.withBrowseTransition("filter", () => {
+      if (applyDraft) applyFilterDraft();
+      else discardFilterDraft();
+      closeFilter();
+      render();
+    });
     quarterRoot.querySelector("[data-filter-toggle]")?.focus();
     restoreListScroll();
   }
@@ -1228,28 +1287,34 @@
     pageSizeSelect();
     let closeSortPopover = () => {};
     search?.addEventListener("input", () => {
-      state.query = search.value;
-      state.page = 1;
-      clearSelection(true);
-      render();
+      archive.withBrowseTransition("search", () => {
+        state.query = search.value;
+        state.page = 1;
+        clearSelection(true);
+        render();
+      });
     });
     quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
       button.addEventListener("click", () => {
         closeSortPopover();
-        state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv";
-        discardFilterDraft();
-        archive.normalizeFiltersForMedia(state, records);
-        state.page = 1;
-        clearSelection(true);
-        renderFilterPanel();
-        render();
+        archive.withBrowseTransition("media", () => {
+          state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv";
+          discardFilterDraft();
+          archive.normalizeFiltersForMedia(state, records);
+          state.page = 1;
+          clearSelection(true);
+          renderFilterPanel();
+          render();
+        });
       });
     });
     quarterRoot.querySelectorAll("[data-view-mode]").forEach((button) => {
       button.addEventListener("click", () => {
         closeSortPopover();
-        state.viewMode = archive.writeViewMode(button.dataset.viewMode);
-        render();
+        archive.withBrowseTransition("view-mode", () => {
+          state.viewMode = archive.writeViewMode(button.dataset.viewMode);
+          render();
+        });
         button.focus();
       });
     });
@@ -1273,11 +1338,13 @@
         button.textContent = label;
         button.setAttribute("aria-checked", String(state.sort === value));
         button.addEventListener("click", () => {
-          state.sort = value;
-          state.page = 1;
-          closeSortPopover(true);
-          clearSelection(true);
-          render();
+          archive.withBrowseTransition("sort", () => {
+            state.sort = value;
+            state.page = 1;
+            closeSortPopover(true);
+            clearSelection(true);
+            render();
+          });
         });
         return button;
       }));
@@ -1334,13 +1401,15 @@
       render();
     });
     quarterRoot.querySelector("[data-clear-all]")?.addEventListener("click", () => {
-      state.query = "";
-      state.filterOptionQuery = "";
-      state.filters = { sources: [], tags: [], sections: [] };
-      if (search) search.value = "";
-      state.page = 1;
-      clearSelection(true);
-      render();
+      archive.withBrowseTransition("clear-filter", () => {
+        state.query = "";
+        state.filterOptionQuery = "";
+        state.filters = { sources: [], tags: [], sections: [] };
+        if (search) search.value = "";
+        state.page = 1;
+        clearSelection(true);
+        render();
+      });
     });
     rows.forEach((row) => row.querySelector("[data-open-subject]")?.addEventListener("click", () => {
       selectRecord(recordByKey.get(row.dataset.recordKey));
@@ -1509,6 +1578,10 @@
       recordByKey = new Map(records.map((record) => [record.key, record]));
       renderFilterPanel();
       render();
+      if (!entrancePlayed) {
+        entrancePlayed = true;
+        archive.playEntranceStagger(quarterRoot);
+      }
       openHash();
     } catch {
       loadError = true;
@@ -1559,6 +1632,7 @@
   let pageSizeControl = null;
   let detailHistoryEntry = false;
   let detailGesture = null;
+  let entrancePlayed = false;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -1832,6 +1906,7 @@
     score.append(scoreValue, count);
     button.append(score);
     article.append(button);
+    article.style.viewTransitionName = archive.subjectTransitionName(record);
     button.addEventListener("click", () => { void selectRecord(record); });
     return article;
   }
@@ -2098,10 +2173,12 @@
   }
 
   function closeFilterAndRestoreFocus(applyDraft = false) {
-    if (applyDraft) applyFilterDraft();
-    else discardFilterDraft();
-    closeFilter();
-    render();
+    archive.withBrowseTransition("filter", () => {
+      if (applyDraft) applyFilterDraft();
+      else discardFilterDraft();
+      closeFilter();
+      render();
+    });
     root.querySelector("[data-filter-toggle]")?.focus();
     restoreListScroll();
   }
@@ -2397,9 +2474,9 @@
         },
       });
     }
-    selectors.search?.addEventListener("input", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); });
-    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
-    root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); state.viewMode = archive.writeViewMode(button.dataset.viewMode); render(); button.focus(); }));
+    selectors.search?.addEventListener("input", () => archive.withBrowseTransition("search", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); }));
+    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withBrowseTransition("media", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }); }));
+    root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withBrowseTransition("view-mode", () => { state.viewMode = archive.writeViewMode(button.dataset.viewMode); render(); }); button.focus(); }));
     root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
       closeSortPopover();
       if (state.workspaceMode === "filter") closeFilterAndRestoreFocus(false);
@@ -2430,11 +2507,13 @@
         button.textContent = label;
         button.setAttribute("aria-checked", String(value === state.sort));
         button.addEventListener("click", () => {
-          state.sort = value;
-          state.page = 1;
-          closeSortPopover(true);
-          clearSelection(true);
-          render();
+          archive.withBrowseTransition("sort", () => {
+            state.sort = value;
+            state.page = 1;
+            closeSortPopover(true);
+            clearSelection(true);
+            render();
+          });
         });
         return button;
       }));
@@ -2478,7 +2557,7 @@
     });
     document.addEventListener("bsb-quarter-sheet-open", () => closeSortPopover());
     window.addEventListener("scroll", () => closeSortPopover(), { passive: true });
-    root.querySelector("[data-clear-all]")?.addEventListener("click", () => { state.query = ""; state.filterOptionQuery = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); });
+    root.querySelector("[data-clear-all]")?.addEventListener("click", () => archive.withBrowseTransition("clear-filter", () => { state.query = ""; state.filterOptionQuery = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); }));
     root.querySelectorAll("[data-scope-choice]").forEach((button) => button.addEventListener("click", () => {
       closeSortPopover();
       const kind = button.dataset.scopeChoice;
@@ -2546,6 +2625,10 @@
       renderFilterPanel();
       if (selectors.scopeLabel) selectors.scopeLabel.textContent = kind === "range" ? `RANGE / ${normalized.from}—${normalized.to}` : `YEAR / ${normalized}`;
       render();
+      if (!entrancePlayed) {
+        entrancePlayed = true;
+        archive.playEntranceStagger(root);
+      }
       await openHash();
     } catch {
       loadError = true;

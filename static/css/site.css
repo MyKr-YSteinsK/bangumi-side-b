@@ -1155,3 +1155,55 @@ html[data-browse-view-mode="list"] .archive-page[data-view-mode="grid"] .subject
   html[data-browse-view-mode="list"] .quarter-page[data-view-mode="grid"] .subject-row__score small,
   html[data-browse-view-mode="list"] .archive-page[data-view-mode="grid"] .subject-row__score small { font-size: .54rem; }
 }
+
+/* Plan 49: keep supported browsers visually continuous while the runtime
+   helper falls back to the same DOM mutation on browsers without View
+   Transitions.  The named shell regions also let same-origin quarter links
+   share their stable chrome without morphing different subject cards. */
+@view-transition { navigation: auto; }
+::view-transition,
+::view-transition-group(*),
+::view-transition-image-pair(*),
+::view-transition-old(*),
+::view-transition-new(*) { pointer-events: none; }
+.site-header { view-transition-name: site-header; }
+.quarter-nav { view-transition-name: quarter-navigation; }
+::view-transition-group(*) {
+  animation-duration: 240ms;
+  animation-timing-function: var(--ease-out);
+}
+::view-transition-old(root) { animation-duration: 180ms; }
+::view-transition-new(root) { animation-duration: 240ms; }
+
+@keyframes browse-subject-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .subject-row {
+    transition: opacity 180ms var(--ease-out), transform 180ms var(--ease-out);
+  }
+  .subject-row.is-entering > .subject-row__open {
+    animation: browse-subject-enter 190ms var(--ease-out) both;
+    animation-delay: calc(var(--stagger-index, 0) * 22ms);
+  }
+}
+
+.sort-popover,
+.quarter-sheet {
+  transform-origin: top right;
+  transition: opacity 140ms var(--ease-out), transform 140ms var(--ease-out);
+}
+.sort-popover:not([hidden]),
+.quarter-sheet:not([hidden]) { animation: browse-popover-in 140ms var(--ease-out) both; }
+
+@keyframes browse-popover-in {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sort-popover,
+  .quarter-sheet { animation: none !important; transition: none !important; }
+}

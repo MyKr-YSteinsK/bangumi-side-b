@@ -235,6 +235,8 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert 'aria-label="结果视图"' in july_html
     assert 'data-view-mode="grid"' in archive_html
     assert 'aria-label="结果视图"' in archive_html
+    css_files = list((site / "assets").glob("app.css"))
+    assert css_files and "@view-transition" not in css_files[0].read_text("utf-8")
     assert [path.name for path in (site / "covers").glob("*.webp")] == [
         "101.webp"
     ]
@@ -408,7 +410,7 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
         "utf-8"
     )
     assert "06 / CHANGELOG" in page
-    assert "当前程序版本</dt><dd>0.6.4" in page
+    assert "当前程序版本</dt><dd>0.6.5" in page
     assert 'data-changelog-release="0.6.3"' in page
     assert '<details class="settings-changelog__release"' not in page
     assert 'data-changelog-release="0.6.2"' in page

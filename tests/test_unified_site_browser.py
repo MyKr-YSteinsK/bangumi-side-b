@@ -587,9 +587,9 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.on("request", lambda request: requests.append(request.url))
 
     page.goto(f"{site_server}/settings/index.html")
-    page.wait_for_selector('[data-changelog-release="0.6.3"]')
+    page.wait_for_selector('[data-changelog-release="0.6.5"]')
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.locator(".settings-about").get_by_text("0.6.3", exact=True).is_visible()
+    assert page.locator(".settings-about").get_by_text("0.6.5", exact=True).is_visible()
     assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
     assert page.get_by_text("作者", exact=True).is_visible()
     assert page.get_by_text("MyKr", exact=True).is_visible()
@@ -597,7 +597,7 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     assert page.locator(".site-footer").get_by_text(
         "Bangumi Side B · MyKr", exact=True
     ).is_visible()
-    assert page.locator('[data-changelog-release="0.6.3"]').evaluate(
+    assert page.locator('[data-changelog-release="0.6.5"]').evaluate(
         "node => node.tagName"
     ) == "SECTION"
     assert page.locator('[data-changelog-milestone="0.6"]').count() == 1
@@ -2387,7 +2387,7 @@ def test_archive_tv_sort_reuses_rows_without_duplicate_nodes(
     ).get_attribute("data-identity") == "archive-stable"
 
 
-def test_browse_transition_helper_has_fallback_identity_and_stagger_limit(
+def test_result_motion_is_local_and_stagger_remains_bounded(
     chromium: BrowserContext,
     site_server_many: str,
 ) -> None:
@@ -2398,22 +2398,28 @@ def test_browse_transition_helper_has_fallback_identity_and_stagger_limit(
     identity = page.locator('[data-subject-id="101"]').first.evaluate(
         "node => node.style.viewTransitionName"
     )
-    assert identity.startswith("subject-101-2026-07-")
+    assert identity == ""
     assert page.locator("header.site-header").evaluate(
         "node => getComputedStyle(node).viewTransitionName"
-    ) == "site-header"
+    ) == "none"
     assert page.locator(".quarter-nav").evaluate(
         "node => getComputedStyle(node).viewTransitionName"
-    ) == "quarter-navigation"
+    ) == "none"
 
-    fallback = page.evaluate(
+    motion = page.evaluate(
         """() => {
-          const original = document.startViewTransition;
+          const root = document.querySelector('[data-page="quarter"]');
+          const list = root.querySelector('[data-list-section="tv"] [data-list]');
+          const nodes = [...list.children];
           let mutated = 0;
-          document.startViewTransition = undefined;
-          const result = window.BsbArchive.withBrowseTransition(
-            'fallback', () => { mutated += 1; }
+          const result = window.BsbArchive.withResultMotion(
+            'sort', root, () => { mutated += 1; list.append(...nodes.reverse()); }
           );
+          const animated = nodes.filter((node) => node.getAnimations().length).length;
+          const original = document.startViewTransition;
+          let called = 0;
+          document.startViewTransition = () => { called += 1; };
+          window.BsbArchive.withResultMotion('search', root, () => { mutated += 1; });
           document.startViewTransition = original;
           document.querySelectorAll('.subject-row').forEach(
             (row) => row.classList.remove('is-entering')
@@ -2424,27 +2430,26 @@ def test_browse_transition_helper_has_fallback_identity_and_stagger_limit(
           return {
             mutated,
             resultIsUndefined: result === undefined,
+            animated,
+            viewTransitionCalls: called,
             entering: document.querySelectorAll('.subject-row.is-entering').length,
           };
         }"""
     )
-    assert fallback == {
-        "mutated": 1,
-        "resultIsUndefined": True,
-        "entering": 10,
-    }
+    assert motion["mutated"] == 2
+    assert motion["resultIsUndefined"] is True
+    assert 0 < motion["animated"] <= 32
+    assert motion["viewTransitionCalls"] == 0
+    assert motion["entering"] == 10
 
     page.emulate_media(reduced_motion="reduce")
     reduced = page.evaluate(
         """() => {
-          const original = document.startViewTransition;
-          let called = 0;
           let mutated = 0;
-          document.startViewTransition = () => { called += 1; };
-          const result = window.BsbArchive.withBrowseTransition(
-            'reduced', () => { mutated += 1; }
+          const root = document.querySelector('[data-page="quarter"]');
+          const result = window.BsbArchive.withResultMotion(
+            'reduced', root, () => { mutated += 1; }
           );
-          document.startViewTransition = original;
           document.querySelectorAll('.subject-row').forEach(
             (row) => row.classList.remove('is-entering')
           );
@@ -2452,7 +2457,6 @@ def test_browse_transition_helper_has_fallback_identity_and_stagger_limit(
             document.querySelector('[data-page="quarter"]')
           );
           return {
-            called,
             mutated,
             resultIsUndefined: result === undefined,
             entering: document.querySelectorAll('.subject-row.is-entering').length,
@@ -2460,14 +2464,13 @@ def test_browse_transition_helper_has_fallback_identity_and_stagger_limit(
         }"""
     )
     assert reduced == {
-        "called": 0,
         "mutated": 1,
         "resultIsUndefined": True,
         "entering": 0,
     }
 
 
-def test_browse_transition_helper_uses_native_update_and_recovers_from_errors(
+def test_result_motion_cancels_rapid_reentry_without_view_transition(
     chromium: BrowserContext,
     site_server_many: str,
 ) -> None:
@@ -2477,65 +2480,100 @@ def test_browse_transition_helper_uses_native_update_and_recovers_from_errors(
     result = page.evaluate(
         """() => {
           const original = document.startViewTransition;
-          const callbacks = [];
-          const transitions = [];
-          document.startViewTransition = (callback) => {
-            const transition = {
-              skips: 0,
-              skipTransition() { this.skips += 1; },
-              finished: {
-                then(resolve) { transition.settle = resolve; },
-              },
-              settle() {},
-            };
-            callbacks.push(callback);
-            transitions.push(transition);
-            return transition;
-          };
+          let viewTransitionCalls = 0;
+          document.startViewTransition = () => { viewTransitionCalls += 1; };
+          const root = document.querySelector('[data-page="quarter"]');
+          const list = root.querySelector('[data-list-section="tv"] [data-list]');
+          const nodes = [...list.children];
           let mutations = 0;
-          const first = window.BsbArchive.withBrowseTransition(
-            'normal', () => { mutations += 1; }
+          const first = window.BsbArchive.withResultMotion(
+            'normal', root, () => { mutations += 1; list.append(...nodes.reverse()); }
           );
-          const beforeCallback = mutations;
-          const normalSkips = transitions[0].skips;
-          callbacks[0]();
-          callbacks[0]();
-          const second = window.BsbArchive.withBrowseTransition(
-            'rapid-reentry', () => { mutations += 1; }
+          const firstAnimations = nodes.reduce(
+            (count, node) => count + node.getAnimations().length, 0
           );
-          callbacks[1]();
-          callbacks[1]();
-          transitions[1].settle();
-          document.startViewTransition = () => { throw new Error('unsupported'); };
-          let fallbackMutations = 0;
-          const fallback = window.BsbArchive.withBrowseTransition(
-            'api-error', () => { fallbackMutations += 1; }
+          const second = window.BsbArchive.withResultMotion(
+            'rapid-reentry', root, () => { mutations += 1; list.append(...nodes.reverse()); }
           );
           document.startViewTransition = original;
           return {
-            beforeCallback,
-            normalSkips,
-            firstSkips: transitions[0].skips,
-            secondSkips: transitions[1].skips,
             mutations,
-            fallbackMutations,
-            firstCreated: first === transitions[0],
-            secondCreated: second === transitions[1],
-            fallbackIsUndefined: fallback === undefined,
+            firstUndefined: first === undefined,
+            secondUndefined: second === undefined,
+            viewTransitionCalls,
+            firstAnimations,
+            activeAnimations: nodes.reduce(
+              (count, node) => count + node.getAnimations().length, 0
+            ),
           };
         }"""
     )
-    assert result == {
-        "beforeCallback": 0,
-        "normalSkips": 0,
-        "firstSkips": 1,
-        "secondSkips": 0,
-        "mutations": 2,
-        "fallbackMutations": 1,
-        "firstCreated": True,
-        "secondCreated": True,
-        "fallbackIsUndefined": True,
-    }
+    assert result["mutations"] == 2
+    assert result["firstUndefined"] is True
+    assert result["secondUndefined"] is True
+    assert result["viewTransitionCalls"] == 0
+    assert 0 < result["firstAnimations"] <= 32
+    assert 0 < result["activeAnimations"] <= 32
+
+
+def test_browse_operations_keep_light_background_without_root_transition(
+    chromium: BrowserContext,
+    site_server_many: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server_many, (390, 844))
+    page.emulate_media(reduced_motion="no-preference")
+    page.evaluate(
+        """() => {
+          window.__viewTransitionCalls = 0;
+          document.startViewTransition = () => { window.__viewTransitionCalls += 1; };
+        }"""
+    )
+
+    def assert_stable() -> None:
+        state = page.evaluate(
+            """() => {
+              const coversViewport = (node) => {
+                const style = getComputedStyle(node);
+                const rect = node.getBoundingClientRect();
+                return style.position === 'fixed'
+                  && rect.width >= innerWidth * .95
+                  && rect.height >= innerHeight * .95
+                  && (style.backgroundColor === 'rgb(0, 0, 0)'
+                    || style.backgroundColor === 'rgba(0, 0, 0, 1)');
+              };
+              return {
+                calls: window.__viewTransitionCalls,
+                htmlBackground: getComputedStyle(document.documentElement).backgroundColor,
+                bodyBackground: getComputedStyle(document.body).backgroundColor,
+                blackOverlay: [...document.body.querySelectorAll('*')].some(coversViewport),
+              };
+            }"""
+        )
+        assert state["calls"] == 0
+        assert state["htmlBackground"] != "rgb(0, 0, 0)"
+        assert state["bodyBackground"] != "rgb(0, 0, 0)"
+        assert not state["blackOverlay"]
+
+    for selector in ('[data-media-mode="movie"]', '[data-media-mode="tv"]'):
+        page.locator(selector).click()
+        assert_stable()
+    for selector in ('[data-view-mode="list"]', '[data-view-mode="grid"]'):
+        page.locator(selector).click()
+        assert_stable()
+    page.locator("[data-sort-toggle]").click()
+    page.get_by_role("menuitemradio", name="评分：低到高").click()
+    assert_stable()
+    page.locator("[data-filter-toggle]").click()
+    assert page.locator("[data-filter-panel]").is_visible()
+    assert_stable()
+    page.locator("[data-filter-close]").first.click()
+    assert_stable()
+    page.locator("[data-search]").fill("subject")
+    assert_stable()
+    page.locator("[data-search]").fill("")
+    assert_stable()
 
 
 def test_archive_lazy_loads_and_reuses_selected_quarter_details(

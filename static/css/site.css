@@ -1165,24 +1165,9 @@ html[data-browse-view-mode="list"] .archive-page[data-view-mode="grid"] .subject
   html[data-browse-view-mode="list"] .archive-page[data-view-mode="grid"] .subject-row__score small { font-size: .54rem; }
 }
 
-/* Plan 49: keep supported browsers visually continuous while the runtime
-   helper falls back to the same DOM mutation on browsers without View
-   Transitions.  The named shell regions also let same-origin quarter links
-   share their stable chrome without morphing different subject cards. */
-@view-transition { navigation: auto; }
-::view-transition,
-::view-transition-group(*),
-::view-transition-image-pair(*),
-::view-transition-old(*),
-::view-transition-new(*) { pointer-events: none; }
-.site-header { view-transition-name: site-header; }
-.quarter-nav { view-transition-name: quarter-navigation; }
-::view-transition-group(*) {
-  animation-duration: 240ms;
-  animation-timing-function: var(--ease-out);
-}
-::view-transition-old(root) { animation-duration: 180ms; }
-::view-transition-new(root) { animation-duration: 240ms; }
+/* Plan 51: browse operations animate only the visible result nodes.  The
+   document root, header, and cross-document navigation remain static so
+   mobile Safari never composites a full-page snapshot transition. */
 
 @keyframes browse-subject-enter {
   from { opacity: 0; transform: translateY(8px); }

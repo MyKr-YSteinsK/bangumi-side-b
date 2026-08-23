@@ -12,8 +12,6 @@
     "rating-count-desc": "评分人数：多到少",
     "rating-count-asc": "评分人数：少到多",
   });
-  let activeBrowseTransition = null;
-
   function normalize(value) {
     return String(value ?? "")
       .normalize("NFKC")
@@ -239,51 +237,108 @@
     return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
   }
 
-  function withBrowseTransition(reason, mutate) {
-    void reason;
-    if (typeof mutate !== "function") return undefined;
-    let mutated = false;
-    const runMutation = () => {
-      if (mutated) return undefined;
-      mutated = true;
-      return mutate();
-    };
-    if (typeof document.startViewTransition !== "function" || prefersReducedMotion()) {
-      return runMutation();
-    }
-    if (activeBrowseTransition) {
-      try {
-        activeBrowseTransition.skipTransition?.();
-      } finally {
-        activeBrowseTransition = null;
-      }
-    }
-    let transition;
-    try {
-      transition = document.startViewTransition(() => runMutation());
-    } catch (error) {
-      if (mutated) throw error;
-      // An API-level failure happens before the update callback.  The
-      // mutation remains the authoritative synchronous fallback.
-      return runMutation();
-    }
-    if (!transition) {
-      return mutated ? transition : runMutation();
-    }
-    activeBrowseTransition = transition;
-    const clearActive = () => {
-      if (activeBrowseTransition === transition) activeBrowseTransition = null;
-    };
-    if (transition.finished && typeof transition.finished.then === "function") {
-      transition.finished.then(clearActive, clearActive);
-    }
-    return transition;
+  const MAX_RESULT_MOTION_NODES = 32;
+  const MAX_RESULT_ENTRANCES = 12;
+
+  function resultHost(root) {
+    if (root?.matches?.("[data-archive-app]")) return root;
+    return root?.closest?.("[data-archive-app]")
+      || document.querySelector("[data-archive-app]");
   }
 
-  function subjectTransitionName(record) {
-    const token = String(record?.key || recordKey(record))
-      .replace(/[^a-zA-Z0-9_-]/g, "-");
-    return `subject-${token}`;
+  function visibleResultNodes(root) {
+    if (!root) return [];
+    const viewportTop = -window.innerHeight;
+    const viewportBottom = window.innerHeight * 2;
+    return [...root.querySelectorAll("[data-record-key]")]
+      .filter((node) => {
+        if (node.hidden) return false;
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0
+          && rect.bottom >= viewportTop && rect.top <= viewportBottom;
+      })
+      .slice(0, MAX_RESULT_MOTION_NODES);
+  }
+
+  function cancelResultMotion(root) {
+    if (!root) return;
+    root.querySelectorAll("[data-record-key]").forEach((node) => {
+      node.getAnimations?.().forEach((animation) => animation.cancel());
+    });
+  }
+
+  function captureResultPositions(root) {
+    return new Map(visibleResultNodes(root).map((node) => {
+      const rect = node.getBoundingClientRect();
+      return [node.dataset.recordKey, { left: rect.left, top: rect.top }];
+    }));
+  }
+
+  function animateResultNode(node, keyframes, duration) {
+    if (typeof node.animate !== "function") return;
+    const animation = node.animate(keyframes, {
+      duration,
+      easing: "cubic-bezier(.2, .7, .2, 1)",
+      fill: "both",
+    });
+    animation.finished?.then(
+      () => animation.cancel(),
+      () => {},
+    );
+  }
+
+  function playResultMotion(root, before, reason = "browse") {
+    if (!root || prefersReducedMotion()) return;
+    let entrances = 0;
+    const duration = reason === "search" ? 110 : 200;
+    for (const node of visibleResultNodes(root)) {
+      const previous = before.get(node.dataset.recordKey);
+      const next = node.getBoundingClientRect();
+      if (previous) {
+        const dx = previous.left - next.left;
+        const dy = previous.top - next.top;
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+          animateResultNode(
+            node,
+            [
+              { transform: `translate(${dx}px, ${dy}px)` },
+              { transform: "translate(0, 0)" },
+            ],
+            duration,
+          );
+        }
+      } else if (entrances < MAX_RESULT_ENTRANCES) {
+        entrances += 1;
+        animateResultNode(
+          node,
+          [
+            { opacity: 0, transform: "translateY(8px)" },
+            { opacity: 1, transform: "translateY(0)" },
+          ],
+          reason === "search" ? 110 : 180,
+        );
+      }
+    }
+  }
+
+  function withResultMotion(reason, root, mutate) {
+    if (typeof root === "function") {
+      mutate = root;
+      root = document.querySelector("[data-archive-app]");
+    }
+    if (typeof mutate !== "function") return undefined;
+    const host = resultHost(root);
+    cancelResultMotion(host);
+    const before = captureResultPositions(host);
+    const result = mutate();
+    playResultMotion(host, before, reason);
+    return result;
+  }
+
+  // Kept as a small compatibility alias for older page-local callers.  It no
+  // longer invokes the browser View Transition API or animates the page root.
+  function withBrowseTransition(reason, mutate) {
+    return withResultMotion(reason, document.querySelector("[data-archive-app]"), mutate);
   }
 
   function playEntranceStagger(root, limit = 10) {
@@ -423,8 +478,8 @@
     positionPopover,
     clearPopoverPosition,
     prefersReducedMotion,
+    withResultMotion,
     withBrowseTransition,
-    subjectTransitionName,
     playEntranceStagger,
     scopeCounts,
     selectedRecord,
@@ -1061,7 +1116,6 @@
     for (const row of rows) {
       const record = recordByKey.get(row.dataset.recordKey);
       const show = record && visible.has(record.key);
-      if (record) row.style.viewTransitionName = archive.subjectTransitionName(record);
       row.hidden = !show;
       row.classList.toggle("is-selected", Boolean(record && state.selectedOccurrence === record.key));
       const button = row.querySelector("[data-open-subject]");
@@ -1255,7 +1309,7 @@
   }
 
   function closeFilterAndRestoreFocus(applyDraft = false) {
-    archive.withBrowseTransition("filter", () => {
+    archive.withResultMotion("filter", quarterRoot, () => {
       if (applyDraft) applyFilterDraft();
       else discardFilterDraft();
       closeFilter();
@@ -1397,7 +1451,7 @@
     pageSizeSelect();
     let closeSortPopover = () => {};
     search?.addEventListener("input", () => {
-      archive.withBrowseTransition("search", () => {
+      archive.withResultMotion("search", quarterRoot, () => {
         state.query = search.value;
         state.page = 1;
         clearSelection(true);
@@ -1407,7 +1461,7 @@
     quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
       button.addEventListener("click", () => {
         closeSortPopover();
-        archive.withBrowseTransition("media", () => {
+        archive.withResultMotion("media", quarterRoot, () => {
           state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv";
           discardFilterDraft();
           archive.normalizeFiltersForMedia(state, records);
@@ -1421,7 +1475,7 @@
     quarterRoot.querySelectorAll("[data-view-mode]").forEach((button) => {
       button.addEventListener("click", () => {
         closeSortPopover();
-        archive.withBrowseTransition("view-mode", () => {
+        archive.withResultMotion("view-mode", quarterRoot, () => {
           state.viewMode = archive.writeViewMode(button.dataset.viewMode);
           render();
         });
@@ -1448,7 +1502,7 @@
         button.textContent = label;
         button.setAttribute("aria-checked", String(state.sort === value));
         button.addEventListener("click", () => {
-          archive.withBrowseTransition("sort", () => {
+          archive.withResultMotion("sort", quarterRoot, () => {
             state.sort = value;
             state.page = 1;
             closeSortPopover(true);
@@ -1512,7 +1566,7 @@
       render();
     });
     quarterRoot.querySelector("[data-clear-all]")?.addEventListener("click", () => {
-      archive.withBrowseTransition("clear-filter", () => {
+      archive.withResultMotion("clear-filter", quarterRoot, () => {
         state.query = "";
         state.filterOptionQuery = "";
         state.filters = { sources: [], tags: [], sections: [] };
@@ -2017,7 +2071,6 @@
     score.append(scoreValue, count);
     button.append(score);
     article.append(button);
-    article.style.viewTransitionName = archive.subjectTransitionName(record);
     button.addEventListener("click", () => { void selectRecord(record); });
     return article;
   }
@@ -2284,7 +2337,7 @@
   }
 
   function closeFilterAndRestoreFocus(applyDraft = false) {
-    archive.withBrowseTransition("filter", () => {
+    archive.withResultMotion("filter", root, () => {
       if (applyDraft) applyFilterDraft();
       else discardFilterDraft();
       closeFilter();
@@ -2585,9 +2638,9 @@
         },
       });
     }
-    selectors.search?.addEventListener("input", () => archive.withBrowseTransition("search", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); }));
-    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withBrowseTransition("media", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }); }));
-    root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withBrowseTransition("view-mode", () => { state.viewMode = archive.writeViewMode(button.dataset.viewMode); render(); }); button.focus(); }));
+    selectors.search?.addEventListener("input", () => archive.withResultMotion("search", root, () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); }));
+    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withResultMotion("media", root, () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }); }));
+    root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withResultMotion("view-mode", root, () => { state.viewMode = archive.writeViewMode(button.dataset.viewMode); render(); }); button.focus(); }));
     root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
       closeSortPopover();
       if (state.workspaceMode === "filter") closeFilterAndRestoreFocus(false);
@@ -2618,7 +2671,7 @@
         button.textContent = label;
         button.setAttribute("aria-checked", String(value === state.sort));
         button.addEventListener("click", () => {
-          archive.withBrowseTransition("sort", () => {
+          archive.withResultMotion("sort", root, () => {
             state.sort = value;
             state.page = 1;
             closeSortPopover(true);
@@ -2669,7 +2722,7 @@
     document.addEventListener("bsb-quarter-sheet-open", () => closeSortPopover());
     document.addEventListener("bsb-mobile-menu-open", () => closeSortPopover());
     window.addEventListener("scroll", () => closeSortPopover(), { passive: true });
-    root.querySelector("[data-clear-all]")?.addEventListener("click", () => archive.withBrowseTransition("clear-filter", () => { state.query = ""; state.filterOptionQuery = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); }));
+    root.querySelector("[data-clear-all]")?.addEventListener("click", () => archive.withResultMotion("clear-filter", root, () => { state.query = ""; state.filterOptionQuery = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); }));
     root.querySelectorAll("[data-scope-choice]").forEach((button) => button.addEventListener("click", () => {
       closeSortPopover();
       const kind = button.dataset.scopeChoice;

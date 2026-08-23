@@ -41,10 +41,10 @@ ChangelogBlock = ChangelogItem | ChangelogSection
 
 @dataclass(frozen=True)
 class ChangelogRelease:
-    """One unreleased or versioned release section."""
+    """One concrete versioned release section."""
 
     heading: str
-    version: str | None
+    version: str
     date: str | None
     blocks: tuple[ChangelogBlock, ...]
 
@@ -84,17 +84,90 @@ class ChangelogDocument:
             None,
         )
 
-    @property
-    def unreleased(self) -> ChangelogRelease | None:
-        return next(
-            (release for release in self.releases if release.version is None),
-            None,
-        )
-
-
 _RELEASE_RE = re.compile(
     r"^(?P<version>\d+\.\d+\.\d+)(?:\s+-\s+(?P<date>\d{4}-\d{2}-\d{2}))?$"
 )
+_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+
+
+@dataclass(frozen=True)
+class ChangelogMilestone:
+    """One ``major.minor`` window and its concrete releases."""
+
+    label: str
+    releases: tuple[ChangelogRelease, ...]
+
+    @property
+    def children(self) -> tuple[ChangelogRelease, ...]:
+        """Alias that describes the releases rendered inside the group."""
+        return self.releases
+
+
+@dataclass(frozen=True)
+class ChangelogSettingsGroups:
+    """Build-time Settings presentation groups, kept separate from Markdown."""
+
+    standalone: tuple[ChangelogRelease, ...]
+    milestones: tuple[ChangelogMilestone, ...]
+
+
+def release_version_tuple(version: str) -> tuple[int, int, int]:
+    """Parse the deliberately small concrete release version format."""
+    match = _VERSION_RE.fullmatch(version)
+    if match is None:
+        raise ChangelogError(f"malformed release version: {version}")
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def group_releases_for_settings(
+    document: ChangelogDocument,
+) -> ChangelogSettingsGroups:
+    """Group concrete releases into standalone entries and milestone windows."""
+    ordered = tuple(
+        sorted(
+            document.releases,
+            key=lambda release: release_version_tuple(release.version),
+            reverse=True,
+        )
+    )
+    milestone_releases = tuple(
+        release
+        for release in ordered
+        if release_version_tuple(release.version)[2] == 0
+    )
+    if not milestone_releases:
+        return ChangelogSettingsGroups(ordered, ())
+
+    milestone_versions = tuple(
+        release_version_tuple(release.version) for release in milestone_releases
+    )
+    latest_milestone = milestone_versions[0]
+    standalone = tuple(
+        release
+        for release in ordered
+        if release_version_tuple(release.version) > latest_milestone
+    )
+    groups: list[ChangelogMilestone] = []
+    for index, milestone in enumerate(milestone_releases):
+        current = milestone_versions[index]
+        previous = (
+            milestone_versions[index + 1]
+            if index + 1 < len(milestone_versions)
+            else None
+        )
+        releases = tuple(
+            release
+            for release in ordered
+            if release_version_tuple(release.version) <= current
+            and (previous is None or release_version_tuple(release.version) > previous)
+        )
+        groups.append(
+            ChangelogMilestone(
+                f"{current[0]}.{current[1]}",
+                releases,
+            )
+        )
+    return ChangelogSettingsGroups(standalone, tuple(groups))
 
 
 def load_changelog(path: Path) -> ChangelogDocument:
@@ -164,12 +237,7 @@ def parse_changelog(text: str) -> ChangelogDocument:
             flush_release()
             heading = line[3:].strip()
             if heading == "尚未发布":
-                if any(release.version is None for release in releases):
-                    raise ChangelogError("duplicate unreleased section")
-                current_heading = heading
-                current_version = None
-                current_date = None
-                continue
+                raise ChangelogError("unreleased sections are not supported")
             match = _RELEASE_RE.fullmatch(heading)
             if match is None:
                 raise ChangelogError(f"malformed release heading: {heading}")
@@ -220,8 +288,12 @@ __all__ = [
     "ChangelogDocument",
     "ChangelogError",
     "ChangelogItem",
+    "ChangelogMilestone",
     "ChangelogRelease",
+    "ChangelogSettingsGroups",
     "ChangelogSection",
+    "group_releases_for_settings",
     "load_changelog",
     "parse_changelog",
+    "release_version_tuple",
 ]

@@ -20,7 +20,9 @@ from bgm_side_b.build.changelog import (
     ChangelogDocument,
     ChangelogError,
     ChangelogItem,
+    ChangelogRelease,
     ChangelogSection,
+    group_releases_for_settings,
     load_changelog,
 )
 from bgm_side_b.build.fingerprint import (
@@ -1405,7 +1407,7 @@ def _settings_html(
         '<header><p>06 / CHANGELOG</p><h2 id="settings-changelog-title">更新日志</h2></header>'
         f'<div class="settings-changelog"><dl class="settings-facts">'
         f'<div><dt>当前程序版本</dt><dd>{html.escape(app_version)}</dd></div></dl>'
-        f'{_changelog_releases_html(changelog, app_version)}</div></section>'
+        f'{_changelog_releases_html(changelog)}</div></section>'
         '</div></main>'
         '<footer class="site-footer"><p>Bangumi Side B · MyKr</p><p>离线下载仅使用当前站点的同源、逐文件校验资源。</p></footer>'
     )
@@ -1423,28 +1425,36 @@ def _settings_html(
     )
 
 
-def _changelog_releases_html(
-    changelog: ChangelogDocument, app_version: str
-) -> str:
-    """Render the parsed model without allowing Markdown/HTML passthrough."""
-    rendered: list[str] = []
-    for release in changelog.releases:
-        has_content = any(
-            block.items if isinstance(block, ChangelogSection) else (block,)
-            for block in release.blocks
+def _changelog_releases_html(changelog: ChangelogDocument) -> str:
+    """Render grouped concrete releases without Markdown/HTML passthrough."""
+    groups = group_releases_for_settings(changelog)
+    rendered = [
+        _changelog_release_html(release)
+        for release in groups.standalone
+    ]
+    for milestone in groups.milestones:
+        children = "".join(
+            _changelog_release_html(release)
+            for release in milestone.releases
         )
-        is_current = release.version == app_version
-        is_unreleased = release.version is None
-        open_attribute = " open" if (is_current or (is_unreleased and has_content)) else ""
-        identifier = "unreleased" if is_unreleased else release.version
         rendered.append(
-            f'<details class="settings-changelog__release" '
-            f'data-changelog-release="{html.escape(identifier or "", quote=True)}"'
-            f'{open_attribute}><summary>{html.escape(release.heading)}</summary>'
-            f'<div class="settings-changelog__body">{_changelog_blocks_html(release.blocks)}</div>'
+            f'<details class="settings-changelog__milestone" '
+            f'data-changelog-milestone="{html.escape(milestone.label, quote=True)}">'
+            f'<summary>{html.escape(milestone.label)}</summary>'
+            f'<div class="settings-changelog__milestone-releases">{children}</div>'
             "</details>"
         )
     return '<div class="settings-changelog__releases">' + "".join(rendered) + "</div>"
+
+
+def _changelog_release_html(release: ChangelogRelease) -> str:
+    return (
+        f'<section class="settings-changelog__release" '
+        f'data-changelog-release="{html.escape(release.version, quote=True)}">'
+        f'<h3 class="settings-changelog__release-title">{html.escape(release.heading)}</h3>'
+        f'<div class="settings-changelog__body">{_changelog_blocks_html(release.blocks)}</div>'
+        "</section>"
+    )
 
 
 def _changelog_blocks_html(

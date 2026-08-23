@@ -530,9 +530,9 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.on("request", lambda request: requests.append(request.url))
 
     page.goto(f"{site_server}/settings/index.html")
-    page.wait_for_selector('[data-changelog-release="unreleased"]')
+    page.wait_for_selector('[data-changelog-release="0.6.3"]')
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.locator(".settings-about").get_by_text("0.6.2", exact=True).is_visible()
+    assert page.locator(".settings-about").get_by_text("0.6.3", exact=True).is_visible()
     assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
     assert page.get_by_text("作者", exact=True).is_visible()
     assert page.get_by_text("MyKr", exact=True).is_visible()
@@ -540,18 +540,18 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     assert page.locator(".site-footer").get_by_text(
         "Bangumi Side B · MyKr", exact=True
     ).is_visible()
-    assert not page.locator('[data-changelog-release="unreleased"]').evaluate(
+    assert page.locator('[data-changelog-release="0.6.3"]').evaluate(
+        "node => node.tagName"
+    ) == "SECTION"
+    assert page.locator('[data-changelog-milestone="0.6"]').count() == 1
+    assert not page.locator('[data-changelog-milestone="0.6"]').evaluate(
         "node => node.open"
     )
-    assert page.locator('[data-changelog-release="0.6.2"]').evaluate(
+    assert page.locator('[data-changelog-release="0.6.0"]').count() == 1
+    assert not page.locator('[data-changelog-milestone="0.2"]').evaluate(
         "node => node.open"
     )
-    assert not page.locator('[data-changelog-release="0.2.0"]').evaluate(
-        "node => node.open"
-    )
-    assert not page.locator('[data-changelog-release="0.1.3"]').evaluate(
-        "node => node.open"
-    )
+    assert page.locator('[data-changelog-milestone="0.1"]').count() == 0
     assert page.locator(".settings-section h2").all_text_contents() == [
         "离线季度",
         "下载任务",

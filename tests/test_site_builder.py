@@ -370,17 +370,22 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
     builder.changelog_path.write_text(
         """# Changelog
 
-## 尚未发布
+## 0.6.3 - 2026-08-23
 
 ### 修复
 
 - <b>escaped</b>
+- current release
 
 ## 0.6.2 - 2026-08-23
 
 ### 修复
 
 - current patch
+
+## 0.6.0 - 2026-08-22
+
+- milestone
 
 ## 0.3.0 - 2026-08-19
 
@@ -400,10 +405,13 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
         "utf-8"
     )
     assert "06 / CHANGELOG" in page
-    assert "当前程序版本</dt><dd>0.6.2" in page
-    assert 'data-changelog-release="unreleased" open' in page
-    assert 'data-changelog-release="0.6.2" open' in page
-    assert 'data-changelog-release="0.3.0" open' not in page
+    assert "当前程序版本</dt><dd>0.6.3" in page
+    assert 'data-changelog-release="0.6.3"' in page
+    assert '<details class="settings-changelog__release"' not in page
+    assert 'data-changelog-release="0.6.2"' in page
+    assert 'data-changelog-milestone="0.6"' in page
+    assert 'data-changelog-milestone="0.6" open' not in page
+    assert 'data-changelog-release="0.3.0"' in page
     assert 'data-changelog-release="0.1.0"' in page
     assert 'data-changelog-release="0.1.0" open' not in page
     assert "&lt;b&gt;escaped&lt;/b&gt;" in page

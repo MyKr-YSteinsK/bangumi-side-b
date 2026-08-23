@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from bgm_side_b.build.changelog import ChangelogError, parse_changelog
+from bgm_side_b.build.changelog import (
+    ChangelogError,
+    group_releases_for_settings,
+    parse_changelog,
+)
 
 
 def test_changelog_model_preserves_releases_groups_and_utf8_order() -> None:
@@ -12,13 +16,6 @@ def test_changelog_model_preserves_releases_groups_and_utf8_order() -> None:
         """# 更新日志
 
 说明段落
-
-## 尚未发布
-
-### 修复
-
-- <b>不执行</b>
-- 中文条目
 
 ## 0.4.0 - 2026-08-21
 
@@ -47,22 +44,17 @@ def test_changelog_model_preserves_releases_groups_and_utf8_order() -> None:
     assert document.title == "更新日志"
     assert document.preamble == ("说明段落",)
     assert [release.heading for release in document.releases] == [
-        "尚未发布",
         "0.4.0 - 2026-08-21",
         "0.1.3 - 2026-08-07",
         "0.1.2 - 2026-08-01",
         "0.1.1 - 2026-08-01",
         "0.1.0",
     ]
-    assert document.unreleased is document.releases[0]
     assert document.release_for_version("0.4.0").date == "2026-08-21"
     assert document.release_for_version("0.1.3").date == "2026-08-07"
     assert document.release_for_version("0.1.2").date == "2026-08-01"
     assert document.release_for_version("0.1.1").date == "2026-08-01"
     assert document.release_for_version("0.1.0").date is None
-    section = document.releases[0].blocks[0]
-    assert section.title == "修复"
-    assert [item.text for item in section.items] == ["<b>不执行</b>", "中文条目"]
     old_item = document.release_for_version("0.1.0").blocks[0]
     assert old_item.kind == "paragraph"
     assert old_item.text == "旧版本短段落"
@@ -97,3 +89,87 @@ def test_changelog_rejects_malformed_release_headings(heading: str) -> None:
 def test_changelog_requires_a_release_section() -> None:
     with pytest.raises(ChangelogError, match="no release sections"):
         parse_changelog("# Changelog\n\nOnly an introduction.\n")
+
+
+def test_changelog_rejects_unreleased_sections() -> None:
+    with pytest.raises(ChangelogError, match="unreleased sections are not supported"):
+        parse_changelog("# Changelog\n\n## 尚未发布\n\n- item\n")
+
+
+def test_settings_grouping_keeps_new_patches_standalone_until_next_milestone() -> None:
+    document = parse_changelog(
+        """# Changelog
+
+## 0.7.0
+- next milestone
+## 0.6.3
+- patch three
+## 0.6.2
+- patch two
+## 0.6.1
+- patch one
+## 0.6.0
+- milestone
+## 0.5.1
+- old patch
+## 0.5.0
+- old milestone
+"""
+    )
+    groups = group_releases_for_settings(document)
+    assert groups.standalone == ()
+    grouped = [
+        (group.label, [release.version for release in group.releases])
+        for group in groups.milestones
+    ]
+    assert grouped == [
+        ("0.7", ["0.7.0", "0.6.3", "0.6.2", "0.6.1"]),
+        ("0.6", ["0.6.0", "0.5.1"]),
+        ("0.5", ["0.5.0"]),
+    ]
+
+    without_next = parse_changelog(
+        """# Changelog
+
+## 0.6.3
+- patch three
+## 0.6.2
+- patch two
+## 0.6.1
+- patch one
+## 0.6.0
+- milestone
+"""
+    )
+    groups = group_releases_for_settings(without_next)
+    assert [release.version for release in groups.standalone] == [
+        "0.6.3",
+        "0.6.2",
+        "0.6.1",
+    ]
+    assert [release.version for release in groups.milestones[0].releases] == ["0.6.0"]
+
+
+def test_settings_grouping_handles_major_jumps() -> None:
+    document = parse_changelog(
+        """# Changelog
+
+## 1.0.0
+- major
+## 0.6.2
+- patch two
+## 0.6.1
+- patch one
+## 0.6.0
+- milestone
+"""
+    )
+    groups = group_releases_for_settings(document)
+    grouped = [
+        (group.label, [release.version for release in group.releases])
+        for group in groups.milestones
+    ]
+    assert grouped == [
+        ("1.0", ["1.0.0", "0.6.2", "0.6.1"]),
+        ("0.6", ["0.6.0"]),
+    ]

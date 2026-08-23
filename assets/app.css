@@ -397,6 +397,10 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .settings-changelog__releases { display: grid; gap: .7rem; }
 .settings-changelog__release { border-top: 1px solid var(--rule); padding-top: .7rem; }
 .settings-changelog__release summary { cursor: pointer; font-weight: 700; overflow-wrap: anywhere; }
+.settings-changelog__release-title { font-size: .82rem; margin: 0; overflow-wrap: anywhere; }
+.settings-changelog__milestone { border-top: 1px solid var(--rule); padding-top: .7rem; }
+.settings-changelog__milestone > summary { cursor: pointer; font-weight: 700; overflow-wrap: anywhere; }
+.settings-changelog__milestone-releases { padding-top: .55rem; }
 .settings-changelog__body { min-width: 0; padding: .55rem 0 .15rem; }
 .settings-changelog__group + .settings-changelog__group { border-top: 1px solid var(--rule); margin-top: .8rem; padding-top: .7rem; }
 .settings-changelog__group h3 { font-size: .78rem; margin: 0 0 .35rem; }

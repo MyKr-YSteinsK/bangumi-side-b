@@ -2055,6 +2055,170 @@ def test_sort_popover_has_menu_state_and_focus_return(
     assert trigger.evaluate("node => node === document.activeElement")
 
 
+@pytest.mark.parametrize("viewport", [(360, 800), (393, 852), (430, 932)])
+def test_sort_popover_is_fixed_to_trigger_without_layout_shift(
+    chromium: BrowserContext,
+    site_server: str,
+    viewport: tuple[int, int],
+) -> None:
+    page = chromium.new_page(viewport={"width": viewport[0], "height": viewport[1]})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server, viewport)
+    trigger = page.locator("[data-sort-toggle]")
+    summary = page.locator("[data-results-summary]")
+    first = page.locator('[data-list-section="tv"] .subject-row:not([hidden])').first
+    before = page.evaluate(
+        """() => ({
+          scrollY: window.scrollY,
+          summaryTop: document.querySelector(
+            '[data-results-summary]'
+          ).getBoundingClientRect().top,
+          firstTop: document.querySelector(
+            '[data-list-section="tv"] .subject-row:not([hidden])'
+          ).getBoundingClientRect().top,
+        })"""
+    )
+    trigger_box = trigger.bounding_box()
+    assert trigger_box is not None
+    trigger.click()
+    menu = page.locator('[data-sort-popover][role="menu"]')
+    assert menu.is_visible()
+    menu_box = menu.bounding_box()
+    assert menu_box is not None
+    after = page.evaluate(
+        """() => ({
+          scrollY: window.scrollY,
+          summaryTop: document.querySelector(
+            '[data-results-summary]'
+          ).getBoundingClientRect().top,
+          firstTop: document.querySelector(
+            '[data-list-section="tv"] .subject-row:not([hidden])'
+          ).getBoundingClientRect().top,
+        })"""
+    )
+    assert after["scrollY"] == before["scrollY"]
+    assert abs(after["summaryTop"] - before["summaryTop"]) <= 1
+    assert abs(after["firstTop"] - before["firstTop"]) <= 1
+    assert menu_box["x"] + menu_box["width"] <= viewport[0] + 1
+    assert menu_box["x"] >= -1
+    assert (
+        menu_box["y"] >= trigger_box["y"] + trigger_box["height"] - 1
+        or menu_box["y"] + menu_box["height"] <= trigger_box["y"] + 1
+    )
+    assert summary.is_visible() and first.is_visible()
+    page.mouse.click(2, 2)
+    assert menu.is_hidden()
+
+
+def test_tv_sort_reorders_one_dom_sequence_and_preserves_identity(
+    chromium: BrowserContext,
+    site_server_mixed: str,
+    unified_site_mixed: Path,
+) -> None:
+    payload = json.loads(
+        (unified_site_mixed / "data" / "quarters" / "2026-07.json").read_text(
+            "utf-8"
+        )
+    )
+    continuing = payload["tv"]["continuing"][0]
+    premiere = payload["tv"]["premiere"][0]
+    continuing["score"], continuing["rating_count"] = 7.9, 90
+    premiere["score"], premiere["rating_count"] = 8.0, 20
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/quarters/2026-07.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        ),
+    )
+    _open_quarter(page, site_server_mixed, (390, 844))
+    page.locator('[data-subject-id="101"]').evaluate(
+        "node => { node.dataset.identity = 'stable'; }"
+    )
+
+    def visible_ids() -> list[str]:
+        return page.locator(
+            '[data-list-section="tv"] .subject-row:not([hidden])'
+        ).evaluate_all("nodes => nodes.map(node => node.dataset.subjectId)")
+
+    assert visible_ids() == ["303", "101"]
+    assert page.locator('[data-subject-id="101"]').get_attribute(
+        "data-identity"
+    ) == "stable"
+    expected = {
+        "评分：高到低": ["303", "101"],
+        "评分：低到高": ["101", "303"],
+        "评分人数：多到少": ["101", "303"],
+        "评分人数：少到多": ["303", "101"],
+    }
+    for label, order in expected.items():
+        page.locator("[data-sort-toggle]").click()
+        page.get_by_role("menuitemradio", name=label).click()
+        assert visible_ids() == order
+        assert page.locator('[data-subject-id="101"]').get_attribute(
+            "data-identity"
+        ) == "stable"
+
+    page.locator("[data-filter-toggle]").click()
+    page.get_by_label("续播").check()
+    page.get_by_role("button", name="返回结果").click()
+    assert visible_ids() == ["101"]
+    page.locator("[data-filter-toggle]").click()
+    page.locator("[data-filter-workspace-clear]").click()
+    page.get_by_role("button", name="返回结果").click()
+    assert visible_ids() == ["303", "101"]
+
+
+def test_archive_tv_sort_reuses_rows_without_duplicate_nodes(
+    chromium: BrowserContext,
+    site_server_mixed: str,
+    unified_site_mixed: Path,
+) -> None:
+    catalog = json.loads(
+        (unified_site_mixed / "data" / "catalog" / "2026.json").read_text(
+            "utf-8"
+        )
+    )
+    for record in catalog["records"]:
+        if record["media"] != "TV":
+            continue
+        record["score"] = 8.0 if record["id"] == 303 else 7.9
+        record["rating_count"] = 20 if record["id"] == 303 else 90
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    page.set_default_timeout(8000)
+    page.route(
+        "**/data/catalog/2026.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(catalog),
+        ),
+    )
+    page.goto(f"{site_server_mixed}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes("
+        "'3 / 3')"
+    )
+    tv_rows = page.locator('[data-list-section="tv"] .subject-row')
+    assert tv_rows.count() == 3
+    page.locator('[data-subject-id="101"][data-quarter="2026-07"]').evaluate(
+        "node => { node.dataset.identity = 'archive-stable'; }"
+    )
+    ids = tv_rows.evaluate_all("nodes => nodes.map(node => node.dataset.subjectId)")
+    assert ids == ["303", "101", "101"]
+    page.locator("[data-sort-toggle]").click()
+    page.get_by_role("menuitemradio", name="评分：低到高").click()
+    assert tv_rows.count() == 3
+    ids = tv_rows.evaluate_all("nodes => nodes.map(node => node.dataset.subjectId)")
+    assert ids == ["101", "101", "303"]
+    assert page.locator(
+        '[data-subject-id="101"][data-quarter="2026-07"]'
+    ).get_attribute("data-identity") == "archive-stable"
+
+
 def test_archive_lazy_loads_and_reuses_selected_quarter_details(
     chromium: BrowserContext,
     site_server: str,

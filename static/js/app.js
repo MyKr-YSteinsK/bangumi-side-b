@@ -206,6 +206,34 @@
     };
   }
 
+  function positionPopover(popover, anchor) {
+    if (!popover || !anchor) return;
+    const anchorBox = anchor.getBoundingClientRect();
+    const viewportPadding = 8;
+    const width = Math.min(
+      Math.max(popover.offsetWidth, 12 * parseFloat(getComputedStyle(document.documentElement).fontSize || "16")),
+      Math.max(0, window.innerWidth - viewportPadding * 2),
+    );
+    const left = Math.max(
+      viewportPadding,
+      Math.min(anchorBox.right - width, window.innerWidth - width - viewportPadding),
+    );
+    const below = anchorBox.bottom + 6;
+    const top = below + popover.offsetHeight <= window.innerHeight - viewportPadding
+      ? below
+      : Math.max(viewportPadding, anchorBox.top - popover.offsetHeight - 6);
+    popover.style.left = `${Math.round(left)}px`;
+    popover.style.top = `${Math.round(top)}px`;
+    popover.style.width = `${Math.round(width)}px`;
+  }
+
+  function clearPopoverPosition(popover) {
+    if (!popover) return;
+    popover.style.removeProperty("left");
+    popover.style.removeProperty("top");
+    popover.style.removeProperty("width");
+  }
+
   function scopeCounts(records) {
     return records.reduce((counts, record) => {
       const media = record.media === "MOVIE" ? "movie" : "tv";
@@ -323,6 +351,8 @@
     matchesFilters,
     compareRecords,
     applyPipeline,
+    positionPopover,
+    clearPopoverPosition,
     scopeCounts,
     selectedRecord,
     appearanceLabel,
@@ -566,6 +596,7 @@
       const opening = quarterSheet.hidden;
       quarterSheet.hidden = !opening;
       quarterToggle.setAttribute("aria-expanded", String(opening));
+      if (opening) document.dispatchEvent(new Event("bsb-quarter-sheet-open"));
       if (opening) quarterSheet.querySelector("a, button")?.focus();
     });
     quarterSheet.querySelector("[data-quarter-sheet-close]")?.addEventListener(
@@ -749,6 +780,7 @@
     scope: { kind: "quarter", value: quarterRoot.dataset.quarter || "" },
   });
   const rows = [...quarterRoot.querySelectorAll(".subject-row")];
+  const rowByKey = new Map(rows.map((row) => [row.dataset.recordKey, row]));
   let recordByKey = new Map();
   const sections = [...quarterRoot.querySelectorAll("[data-list-section]")];
   const scopePanel = quarterRoot.querySelector("[data-scope-panel]");
@@ -836,6 +868,30 @@
     const visibleRecords = window.innerWidth < 768 ? result.all : result.pageRecords;
     const visible = new Set(visibleRecords.map((record) => record.key));
     const position = new Map(result.all.map((record, index) => [record.key, index + 1]));
+    for (const section of sections) {
+      const media = section.dataset.listSection === "movie" ? "MOVIE" : "TV";
+      const appearance = section.dataset.appearanceSection;
+      const sectionRecords = records.filter((record) => (
+        record.media === media
+        && (appearance === "all" || record.appearance === appearance)
+      ));
+      const orderedKeys = new Set(result.all.filter((record) => (
+        record.media === media
+        && (appearance === "all" || record.appearance === appearance)
+      )).map((record) => record.key));
+      const orderedRecords = [
+        ...result.all.filter((record) => (
+          record.media === media
+          && (appearance === "all" || record.appearance === appearance)
+        )),
+        ...sectionRecords.filter((record) => !orderedKeys.has(record.key)),
+      ];
+      const list = section.querySelector("[data-list]");
+      orderedRecords.forEach((record) => {
+        const row = rowByKey.get(record.key);
+        if (row) list?.append(row);
+      });
+    }
     for (const row of rows) {
       const record = recordByKey.get(row.dataset.recordKey);
       const show = record && visible.has(record.key);
@@ -1170,6 +1226,7 @@
 
   function bindControls() {
     pageSizeSelect();
+    let closeSortPopover = () => {};
     search?.addEventListener("input", () => {
       state.query = search.value;
       state.page = 1;
@@ -1178,6 +1235,7 @@
     });
     quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
       button.addEventListener("click", () => {
+        closeSortPopover();
         state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv";
         discardFilterDraft();
         archive.normalizeFiltersForMedia(state, records);
@@ -1189,6 +1247,7 @@
     });
     quarterRoot.querySelectorAll("[data-view-mode]").forEach((button) => {
       button.addEventListener("click", () => {
+        closeSortPopover();
         state.viewMode = archive.writeViewMode(button.dataset.viewMode);
         render();
         button.focus();
@@ -1196,9 +1255,10 @@
     });
     const sortButton = quarterRoot.querySelector("[data-sort-toggle]");
     const sortPopover = quarterRoot.querySelector("[data-sort-popover]");
-    const closeSortPopover = (restoreFocus = false) => {
+    closeSortPopover = (restoreFocus = false) => {
       if (!sortPopover || sortPopover.hidden) return;
       sortPopover.hidden = true;
+      archive.clearPopoverPosition(sortPopover);
       sortButton?.setAttribute("aria-expanded", "false");
       if (restoreFocus) sortButton?.focus();
     };
@@ -1221,6 +1281,7 @@
         });
         return button;
       }));
+      archive.positionPopover(sortPopover, sortButton);
       if (focusOption) sortPopover.querySelector('[aria-checked="true"]')?.focus();
     };
     sortPopover?.addEventListener("keydown", (event) => {
@@ -1258,7 +1319,10 @@
         closeSortPopover();
       }
     });
+    document.addEventListener("bsb-quarter-sheet-open", () => closeSortPopover());
+    window.addEventListener("scroll", () => closeSortPopover(), { passive: true });
     quarterRoot.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
+      closeSortPopover();
       if (state.workspaceMode === "filter") {
         closeFilterAndRestoreFocus(false);
       } else {
@@ -1484,6 +1548,9 @@
   let index = null;
   let records = [];
   let rows = [];
+  let listSignature = "";
+  let listSections = new Map();
+  let rowByKey = new Map();
   let recordByKey = new Map();
   const detailByQuarter = new Map();
   let detailRequest = 0;
@@ -1771,45 +1838,80 @@
 
   function buildLists(result) {
     if (!selectors.list) return;
-    selectors.list.replaceChildren();
-    const positions = new Map(result.all.map((record, index) => [record.key, index + 1]));
-    const groups = [
-      ["tv", "all", "电视节目"],
-      ["movie", "premiere", "剧场版"],
-    ];
-    groups.forEach(([media, appearance, title]) => {
-      const allValues = result.all.filter((record) =>
-        record.media === (media === "movie" ? "MOVIE" : "TV")
-        && (appearance === "all" || record.appearance === appearance));
-      const pageValues = result.pageRecords.filter((record) =>
-        record.media === (media === "movie" ? "MOVIE" : "TV")
-        && (appearance === "all" || record.appearance === appearance));
-      const section = document.createElement("section");
-      section.className = "result-section";
-      section.dataset.listSection = media;
-      section.dataset.appearanceSection = appearance;
-      const header = document.createElement("header");
-      header.className = "result-section__header";
-      const code = document.createElement("p");
-      code.className = "result-section__code";
-      code.textContent = `${media.toUpperCase()} / ${appearance.toUpperCase()}`;
-      const heading = document.createElement("h2");
-      heading.textContent = title;
-      const counter = document.createElement("span");
-      counter.dataset.sectionCount = "true";
-      counter.textContent = String(allValues.length).padStart(2, "0");
-      header.append(code, heading, counter);
-      const list = document.createElement("div");
-      list.className = "result-list";
-      pageValues.forEach((record) => {
-        const row = createRow(record, positions.get(record.key) || 0);
-        list.append(row);
+    const signature = records.map((record) => record.key).join("\u0000");
+    if (signature !== listSignature) {
+      selectors.list.replaceChildren();
+      listSections = new Map();
+      rowByKey = new Map();
+      const groups = [
+        ["tv", "all", "电视节目"],
+        ["movie", "premiere", "剧场版"],
+      ];
+      groups.forEach(([media, appearance, title]) => {
+        const sectionRecords = records.filter((record) => (
+          record.media === (media === "movie" ? "MOVIE" : "TV")
+          && (appearance === "all" || record.appearance === appearance)
+        ));
+        const section = document.createElement("section");
+        section.className = "result-section";
+        section.dataset.listSection = media;
+        section.dataset.appearanceSection = appearance;
+        const header = document.createElement("header");
+        header.className = "result-section__header";
+        const code = document.createElement("p");
+        code.className = "result-section__code";
+        code.textContent = `${media.toUpperCase()} / ${appearance.toUpperCase()}`;
+        const heading = document.createElement("h2");
+        heading.textContent = title;
+        const counter = document.createElement("span");
+        counter.dataset.sectionCount = "true";
+        header.append(code, heading, counter);
+        const list = document.createElement("div");
+        list.className = "result-list";
+        sectionRecords.forEach((record, index) => {
+          const row = createRow(record, index + 1);
+          rowByKey.set(record.key, row);
+          list.append(row);
+        });
+        section.append(header, list);
+        selectors.list.append(section);
+        listSections.set(media, { section, list, records: sectionRecords });
       });
-      section.append(header, list);
-      section.hidden = state.media !== media || pageValues.length === 0;
-      selectors.list.append(section);
-    });
-    rows = [...selectors.list.querySelectorAll(".subject-row")];
+      rows = [...selectors.list.querySelectorAll(".subject-row")];
+      listSignature = signature;
+    }
+    const positions = new Map(result.all.map((record, index) => [record.key, index + 1]));
+    const visibleRecords = window.innerWidth < 768 ? result.all : result.pageRecords;
+    const visible = new Set(visibleRecords.map((record) => record.key));
+    for (const [media, group] of listSections) {
+      const sectionMedia = media === "movie" ? "MOVIE" : "TV";
+      const matching = result.all.filter((record) => record.media === sectionMedia);
+      const matchingKeys = new Set(matching.map((record) => record.key));
+      const ordered = [
+        ...matching,
+        ...group.records.filter((record) => !matchingKeys.has(record.key)),
+      ];
+      group.list.replaceChildren(
+        ...ordered
+          .filter((record) => visible.has(record.key))
+          .map((record) => rowByKey.get(record.key)),
+      );
+      const count = matching.length;
+      group.section.hidden = state.media !== media || count === 0;
+      const counter = group.section.querySelector("[data-section-count]");
+      if (counter) counter.textContent = String(count).padStart(2, "0");
+      group.records.forEach((record) => {
+        const row = rowByKey.get(record.key);
+        if (!row) return;
+        row.hidden = false;
+        row.classList.toggle("is-selected", record.key === state.selectedOccurrence);
+        const button = row.querySelector("[data-open-subject]");
+        if (button) button.setAttribute("aria-expanded", String(record.key === state.selectedOccurrence));
+        const sequence = row.querySelector(".subject-row__sequence");
+        if (sequence) sequence.textContent = String(positions.get(record.key) || 0).padStart(3, "0");
+      });
+    }
+    rows = [...rowByKey.values()];
   }
 
   function scopeCounts() {
@@ -2279,6 +2381,7 @@
   }
 
   function bindControls() {
+    let closeSortPopover = () => {};
     const pageSize = root.querySelector("[data-page-size]");
     if (pageSize && window.BsbListbox) {
       pageSizeControl = window.BsbListbox.create(pageSize, {
@@ -2295,9 +2398,10 @@
       });
     }
     selectors.search?.addEventListener("input", () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); });
-    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
-    root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => { state.viewMode = archive.writeViewMode(button.dataset.viewMode); render(); button.focus(); }));
+    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }));
+    root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); state.viewMode = archive.writeViewMode(button.dataset.viewMode); render(); button.focus(); }));
     root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
+      closeSortPopover();
       if (state.workspaceMode === "filter") closeFilterAndRestoreFocus(false);
       else {
         if (window.innerWidth < 768) state.listScrollTop = window.scrollY;
@@ -2308,9 +2412,10 @@
       render();
     });
     const sortButton = root.querySelector("[data-sort-toggle]");
-    const closeSortPopover = (restoreFocus = false) => {
+    closeSortPopover = (restoreFocus = false) => {
       if (!selectors.sortPopover || selectors.sortPopover.hidden) return;
       selectors.sortPopover.hidden = true;
+      archive.clearPopoverPosition(selectors.sortPopover);
       sortButton?.setAttribute("aria-expanded", "false");
       if (restoreFocus) sortButton?.focus();
     };
@@ -2333,6 +2438,7 @@
         });
         return button;
       }));
+      archive.positionPopover(selectors.sortPopover, sortButton);
       if (focusOption) selectors.sortPopover.querySelector('[aria-checked="true"]')?.focus();
     };
     selectors.sortPopover?.addEventListener("keydown", (event) => {
@@ -2370,8 +2476,11 @@
         closeSortPopover();
       }
     });
+    document.addEventListener("bsb-quarter-sheet-open", () => closeSortPopover());
+    window.addEventListener("scroll", () => closeSortPopover(), { passive: true });
     root.querySelector("[data-clear-all]")?.addEventListener("click", () => { state.query = ""; state.filterOptionQuery = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); });
     root.querySelectorAll("[data-scope-choice]").forEach((button) => button.addEventListener("click", () => {
+      closeSortPopover();
       const kind = button.dataset.scopeChoice;
       setTab(kind);
       if (kind === "quarter") { state.scope = { kind: "quarter", value: "" }; selectors.browser.hidden = true; return; }

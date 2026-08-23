@@ -336,7 +336,7 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .pager button { background: transparent; border: 1px solid var(--rule); color: var(--ink-muted); cursor: pointer; font-family: var(--font-mono); font-size: .67rem; min-width: 2.2rem; padding: .35rem .4rem; }
 .pager button[aria-current="page"], .pager button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-ink); }
 .pager button:disabled { color: #9b9d97; cursor: not-allowed; }
-.sort-popover { background: var(--paper-raised); border: 1px solid var(--rule-strong); box-shadow: 0 8px 20px rgb(23 32 29 / 8%); display: grid; margin-left: auto; max-width: 15rem; padding: .25rem; position: relative; z-index: 2; }
+.sort-popover { background: var(--paper-raised); border: 1px solid var(--rule-strong); box-shadow: 0 8px 20px rgb(23 32 29 / 8%); display: grid; max-width: calc(100vw - 1rem); min-width: 12rem; padding: .25rem; position: fixed; width: max-content; z-index: 25; }
 .sort-popover[hidden] { display: none; }
 .sort-popover button { background: transparent; border: 0; cursor: pointer; padding: .45rem .6rem; text-align: left; }
 .sort-popover button:hover, .sort-popover button[aria-pressed="true"] { background: var(--surface-muted); color: var(--accent-ink); }
@@ -755,10 +755,10 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
   border-radius: var(--radius-popover);
   box-shadow: var(--shadow-popover);
   gap: .2rem;
-  margin: .45rem 0 0 auto;
-  max-width: min(18rem, 100%);
+  margin: 0;
+  max-width: min(18rem, calc(100vw - 1rem));
   padding: .35rem;
-  position: relative;
+  position: fixed;
   z-index: 25;
 }
 .sort-popover button {

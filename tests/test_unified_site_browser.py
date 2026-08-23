@@ -256,6 +256,10 @@ def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
     assert page.locator("[data-mobile-menu]").is_visible()
     assert not page.locator("[data-sort-popover]").is_visible()
 
+    # A top-layer menu intentionally intercepts clicks on controls beneath it;
+    # close it before opening the quarter sheet instead of clicking through it.
+    page.keyboard.press("Escape")
+    assert not page.locator("[data-mobile-menu]").is_visible()
     page.locator("[data-quarter-selector]").click()
     assert page.locator("[data-quarter-sheet]").is_visible()
     page.locator("[data-mobile-menu-toggle]").click()

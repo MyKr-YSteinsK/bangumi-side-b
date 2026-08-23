@@ -242,6 +242,14 @@ def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
     assert overlay["hitMenu"]
 
     page.mouse.click(2, 2)
+    page.wait_for_function(
+        """() => {
+          const menu = document.querySelector("[data-mobile-menu]");
+          return menu
+            && menu.dataset.menuOpen === "false"
+            && !menu.matches(":popover-open");
+        }"""
+    )
     assert not page.locator("[data-mobile-menu]").is_visible()
     page.locator("[data-mobile-menu-toggle]").click()
     page.keyboard.press("Escape")

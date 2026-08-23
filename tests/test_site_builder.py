@@ -203,6 +203,8 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     settings_html = (site / "settings" / "index.html").read_text("utf-8")
     assert "Bangumi Side B · MyKr" in july_html
     assert "2026-07 · Bangumi Side B｜MyKr" in july_html
+    bootstrap_index = july_html.index('localStorage.getItem("bsb-browse-view-mode")')
+    assert bootstrap_index < july_html.index('<link rel="stylesheet"')
     assert "Bangumi Side B｜MyKr" in settings_html
     assert 'id="settings-app-title"' in settings_html
     assert "<dd>MyKr</dd>" in settings_html

@@ -1804,6 +1804,9 @@ def _page(
         f"<title>{html.escape(title)}</title>"
         f'<link rel="manifest" href="{manifest_href}">'
         f'<link rel="icon" href="{favicon_href}" type="image/svg+xml">'
+        '<script>(function(){try{var mode=localStorage.getItem("bsb-browse-view-mode");'
+        'if(mode==="grid"||mode==="list")document.documentElement.dataset.browseViewMode=mode;'
+        '}catch(_){}})();</script>'
         f'<link rel="stylesheet" href="{_revision_href(css_href, revisions["assets/app.css"])}"></head>'
         f"<body{class_attr}{attributes}>"
         '<a class="skip-link" href="#main-content">跳到主要内容</a>'

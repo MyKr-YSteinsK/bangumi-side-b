@@ -169,6 +169,8 @@ def test_quarter_tv_appearances_share_one_list_and_static_navigation(
 ) -> None:
     page = chromium.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8000)
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
     _open_quarter(page, site_server_mixed, (390, 844))
 
     assert page.locator('[data-list-section="tv"]').count() == 1
@@ -344,6 +346,48 @@ def test_grid_list_view_switch_persists_and_preserves_detail(
         "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
     )
     assert archive_root.get_attribute("data-view-mode") == "grid"
+
+
+@pytest.mark.parametrize("mode", ["list", "grid"])
+def test_saved_view_mode_applies_before_delayed_app_bundle(
+    chromium: BrowserContext,
+    site_server: str,
+    unified_site: Path,
+    mode: str,
+) -> None:
+    bundle = (unified_site / "assets" / "app.js").read_text(encoding="utf-8")
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.add_init_script(
+        f"localStorage.setItem('bsb-browse-view-mode', '{mode}')"
+    )
+    page.route(
+        "**/assets/app.js*",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/javascript",
+            body=f"setTimeout(() => {{ {bundle} }}, 900);",
+        ),
+    )
+    page.goto(f"{site_server}/2026-07/index.html", wait_until="domcontentloaded")
+    page.wait_for_selector('[data-page="quarter"][data-archive-app]')
+    assert page.locator("html").get_attribute("data-browse-view-mode") == mode
+    metrics = page.locator('[data-list-section="tv"] .result-list').evaluate(
+        "node => ({columns: getComputedStyle(node).gridTemplateColumns, "
+        "coverWidth: node.querySelector('.subject-row__cover')"
+        ".getBoundingClientRect().width})"
+    )
+    if mode == "list":
+        assert len(metrics["columns"].split()) == 1
+        assert metrics["coverWidth"] < 80
+    else:
+        assert len(metrics["columns"].split()) == 2
+    page.wait_for_timeout(1500)
+    assert page.locator('main[data-page="quarter"]').get_attribute(
+        "data-view-mode"
+    ) == mode, errors
 
 
 def test_desktop_grid_list_view_switch_changes_density(

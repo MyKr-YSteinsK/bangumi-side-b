@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import shutil
 from dataclasses import replace
 from datetime import UTC, date, datetime
@@ -13,8 +14,13 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from bgm_side_b.build.site_builder import BuildError, UnifiedSiteBuilder, _subject_row
-from bgm_side_b.build.site_projection import SubjectProjection
+from bgm_side_b.build.site_builder import (
+    BuildError,
+    UnifiedSiteBuilder,
+    _quarter_html,
+    _subject_row,
+)
+from bgm_side_b.build.site_projection import QuarterProjection, SubjectProjection
 from bgm_side_b.config import load_tag_rules
 from bgm_side_b.database import Database
 from bgm_side_b.domain import (
@@ -370,7 +376,7 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
 
 - <b>escaped</b>
 
-## 0.6.1 - 2026-08-23
+## 0.6.2 - 2026-08-23
 
 ### 修复
 
@@ -394,9 +400,9 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
         "utf-8"
     )
     assert "06 / CHANGELOG" in page
-    assert "当前程序版本</dt><dd>0.6.1" in page
+    assert "当前程序版本</dt><dd>0.6.2" in page
     assert 'data-changelog-release="unreleased" open' in page
-    assert 'data-changelog-release="0.6.1" open' in page
+    assert 'data-changelog-release="0.6.2" open' in page
     assert 'data-changelog-release="0.3.0" open' not in page
     assert 'data-changelog-release="0.1.0"' in page
     assert 'data-changelog-release="0.1.0" open' not in page
@@ -573,6 +579,81 @@ def test_quarter_output_uses_master_detail_shell_and_static_rows(
     assert 'data-media="movie"' in page
     assert 'class="subject-card"' not in page
     assert 'id="subject-drawer"' not in page
+
+
+def test_quarter_static_rows_match_default_runtime_order() -> None:
+    def record(
+        subject_id: int,
+        score: float | None,
+        rating_count: int | None,
+        air_date: str | None,
+        *,
+        appearance: str = "premiere",
+        media: str = "TV",
+    ) -> SubjectProjection:
+        return SubjectProjection(
+            subject_id=subject_id,
+            preferred_title=f"Subject {subject_id}",
+            original_title=None,
+            aliases=(),
+            media_format=media,
+            episode_count=None,
+            air_date=air_date,
+            end_date=None,
+            rating_score=score,
+            rating_count=rating_count,
+            source="source",
+            allowed_tags=(),
+            display_summary=None,
+            cover_url=None,
+            cover_hash=None,
+            appearance_kind=appearance,
+            quarter="2026-07",
+            premiere_quarter=None,
+            bangumi_url=f"https://bgm.tv/subject/{subject_id}",
+        )
+
+    quarter = QuarterProjection(
+        "2026-07",
+        tv_premiere=(
+            record(1, 8.0, 10, "2026-07-03"),
+            record(3, 7.0, 5, "2026-07-05"),
+            record(5, None, 500, None),
+        ),
+        tv_continuing=(
+            record(2, 8.0, 20, "2026-07-04", appearance="continuing"),
+            record(4, 7.0, 5, "2026-07-02", appearance="continuing"),
+        ),
+        movie_premiere=(
+            record(7, None, None, None, media="MOVIE"),
+            record(6, 7.5, 1, "2026-07-01", media="MOVIE"),
+        ),
+    )
+    revisions = {
+        "assets/app.css": "css",
+        "assets/app.js": "js",
+        "assets/pwa.js": "pwa",
+        "manifest.webmanifest": "manifest",
+        "icons/favicon.svg": "favicon",
+    }
+    page = _quarter_html(quarter, revisions).decode("utf-8")
+    tv_section = page.split('data-list-section="tv"', 1)[1].split(
+        'data-list-section="movie"', 1
+    )[0]
+    movie_section = page.split('data-list-section="movie"', 1)[1]
+    tv_keys = re.findall(r'data-record-key="([^"]+)"', tv_section)
+    movie_keys = re.findall(r'data-record-key="([^"]+)"', movie_section)
+    assert tv_keys == [
+        "2@2026-07@continuing",
+        "1@2026-07@premiere",
+        "4@2026-07@continuing",
+        "3@2026-07@premiere",
+        "5@2026-07@premiere",
+    ]
+    assert movie_keys == [
+        "6@2026-07@premiere",
+        "7@2026-07@premiere",
+    ]
 
 
 def test_rating_change_only_dirties_own_quarter_and_shared_indexes(

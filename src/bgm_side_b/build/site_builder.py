@@ -1553,9 +1553,16 @@ def _quarter_html(
             "tv",
             "all",
             "电视节目",
-            (*quarter.tv_premiere, *quarter.tv_continuing),
+            _default_display_records(
+                (*quarter.tv_premiere, *quarter.tv_continuing)
+            ),
         ),
-        ("movie", "premiere", "剧场版", quarter.movie_premiere),
+        (
+            "movie",
+            "premiere",
+            "剧场版",
+            _default_display_records(quarter.movie_premiere),
+        ),
     )
     rendered = "".join(
         _result_section(mode, kind, title, records)
@@ -1623,6 +1630,37 @@ def _quarter_html(
         revisions,
         body_class=f"season-{quarter.quarter[-2:]}",
         data_attrs={"data-page": "quarter"},
+    )
+
+
+def _default_display_records(
+    records: tuple[SubjectProjection, ...],
+) -> tuple[SubjectProjection, ...]:
+    """Match the runtime score-desc order for the static first frame."""
+    return tuple(sorted(records, key=_default_display_sort_key))
+
+
+def _default_display_sort_key(
+    item: SubjectProjection,
+) -> tuple[bool, float, bool, int, bool, str, int, str]:
+    score_missing = item.rating_score is None
+    score = 0.0 if score_missing else -item.rating_score
+    count_missing = item.rating_count is None
+    count = 0 if count_missing else -item.rating_count
+    air_missing = item.air_date is None
+    air_date = "" if air_missing else item.air_date
+    record_key = (
+        f"{item.subject_id}@{item.quarter}@{item.appearance_kind}"
+    )
+    return (
+        score_missing,
+        score,
+        count_missing,
+        count,
+        air_missing,
+        air_date,
+        item.subject_id,
+        record_key,
     )
 
 

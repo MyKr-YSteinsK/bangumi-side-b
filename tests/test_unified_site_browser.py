@@ -532,7 +532,7 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.goto(f"{site_server}/settings/index.html")
     page.wait_for_selector('[data-changelog-release="unreleased"]')
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.locator(".settings-about").get_by_text("0.6.1", exact=True).is_visible()
+    assert page.locator(".settings-about").get_by_text("0.6.2", exact=True).is_visible()
     assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
     assert page.get_by_text("作者", exact=True).is_visible()
     assert page.get_by_text("MyKr", exact=True).is_visible()
@@ -543,7 +543,7 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     assert not page.locator('[data-changelog-release="unreleased"]').evaluate(
         "node => node.open"
     )
-    assert page.locator('[data-changelog-release="0.6.1"]').evaluate(
+    assert page.locator('[data-changelog-release="0.6.2"]').evaluate(
         "node => node.open"
     )
     assert not page.locator('[data-changelog-release="0.2.0"]').evaluate(

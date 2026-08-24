@@ -219,6 +219,7 @@
       || value.quarter !== expectedQuarter
       || typeof value.revision !== "string"
       || !value.revision
+      || !HEX_64.test(value.data_revision || "")
       || !Array.isArray(value.resources)
       || value.resources.length === 0
     ) throw new Error("季度清单无效");
@@ -235,7 +236,22 @@
       seen.add(resource.url);
       return resource;
     });
-    return { quarter: expectedQuarter, revision: value.revision, resources };
+    return {
+      quarter: expectedQuarter,
+      revision: value.revision,
+      data_revision: value.data_revision,
+      resources,
+    };
+  }
+
+  function effectiveDataRevision(manifest) {
+    if (HEX_64.test(manifest?.data_revision || "")) return manifest.data_revision;
+    const quarter = manifest?.quarter;
+    const resources = Array.isArray(manifest?.resources) ? manifest.resources : [];
+    const resource = resources.find(
+      (item) => item?.url === `data/quarters/${quarter}.json`,
+    );
+    return HEX_64.test(resource?.content_hash || "") ? resource.content_hash : null;
   }
 
   async function fetchQuarterManifest(quarter) {
@@ -1273,31 +1289,50 @@
   }
 
   async function detectUpdates() {
-    if (!navigator.onLine) return [];
-    const changed = [];
+    const result = { dataUpdates: [], packageMaintenance: [], current: [] };
+    if (!navigator.onLine) return result;
     for (const snapshot of await listQuarterStates()) {
       if (!snapshot.active) continue;
       try {
         // Network I/O stays outside the quarter transaction. The snapshot is
         // only a compare-and-set guard for the short metadata write below.
         const current = await fetchQuarterManifest(snapshot.quarter);
-        const marked = await withQuarterMutation(snapshot.quarter, async () => {
+        const classification = await withQuarterMutation(snapshot.quarter, async () => {
           const latest = await getQuarterState(snapshot.quarter);
           if (
             !latest.active
             || latest.active.revision !== snapshot.active.revision
             || latest.staging
-            || current.revision === latest.active.revision
-          ) return false;
-          await writeQuarterStateUnlocked({ ...latest, status: "UPDATE_AVAILABLE" });
-          return true;
+          ) return null;
+          const activeDataRevision = effectiveDataRevision(latest.active);
+          const hasDataUpdate = activeDataRevision !== current.data_revision;
+          const needsMigration = (
+            latest.active.data_revision !== current.data_revision
+            && activeDataRevision === current.data_revision
+          );
+          if (hasDataUpdate) {
+            await writeQuarterStateUnlocked({ ...latest, status: "UPDATE_AVAILABLE" });
+            return "DATA_UPDATE";
+          }
+          if (needsMigration) {
+            await writeQuarterStateUnlocked({
+              ...latest,
+              active: { ...latest.active, data_revision: current.data_revision },
+            });
+          }
+          if (current.revision === latest.active.revision) return "NONE";
+          return "PACKAGE_MAINTENANCE";
         });
-        if (marked) changed.push(snapshot.quarter);
+        if (classification === "DATA_UPDATE") result.dataUpdates.push(snapshot.quarter);
+        if (classification === "PACKAGE_MAINTENANCE") {
+          result.packageMaintenance.push(snapshot.quarter);
+        }
+        if (classification === "NONE") result.current.push(snapshot.quarter);
       } catch {
         // Update detection is best effort and never damages active metadata.
       }
     }
-    return changed;
+    return result;
   }
 
   async function restoreQueue() {

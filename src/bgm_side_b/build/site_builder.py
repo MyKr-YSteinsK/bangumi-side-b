@@ -71,6 +71,7 @@ class BuildBlocked(BuildError):
 
 
 _HREF_RE = re.compile(r"(?:href|src)=\"([^\"]+)\"")
+_HEX_64 = re.compile(r"[0-9a-f]{64}")
 _THEME_COLOR = "#17201d"
 _PWA_SOURCE_PATHS = {
     "assets/app.css": "static/css/site.css",
@@ -1104,6 +1105,24 @@ def _validate_offline_payload(
     site: Path,
 ) -> None:
     payload = _load_json({"offline.json": content}, "offline.json")
+    quarter = payload.get("quarter")
+    data_revision = payload.get("data_revision")
+    if not isinstance(quarter, str) or not re.fullmatch(r"[0-9]{4}-(?:01|04|07|10)", quarter):
+        raise BuildError("offline manifest quarter is invalid")
+    if not isinstance(data_revision, str) or _HEX_64.fullmatch(data_revision) is None:
+        raise BuildError("offline manifest data revision is invalid")
+    quarter_relative = f"data/quarters/{quarter}.json"
+    quarter_bytes = mapping.get(quarter_relative)
+    if quarter_bytes is None:
+        quarter_path = site / Path(quarter_relative)
+        if not quarter_path.is_file():
+            raise BuildError(f"offline manifest data payload is missing: {quarter}")
+        try:
+            quarter_bytes = quarter_path.read_bytes()
+        except OSError as error:
+            raise BuildError(f"offline manifest data payload is unreadable: {quarter}") from error
+    if hashlib.sha256(quarter_bytes).hexdigest() != data_revision:
+        raise BuildError(f"offline manifest data revision is invalid: {quarter}")
     resources = payload.get("resources", [])
     if not isinstance(resources, list):
         raise BuildError("offline manifest resources are invalid")
@@ -1944,6 +1963,7 @@ def _offline_manifest_bytes(
     quarter: QuarterProjection, specs: Mapping[str, ArtifactSpec]
 ) -> bytes:
     label = quarter.quarter
+    data_revision = hashlib.sha256(json_bytes(quarter.to_dict())).hexdigest()
     required = [
         f"{label}/index.html",
         f"data/quarters/{label}.json",
@@ -1983,13 +2003,14 @@ def _offline_manifest_bytes(
             "revision": fingerprint(
                 {
                     "quarter": label,
-                    "data_revision": quarter.fingerprint,
+                    "data_revision": data_revision,
                     "resources": [
                         (item["url"], item["content_hash"], item["size_bytes"])
                         for item in resources
                     ],
                 }
             ),
+            "data_revision": data_revision,
             "resources": resources,
         }
     )

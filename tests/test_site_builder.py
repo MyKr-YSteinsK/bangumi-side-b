@@ -410,7 +410,7 @@ def test_settings_embeds_escaped_changelog_with_release_defaults(
         "utf-8"
     )
     assert "06 / CHANGELOG" in page
-    assert "当前程序版本</dt><dd>0.7.0" in page
+    assert "当前程序版本</dt><dd>0.7.1" in page
     assert 'data-changelog-release="0.6.3"' in page
     assert '<details class="settings-changelog__release"' not in page
     assert 'data-changelog-release="0.6.2"' in page
@@ -547,12 +547,19 @@ def test_offline_package_revision_covers_resources_but_not_sw_or_icons(
     builder.build()
     site = tmp_path / "dist" / "site"
 
-    def package_state() -> tuple[str, str, bytes]:
+    def package_state() -> tuple[str, str, str, bytes]:
         package = json.loads(
             (site / "data" / "offline" / "2026-07.json").read_text("utf-8")
         )
         shell = json.loads((site / "data" / "pwa-shell.json").read_text("utf-8"))
-        return package["revision"], shell["revision"], (site / "sw.js").read_bytes()
+        data = (site / "data" / "quarters" / "2026-07.json").read_bytes()
+        assert package["data_revision"] == hashlib.sha256(data).hexdigest()
+        return (
+            package["revision"],
+            package["data_revision"],
+            shell["revision"],
+            (site / "sw.js").read_bytes(),
+        )
 
     initial = package_state()
     css = isolated_root / "static" / "css" / "site.css"
@@ -562,6 +569,14 @@ def test_offline_package_revision_covers_resources_but_not_sw_or_icons(
     builder.build()
     after_css = package_state()
     assert after_css[0] != initial[0]
+    assert after_css[1] == initial[1]
+
+    js = isolated_root / "static" / "js" / "app.js"
+    js.write_text(js.read_text("utf-8") + "\n// package revision\n", encoding="utf-8")
+    builder.build()
+    after_js = package_state()
+    assert after_js[0] != after_css[0]
+    assert after_js[1] == initial[1]
 
     sw = isolated_root / "static" / "pwa" / "sw.js"
     sw.write_text(
@@ -569,15 +584,17 @@ def test_offline_package_revision_covers_resources_but_not_sw_or_icons(
     )
     builder.build()
     after_sw = package_state()
-    assert after_sw[0] == after_css[0]
-    assert after_sw[1] == after_css[1]
-    assert after_sw[2] != after_css[2]
+    assert after_sw[0] == after_js[0]
+    assert after_sw[1] == after_js[1]
+    assert after_sw[2] == after_js[2]
+    assert after_sw[3] != after_js[3]
 
     icon = isolated_root / "static" / "icons" / "pwa-192.png"
     icon.write_bytes(icon.read_bytes() + b"icon-only")
     builder.build()
     after_icon = package_state()
     assert after_icon[0] == after_sw[0]
+    assert after_icon[1] == after_sw[1]
 
 
 def test_quarter_output_uses_master_detail_shell_and_static_rows(

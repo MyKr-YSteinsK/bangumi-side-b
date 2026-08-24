@@ -2066,7 +2066,8 @@ def test_update_detection_does_not_resurrect_removed_quarter_during_fetch(
         }
         """
     )
-    assert changed == []
+    assert changed["dataUpdates"] == []
+    assert changed["packageMaintenance"] == []
     assert page.evaluate(
         "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
     ) == "NONE"
@@ -2137,7 +2138,8 @@ def test_update_detection_does_not_overwrite_completed_update(
         }
         """
     )
-    assert result["changed"] == []
+    assert result["changed"]["dataUpdates"] == []
+    assert result["changed"]["packageMaintenance"] == []
     assert result["state"]["active"]["revision"] == manifest["revision"]
     assert result["state"]["staging"] is None
     context.close()
@@ -2209,9 +2211,90 @@ def test_update_detection_preserves_partial_staging_during_fetch(
         """,
         {"manifest": manifest, "stagedHash": staged_hash},
     )
-    assert result["changed"] == []
+    assert result["changed"]["dataUpdates"] == []
+    assert result["changed"]["packageMaintenance"] == []
     assert result["state"]["status"] == "INCOMPLETE"
     assert result["state"]["staging"]["verified_hashes"] == [staged_hash]
+    context.close()
+
+
+def test_update_detection_separates_data_and_package_revisions(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+
+    def write_state(active: dict[str, object]) -> None:
+        page.evaluate(
+            """
+            async (active) => {
+              const meta = await caches.open("bsb-meta-v1");
+              await meta.put(
+                new Request(new URL(
+                  "../__bsb_meta__/quarters/2026-07.json", location.href)),
+                new Response(JSON.stringify({
+                  schema: 1,
+                  quarter: "2026-07",
+                  status: "COMPLETE",
+                  active,
+                  staging: null,
+                  error: null,
+                })),
+              );
+            }
+            """,
+            active,
+        )
+
+    write_state({**manifest, "revision": "old-package-revision"})
+    manifest["revision"] = "package-only-revision"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    package_only = page.evaluate("async () => window.BsbPwa.detectUpdates()")
+    assert package_only == {
+        "dataUpdates": [],
+        "packageMaintenance": ["2026-07"],
+        "current": [],
+    }
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
+    ) == "COMPLETE"
+
+    legacy = {key: value for key, value in manifest.items() if key != "data_revision"}
+    write_state({**legacy, "revision": "legacy-package-revision"})
+    manifest["revision"] = "legacy-migrated-revision"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    migrated = page.evaluate("async () => window.BsbPwa.detectUpdates()")
+    assert migrated["dataUpdates"] == []
+    assert migrated["packageMaintenance"] == ["2026-07"]
+    migrated_state = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert migrated_state["active"]["data_revision"] == manifest["data_revision"]
+
+    manifest["revision"] = "data-update-revision"
+    manifest["data_revision"] = "d" * 64
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    data_update = page.evaluate("async () => window.BsbPwa.detectUpdates()")
+    assert data_update["dataUpdates"] == ["2026-07"]
+    assert data_update["packageMaintenance"] == []
+    assert page.evaluate(
+        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
+    ) == "UPDATE_AVAILABLE"
     context.close()
 
 
@@ -2489,6 +2572,7 @@ def test_quarter_manifest_validation_rejects_unsafe_and_duplicate_resources(
     valid = {
         "quarter": "2026-07",
         "revision": "revision",
+        "data_revision": "b" * 64,
         "resources": [
             {"url": "index.html", "content_hash": "a" * 64, "size_bytes": 1}
         ],
@@ -2497,6 +2581,18 @@ def test_quarter_manifest_validation_rejects_unsafe_and_duplicate_resources(
         "([value]) => window.BsbPwa.validateQuarterManifest(value, '2026-07')",
         [valid],
     )["quarter"] == "2026-07"
+    invalid_data_revision = {**valid, "data_revision": "invalid"}
+    assert page.evaluate(
+        """
+        ([value]) => {
+          try {
+            window.BsbPwa.validateQuarterManifest(value, "2026-07");
+            return false;
+          } catch { return true; }
+        }
+        """,
+        [invalid_data_revision],
+    )
     for bad_url in ("/absolute", "../escape", "https://example.invalid/x"):
         invalid = {**valid, "resources": [{**valid["resources"][0], "url": bad_url}]}
         assert page.evaluate(
@@ -3304,6 +3400,7 @@ def test_settings_rechecks_offline_updates_after_reconnect(
     manifest_path = served / "data" / "offline" / "2026-07.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
     manifest["revision"] = "reconnect-update-revision"
+    manifest["data_revision"] = "f" * 64
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
         encoding="utf-8",

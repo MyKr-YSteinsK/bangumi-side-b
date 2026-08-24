@@ -177,6 +177,9 @@ def test_quarter_tv_appearances_share_one_list_and_static_navigation(
     errors: list[str] = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     _open_quarter(page, site_server_mixed, (390, 844))
+    assert page.evaluate(
+        "getComputedStyle(document.documentElement).touchAction"
+    ) == "manipulation"
 
     assert page.locator('[data-list-section="tv"]').count() == 1
     assert page.locator('[data-list-section="movie"]').count() == 1
@@ -649,7 +652,7 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.goto(f"{site_server}/settings/index.html")
     page.wait_for_selector('[data-changelog-release="0.8.0"]', state="attached")
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.locator(".settings-about").get_by_text("0.8.0", exact=True).is_visible()
+    assert page.locator(".settings-about").get_by_text("0.8.1", exact=True).is_visible()
     assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
     assert page.get_by_text("作者", exact=True).is_visible()
     assert page.get_by_text("MyKr", exact=True).is_visible()

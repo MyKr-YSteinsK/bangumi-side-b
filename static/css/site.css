@@ -52,7 +52,7 @@
 
 * { box-sizing: border-box; }
 
-html { background: var(--surface-page); color: var(--ink); font-family: var(--font-sans); line-height: 1.6; }
+html { background: var(--surface-page); color: var(--ink); font-family: var(--font-sans); line-height: 1.6; touch-action: manipulation; }
 
 body { margin: 0; min-width: 320px; }
 

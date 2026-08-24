@@ -22,6 +22,8 @@
   const QUARTER = /^\d{4}-(?:01|04|07|10)$/;
   const RETRY_DELAYS = Object.freeze([1000, 3000, 10000]);
   const MAX_CONCURRENT_RESOURCES = 3;
+  const MAX_CONCURRENT_MANIFEST_CHECKS = 3;
+  const AUTO_MAINTENANCE_SESSION_KEY = "bsb-offline-auto-maintenance";
   const listeners = new Set();
   let queueRunner = null;
   let installPrompt = null;
@@ -34,6 +36,8 @@
   let registrationPromise = null;
   let serviceWorkerRegistration = null;
   let registrationError = null;
+  let autoMaintenancePromise = null;
+  let autoMaintenanceNeedsOnlineRecovery = !navigator.onLine;
   let fallbackQueueLockSequence = 0;
   let activeFallbackQueueLock = null;
   const fallbackQueueLockPage = crypto.randomUUID?.()
@@ -219,6 +223,7 @@
       || value.quarter !== expectedQuarter
       || typeof value.revision !== "string"
       || !value.revision
+      || !HEX_64.test(value.data_revision || "")
       || !Array.isArray(value.resources)
       || value.resources.length === 0
     ) throw new Error("季度清单无效");
@@ -235,7 +240,22 @@
       seen.add(resource.url);
       return resource;
     });
-    return { quarter: expectedQuarter, revision: value.revision, resources };
+    return {
+      quarter: expectedQuarter,
+      revision: value.revision,
+      data_revision: value.data_revision,
+      resources,
+    };
+  }
+
+  function effectiveDataRevision(manifest) {
+    if (HEX_64.test(manifest?.data_revision || "")) return manifest.data_revision;
+    const quarter = manifest?.quarter;
+    const resources = Array.isArray(manifest?.resources) ? manifest.resources : [];
+    const resource = resources.find(
+      (item) => item?.url === `data/quarters/${quarter}.json`,
+    );
+    return HEX_64.test(resource?.content_hash || "") ? resource.content_hash : null;
   }
 
   async function fetchQuarterManifest(quarter) {
@@ -915,6 +935,7 @@
               status: "COMPLETE",
               active: manifest,
               staging: null,
+              auto_maintenance: null,
               error: null,
             },
             progress: null,
@@ -929,7 +950,18 @@
       await updateQuarterDownloadState(quarter, generation, (current) => ({
         state: {
           ...current,
-          status: "INCOMPLETE",
+          status: current.auto_maintenance === "package"
+            && effectiveDataRevision(current.active) === manifest.data_revision
+            ? "COMPLETE"
+            : "INCOMPLETE",
+          staging: current.auto_maintenance === "package"
+            && effectiveDataRevision(current.active) === manifest.data_revision
+            ? null
+            : current.staging,
+          auto_maintenance: current.auto_maintenance === "package"
+            && effectiveDataRevision(current.active) === manifest.data_revision
+            ? "package"
+            : null,
           error: shortError(error),
         },
       }));
@@ -950,10 +982,25 @@
     return [...new Set(labels.filter((label) => QUARTER.test(label)))].sort().reverse();
   }
 
-  async function enqueue(labels) {
+  async function markPackageMaintenance(labels) {
+    for (const quarter of normalizeQuarterLabels(labels)) {
+      await withQuarterMutation(quarter, async () => {
+        const current = await getQuarterState(quarter);
+        if (!current.active || current.staging) return;
+        await writeQuarterStateUnlocked({
+          ...current,
+          auto_maintenance: "package",
+        });
+      });
+    }
+  }
+
+  async function enqueue(labels, options = {}) {
     await ensureServiceWorkerReady();
     const normalized = normalizeQuarterLabels(labels);
     if (!normalized.length) return currentQueue();
+    const packageMaintenance = normalizeQuarterLabels(options.packageMaintenance || []);
+    if (packageMaintenance.length) await markPackageMaintenance(packageMaintenance);
     const queue = await updateQueue((current) => {
       if (
         current.generation
@@ -1273,31 +1320,108 @@
   }
 
   async function detectUpdates() {
-    if (!navigator.onLine) return [];
-    const changed = [];
-    for (const snapshot of await listQuarterStates()) {
-      if (!snapshot.active) continue;
-      try {
-        // Network I/O stays outside the quarter transaction. The snapshot is
-        // only a compare-and-set guard for the short metadata write below.
-        const current = await fetchQuarterManifest(snapshot.quarter);
-        const marked = await withQuarterMutation(snapshot.quarter, async () => {
-          const latest = await getQuarterState(snapshot.quarter);
-          if (
-            !latest.active
-            || latest.active.revision !== snapshot.active.revision
-            || latest.staging
-            || current.revision === latest.active.revision
-          ) return false;
-          await writeQuarterStateUnlocked({ ...latest, status: "UPDATE_AVAILABLE" });
-          return true;
-        });
-        if (marked) changed.push(snapshot.quarter);
-      } catch {
-        // Update detection is best effort and never damages active metadata.
+    const result = { dataUpdates: [], packageMaintenance: [], current: [] };
+    Object.defineProperty(result, "hadError", {
+      configurable: true,
+      enumerable: false,
+      value: false,
+      writable: true,
+    });
+    if (!navigator.onLine) return result;
+    const snapshots = (await listQuarterStates()).filter((snapshot) => snapshot.active);
+    const classifications = new Map();
+    let cursor = 0;
+    const inspect = async () => {
+      while (cursor < snapshots.length) {
+        const snapshot = snapshots[cursor];
+        cursor += 1;
+        try {
+          // Network I/O stays outside the quarter transaction. The snapshot is
+          // only a compare-and-set guard for the short metadata write below.
+          const current = await fetchQuarterManifest(snapshot.quarter);
+          const classification = await withQuarterMutation(snapshot.quarter, async () => {
+            const latest = await getQuarterState(snapshot.quarter);
+            if (
+              !latest.active
+              || latest.active.revision !== snapshot.active.revision
+              || latest.staging
+            ) return null;
+            const activeDataRevision = effectiveDataRevision(latest.active);
+            const hasDataUpdate = activeDataRevision !== current.data_revision;
+            const needsMigration = (
+              latest.active.data_revision !== current.data_revision
+              && activeDataRevision === current.data_revision
+            );
+            if (hasDataUpdate) {
+              await writeQuarterStateUnlocked({ ...latest, status: "UPDATE_AVAILABLE" });
+              return "DATA_UPDATE";
+            }
+            if (needsMigration) {
+              await writeQuarterStateUnlocked({
+                ...latest,
+                active: { ...latest.active, data_revision: current.data_revision },
+              });
+            }
+            if (current.revision === latest.active.revision) return "NONE";
+            return "PACKAGE_MAINTENANCE";
+          });
+          classifications.set(snapshot.quarter, classification);
+        } catch {
+          result.hadError = true;
+          // Update detection is best effort and never damages active metadata.
+        }
       }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(MAX_CONCURRENT_MANIFEST_CHECKS, snapshots.length) },
+        () => inspect(),
+      ),
+    );
+    for (const snapshot of snapshots) {
+      const classification = classifications.get(snapshot.quarter);
+      if (classification === "DATA_UPDATE") result.dataUpdates.push(snapshot.quarter);
+      if (classification === "PACKAGE_MAINTENANCE") {
+        result.packageMaintenance.push(snapshot.quarter);
+      }
+      if (classification === "NONE") result.current.push(snapshot.quarter);
     }
-    return changed;
+    return result;
+  }
+
+  function autoMaintenanceWasChecked() {
+    try {
+      return sessionStorage.getItem(AUTO_MAINTENANCE_SESSION_KEY) === "complete";
+    } catch {
+      return false;
+    }
+  }
+
+  function markAutoMaintenanceChecked() {
+    try {
+      sessionStorage.setItem(AUTO_MAINTENANCE_SESSION_KEY, "complete");
+    } catch {
+      // Session storage can be unavailable in private browsing.
+    }
+  }
+
+  async function autoMaintainDownloadedQuarters({ force = false } = {}) {
+    if (autoMaintenancePromise) return autoMaintenancePromise;
+    autoMaintenancePromise = (async () => {
+      if (!supported() || !navigator.onLine || !canRunGuaranteedQueue()) return null;
+      if (!force && autoMaintenanceWasChecked()) return null;
+      const result = await detectUpdates();
+      if (result.hadError) return result;
+      const labels = [...result.dataUpdates, ...result.packageMaintenance];
+      if (labels.length) {
+        await enqueue(labels, { packageMaintenance: result.packageMaintenance });
+      }
+      markAutoMaintenanceChecked();
+      return result;
+    })().catch(() => null).finally(() => {
+      autoMaintenancePromise = null;
+    });
+    return autoMaintenancePromise;
   }
 
   async function restoreQueue() {
@@ -1907,7 +2031,6 @@
     // before its selector area is committed. Render the selector once after
     // the initial settings barrier so it cannot remain on the loading shell.
     renderQueueSelector(root.querySelector("[data-settings-selector]"));
-    await detectUpdates();
   }
 
   async function loadArchiveIndex(url) {
@@ -2032,12 +2155,15 @@
   window.addEventListener("online", async () => {
     const settings = document.querySelector("[data-pwa-settings]");
     await loadArchiveIndex(settings?.dataset.archiveIndexUrl);
-    if (settings) await detectUpdates();
+    const forceMaintenance = autoMaintenanceNeedsOnlineRecovery;
+    autoMaintenanceNeedsOnlineRecovery = false;
+    void autoMaintainDownloadedQuarters({ force: forceMaintenance });
     const queue = await currentQueue();
     if (queue.state === "waiting-network") await resumeQueue();
     notify({ areas: ["app", "quarter", "queue", "selector"], reason: "online" });
   });
   window.addEventListener("offline", async () => {
+    autoMaintenanceNeedsOnlineRecovery = true;
     await updateQueue((queue) => (
       queue.state === "downloading"
         ? { ...queue, state: "waiting-network" }
@@ -2054,6 +2180,7 @@
     window.addEventListener("load", async () => {
       await getOrStartServiceWorkerRegistration().catch(() => null);
       await restoreQueue();
+      void autoMaintainDownloadedQuarters();
     });
   }
 
@@ -2063,6 +2190,7 @@
     META_CACHE,
     RETRY_DELAYS,
     MAX_CONCURRENT_RESOURCES,
+    MAX_CONCURRENT_MANIFEST_CHECKS,
     supported,
     capabilityState: () => capabilityState,
     capabilityLabel,
@@ -2080,6 +2208,7 @@
     removeQuarter,
     retryServiceWorkerRegistration,
     detectUpdates,
+    autoMaintainDownloadedQuarters,
     garbageCollect,
     subscribe,
     refreshApp,

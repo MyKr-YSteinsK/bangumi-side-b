@@ -1,7 +1,7 @@
 /* Unified Bangumi Side B service worker. */
 "use strict";
 
-const BSB_SHELL_REVISION = "25ab1b901610aef8a5d17da5e3ad92ed7637c53cf42b35bf8b2baad20b66d64b";
+const BSB_SHELL_REVISION = "134e883e78dc82ffe9997e98bbbb065ef5d527b06ad0ab4762177e5ce25ea73f";
 const CONTENT_CACHE = "bsb-content-v1";
 const RUNTIME_CACHE = "bsb-runtime-v1";
 const META_CACHE = "bsb-meta-v1";
@@ -116,7 +116,12 @@ function validateManifest(value, expectedQuarter = null) {
     if (value.schema !== 1 || value.revision !== BSB_SHELL_REVISION) {
       throw new Error("shell revision mismatch");
     }
-  } else if (value.quarter !== expectedQuarter || typeof value.revision !== "string" || !value.revision) {
+  } else if (
+    value.quarter !== expectedQuarter
+    || typeof value.revision !== "string"
+    || !value.revision
+    || !HEX_64.test(value.data_revision || "")
+  ) {
     throw new Error("quarter manifest mismatch");
   }
   const seen = new Set();

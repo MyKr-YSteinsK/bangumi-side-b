@@ -459,7 +459,7 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
   .site-nav { display: none; }
   .mobile-menu-toggle { align-items: center; background: transparent; border: 1px solid var(--border-default); border-radius: var(--radius-small); color: var(--ink-muted); cursor: pointer; display: inline-flex; min-height: var(--control-height-touch); padding: 0 .7rem; }
   .site-header__brand { position: relative; }
-  .mobile-menu { background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-popover); box-shadow: var(--shadow-popover); display: grid; gap: .7rem; margin: 0; min-width: min(17rem, calc(100vw - 1rem)); overflow: auto; padding: .7rem .7rem calc(.7rem + var(--safe-area-bottom)); position: fixed; right: var(--safe-area-right); top: 0; z-index: var(--z-nav-overlay); }
+  .mobile-menu { background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-popover); bottom: auto; display: grid; gap: .7rem; inset: auto; left: auto; margin: 0; max-height: calc(100dvh - 1rem); max-width: calc(100vw - 1.4rem); min-width: min(17rem, calc(100vw - 1.4rem)); overflow: auto; padding: .7rem .7rem calc(.7rem + var(--safe-area-bottom)); position: fixed; right: auto; top: auto; width: min(17rem, calc(100vw - 1.4rem)); z-index: var(--z-nav-overlay); }
   .mobile-menu[data-menu-open="false"], .mobile-menu[hidden], .mobile-menu[popover]:not(:popover-open) { display: none; }
   .mobile-menu[data-menu-open="true"] { display: grid; }
   .mobile-menu__links { display: grid; gap: .25rem; }

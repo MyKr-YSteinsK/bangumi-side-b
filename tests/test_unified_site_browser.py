@@ -204,7 +204,10 @@ def test_quarter_tv_appearances_share_one_list_and_static_navigation(
     assert page.get_by_role("link", name="离线与设置").is_visible()
 
 
-@pytest.mark.parametrize("viewport", [(393, 852), (390, 844), (360, 800), (430, 932)])
+@pytest.mark.parametrize(
+    "viewport",
+    [(393, 852), (390, 844), (360, 800), (430, 932), (844, 390)],
+)
 def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
     chromium: BrowserContext,
     site_server_mixed: str,
@@ -214,11 +217,18 @@ def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
     page.set_default_timeout(8000)
     _open_quarter(page, site_server_mixed, viewport)
 
-    page.locator("[data-mobile-menu-toggle]").click()
+    menu_toggle = page.locator("[data-mobile-menu-toggle]")
+    if not menu_toggle.is_visible():
+        assert viewport[0] > 767
+        assert page.locator(".site-nav").is_visible()
+        return
+    menu_toggle.click()
     assert page.locator("[data-mobile-menu]").is_visible()
     overlay = page.locator("[data-mobile-menu]").evaluate(
         """menu => {
           const rect = menu.getBoundingClientRect();
+          const trigger = document.querySelector("[data-mobile-menu-toggle]");
+          const triggerRect = trigger.getBoundingClientRect();
           const x = Math.round(rect.left + rect.width / 2);
           const y = Math.round(rect.top + rect.height / 2);
           const hit = document.elementFromPoint(x, y);
@@ -228,6 +238,8 @@ def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
             open: menu.dataset.menuOpen,
             position: style.position,
             background: style.backgroundColor,
+            triggerGap: rect.top - triggerRect.bottom,
+            rightDelta: Math.abs(rect.right - triggerRect.right),
             withinViewport: rect.left >= 0 && rect.right <= innerWidth
               && rect.top >= 0 && rect.bottom <= innerHeight,
             hitMenu: hit === menu || menu.contains(hit),
@@ -240,6 +252,8 @@ def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
     assert overlay["background"] not in {"transparent", "rgba(0, 0, 0, 0)"}
     assert overlay["withinViewport"]
     assert overlay["hitMenu"]
+    assert 4 <= overlay["triggerGap"] <= 14
+    assert overlay["rightDelta"] <= 2
 
     # Allow native top-layer hit testing to settle before the real outside click.
     page.wait_for_function(
@@ -611,7 +625,7 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.goto(f"{site_server}/settings/index.html")
     page.wait_for_selector('[data-changelog-release="0.6.6"]')
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.locator(".settings-about").get_by_text("0.6.6", exact=True).is_visible()
+    assert page.locator(".settings-about").get_by_text("0.6.7", exact=True).is_visible()
     assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
     assert page.get_by_text("作者", exact=True).is_visible()
     assert page.get_by_text("MyKr", exact=True).is_visible()

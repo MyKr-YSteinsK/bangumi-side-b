@@ -703,25 +703,49 @@
       menuToggle.setAttribute("aria-expanded", String(open));
     };
     const clearMenuPosition = () => {
-      for (const property of ["top", "right", "max-width", "max-height"]) {
+      for (const property of [
+        "top",
+        "right",
+        "bottom",
+        "left",
+        "width",
+        "max-width",
+        "max-height",
+      ]) {
         menu.style.removeProperty(property);
       }
+    };
+    const safeAreaInset = (property) => {
+      const value = Number.parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue(property),
+      );
+      return Number.isFinite(value) ? value : 0;
     };
     const positionMenu = () => {
       if (!isOpen()) return;
       const anchor = menuToggle.getBoundingClientRect();
       const viewportPadding = 8;
-      const right = Math.max(viewportPadding, window.innerWidth - anchor.right);
-      const maxWidth = Math.max(0, window.innerWidth - viewportPadding * 2);
-      const maxHeight = Math.max(0, window.innerHeight - viewportPadding * 2);
-      menu.style.right = `${Math.round(right)}px`;
+      const leftPadding = Math.max(viewportPadding, safeAreaInset("--safe-area-left"));
+      const rightPadding = Math.max(viewportPadding, safeAreaInset("--safe-area-right"));
+      const topPadding = Math.max(viewportPadding, safeAreaInset("--safe-area-top"));
+      const bottomPadding = Math.max(viewportPadding, safeAreaInset("--safe-area-bottom"));
+      const maxWidth = Math.max(0, window.innerWidth - leftPadding - rightPadding);
+      const maxHeight = Math.max(0, window.innerHeight - topPadding - bottomPadding);
       menu.style.maxWidth = `${Math.round(maxWidth)}px`;
       menu.style.maxHeight = `${Math.round(maxHeight)}px`;
+      menu.style.width = `${Math.round(Math.min(menu.getBoundingClientRect().width, maxWidth))}px`;
+      const width = menu.getBoundingClientRect().width;
+      const left = Math.min(
+        Math.max(leftPadding, anchor.right - width),
+        Math.max(leftPadding, window.innerWidth - rightPadding - width),
+      );
+      menu.style.left = `${Math.round(left)}px`;
+      menu.style.right = "auto";
       const height = menu.getBoundingClientRect().height;
       const below = anchor.bottom + 8;
-      const top = below + height <= window.innerHeight - viewportPadding
+      const top = below + height <= window.innerHeight - bottomPadding
         ? below
-        : Math.max(viewportPadding, anchor.top - height - 8);
+        : Math.max(topPadding, anchor.top - height - 8);
       menu.style.top = `${Math.round(top)}px`;
     };
     const closeCompetingSurfaces = () => {

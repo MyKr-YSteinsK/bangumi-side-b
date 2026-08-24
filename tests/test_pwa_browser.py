@@ -193,6 +193,35 @@ def _arm_delayed_manifest(page: Page) -> None:
     page.evaluate("fetch('../__test__/delay-next-manifest')")
 
 
+def _write_offline_manifest(
+    pwa_site: Path,
+    quarter: str,
+    manifest: dict[str, object],
+) -> None:
+    (pwa_site / "data" / "offline" / f"{quarter}.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _seed_quarter_state(page: Page, quarter: str, state: dict[str, object]) -> None:
+    page.evaluate(
+        """
+        async ({ quarter, state }) => {
+          const meta = await caches.open('bsb-meta-v1');
+          await meta.put(
+            new Request(new URL(
+              `../__bsb_meta__/quarters/${quarter}.json`, location.href)),
+            new Response(JSON.stringify(state), {
+              headers: { 'Content-Type': 'application/json' },
+            }),
+          );
+        }
+        """,
+        {"quarter": quarter, "state": state},
+    )
+
+
 @pytest.fixture
 def failing_manifest_server(pwa_site: Path) -> Iterator[str]:
     class FailingManifestHandler(http.server.SimpleHTTPRequestHandler):
@@ -452,7 +481,10 @@ def test_shell_manifest_rejects_conflicting_content_identity(
     page.evaluate(
         "navigator.serviceWorker.ready.then((registration) => registration.update())"
     )
-    page.wait_for_timeout(1000)
+    page.wait_for_function(
+        "window.BsbPwa.currentQueue().then((queue) => "
+        "queue.state === 'idle' && queue.succeeded.includes('2026-07'))"
+    )
     shell_after = page.evaluate(
         """
         async () => {
@@ -2298,6 +2330,257 @@ def test_update_detection_separates_data_and_package_revisions(
     context.close()
 
 
+def test_auto_maintenance_is_nonblocking_and_active_only(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    _seed_quarter_state(page, "2026-04", {
+        "schema": 1,
+        "quarter": "2026-04",
+        "status": "INCOMPLETE",
+        "active": None,
+        "staging": {"revision": "incomplete"},
+        "error": "test",
+    })
+    _seed_quarter_state(page, "2026-01", {
+        "schema": 1,
+        "quarter": "2026-01",
+        "status": "INCOMPLETE",
+        "active": None,
+        "staging": {"revision": "incomplete"},
+        "error": "test",
+    })
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+
+    def delay_manifest(route) -> None:
+        time.sleep(0.5)
+        route.continue_()
+
+    page.route("**/data/offline/2026-07.json", delay_manifest)
+    page.goto(f"{pwa_server}/2026-07/index.html", wait_until="domcontentloaded")
+    page.wait_for_selector(".subject-row", timeout=1000)
+    assert page.locator("main[data-page=quarter]").is_visible()
+    page.unroute("**/data/offline/2026-07.json")
+    page.wait_for_function(
+        "sessionStorage.getItem('bsb-offline-auto-maintenance') === 'complete'"
+    )
+    manifest_requests = [url for url in requests if "data/offline/" in url]
+    assert any("data/offline/2026-07.json" in url for url in manifest_requests)
+    assert not any("data/offline/2026-04.json" in url for url in manifest_requests)
+    assert not any("data/offline/2026-01.json" in url for url in manifest_requests)
+    queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert queue["state"] == "idle"
+    assert queue["succeeded"] == ["2026-07"]
+    assert queue["failed"] == []
+    context.close()
+
+
+def test_auto_maintenance_updates_data_and_package_without_data_notice(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+
+    quarter_path = pwa_site / "data" / "quarters" / "2026-07.json"
+    changed_bytes = quarter_path.read_bytes() + b" "
+    quarter_path.write_bytes(changed_bytes)
+    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    data_resource = next(
+        item for item in manifest["resources"]
+        if item["url"] == "data/quarters/2026-07.json"
+    )
+    data_resource["content_hash"] = hashlib.sha256(changed_bytes).hexdigest()
+    data_resource["size_bytes"] = len(changed_bytes)
+    manifest["revision"] = "d" * 64
+    manifest["data_revision"] = data_resource["content_hash"]
+    _write_offline_manifest(pwa_site, "2026-07", manifest)
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
+    _wait_for_queue(page, 1)
+    data_state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert data_state["status"] == "COMPLETE"
+    assert data_state["active"]["revision"] == "d" * 64
+    assert data_state["active"]["data_revision"] == manifest["data_revision"]
+    assert data_state["staging"] is None
+
+    manifest["revision"] = "p" * 64
+    _write_offline_manifest(pwa_site, "2026-07", manifest)
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
+    _wait_for_queue(page, 1)
+    package_state = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert package_state["status"] == "COMPLETE"
+    assert package_state["active"]["revision"] == "p" * 64
+    assert package_state["active"]["data_revision"] == manifest["data_revision"]
+    assert package_state["staging"] is None
+    page.goto(f"{pwa_server}/settings/index.html")
+    row = page.locator('[data-offline-quarter="2026-07"]')
+    row.get_by_text("已下载").wait_for(state="visible")
+    assert "有更新" not in row.inner_text()
+    context.close()
+
+
+def test_auto_package_failure_keeps_active_downloaded_and_records_error(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    context = chromium.new_context()
+    context.add_init_script(
+        """
+        const nativeSetTimeout = window.setTimeout.bind(window);
+        window.setTimeout = (callback, delay, ...args) =>
+          nativeSetTimeout(callback, Math.min(delay, 5), ...args);
+        """
+    )
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    original = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    app_resource = next(
+        item for item in manifest["resources"] if item["url"] == "assets/app.js"
+    )
+    app_resource["content_hash"] = "e" * 64
+    manifest["revision"] = "f" * 64
+    _write_offline_manifest(pwa_site, "2026-07", manifest)
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
+    _wait_for_queue(page, 1)
+    state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert state["status"] == "COMPLETE"
+    assert state["active"]["revision"] == original["active"]["revision"]
+    assert state["staging"] is None
+    assert state["error"]
+    assert any(error["quarter"] == "2026-07" for error in queue["errors"])
+    context.close()
+
+
+def test_auto_maintenance_session_guard_and_offline_recovery(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
+    page.wait_for_function(
+        "sessionStorage.getItem('bsb-offline-auto-maintenance') === 'complete'"
+    )
+    page.goto(f"{pwa_server}/2026-07/index.html")
+    page.goto(f"{pwa_server}/archive/index.html")
+    page.goto(f"{pwa_server}/settings/index.html")
+    manifest_requests = [url for url in requests if "data/offline/2026-07.json" in url]
+    assert len(manifest_requests) == 1
+
+    page.wait_for_timeout(300)
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    requests.clear()
+    context.set_offline(True)
+    page.wait_for_function("navigator.onLine === false")
+    page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
+    page.wait_for_timeout(150)
+    assert not any("data/offline/2026-07.json" in url for url in requests)
+    context.set_offline(False)
+    page.evaluate("window.dispatchEvent(new Event('online'))")
+    page.wait_for_function(
+        "sessionStorage.getItem('bsb-offline-auto-maintenance') === 'complete'"
+    )
+    assert any("data/offline/2026-07.json" in url for url in requests)
+    context.close()
+
+
+def test_auto_maintenance_merges_existing_queue_generation(
+    chromium: Browser,
+    pwa_server: str,
+    pwa_site: Path,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/settings/index.html")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    manifest["revision"] = "m" * 64
+    _write_offline_manifest(pwa_site, "2026-07", manifest)
+    manifest_04 = json.loads(
+        (pwa_site / "data" / "offline" / "2026-04.json").read_text("utf-8")
+    )
+    _seed_quarter_state(page, "2026-04", {
+        "schema": 1,
+        "quarter": "2026-04",
+        "status": "COMPLETE",
+        "active": manifest_04,
+        "staging": None,
+        "error": None,
+    })
+    generation = "manual-generation"
+    page.evaluate(
+        """
+        async (generation) => {
+          const meta = await caches.open('bsb-meta-v1');
+          await meta.put(
+            new Request(new URL('../__bsb_meta__/queue.json', location.href)),
+            new Response(JSON.stringify({
+              schema: 2,
+              generation,
+              state: 'paused',
+              labels: ['2026-04'],
+              current: null,
+              succeeded: [],
+              failed: [],
+              errors: [],
+            })),
+          );
+        }
+        """,
+        generation,
+    )
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
+    page.wait_for_function(
+        "window.BsbPwa.currentQueue().then((queue) => "
+        "queue.generation === 'manual-generation' "
+        "&& queue.state === 'paused' "
+        "&& queue.labels.includes('2026-04') "
+        "&& queue.labels.includes('2026-07'))"
+    )
+    queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
+    assert queue["generation"] == generation
+    assert queue["labels"] == ["2026-07", "2026-04"]
+    assert queue["state"] == "paused"
+    context.close()
+
+
 def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_bytes(
     chromium: Browser,
     pwa_server: str,
@@ -3384,7 +3667,7 @@ def test_app_update_waits_for_user_and_data_only_build_does_not_update_shell(
     context.close()
 
 
-def test_settings_rechecks_offline_updates_after_reconnect(
+def test_auto_maintenance_rechecks_offline_updates_after_reconnect(
     chromium: Browser,
     update_server: str,
     update_site: tuple[object, object, Path, Path],
@@ -3396,7 +3679,6 @@ def test_settings_rechecks_offline_updates_after_reconnect(
     page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
     _wait_for_queue(page, 1)
-    before = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
     manifest_path = served / "data" / "offline" / "2026-07.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
     manifest["revision"] = "reconnect-update-revision"
@@ -3414,14 +3696,13 @@ def test_settings_rechecks_offline_updates_after_reconnect(
     )
     context.set_offline(False)
     page.evaluate("window.dispatchEvent(new Event('online'))")
-    page.wait_for_function(
-        "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
-        "?.textContent.includes('有更新')"
-    )
+    page.wait_for_timeout(1000)
     after = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
     queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
-    assert after["status"] == "UPDATE_AVAILABLE"
-    assert after["active"]["revision"] == before["active"]["revision"]
+    assert after["status"] == "COMPLETE", (after, queue, page.evaluate(
+        "sessionStorage.getItem('bsb-offline-auto-maintenance')"
+    ))
+    assert after["active"]["revision"] == "reconnect-update-revision", after
     assert after["staging"] is None
     assert queue["state"] == "idle"
     assert queue["current"] is None

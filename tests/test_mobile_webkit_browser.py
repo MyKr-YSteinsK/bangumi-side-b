@@ -57,7 +57,7 @@ def site_server(mobile_site: Path) -> Iterator[str]:
         server.server_close()
 
 
-@pytest.fixture(scope="session", params=("chromium", "webkit"))
+@pytest.fixture(scope="module", params=("chromium", "webkit"))
 def motion_browser(request: pytest.FixtureRequest) -> Iterator[Browser]:
     with sync_playwright() as runner:
         browser = getattr(runner, request.param).launch()

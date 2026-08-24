@@ -639,9 +639,9 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.on("request", lambda request: requests.append(request.url))
 
     page.goto(f"{site_server}/settings/index.html")
-    page.wait_for_selector('[data-changelog-release="0.7.1"]', state="attached")
+    page.wait_for_selector('[data-changelog-release="0.7.2"]', state="attached")
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.locator(".settings-about").get_by_text("0.7.1", exact=True).is_visible()
+    assert page.locator(".settings-about").get_by_text("0.7.2", exact=True).is_visible()
     assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
     assert page.get_by_text("作者", exact=True).is_visible()
     assert page.get_by_text("MyKr", exact=True).is_visible()
@@ -649,7 +649,7 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     assert page.locator(".site-footer").get_by_text(
         "Bangumi Side B · MyKr", exact=True
     ).is_visible()
-    assert page.locator('[data-changelog-release="0.7.1"]').evaluate(
+    assert page.locator('[data-changelog-release="0.7.2"]').evaluate(
         "node => node.tagName"
     ) == "SECTION"
     assert page.locator('[data-changelog-milestone="0.6"]').count() == 1
@@ -2181,8 +2181,8 @@ def test_large_archive_renders_only_the_current_page_and_restores_deep_link(
     assert page.locator(".subject-row").count() == 20
 
     page.locator("[data-page-size] .select-trigger").click()
-    page.locator('[data-page-size] [role="option"]', has_text="100").click()
-    assert page.locator(".subject-row").count() == 100
+    page.locator('[data-page-size] [role="option"]', has_text="50").click()
+    assert page.locator(".subject-row").count() == 50
     page.locator("[data-page-size] .select-trigger").click()
     page.locator('[data-page-size] [role="option"]', has_text="20").click()
     page.locator("[data-pager] button", has_text="02").click()
@@ -2203,12 +2203,88 @@ def test_large_archive_renders_only_the_current_page_and_restores_deep_link(
     assert "151" in page.locator(".subject-row__sequence").all_inner_texts()
 
 
+@pytest.mark.parametrize(
+    "viewport", [(393, 852), (430, 932), (1024, 768), (1440, 900)]
+)
+def test_archive_pagination_is_real_on_mobile_and_desktop(
+    chromium: BrowserContext,
+    site_server: str,
+    unified_site: Path,
+    viewport: tuple[int, int],
+) -> None:
+    catalog = json.loads(
+        (unified_site / "data" / "catalog" / "2026.json").read_text("utf-8")
+    )
+    base = next(record for record in catalog["records"] if record["media"] == "TV")
+    catalog["records"] = [
+        {
+            **_facet_record(base, 5000 + index, "original", "奇幻"),
+            "preferred_title": f"Archive page {index + 1}",
+            "quarter": "2026-07",
+            "appearance": "premiere",
+            "air_date": "2026-07-01",
+            "rating_count": 100,
+            "score": 8.0,
+        }
+        for index in range(60)
+    ]
+
+    page = chromium.new_page(viewport={"width": viewport[0], "height": viewport[1]})
+    page.set_default_timeout(8000)
+    page.add_init_script("localStorage.setItem('bsb-archive-page-size', '40')")
+    page.route(
+        "**/data/catalog/2026.json",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(catalog),
+        ),
+    )
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')"
+        "?.textContent.includes('60 / 60')"
+    )
+
+    trigger = page.locator("[data-page-size] .select-trigger")
+    assert trigger.inner_text() == "20"
+    assert page.locator(".subject-row").count() == 20
+    assert page.locator("[data-pager]").is_visible()
+
+    trigger.click()
+    page.locator('[data-page-size] [role="option"]', has_text="10").click()
+    assert trigger.inner_text() == "10"
+    assert page.locator(".subject-row").count() == 10
+    assert "第 1 / 6 页" in page.locator("[data-results-summary]").inner_text()
+    page.locator("[data-pager] button", has_text="下一页").click()
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')"
+        "?.textContent.includes('第 2 / 6 页')"
+    )
+    assert page.locator(".subject-row").count() == 10
+    assert "011" in page.locator(".subject-row__sequence").all_inner_texts()
+
+    trigger.click()
+    page.locator('[data-page-size] [role="option"]', has_text="50").click()
+    assert trigger.inner_text() == "50"
+    assert page.locator(".subject-row").count() == 50
+    assert "第 1 / 2 页" in page.locator("[data-results-summary]").inner_text()
+    page.locator("[data-pager] button", has_text="下一页").click()
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')"
+        "?.textContent.includes('第 2 / 2 页')"
+    )
+    assert page.locator(".subject-row").count() == 10
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+
+
 def test_custom_listboxes_keep_keyboard_and_outside_click_behavior(
     chromium: BrowserContext,
     site_server: str,
 ) -> None:
     page = chromium.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8000)
+    page.add_init_script("localStorage.setItem('bsb-archive-page-size', '40')")
     page.goto(f"{site_server}/archive/index.html?year=2026")
     page.wait_for_function(
         "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
@@ -2217,6 +2293,7 @@ def test_custom_listboxes_keep_keyboard_and_outside_click_behavior(
 
     trigger = page.locator("[data-page-size] .select-trigger")
     assert trigger.get_attribute("role") == "combobox"
+    assert trigger.inner_text() == "20"
     assert trigger.get_attribute("aria-controls")
     trigger.click()
     listbox = page.locator('[data-page-size] [role="listbox"]')
@@ -2229,8 +2306,8 @@ def test_custom_listboxes_keep_keyboard_and_outside_click_behavior(
     )
     trigger.press("End")
     trigger.press("Enter")
-    assert trigger.inner_text() == "100"
-    assert page.evaluate("localStorage.getItem('bsb-archive-page-size')") == "100"
+    assert trigger.inner_text() == "50"
+    assert page.evaluate("localStorage.getItem('bsb-archive-page-size')") == "50"
     assert page.locator('[data-page-size] [role="listbox"]').is_hidden()
     trigger.press("ArrowDown")
     assert page.locator('[data-page-size] [role="listbox"]').is_visible()

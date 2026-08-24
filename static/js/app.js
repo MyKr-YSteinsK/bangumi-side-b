@@ -4,7 +4,8 @@
 
   const PAGE_SIZE_KEY = "bsb-archive-page-size";
   const VIEW_MODE_KEY = "bsb-browse-view-mode";
-  const PAGE_SIZES = Object.freeze([20, 40, 60, 100]);
+  const PAGE_SIZES = Object.freeze([10, 20, 50]);
+  const DEFAULT_PAGE_SIZE = 20;
   const VIEW_MODES = Object.freeze(["grid", "list"]);
   const SORTS = Object.freeze({
     "score-desc": "评分：高到低",
@@ -32,14 +33,14 @@
   function readPageSize(storage = window.localStorage) {
     try {
       const value = Number(storage.getItem(PAGE_SIZE_KEY));
-      return PAGE_SIZES.includes(value) ? value : PAGE_SIZES[0];
+      return PAGE_SIZES.includes(value) ? value : DEFAULT_PAGE_SIZE;
     } catch {
-      return PAGE_SIZES[0];
+      return DEFAULT_PAGE_SIZE;
     }
   }
 
   function writePageSize(value, storage = window.localStorage) {
-    const size = PAGE_SIZES.includes(Number(value)) ? Number(value) : PAGE_SIZES[0];
+    const size = PAGE_SIZES.includes(Number(value)) ? Number(value) : DEFAULT_PAGE_SIZE;
     try {
       storage.setItem(PAGE_SIZE_KEY, String(size));
     } catch {
@@ -93,7 +94,7 @@
     };
     state.pageSize = PAGE_SIZES.includes(Number(state.pageSize))
       ? Number(state.pageSize)
-      : PAGE_SIZES[0];
+      : DEFAULT_PAGE_SIZE;
     state.sort = SORTS[state.sort] ? state.sort : "score-desc";
     state.media = state.media === "movie" ? "movie" : "tv";
     state.viewMode = VIEW_MODES.includes(state.viewMode) ? state.viewMode : "grid";
@@ -2353,7 +2354,7 @@
       listSignature = signature;
     }
     const positions = new Map(result.all.map((record, index) => [record.key, index + 1]));
-    const visibleRecords = window.innerWidth < 768 ? result.all : result.pageRecords;
+    const visibleRecords = result.pageRecords;
     const visible = new Set(visibleRecords.map((record) => record.key));
     for (const [media, group] of listSections) {
       const sectionMedia = media === "movie" ? "MOVIE" : "TV";

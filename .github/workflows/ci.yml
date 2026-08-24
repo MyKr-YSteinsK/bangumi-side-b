@@ -47,5 +47,5 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
-      - run: python -m playwright install --with-deps chromium webkit
+      - run: python -m playwright install --with-deps chromium
       - run: python -m pytest -m release_smoke --maxfail=1

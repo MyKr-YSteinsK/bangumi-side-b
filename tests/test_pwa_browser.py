@@ -3694,6 +3694,7 @@ def test_auto_maintenance_rechecks_offline_updates_after_reconnect(
         "document.querySelector('[data-page=\"settings\"]') "
         "&& Boolean(window.BsbPwa)"
     )
+    page.wait_for_function("navigator.onLine === false")
     context.set_offline(False)
     page.evaluate("window.dispatchEvent(new Event('online'))")
     for _attempt in range(400):

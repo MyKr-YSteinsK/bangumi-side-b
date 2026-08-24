@@ -438,11 +438,25 @@ def test_grid_list_view_switch_persists_and_preserves_detail(
     assert archive_cover_box is not None and archive_cover_box["width"] < 80
     page.locator('[data-page="archive"] [data-view-mode="grid"]').click()
     assert archive_root.get_attribute("data-view-mode") == "grid"
+    assert len(
+        page.locator('[data-list-section="tv"] .result-list').evaluate(
+            "node => getComputedStyle(node).gridTemplateColumns"
+        ).split()
+    ) == 2
+    grid_cover_box = page.locator(
+        '[data-subject-id="101"][data-quarter="2026-07"] .subject-row__cover'
+    ).first.bounding_box()
+    assert grid_cover_box is not None and grid_cover_box["width"] > 80
     page.reload()
     page.wait_for_function(
         "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
     )
     assert archive_root.get_attribute("data-view-mode") == "grid"
+    assert len(
+        page.locator('[data-list-section="tv"] .result-list').evaluate(
+            "node => getComputedStyle(node).gridTemplateColumns"
+        ).split()
+    ) == 2
 
 
 @pytest.mark.parametrize("mode", ["list", "grid"])
@@ -545,6 +559,8 @@ def test_saved_view_mode_applies_before_delayed_app_bundle(
     else:
         assert len(metrics["columns"].split()) == 2
     page.wait_for_timeout(1500)
+    assert page.locator("html").get_attribute("data-browse-hydrated") == "true"
+    assert page.locator("html").get_attribute("data-browse-view-mode") is None
     assert page.locator('main[data-page="quarter"]').get_attribute(
         "data-view-mode"
     ) == mode, errors
@@ -625,7 +641,7 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.goto(f"{site_server}/settings/index.html")
     page.wait_for_selector('[data-changelog-release="0.6.6"]')
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.locator(".settings-about").get_by_text("0.6.7", exact=True).is_visible()
+    assert page.locator(".settings-about").get_by_text("0.6.8", exact=True).is_visible()
     assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
     assert page.get_by_text("作者", exact=True).is_visible()
     assert page.get_by_text("MyKr", exact=True).is_visible()

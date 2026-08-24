@@ -233,6 +233,13 @@
     popover.style.removeProperty("width");
   }
 
+  function releaseBrowsePrepaint(root, mode) {
+    if (!root) return;
+    if (VIEW_MODES.includes(mode)) root.dataset.viewMode = mode;
+    document.documentElement.dataset.browseHydrated = "true";
+    delete document.documentElement.dataset.browseViewMode;
+  }
+
   function prefersReducedMotion() {
     return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
   }
@@ -477,6 +484,7 @@
     applyPipeline,
     positionPopover,
     clearPopoverPosition,
+    releaseBrowsePrepaint,
     prefersReducedMotion,
     withResultMotion,
     withBrowseTransition,
@@ -1767,6 +1775,7 @@
       recordByKey = new Map(records.map((record) => [record.key, record]));
       renderFilterPanel();
       render();
+      archive.releaseBrowsePrepaint(quarterRoot, state.viewMode);
       if (!entrancePlayed) {
         entrancePlayed = true;
         archive.playEntranceStagger(quarterRoot);
@@ -2814,6 +2823,7 @@
       renderFilterPanel();
       if (selectors.scopeLabel) selectors.scopeLabel.textContent = kind === "range" ? `RANGE / ${normalized.from}—${normalized.to}` : `YEAR / ${normalized}`;
       render();
+      archive.releaseBrowsePrepaint(root, state.viewMode);
       if (!entrancePlayed) {
         entrancePlayed = true;
         archive.playEntranceStagger(root);

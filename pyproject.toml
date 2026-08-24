@@ -24,7 +24,11 @@ version = { attr = "bgm_side_b._version.__version__" }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-markers = ["browser: requires an installed Playwright Chromium browser"]
+markers = [
+    "browser: requires an installed Playwright browser",
+    "release_smoke: release-critical browser coverage for the default CI gate",
+    "deep_regression: expensive regression coverage run only by manual workflow",
+]
 
 [tool.ruff]
 target-version = "py311"

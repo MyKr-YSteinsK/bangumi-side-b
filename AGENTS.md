@@ -44,6 +44,21 @@ After the entire Plan is complete and integrated validation passes, Codex must r
 
 Never force-push or force-with-lease, modify remotes, rebase, amend, squash, delete, or rewrite already-pushed history.
 
+## Live Bangumi sync policy
+
+`bgmb sync` is forbidden by default during Codex development.
+
+It is allowed only when either:
+
+1. the current approved Plan explicitly says `Live Bangumi sync: AUTHORIZED`; or
+2. the user explicitly requests a real data sync in the current task.
+
+This prohibition also covers wrapper scripts, build helpers, tests, and release
+commands that would invoke sync indirectly. Normal tests, builds, audits,
+`release prepare`, and `release publish` must use the existing local SQLite and
+fixtures. If a command unexpectedly invokes live sync, stop immediately and
+report the scope violation instead of retrying.
+
 ## Scope
 
 Do not modify MyKr-ops. Do not add speculative integration, plugin systems, accounts, community features, webpage editing, unrelated refactors, dependency upgrades, or full-repository formatting.

@@ -43,6 +43,18 @@ bgmb doctor
 同样只读本地；不带 `--local` 的 `doctor` 会读取 `origin/main` 和远端
 `gh-pages`，网络失败只影响远端检查项，绝不访问 Bangumi API。
 
+## Live Bangumi sync policy
+
+正常开发、测试、build、audit、`release prepare` 和 `release publish` 的事实源是
+已有 SQLite 与 fixtures，默认不访问 Bangumi API：
+
+> **Live Bangumi sync is opt-in, not part of normal development validation.**
+
+`bgmb sync` 默认禁止。只有当前 approved Plan 明确写出
+`Live Bangumi sync: AUTHORIZED`，或用户在当前任务明确要求真实数据同步时，才可以
+执行 live sync；缺少明确授权时一律视为 `FORBIDDEN`。不得通过包装脚本、测试、build
+或 release 命令间接触发。若命令意外触发 live sync，应立即停止并报告 scope violation。
+
 ## 修改后的验收
 
 代码或静态资源修改后，先运行自动测试，再构建唯一站点：
@@ -89,7 +101,7 @@ reduced-motion 与快速重复操作下保持最终状态确定。
 冲突型 REVIEW 仍保留 REVIEW。命中项会永久写入
 `auto_excluded_subject_ids`，并在同一次同步中停止季度归属、REVIEW 和封面处理。评分人数后来上涨不会
 自动恢复；需要人工删除配置中的自动 ID 后再重新 sync。
-日常裁决流程仍是：
+获授权的真实数据裁决流程（不属于普通开发验证）仍是：
 
 ```powershell
 cd <repository-root>

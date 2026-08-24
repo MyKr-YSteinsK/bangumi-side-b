@@ -194,6 +194,7 @@ def test_repository_milestone_dates_use_concrete_zero_anchors() -> None:
     document = load_changelog(Path(__file__).parents[1] / "CHANGELOG.md")
     groups = group_releases_for_settings(document)
     assert {group.label: group.date for group in groups.milestones} == {
+        "0.8": "2026-08-24",
         "0.6": "2026-08-23",
         "0.7": "2026-08-24",
         "0.5": "2026-08-22",

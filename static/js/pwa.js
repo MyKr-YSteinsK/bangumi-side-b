@@ -261,7 +261,7 @@
   async function fetchQuarterManifest(quarter) {
     if (!QUARTER.test(quarter)) throw new Error("季度编号无效");
     const response = await fetch(absolute(`data/offline/${quarter}.json`), {
-      cache: "reload",
+      cache: "no-store",
       credentials: "same-origin",
     });
     if (!response.ok) throw new Error("季度清单不可用");

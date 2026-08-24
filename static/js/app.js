@@ -269,9 +269,13 @@
 
   function cancelResultMotion(root) {
     if (!root) return;
-    root.querySelectorAll("[data-record-key]").forEach((node) => {
+    root.querySelectorAll("[data-record-key], [data-record-key] *").forEach((node) => {
       node.getAnimations?.().forEach((animation) => animation.cancel());
     });
+  }
+
+  function cancelActiveResultAnimations(root) {
+    cancelResultMotion(resultHost(root));
   }
 
   function captureResultPositions(root) {
@@ -281,8 +285,34 @@
     }));
   }
 
+  function captureResultGeometry(root) {
+    const host = resultHost(root);
+    return new Map(visibleResultNodes(host).map((row) => {
+      const elements = {
+        outer: row,
+        cover: row.querySelector(".subject-row__cover"),
+        content: row.querySelector(".subject-row__content"),
+        score: row.querySelector(".subject-row__score"),
+      };
+      const geometry = Object.fromEntries(
+        Object.entries(elements)
+          .filter(([, element]) => element)
+          .map(([name, element]) => {
+            const rect = element.getBoundingClientRect();
+            return [name, {
+              left: rect.left,
+              top: rect.top,
+              width: rect.width,
+              height: rect.height,
+            }];
+          }),
+      );
+      return [row.dataset.recordKey, geometry];
+    }));
+  }
+
   function animateResultNode(node, keyframes, duration) {
-    if (typeof node.animate !== "function") return;
+    if (typeof node?.animate !== "function") return null;
     const animation = node.animate(keyframes, {
       duration,
       easing: "cubic-bezier(.2, .7, .2, 1)",
@@ -292,6 +322,162 @@
       () => animation.cancel(),
       () => {},
     );
+    return animation;
+  }
+
+  function animateGeometry(
+    element,
+    before,
+    after,
+    { scale = false, duration = 230, force = false } = {},
+  ) {
+    if (!element || !before || !after) return null;
+    const dx = before.left - after.left;
+    const dy = before.top - after.top;
+    const scaleX = after.width ? before.width / after.width : 1;
+    const scaleY = after.height ? before.height / after.height : 1;
+    const changed = Math.abs(dx) > 0.5
+      || Math.abs(dy) > 0.5
+      || (scale && (Math.abs(scaleX - 1) > 0.01 || Math.abs(scaleY - 1) > 0.01));
+    if (!changed && !force) return null;
+    if (scale) element.style.transformOrigin = "0 0";
+    const animation = animateResultNode(
+      element,
+      [
+        {
+          transform: scale
+            ? `translate(${dx}px, ${dy}px) scale(${scaleX}, ${scaleY})`
+            : `translate(${dx}px, ${dy}px)`,
+        },
+        { transform: scale ? "translate(0, 0) scale(1, 1)" : "translate(0, 0)" },
+      ],
+      duration,
+    );
+    animation?.finished?.then(
+      () => element.style.removeProperty("transform-origin"),
+      () => element.style.removeProperty("transform-origin"),
+    );
+    return animation;
+  }
+
+  function animateViewModeMorph(root, before) {
+    if (!root || prefersReducedMotion()) return;
+    const after = captureResultGeometry(root);
+    for (const [key, geometry] of after) {
+      const previous = before.get(key);
+      if (!previous) continue;
+      animateGeometry(
+        root.querySelector(`[data-record-key="${CSS.escape(key)}"]`),
+        previous.outer,
+        geometry.outer,
+        { duration: 230, force: true },
+      );
+      animateGeometry(
+        root.querySelector(`[data-record-key="${CSS.escape(key)}"] .subject-row__cover`),
+        previous.cover,
+        geometry.cover,
+        { scale: true, duration: 240, force: true },
+      );
+      animateGeometry(
+        root.querySelector(`[data-record-key="${CSS.escape(key)}"] .subject-row__content`),
+        previous.content,
+        geometry.content,
+        { duration: 220, force: true },
+      );
+      animateGeometry(
+        root.querySelector(`[data-record-key="${CSS.escape(key)}"] .subject-row__score`),
+        previous.score,
+        geometry.score,
+        { duration: 220, force: true },
+      );
+    }
+  }
+
+  function animateCollectionChange(root, before) {
+    if (!root || prefersReducedMotion()) return;
+    const region = root.querySelector("[data-list-sections]");
+    animateResultNode(
+      region,
+      [
+        { opacity: 0.72, transform: "translateY(-4px)" },
+        { opacity: 1, transform: "translateY(0)" },
+      ],
+      100,
+    );
+    playResultMotion(root, before, "media");
+  }
+
+  const QUARTER_MOTION_KEY = "bsb-quarter-motion";
+
+  function quarterFromHref(link) {
+    const match = new URL(link.href, window.location.href).pathname.match(
+      /\/(\d{4}-\d{2})\/index\.html$/,
+    );
+    return match?.[1] || null;
+  }
+
+  function prepareQuarterDeparture(event) {
+    if (event.defaultPrevented || event.button !== 0
+      || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const link = event.target.closest?.(
+      'a[data-quarter-prev], a[data-quarter-next], a[data-quarter-option]',
+    );
+    const root = document.querySelector('[data-page="quarter"][data-archive-app]');
+    if (!link || !root || link.target === "_blank") return;
+    const from = root.dataset.quarter;
+    const to = quarterFromHref(link);
+    if (!from || !to || from === to || prefersReducedMotion()) return;
+    const direction = Number(to.replace("-", "")) >= Number(from.replace("-", ""))
+      ? "next"
+      : "prev";
+    try {
+      sessionStorage.setItem(QUARTER_MOTION_KEY, JSON.stringify({
+        from,
+        to,
+        direction,
+        timestamp: Date.now(),
+      }));
+    } catch {
+      // Navigation remains available when sessionStorage is unavailable.
+    }
+    event.preventDefault();
+    const sign = direction === "next" ? -1 : 1;
+    visibleResultNodes(root).slice(0, MAX_RESULT_ENTRANCES).forEach((row) => {
+      animateResultNode(
+        row,
+        [
+          { opacity: 1, transform: "translateX(0)" },
+          { opacity: 0.65, transform: `translateX(${sign * 12}px)` },
+        ],
+        110,
+      );
+    });
+    window.setTimeout(() => window.location.assign(link.href), 110);
+  }
+
+  function playQuarterArrival(root) {
+    let token;
+    try {
+      token = JSON.parse(sessionStorage.getItem(QUARTER_MOTION_KEY) || "null");
+      sessionStorage.removeItem(QUARTER_MOTION_KEY);
+    } catch {
+      return false;
+    }
+    if (!token || token.to !== root?.dataset.quarter
+      || Date.now() - Number(token.timestamp) > 2000) return false;
+    if (prefersReducedMotion()) return true;
+    const sign = token.direction === "next" ? 1 : -1;
+    visibleResultNodes(root).slice(0, MAX_RESULT_ENTRANCES).forEach((row, index) => {
+      animateResultNode(
+        row,
+        [
+          { opacity: 0, transform: `translateX(${sign * 12}px)` },
+          { opacity: 1, transform: "translateX(0)" },
+        ],
+        170 + index * 14,
+      );
+    });
+    return true;
   }
 
   function playResultMotion(root, before, reason = "browse") {
@@ -336,11 +522,17 @@
     if (typeof mutate !== "function") return undefined;
     const host = resultHost(root);
     cancelResultMotion(host);
-    const before = captureResultPositions(host);
+    const before = reason === "view-mode"
+      ? captureResultGeometry(host)
+      : captureResultPositions(host);
     const result = mutate();
-    playResultMotion(host, before, reason);
+    if (reason === "view-mode") animateViewModeMorph(host, before);
+    else if (reason === "media") animateCollectionChange(host, before);
+    else playResultMotion(host, before, reason);
     return result;
   }
+
+  document.addEventListener("click", prepareQuarterDeparture);
 
   // Kept as a small compatibility alias for older page-local callers.  It no
   // longer invokes the browser View Transition API or animates the page root.
@@ -488,6 +680,12 @@
     prefersReducedMotion,
     withResultMotion,
     withBrowseTransition,
+    captureResultGeometry,
+    animateViewModeMorph,
+    animateCollectionChange,
+    cancelActiveResultAnimations,
+    prepareQuarterDeparture,
+    playQuarterArrival,
     playEntranceStagger,
     scopeCounts,
     selectedRecord,
@@ -1778,7 +1976,9 @@
       archive.releaseBrowsePrepaint(quarterRoot, state.viewMode);
       if (!entrancePlayed) {
         entrancePlayed = true;
-        archive.playEntranceStagger(quarterRoot);
+        if (!archive.playQuarterArrival(quarterRoot)) {
+          archive.playEntranceStagger(quarterRoot);
+        }
       }
       openHash();
     } catch {

@@ -639,9 +639,9 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.on("request", lambda request: requests.append(request.url))
 
     page.goto(f"{site_server}/settings/index.html")
-    page.wait_for_selector('[data-changelog-release="0.6.6"]')
+    page.wait_for_selector('[data-changelog-release="0.7.0"]', state="attached")
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.locator(".settings-about").get_by_text("0.6.8", exact=True).is_visible()
+    assert page.locator(".settings-about").get_by_text("0.7.0", exact=True).is_visible()
     assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
     assert page.get_by_text("作者", exact=True).is_visible()
     assert page.get_by_text("MyKr", exact=True).is_visible()
@@ -649,7 +649,7 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     assert page.locator(".site-footer").get_by_text(
         "Bangumi Side B · MyKr", exact=True
     ).is_visible()
-    assert page.locator('[data-changelog-release="0.6.6"]').evaluate(
+    assert page.locator('[data-changelog-release="0.7.0"]').evaluate(
         "node => node.tagName"
     ) == "SECTION"
     assert page.locator('[data-changelog-milestone="0.6"]').count() == 1
@@ -2575,6 +2575,96 @@ def test_result_motion_cancels_rapid_reentry_without_view_transition(
     assert result["viewTransitionCalls"] == 0
     assert 0 < result["firstAnimations"] <= 32
     assert 0 < result["activeAnimations"] <= 32
+
+
+def test_view_mode_motion_carries_shared_geometry_without_root_animation(
+    chromium: BrowserContext,
+    site_server_many: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server_many, (390, 844))
+    page.emulate_media(reduced_motion="no-preference")
+    page.locator('[data-view-mode="list"]').click()
+    motion = page.evaluate(
+        """() => {
+          const root = document.querySelector('[data-page="quarter"]');
+          const list = root.querySelector('[data-list-section="tv"] .result-list');
+          const row = list.querySelector('.subject-row');
+          return {
+            columns: getComputedStyle(list).gridTemplateColumns.split(' ').length,
+            coverWidth: row.querySelector(
+              '.subject-row__cover'
+            ).offsetWidth,
+            rowAnimations: row.getAnimations().length,
+            coverAnimations: row.querySelector(
+              '.subject-row__cover'
+            ).getAnimations().length,
+            contentAnimations: row.querySelector(
+              '.subject-row__content'
+            ).getAnimations().length,
+            scoreAnimations: row.querySelector(
+              '.subject-row__score'
+            ).getAnimations().length,
+            rootAnimations: document.documentElement.getAnimations().length,
+          };
+        }"""
+    )
+    assert motion["columns"] == 1
+    assert motion["coverWidth"] < 80
+    assert motion["rowAnimations"] > 0, motion
+    assert motion["coverAnimations"] > 0
+    assert motion["contentAnimations"] > 0
+    assert motion["scoreAnimations"] > 0
+    assert motion["rootAnimations"] == 0
+
+
+def test_collection_motion_stays_inside_results_and_arrival_consumes_token(
+    chromium: BrowserContext,
+    site_server_many: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    _open_quarter(page, site_server_many, (390, 844))
+    page.emulate_media(reduced_motion="no-preference")
+    page.locator('[data-media-mode="movie"]').click()
+    collection = page.evaluate(
+        """() => ({
+          regionAnimations: document.querySelector(
+            '[data-list-sections]'
+          ).getAnimations().length,
+          headerAnimations: document.querySelector('header').getAnimations().length,
+          controlAnimations: document.querySelector(
+            '.browser-controls'
+          ).getAnimations().length,
+        })"""
+    )
+    assert collection["regionAnimations"] > 0
+    assert collection["headerAnimations"] == 0
+    assert collection["controlAnimations"] == 0
+
+    arrival = page.evaluate(
+        """() => {
+          const root = document.querySelector('[data-page="quarter"]');
+          sessionStorage.setItem('bsb-quarter-motion', JSON.stringify({
+            from: '2026-04',
+            to: root.dataset.quarter,
+            direction: 'next',
+            timestamp: Date.now()
+          }));
+          const played = window.BsbArchive.playQuarterArrival(root);
+          return {
+            played,
+            token: sessionStorage.getItem('bsb-quarter-motion'),
+            resultAnimations: root.querySelector(
+              '.subject-row:not([hidden])'
+            ).getAnimations().length,
+          };
+        }"""
+    )
+    assert arrival["played"] is True
+    assert arrival["token"] is None
+    assert arrival["resultAnimations"] > 0
 
 
 def test_browse_operations_keep_light_background_without_root_transition(

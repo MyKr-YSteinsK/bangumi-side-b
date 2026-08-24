@@ -195,6 +195,7 @@ def test_repository_milestone_dates_use_concrete_zero_anchors() -> None:
     groups = group_releases_for_settings(document)
     assert {group.label: group.date for group in groups.milestones} == {
         "0.6": "2026-08-23",
+        "0.7": "2026-08-24",
         "0.5": "2026-08-22",
         "0.4": "2026-08-21",
         "0.3": "2026-08-19",

@@ -55,22 +55,29 @@ bgmb doctor
 执行 live sync；缺少明确授权时一律视为 `FORBIDDEN`。不得通过包装脚本、测试、build
 或 release 命令间接触发。若命令意外触发 live sync，应立即停止并报告 scope violation。
 
-## 修改后的验收
+## 分级验证
 
-代码或静态资源修改后，先运行自动测试，再构建唯一站点：
+每份 approved Plan 必须声明 `Validation tier: light / standard / full`；未声明时按
+`standard`，绝不默认完整回归。开发期间优先运行本次改动的 focused tests，不为小修改
+重复执行昂贵套件。
 
-```powershell
-python -m pytest tests -q
-python -m ruff check .
-bgmb build --all
-bgmb serve --port 8000
-bgmb serve --open
-```
+| 改动类型 | Tier | 本地测试 | build/audit | full pytest |
+|---|---|---|---|---|
+| 文案、CSS、小 UI | light | focused test / smoke | 通常否 | 禁止 |
+| tests、docs、CI-only | light | changed test only | 禁止 | 禁止 |
+| Archive/Quarter 普通逻辑 | standard | related suite | 必要时一次 | 默认否 |
+| PWA 一般功能 | standard | targeted PWA tests | 必要时一次 | 默认否 |
+| schema、sync、release、PWA 核心队列 | full | focused + full once | 一次 | 一次 |
+
+light 的本地验证目标不超过五分钟；超过八分钟必须重新评估。standard 的目标不超过
+十五分钟。full-tier Plan 最多正常执行一次完整本地验证；之后若只追加 tests/docs/CI
+修复，不重新跑 full pytest、build 或 audit。
 
 `build` 只读 SQLite、配置、静态源文件和已校验封面，写入 `dist/site`；第二次相同
 构建应无 artifact 写入。`serve` 只服务已有 `dist/site`，不读 SQLite、不构建、不同步
 也不发布。成功 bind 后 CLI 打印 loopback URL 和 Ctrl+C 退出提示；默认不打开浏览器，
-只有 `--open` 才请求系统默认浏览器，启动失败仅报告 warning。release prepare 属于后续发布生命周期。
+只有 `--open` 才请求系统默认浏览器，启动失败仅报告 warning。`release prepare` 仅属于
+真正产品发布的后续生命周期，tests/docs/CI-only 改动禁止执行。
 
 Settings 的 06 / CHANGELOG 是 build-time 静态 HTML：builder 读取仓库 `CHANGELOG.md` 与
 源码单一版本号，严格 escape 文本后写入 `settings/index.html`；运行时不 fetch changelog。

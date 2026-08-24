@@ -59,6 +59,36 @@ commands that would invoke sync indirectly. Normal tests, builds, audits,
 fixtures. If a command unexpectedly invokes live sync, stop immediately and
 report the scope violation instead of retrying.
 
+## Validation cost policy
+
+- Every approved Plan declares Validation tier: `light`, `standard`, or `full`.
+- A missing tier defaults to `standard`, never `full`.
+- Use focused tests while implementing.
+- Full pytest is forbidden for light tasks.
+- Full pytest is not required for standard tasks.
+- Full validation is reserved for explicitly high-risk full-tier work.
+- Do not rerun product build or audit after tests/docs/CI-only commits.
+- Do not intentionally execute the same expensive suite twice in one validation cycle.
+
+Light tasks use one to three focused tests, an optional browser smoke, and
+`git diff --check`; their local validation target is five minutes, and work
+must be reassessed after eight. Standard tasks run the relevant suite, targeted
+browser coverage when needed, Ruff, and `git diff --check`; any necessary build
+or audit runs only once at the Plan boundary. Full-tier work may run one full
+local validation cycle only.
+
+After the first pushed SHA fails CI, Codex may make at most one automatic repair
+cycle, and only when the root cause is clear, the change is a local test or CI
+fix, product behavior is unchanged, and it is expected to take at most ten
+minutes. If the second exact-SHA CI fails, mark the Plan BLOCKED and wait for
+user direction. Do not repeatedly push repairs for flaky CI.
+
+When the already-validated product source is followed only by changes under
+`tests/**`, `docs/**`, `AGENTS.md`, or `.github/workflows/**`, do not rerun
+product build, audit, or full pytest. Use the changed tests and CI for the new
+SHA. Run `release prepare` only when genuinely preparing a product publish;
+tests/docs/CI-only Plans must not run it.
+
 ## Scope
 
 Do not modify MyKr-ops. Do not add speculative integration, plugin systems, accounts, community features, webpage editing, unrelated refactors, dependency upgrades, or full-repository formatting.

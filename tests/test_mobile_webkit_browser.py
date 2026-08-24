@@ -141,6 +141,7 @@ def test_mobile_menu_is_anchored_without_fullscreen_overlay(
             rect.top + rect.height / 2,
           );
           return {
+            width: rect.width,
             gap: rect.top - triggerRect.bottom,
             rightDelta: Math.abs(rect.right - triggerRect.right),
             withinViewport: rect.left >= 0 && rect.right <= innerWidth
@@ -150,9 +151,12 @@ def test_mobile_menu_is_anchored_without_fullscreen_overlay(
         }"""
     )
     assert 4 <= state["gap"] <= 14, state
+    assert state["width"] <= 225, state
     assert state["rightDelta"] <= 2, state
     assert state["withinViewport"] is True
     assert state["hitMenu"] is True
+    assert menu.get_by_role("link", name="档案", exact=True).is_visible()
+    assert menu.get_by_role("link", name="Archive", exact=True).count() == 0
     _assert_no_root_motion_or_black_overlay(motion_page)
 
 

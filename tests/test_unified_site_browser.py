@@ -238,6 +238,7 @@ def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
             open: menu.dataset.menuOpen,
             position: style.position,
             background: style.backgroundColor,
+            width: rect.width,
             triggerGap: rect.top - triggerRect.bottom,
             rightDelta: Math.abs(rect.right - triggerRect.right),
             withinViewport: rect.left >= 0 && rect.right <= innerWidth
@@ -250,10 +251,14 @@ def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
     assert overlay["open"] == "true"
     assert overlay["position"] == "fixed"
     assert overlay["background"] not in {"transparent", "rgba(0, 0, 0, 0)"}
+    assert overlay["width"] <= 225
     assert overlay["withinViewport"]
     assert overlay["hitMenu"]
     assert 4 <= overlay["triggerGap"] <= 14
     assert overlay["rightDelta"] <= 2
+    menu = page.locator("[data-mobile-menu]")
+    assert menu.get_by_role("link", name="档案", exact=True).is_visible()
+    assert menu.get_by_role("link", name="Archive", exact=True).count() == 0
 
     # Allow native top-layer hit testing to settle before the real outside click.
     page.wait_for_function(
@@ -639,9 +644,9 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.on("request", lambda request: requests.append(request.url))
 
     page.goto(f"{site_server}/settings/index.html")
-    page.wait_for_selector('[data-changelog-release="0.7.2"]', state="attached")
+    page.wait_for_selector('[data-changelog-release="0.7.3"]', state="attached")
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.locator(".settings-about").get_by_text("0.7.2", exact=True).is_visible()
+    assert page.locator(".settings-about").get_by_text("0.7.3", exact=True).is_visible()
     assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
     assert page.get_by_text("作者", exact=True).is_visible()
     assert page.get_by_text("MyKr", exact=True).is_visible()
@@ -649,7 +654,7 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     assert page.locator(".site-footer").get_by_text(
         "Bangumi Side B · MyKr", exact=True
     ).is_visible()
-    assert page.locator('[data-changelog-release="0.7.2"]').evaluate(
+    assert page.locator('[data-changelog-release="0.7.3"]').evaluate(
         "node => node.tagName"
     ) == "SECTION"
     assert page.locator('[data-changelog-milestone="0.6"]').count() == 1

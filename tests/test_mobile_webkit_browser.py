@@ -11,7 +11,7 @@ from playwright.sync_api import Browser, Page, sync_playwright
 
 from tests.test_site_builder import _build_fixture
 
-pytestmark = pytest.mark.browser
+pytestmark = [pytest.mark.browser, pytest.mark.deep_regression]
 
 _NEXT_SAFE_PORT = 18480
 

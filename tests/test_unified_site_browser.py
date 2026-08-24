@@ -14,7 +14,7 @@ from playwright.sync_api import BrowserContext, Page, sync_playwright
 
 from tests.test_site_builder import _build_fixture
 
-pytestmark = pytest.mark.browser
+pytestmark = [pytest.mark.browser, pytest.mark.deep_regression]
 
 _NEXT_SAFE_PORT = 18280
 
@@ -167,6 +167,7 @@ def _open_quarter(page: Page, root: str, viewport: tuple[int, int]) -> None:
     )
 
 
+@pytest.mark.release_smoke
 def test_quarter_tv_appearances_share_one_list_and_static_navigation(
     chromium: BrowserContext,
     site_server_mixed: str,
@@ -204,6 +205,7 @@ def test_quarter_tv_appearances_share_one_list_and_static_navigation(
     assert page.get_by_role("link", name="离线与设置").is_visible()
 
 
+@pytest.mark.release_smoke
 @pytest.mark.parametrize(
     "viewport",
     [(393, 852), (390, 844), (360, 800), (430, 932), (844, 390)],
@@ -571,6 +573,7 @@ def test_saved_view_mode_applies_before_delayed_app_bundle(
     ) == mode, errors
 
 
+@pytest.mark.release_smoke
 def test_desktop_grid_list_view_switch_changes_density(
     chromium: BrowserContext,
     site_server: str,
@@ -2208,6 +2211,7 @@ def test_large_archive_renders_only_the_current_page_and_restores_deep_link(
     assert "151" in page.locator(".subject-row__sequence").all_inner_texts()
 
 
+@pytest.mark.release_smoke
 @pytest.mark.parametrize(
     "viewport", [(393, 852), (430, 932), (1024, 768), (1440, 900)]
 )

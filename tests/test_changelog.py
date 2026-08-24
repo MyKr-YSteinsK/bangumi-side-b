@@ -193,13 +193,19 @@ def test_settings_grouping_handles_major_jumps() -> None:
 def test_repository_milestone_dates_use_concrete_zero_anchors() -> None:
     document = load_changelog(Path(__file__).parents[1] / "CHANGELOG.md")
     groups = group_releases_for_settings(document)
-    assert {group.label: group.date for group in groups.milestones} == {
-        "0.8": "2026-08-24",
+    milestone_dates = {group.label: group.date for group in groups.milestones}
+    historic_labels = ("0.6", "0.5", "0.4", "0.3", "0.2", "0.1")
+    assert {label: milestone_dates[label] for label in historic_labels} == {
         "0.6": "2026-08-23",
-        "0.7": "2026-08-24",
         "0.5": "2026-08-22",
         "0.4": "2026-08-21",
         "0.3": "2026-08-19",
         "0.2": "2026-08-13",
         "0.1": "2026-07-29",
     }
+    anchors = {
+        ".".join(release.version.split(".")[:2]): release.date
+        for release in document.releases
+        if release.version.endswith(".0")
+    }
+    assert milestone_dates == anchors

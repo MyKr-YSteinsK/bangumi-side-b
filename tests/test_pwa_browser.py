@@ -21,7 +21,7 @@ from playwright.sync_api import Browser, Page, sync_playwright
 from bgm_side_b.repository import SubjectRepository
 from tests.test_site_builder import _build_fixture
 
-pytestmark = pytest.mark.browser
+pytestmark = [pytest.mark.browser, pytest.mark.deep_regression]
 
 _NEXT_SAFE_PORT = 18080
 
@@ -387,6 +387,7 @@ def chromium() -> Iterator[Browser]:
             browser.close()
 
 
+@pytest.mark.release_smoke
 def test_service_worker_controls_pages_prefix_and_serves_shell_offline(
     chromium: Browser,
     pwa_server: str,
@@ -2250,6 +2251,7 @@ def test_update_detection_preserves_partial_staging_during_fetch(
     context.close()
 
 
+@pytest.mark.release_smoke
 def test_update_detection_separates_data_and_package_revisions(
     chromium: Browser,
     pwa_server: str,
@@ -2330,6 +2332,7 @@ def test_update_detection_separates_data_and_package_revisions(
     context.close()
 
 
+@pytest.mark.release_smoke
 def test_auto_maintenance_is_nonblocking_and_active_only(
     chromium: Browser,
     pwa_server: str,
@@ -3517,6 +3520,7 @@ def test_quarter_page_offline_action_tracks_download_and_confirmed_remove(
     context.close()
 
 
+@pytest.mark.release_smoke
 def test_downloaded_quarter_is_complete_offline_and_undownloaded_redirects(
     chromium: Browser,
     pwa_server: str,
@@ -3667,6 +3671,7 @@ def test_app_update_waits_for_user_and_data_only_build_does_not_update_shell(
     context.close()
 
 
+@pytest.mark.release_smoke
 def test_auto_maintenance_rechecks_offline_updates_after_reconnect(
     chromium: Browser,
     update_server: str,

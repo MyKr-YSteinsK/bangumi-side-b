@@ -139,15 +139,40 @@ def delayed_cover_server(
 
 @pytest.fixture
 def delayed_manifest_server(pwa_site: Path) -> Iterator[str]:
-    requests = [0]
+    manifest_condition = threading.Condition()
+    active_manifests = 0
+    delay_next_manifest = False
 
     class DelayedManifestHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
-            if self.path.split("?", 1)[0].endswith("/data/offline/2026-07.json"):
-                requests[0] += 1
-                if requests[0] == 2:
+            nonlocal active_manifests, delay_next_manifest
+            path = self.path.split("?", 1)[0]
+            if path.endswith("/__test__/delay-next-manifest"):
+                with manifest_condition:
+                    manifest_condition.wait_for(
+                        lambda: active_manifests == 0,
+                        timeout=5,
+                    )
+                    delay_next_manifest = True
+                self.send_response(204)
+                self.end_headers()
+                return
+            if not path.endswith("/data/offline/2026-07.json"):
+                super().do_GET()
+                return
+            with manifest_condition:
+                active_manifests += 1
+                should_delay = delay_next_manifest
+                if should_delay:
+                    delay_next_manifest = False
+            try:
+                if should_delay:
                     time.sleep(0.75)
-            super().do_GET()
+                super().do_GET()
+            finally:
+                with manifest_condition:
+                    active_manifests -= 1
+                    manifest_condition.notify_all()
 
     handler = functools.partial(
         DelayedManifestHandler,
@@ -162,6 +187,10 @@ def delayed_manifest_server(pwa_site: Path) -> Iterator[str]:
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+def _arm_delayed_manifest(page: Page) -> None:
+    page.evaluate("fetch('../__test__/delay-next-manifest')")
 
 
 @pytest.fixture
@@ -2022,6 +2051,7 @@ def test_update_detection_does_not_resurrect_removed_quarter_during_fetch(
         manifest,
     )
 
+    _arm_delayed_manifest(page)
     changed = page.evaluate(
         """
         async () => {
@@ -2075,6 +2105,7 @@ def test_update_detection_does_not_overwrite_completed_update(
         manifest,
     )
 
+    _arm_delayed_manifest(page)
     result = page.evaluate(
         """
         async () => {
@@ -2145,6 +2176,7 @@ def test_update_detection_preserves_partial_staging_during_fetch(
     )
     staged_hash = manifest["resources"][0]["content_hash"]
 
+    _arm_delayed_manifest(page)
     result = page.evaluate(
         """
         async ({ manifest, stagedHash }) => {

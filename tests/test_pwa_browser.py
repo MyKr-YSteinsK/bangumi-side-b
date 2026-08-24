@@ -3696,7 +3696,19 @@ def test_auto_maintenance_rechecks_offline_updates_after_reconnect(
     )
     context.set_offline(False)
     page.evaluate("window.dispatchEvent(new Event('online'))")
-    page.wait_for_timeout(1000)
+    for _attempt in range(400):
+        after = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+        queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
+        if (
+            after["status"] == "COMPLETE"
+            and after["active"]["revision"] == "reconnect-update-revision"
+            and queue["state"] == "idle"
+            and queue["current"] is None
+        ):
+            break
+        page.wait_for_timeout(25)
+    else:
+        raise AssertionError((after, queue))
     after = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
     queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
     assert after["status"] == "COMPLETE", (after, queue, page.evaluate(

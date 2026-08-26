@@ -70,6 +70,26 @@ active Codex Skills/runtime and are not repeated here.
   ordinary non-force push to `gh-pages`. Never force-push, modify remotes, or
   attribute another actor's remote commit to this repository's release.
 
+## Formal Plan delivery
+
+- For a formal approved Plan that produces tracked source changes, after
+  implementation, docs, and tests changes are complete, required validation has
+  passed, and the final source commit exists, Codex must automatically run one
+  ordinary `git push` to the current branch's configured upstream.
+- The upstream must accept that commit and the local branch HEAD must equal the
+  configured upstream HEAD before the Plan can be reported as full `PASS` /
+  `COMPLETE`.
+- A push failure (including authentication, non-fast-forward, upstream
+  abnormality, or remote rejection) is a delivery failure and makes the Plan
+  `BLOCKED`; keep completed local commits. Never use force push,
+  force-with-lease, rebase, amend, squash, or history rewrite to recover.
+- A formal Plan with no tracked source changes must not create an empty commit
+  or push just to satisfy this rule; report `no source changes / no push
+  required`.
+- This source push targets only the current source branch. It never authorizes
+  `release publish`, Pages publication or `gh-pages` mutation, or live Bangumi
+  access.
+
 ## Canonical project context
 
 - Stable product purpose, scope, architecture boundaries, invariants, and UX

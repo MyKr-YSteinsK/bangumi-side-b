@@ -118,3 +118,14 @@ WebKit full regression belongs to the manual/deep layer because its reliability
 and cost profile are different. This is an intentional risk/cost split, not a
 missing CI capability; neither literal “no GitHub Actions” wording nor
 every-push expensive full regression supersedes it.
+
+## D-016 — Formal Plan source delivery follows validation
+
+When a formal approved Plan produces tracked source changes, its validated
+source delivery ends with one ordinary push to the current configured
+upstream. This keeps a completion report aligned with actual remote delivery
+instead of leaving a local `COMPLETE` state that the upstream does not have.
+Source push and Pages publication remain independent events; a push failure is
+a delivery failure and cannot be made to pass through force or history rewrite.
+Plans with no tracked source changes do not create an empty commit merely to
+perform a push.

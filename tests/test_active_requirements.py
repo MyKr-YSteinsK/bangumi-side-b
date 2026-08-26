@@ -152,7 +152,7 @@ def test_current_state_records_checkpoint_baseline_and_completion() -> None:
     assert "Migration status: adoption is complete at the checkpoint baseline" in state
     assert "historical context, not the current adopted baseline" in state
     assert (
-        "exact resulting HEAD of this docs/tests-only cleanup is "
+        "exact resulting HEAD of state-only documentation updates is "
         "authoritative in its TASK_RESULT" in state
     )
     assert "being retired" not in state
@@ -202,6 +202,38 @@ def test_agents_is_repo_specific_and_covers_live_access_boundary() -> None:
         "full pytest",
     ):
         assert generic_workflow not in agents
+
+
+def test_agents_require_formal_plan_source_delivery_before_complete() -> None:
+    agents = _compact(_read(ROOT / "AGENTS.md")).lower()
+
+    for required in (
+        "formal approved plan",
+        "tracked source changes",
+        "implementation, docs, and tests changes",
+        "required validation has passed",
+        "final source commit exists",
+        "ordinary `git push`",
+        "configured upstream",
+        "upstream must accept that commit",
+        "local branch head must equal the configured upstream head",
+        "full `pass` / `complete`",
+        "delivery failure",
+        "`blocked`",
+        "force push",
+        "force-with-lease",
+        "rebase",
+        "amend",
+        "squash",
+        "history rewrite",
+        "no source changes / no push required",
+        "current source branch",
+        "`release publish`",
+        "pages publication",
+        "`gh-pages` mutation",
+        "live bangumi access",
+    ):
+        assert required in agents
 
 
 def test_clean_admission_has_no_tv_default_fallback() -> None:

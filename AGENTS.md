@@ -52,6 +52,9 @@ active Codex Skills/runtime and are not repeated here.
 - `build` is fully offline and produces the single formal site at `dist/site`.
 - `serve` serves the existing `dist/site` tree only; it does not read SQLite,
   build, sync, or publish.
+- The PWA extends the same online `dist/site` with a minimal shell, runtime
+  caching, and explicit complete quarter downloads; normal online startup is
+  never gated on downloading the archive.
 - `release prepare` is an offline candidate check/build and does not sync or
   push. `release publish` publishes only a verified prepared `dist/site`; it
   never calls `sync` or `build`.

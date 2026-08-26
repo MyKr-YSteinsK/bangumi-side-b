@@ -116,6 +116,68 @@ def test_project_state_and_active_docs_match_current_archive_evidence_model() ->
         assert "docs/project-requirements-baseline.md" not in current_text
 
 
+def test_issue_taxonomy_distinguishes_information_gaps_from_conflicts() -> None:
+    canonical_docs = (
+        PROJECT / "PROJECT_BRIEF.md",
+        PROJECT / "DECISIONS.md",
+        ROOT / "docs" / "development.md",
+    )
+    for path in canonical_docs:
+        text = _compact(_read(path))
+        assert "information-insufficient" in text
+        assert "automatic permanent exclusion" in text
+        assert "factual conflict" in text
+        assert "REVIEW" in text
+
+    decisions = _compact(_read(PROJECT / "DECISIONS.md")).lower()
+    assert "manual exclusion" in decisions
+    assert "automatic permanent exclusion uses" in decisions
+    assert "`auto_excluded_subject_ids`" in decisions
+    assert "not one universal disposition" in decisions
+    assert "Conflicts and insufficient evidence remain REVIEW" not in decisions
+    assert "冲突或不足证据进入 REVIEW" not in _read(ROOT / "docs" / "development.md")
+
+
+def test_current_state_records_checkpoint_baseline_and_completion() -> None:
+    state = _compact(_read(PROJECT / "CURRENT_STATE.md"))
+    adoption_sha = "4c458a7da6a23563f3a01306b604c52cb546981c"
+    checkpoint_sha = "7e7c7671dd9620a38c61a5d1f1aed29fd94331dc"
+
+    assert (
+        f"Migration adoption audit start: `{adoption_sha}`" in state
+    )
+    assert (
+        f"Migration Checkpoint adopted baseline: `{checkpoint_sha}`" in state
+    )
+    assert "Migration status: adoption is complete at the checkpoint baseline" in state
+    assert "historical context, not the current adopted baseline" in state
+    assert (
+        "exact resulting HEAD of this docs/tests-only cleanup is "
+        "authoritative in its TASK_RESULT" in state
+    )
+    assert "being retired" not in state
+    assert "migration is being changed" not in state
+
+
+def test_durable_decisions_preserve_migration_guardrails() -> None:
+    decisions = _compact(_read(PROJECT / "DECISIONS.md")).lower()
+
+    for required in (
+        "independent repository",
+        "mykr-ops",
+        "generic plugin",
+        "package/api boundary",
+        "package update",
+        "quarter-data update",
+        "root or cross-document view transition",
+        "full-screen black flash",
+        "real-device evidence",
+        "fast gate",
+        "manual/deep layer",
+    ):
+        assert required in decisions
+
+
 def test_agents_is_repo_specific_and_covers_live_access_boundary() -> None:
     agents = _read(ROOT / "AGENTS.md")
 

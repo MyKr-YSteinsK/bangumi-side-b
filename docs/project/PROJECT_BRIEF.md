@@ -34,8 +34,12 @@ online and extended with explicit quarter-level offline downloads.
 
 - Admission and archive facts use deterministic evidence and rules. AI does
   not decide quarter ownership, continuation, format, source, tags, blacklist,
-  or generated facts; unresolved or conflicting evidence remains REVIEW for
-  explicit human adjudication.
+  or generated facts. Evidence gaps have no single disposition: specific facts
+  such as country evidence follow their specialist contract and may enter
+  REVIEW, while the current rule-bound `information-insufficient` issue family
+  may trigger `automatic permanent exclusion`. A `factual conflict` remains
+  REVIEW for explicit human adjudication; manual exclusion and automatic
+  permanent exclusion are distinct states.
 - Browse/Search is candidate discovery. Canonical subject detail is the
   authority for persisted subject facts.
 - Source vocabulary and display tags use exact configured mappings and

@@ -39,7 +39,11 @@ python -m pip install -e ".[dev]"
 
 Browse/Search 只负责候选发现；最终 subject facts 必须来自 canonical detail
 和确定性规则。国家、季度、媒体、来源、标签、黑名单和生成事实不由 AI
-推断；冲突或不足证据进入 REVIEW，并由显式人工裁决配置处理。
+推断。证据不足不是单一 disposition：特定 country evidence 的缺失按专项
+合同处理并可能进入 REVIEW；当前 rule-bound `information-insufficient`
+issue family 可触发 `automatic permanent exclusion`。`factual conflict`
+继续保留为 REVIEW 并交由显式人工裁决；manual exclusion 与 automatic
+permanent exclusion 是不同状态。
 
 运行时使用静态 HTML、CSS 和原生 JavaScript，只请求同源生成的 JSON、页面
 和资源；不读取 SQLite，不请求 Bangumi 或第三方业务 API。SQLite 使用严格

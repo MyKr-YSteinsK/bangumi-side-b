@@ -15,8 +15,9 @@ only quarter are historical and do not expand the current scope.
 
 Rules and structured evidence decide automatic admission and generated facts.
 AI cannot fill missing country, quarter, continuation, source, tag, blacklist,
-or other archive facts. Conflicts and insufficient evidence remain REVIEW until
-an explicit human decision is recorded in the supported configuration.
+or other archive facts. Evidence gaps follow the issue taxonomy in D-012 rather
+than a universal REVIEW shortcut; factual conflicts remain REVIEW until an
+explicit human decision is recorded in the supported configuration.
 
 ## D-003 — Canonical detail after candidate discovery
 
@@ -60,8 +61,12 @@ and must not be reintroduced as a current identity requirement.
 ## D-009 — Local motion foundation
 
 Browsing continuity uses local result motion and reduced-motion handling. Root
-or cross-document View Transition is not the default foundation; an old Plan
-number is not a standing requirement owner.
+or cross-document View Transition is not the default foundation. Historical
+ real iOS Safari and standalone PWA testing exposed a full-screen black flash failure
+mode, so feature availability alone is not a reason to restore it. Reconsider
+only when new real-device evidence shows that failure mode is gone and the
+benefit justifies the added risk; an old Plan number is not a standing
+requirement owner.
 
 ## D-010 — Separate application and publication identities
 
@@ -76,3 +81,40 @@ The migration package, old Plans/Handoffs, old context exports, and retired
 aggregate documents may explain history but cannot override the repository's
 Project State or specialist owners. The foreign old Codex context export is
 quarantined as RED:REPEAT material and is never Bangumi evidence.
+
+## D-012 — Information gaps and factual conflicts stay distinct
+
+Missing or insufficient information is not one universal disposition. Specific
+missing evidence, such as country evidence, follows its specialist contract
+and can enter REVIEW. The current rule-bound `information-insufficient` issue
+family may instead trigger `automatic permanent exclusion`; a `factual
+conflict` continues as REVIEW and requires human adjudication. Manual exclusion
+uses `excluded_subject_ids`; automatic permanent exclusion uses
+`auto_excluded_subject_ids`. They are distinct states. This prevents a
+deterministic information-quality rule from being silently broadened into a
+conflict classifier or vice versa.
+
+## D-013 — Independent repository boundary
+
+Bangumi Side B remains an independent repository and is not folded back into
+MyKr-ops. The project does not pre-build a generic plugin or integration
+framework. A future integration requires an explicit user decision and a
+deliberately defined package/API boundary; proximity of repositories alone is
+not authorization or a design.
+
+## D-014 — Application updates and quarter-data updates are different
+
+Application/package updates change the shell, CSS, JavaScript, or lifecycle and
+use the application update notice plus explicit user refresh. Quarter-data
+updates change structured archive data and follow the explicit complete-quarter
+download/replacement lifecycle. A package update must not be presented as a
+quarter-data update, and automatic maintenance must not expand the user's
+offline quarter scope without an explicit download choice.
+
+## D-015 — Risk-tiered CI is intentional
+
+The default CI remains a fast gate for ordinary pushes. Expensive Chromium or
+WebKit full regression belongs to the manual/deep layer because its reliability
+and cost profile are different. This is an intentional risk/cost split, not a
+missing CI capability; neither literal “no GitHub Actions” wording nor
+every-push expensive full regression supersedes it.

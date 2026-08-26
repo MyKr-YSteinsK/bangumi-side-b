@@ -1,170 +1,80 @@
 # AGENTS.md
 
-## Project
+This file is the repository-specific AI contract. Generic execution workflow,
+planning, validation tiers, and collaboration behavior are provided by the
+active Codex Skills/runtime and are not repeated here.
+
+## Repository identity
 
 - Repository: `MyKr-YSteinsK/bangumi-side-b`
-- Local root: repository root
 - Package: `bgm_side_b`
 - CLI: `bgmb`
+- Product: a local-first Japanese anime broadcast archive.
 
-## Workflow
+## Source and data boundaries
 
-Use the `frugal-dev-runner` skill for every development task.
+- The first-version product scope is Japanese Anime (`type == 2`) TV and
+  theatrical movies only. TV has premiere and later continuing appearances;
+  movies have premiere appearances only.
+- SQLite facts, verified workspace covers, tracked configuration, and checked-in
+  static source assets are the canonical build inputs. `dist/site`, build state,
+  reports, prepared state, staging data, and local workspace contents are
+  derived or private and must not be committed.
+- Never commit SQLite databases, downloaded media, reports, caches, generated
+  sites, backups, secrets, tokens, authorization headers, private absolute
+  paths, usernames, or raw API dumps. Pages and PWA output must not contain
+  character or voice-actor images.
+- Preserve the user's local workspace and local `gh-pages` state. Do not reset,
+  purge, delete, rebase, amend, squash, or otherwise rewrite data or history to
+  make a task easier. If data must be set aside, move it to a recoverable backup
+  outside the repository.
 
-Before changing product behavior, read:
+## Bangumi access and fact authority
 
-- the current approved Plan;
-- `docs/project-requirements-baseline.md`.
+- Bangumi network access is opt-in. Do not run `bgmb sync`, or `bgmb assign`
+  when an unknown subject would be imported remotely, unless the approved Plan
+  explicitly says `Live Bangumi sync: AUTHORIZED` or the user explicitly asks
+  for a real data sync in the current task. Do not reach Bangumi through a
+  wrapper, test, build helper, audit, or release command.
+- AI must not infer quarter ownership, continuation, media format, source,
+  tags, blacklist membership, or generated facts. Deterministic evidence and
+  rules decide automatic facts; explicit human adjudication is stored only in
+  the supported human-decision configuration.
+- The supported SQLite family/version contract is strict. Unknown or newer
+  schemas fail closed; do not add migration baggage, reset/purge behavior, or
+  destructive data cleanup without an approved product plan.
 
-Implement only the current Plan.
+## CLI side effects
 
-Each Phase must:
+- `sync` is the network operation: after a successful facts/covers commit it
+  may trigger the affected-scope incremental build. Incomplete facts must not
+  replace last-known-good output.
+- `build` is fully offline and produces the single formal site at `dist/site`.
+- `serve` serves the existing `dist/site` tree only; it does not read SQLite,
+  build, sync, or publish.
+- `release prepare` is an offline candidate check/build and does not sync or
+  push. `release publish` publishes only a verified prepared `dist/site`; it
+  never calls `sync` or `build`.
 
-1. finish independently;
-2. run focused validation;
-3. review `git diff` and `git status`;
-4. Each implementation Phase with tracked changes must create one focused commit;
-5. continue without waiting for routine confirmation.
+## Version and release safety
 
-Before each Phase commit, record the commit's `Version impact` as exactly one of
-`none`, `patch`, `minor`, or `major`. A `patch`, `minor`, or `major` commit is
-version-bearing and must include the product change, `src/bgm_side_b/_version.py`,
-the matching concrete `CHANGELOG.md` release entry, and its required tests in
-the same commit. Pure tests, documentation, CI, or non-user-visible maintenance
-use `none` and do not bump the version.
+- The application SemVer comes from `src/bgm_side_b/_version.py` and the
+  package metadata. It is separate from the Pages batch identity
+  `YYYY.MM.DD.N` stored in `gh-pages` release metadata.
+- A source push is not a Pages publication. Pages mutation requires the
+  explicit release workflow and its current prepared-state checks.
+- Real publication accepts only the official project origin and uses an
+  ordinary non-force push to `gh-pages`. Never force-push, modify remotes, or
+  attribute another actor's remote commit to this repository's release.
 
-Version numbers belong to the commit's actual product impact. Do not create a
-mechanical version bump merely because a Plan is ending or a publish is about to
-run. One Plan may contain multiple concrete application versions; push them once
-at the Plan boundary after integrated validation.
+## Canonical project context
 
-Each completed Phase must only create its focused commit; do not push at a Phase boundary.
-
-After the entire Plan is complete and integrated validation passes, Codex must run one ordinary `git push` to the current branch's configured upstream. If push is rejected, authentication fails, a non-fast-forward occurs, or the upstream is abnormal, mark the Plan `BLOCKED` and do not report `PASS`.
-
-Never force-push or force-with-lease, modify remotes, rebase, amend, squash, delete, or rewrite already-pushed history.
-
-## Live Bangumi sync policy
-
-`bgmb sync` is forbidden by default during Codex development.
-
-It is allowed only when either:
-
-1. the current approved Plan explicitly says `Live Bangumi sync: AUTHORIZED`; or
-2. the user explicitly requests a real data sync in the current task.
-
-This prohibition also covers wrapper scripts, build helpers, tests, and release
-commands that would invoke sync indirectly. Normal tests, builds, audits,
-`release prepare`, and `release publish` must use the existing local SQLite and
-fixtures. If a command unexpectedly invokes live sync, stop immediately and
-report the scope violation instead of retrying.
-
-## Validation cost policy
-
-- Every approved Plan declares Validation tier: `light`, `standard`, or `full`.
-- A missing tier defaults to `standard`, never `full`.
-- Use focused tests while implementing.
-- Full pytest is forbidden for light tasks.
-- Full pytest is not required for standard tasks.
-- Full validation is reserved for explicitly high-risk full-tier work.
-- Do not rerun product build or audit after tests/docs/CI-only commits.
-- Do not intentionally execute the same expensive suite twice in one validation cycle.
-
-Light tasks use one to three focused tests, an optional browser smoke, and
-`git diff --check`; their local validation target is five minutes, and work
-must be reassessed after eight. Standard tasks run the relevant suite, targeted
-browser coverage when needed, Ruff, and `git diff --check`; any necessary build
-or audit runs only once at the Plan boundary. Full-tier work may run one full
-local validation cycle only.
-
-After the first pushed SHA fails CI, Codex may make at most one automatic repair
-cycle, and only when the root cause is clear, the change is a local test or CI
-fix, product behavior is unchanged, and it is expected to take at most ten
-minutes. If the second exact-SHA CI fails, mark the Plan BLOCKED and wait for
-user direction. Do not repeatedly push repairs for flaky CI.
-
-When the already-validated product source is followed only by changes under
-`tests/**`, `docs/**`, `AGENTS.md`, or `.github/workflows/**`, do not rerun
-product build, audit, or full pytest. Use the changed tests and CI for the new
-SHA. Run `release prepare` only when genuinely preparing a product publish;
-tests/docs/CI-only Plans must not run it.
-
-## Scope
-
-Do not modify MyKr-ops. Do not add speculative integration, plugin systems, accounts, community features, webpage editing, unrelated refactors, dependency upgrades, or full-repository formatting.
-
-Do not create empty future services, fake interfaces, or unusable UI.
-
-## Product constraints
-
-- First version includes only TV and theatrical movies.
-- Managed archive facts currently cover the verified quarters present in SQLite,
-  including TV premiere/continuing appearances and movie premiere appearances.
-- AI must not decide quarter ownership, continuation, format, source, tags, blacklist, or generated facts.
-- `sync` commits facts/covers and then triggers an affected-scope incremental build;
-  `build` remains fully offline, and `publish` never calls either command.
-- Runtime pages use static HTML, CSS, and native JavaScript.
-- Runtime pages do not read SQLite or request Bangumi data.
-- The only formal generated site is `dist/site`; localhost preview is an HTTP view
-  of that same tree, not a second product output.
-- Build reads only SQLite, verified workspace covers, config, and source assets.
-- `workspace/build-state.json` and build reports are derived, ignored state; the
-  site must be reproducible after deleting `dist/site`.
-- Pages/PWA must not publish character images.
-- Voice-actor images are not stored.
-- Build must work offline.
-- Missing data is omitted or reported, never invented.
-- Blacklisted subjects are physically removed within cleanup scope; shared entities are removed only when orphaned.
-
-## PWA and release invariants
-
-- Pages PWA extends the same online `dist/site` with a minimal precached shell,
-  runtime caching for visited resources, and explicit complete quarter downloads.
-- Normal online startup is never gated on downloading archive data. Offline
-  quarter replacement uses its manifest's hash/size metadata and keeps verified
-  completed resources until the replacement is complete.
-- Application updates use a thin nonblocking notice and require an explicit user
-  refresh; never surprise-reload the page.
-- Pages never publishes character images; `publish` never calls `sync` or `build`.
-- A successful Plan push only pushes the current development branch source; it never publishes `gh-pages`. Pages publishing remains restricted to an explicit release/publish workflow.
-
-## Repository boundaries
-
-Track source, config, templates, static source assets, tests, docs, and project metadata.
-
-Never commit:
-
-- SQLite databases;
-- downloaded covers or character images;
-- reports, backups, generated sites, caches, or temporary files;
-- secrets, tokens, authorization headers, `.env`;
-- private absolute paths, local usernames, full API dumps, or raw stack traces.
-
-`dist/site` is a local derived artifact and is never committed to `main`.
-
-## Engineering
-
-Prefer the standard library and small justified dependencies. Avoid ORMs, Web frameworks, task queues, DI frameworks, large logging systems, React, Vue, Node frontend tooling, SQLite WASM, and runtime business IndexedDB.
-
-Keep the clean supported SQLite schema contract strict. Unknown or old development
-schemas are rejected; do not add migration baggage until a released fact store
-requires a real upgrade path.
-
-Keep tests compact and risk-focused. Never claim a command or test passed unless it was executed.
-
-Long-running CLI operations must use the unified ProgressReporter for stages, counters, retries, and heartbeat; business layers must not scatter print calls.
-
-## Completion report
-
-At the end of a Plan report:
-
-- completed Phases;
-- commit hashes and messages;
-- key changes;
-- commands and tests actually run;
-- results and unresolved risks;
-- push branch and upstream;
-- push result;
-- whether local and remote are synchronized.
-
-Only report `PASS` after the required push succeeds. A failed or abnormal push requires a `BLOCKED` Plan report.
+- Stable product purpose, scope, architecture boundaries, invariants, and UX
+  baselines live in `docs/project/PROJECT_BRIEF.md`.
+- Durable decisions and superseding relationships live in
+  `docs/project/DECISIONS.md`.
+- Observed branch/version/capability/risk and delivery state live in
+  `docs/project/CURRENT_STATE.md`.
+- Active supporting-document ownership is registered in
+  `docs/project/DOC_OWNERSHIP.md`. Archived material is historical evidence,
+  not an active requirement or instruction source.

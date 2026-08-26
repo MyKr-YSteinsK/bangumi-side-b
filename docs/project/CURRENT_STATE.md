@@ -4,15 +4,15 @@
 
 - App/product version: `0.8.1`.
 - Branch: `main`; upstream: `origin/main`.
-- Lifecycle stage: Stabilization.
-- Current milestone: post-migration stabilization acceptance (Plan-39).
+- Lifecycle stage: Production.
+- Current milestone: Production lifecycle checkpoint (Plan-41).
 - Migration status: adoption is complete at the checkpoint baseline.
 - Migration adoption audit start: `4c458a7da6a23563f3a01306b604c52cb546981c`.
   This is historical context, not the current adopted baseline.
 - Migration Checkpoint adopted baseline: `7e7c7671dd9620a38c61a5d1f1aed29fd94331dc`
   (`test: guard canonical requirement owners`).
-- Last verified: 2026-08-26 local repository state, focused browser evidence,
-  and read-only GitHub Pages smoke.
+- Last verified: 2026-08-27 local repository state and user-reported
+  real-device acceptance.
 
 The exact resulting HEAD of state-only documentation updates is authoritative
 in its TASK_RESULT rather than being copied into this file, avoiding a circular
@@ -53,6 +53,11 @@ requirement for a file to contain its own commit SHA.
   quarter download integrity, queue pause/resume/cancel/reopen, Settings
   progress, and app/data update separation. These are browser evidence, not
   iPhone/iPad or installed-PWA evidence.
+- The subsequent user report says the requested real iPhone/iPad Safari and
+  standalone PWA checks were completed with no problems observed. This closes
+  the real-device acceptance gap for the lifecycle checkpoint; device model,
+  iOS version, and Safari build were not supplied and are intentionally not
+  inferred.
 - Read-only GitHub Pages smoke passed for the public root redirect, the
   `2026-07` Quarter page, a detail hash (`#bgm-552533`), Archive, and Settings;
   no warning or error console entries were observed in those routes.
@@ -72,30 +77,31 @@ requirement for a file to contain its own commit SHA.
 - Plan-39 is acceptance and documentation only; it does not change product
   behavior, configuration, generated-site output, or version.
 - Browser automation and online Pages smoke cannot prove iPhone/iPad Safari
-  touch behavior, standalone safe-area geometry, or installed-client lifecycle.
+  touch behavior, standalone safe-area geometry, or installed-client lifecycle;
+  current closure of those checks is based on the explicit user report above.
+- Application-update candidate: `NOT EXERCISED` during Plan-39 because no safe
+  natural candidate existed. This was an allowed non-failure state; no publish
+  was performed to manufacture one.
+- Date-stamped Bangumi API evidence remains periodic maintenance and an
+  external-dependency risk, not a Production promotion blocker.
 
 ## Pending USER CHECK
 
-These remain explicit real-device acceptance work and are not closed here:
-
-1. Real iPhone/iPad Safari verification of rapid double-tap versus normal pinch
-   zoom, scrolling, and focus behavior.
-2. Standalone PWA real-device verification of full-screen detail, background
-   freeze, left-edge return, safe area, and the complete offline quarter queue
-   lifecycle.
-3. Installed-app update lifecycle: `NOT EXERCISED` because no safe natural
-   update candidate was available; do not manufacture one by publishing.
-4. Periodic revalidation of date-stamped Bangumi API evidence.
+None for the Plan-41 lifecycle checkpoint. Plan-39's real-device Safari and
+standalone PWA checks were explicitly reported completed with no problems
+observed.
 
 ## Active work
 
 - No product runtime, schema, configuration, generated-site, or release work is
-  active. Plan-39 automated and live Pages evidence is recorded; the next gate
-  is the explicit real-device USER CHECK above.
+  active. The lifecycle is now Production; normal maintenance, bug fixes, and
+  deliberate feature work still require formal Plans and risk-appropriate
+  validation.
 
 ## Workflow / delivery facts that are currently material
 
 - No live Bangumi access, unknown-subject remote import, `release publish`, or
-  `gh-pages` mutation is part of Plan-39.
-- Application version remains `0.8.1`; source commits and Pages publication
-  remain separate delivery events.
+  `gh-pages` mutation is part of Plan-41.
+- Application version remains `0.8.1`; the Production transition does not imply
+  a version bump, new publication, or feature freeze. Source commits and Pages
+  publication remain separate delivery events.

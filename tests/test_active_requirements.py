@@ -151,10 +151,26 @@ def test_current_state_records_checkpoint_baseline_and_completion() -> None:
     )
     assert "Migration status: adoption is complete at the checkpoint baseline" in state
     assert "historical context, not the current adopted baseline" in state
+    assert "Lifecycle stage: Production" in state
+    assert "Lifecycle stage: Stabilization" not in state
+    assert "Current milestone: Production lifecycle checkpoint (Plan-41)" in state
     assert (
         "exact resulting HEAD of state-only documentation updates is "
         "authoritative in its TASK_RESULT" in state
     )
+    assert (
+        "requested real iPhone/iPad Safari and standalone PWA checks were "
+        "completed with no problems observed" in state
+    )
+    assert (
+        "device model, iOS version, and Safari build were not supplied and are "
+        "intentionally not inferred" in state
+    )
+    assert "Pending USER CHECK None for the Plan-41 lifecycle checkpoint" in state
+    assert "Application-update candidate: `NOT EXERCISED` during Plan-39" in state
+    assert "allowed non-failure state" in state
+    assert "not a Production promotion blocker" in state
+    assert "next gate is the explicit real-device USER CHECK" not in state
     assert "being retired" not in state
     assert "migration is being changed" not in state
 

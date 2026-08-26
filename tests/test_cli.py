@@ -272,7 +272,6 @@ def test_active_documentation_matches_the_final_cli_contract() -> None:
     documents = (
         root / "README.md",
         root / "docs" / "USER_GUIDE.md",
-        root / "docs" / "project-requirements-baseline.md",
         root / "docs" / "development.md",
         root / "docs" / "static-build.md",
         root / "docs" / "pwa.md",

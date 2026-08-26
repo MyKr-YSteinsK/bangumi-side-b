@@ -130,10 +130,12 @@ bgmb release publish
 仓库跟踪源代码、配置、模板、静态资源、测试和文档。SQLite 数据库、下载封面、报告、备份、
 生成站点、缓存、临时文件和密钥不应提交。
 
-更多说明见[用户指南](docs/USER_GUIDE.md)、[同步说明](docs/subject-sync.md)、
+更多说明见[用户指南](docs/USER_GUIDE.md)、[项目简介](docs/project/PROJECT_BRIEF.md)、
 [国家/地区规则](docs/country-filter.md)、
 [静态构建说明](docs/static-build.md)、[PWA 说明](docs/pwa.md)、
-[发布说明](docs/publish.md)和[数据重置流程](docs/data-reset.md)。
+[发布说明](docs/publish.md)、[版本说明](docs/releases.md)和[开发文档](docs/development.md)。
+
+旧版综合基线、同步和数据重置文档已移入[历史归档](docs/archive/README.md)，不再作为当前操作说明。
 
 ## 数据与版权说明
 

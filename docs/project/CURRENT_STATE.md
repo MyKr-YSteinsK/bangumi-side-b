@@ -105,21 +105,24 @@ requirement for a file to contain its own commit SHA.
   Japanese-inclusive co-productions under the new same-source-compatible
   rule; independent Japan/non-Japan sources remain REVIEW.
 - The bounded `2025-04..2025-07 --refresh-existing` run completed with facts
-  and covers complete and zero sync errors. Its final aggregate was 125
-  accepted TV, 17 accepted Movie, 40 rejected non-Japanese, 156 blacklisted,
-  14 irrelevant candidates, and 29 outcome-dominated exclusions recorded in
-  the preceding idempotent run. The second run added no duplicate automatic
+  and covers complete and zero sync errors. The first post-policy refresh
+  aggregated 125 accepted TV, 17 accepted Movie, 40 rejected non-Japanese,
+  156 blacklisted, 14 irrelevant candidates, and 29
+  `outcome_dominated_low_rating` exclusions plus 2 deterministic
+  `low_rating_count` exclusions. Follow-up refreshes reconciled stale
+  review-only subjects; the final idempotent refresh added no duplicate
   exclusions and rebuilt the unified static site successfully.
 - `bgmb review 2025 4` and `bgmb review 2025 7` both report zero unresolved
   subjects. The four old Movie date-mismatch rows no longer produce REVIEW or
-  `assign` guidance. The global `bgmb review` contains 33 unresolved subjects:
-  28 classification-unknown, 2 structured-evidence conflicts, and 3
-  region conflicts. Eight are still inclusion-changing cases in the bounded
-  target (the other 25 belong to other quarters and were intentionally not
-  refreshed by this Plan), so the target corpus is reduced from 69 to 8
-  actionable cases (88.4%, exceeding the 80% gate).
+  `assign` guidance. The global `bgmb review` contains 32 unresolved subjects:
+  27 classification-unknown, 2 structured-evidence conflicts, and 3
+  region conflicts. Seven remain inclusion-changing cases in the bounded
+  target; the other 25 belong to other quarters and were intentionally not
+  refreshed by this Plan. The three target rows that had become deterministically
+  non-Japanese were removed from their stale review-only records.
 - The unified `bgmb audit` passed with no pending quarter state and six
-  publishable managed quarters. No duplicate premiere rows were observed.
+  publishable managed quarters. The final database contains 472 subjects and
+  no duplicate premiere rows were observed.
   The application schema remains the existing strict schema-2 contract; no
   SQLite migration, PWA runtime change, Pages publication, or `gh-pages`
   mutation was made.

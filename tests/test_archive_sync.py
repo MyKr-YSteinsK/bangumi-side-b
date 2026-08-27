@@ -738,6 +738,104 @@ def test_stale_out_of_scope_review_only_movie_is_removed(
     assert repository.get_subject_facts(subject_id) is None
 
 
+def test_stale_target_japanese_review_is_dominated_from_stored_facts(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    target = Quarter(2026, 4)
+    subject_id = 650055
+    review = ReviewIssue(
+        "JAPANESE_CLASSIFICATION_UNRESOLVED",
+        None,
+        "2026-04-02",
+        {"provenance": ["browse:MOVIE:2026-05"]},
+        "old",
+    )
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi({}),
+        DiscoveryBatch(()),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 20),
+    )
+    _store_existing(
+        repository,
+        subject_id,
+        media=MediaFormat.MOVIE,
+        review_issues=(review,),
+    )
+    snapshot = repository.get_subject_facts(subject_id)
+    assert snapshot is not None
+    unresolved = replace(
+        snapshot,
+        subject=replace(
+            snapshot.subject,
+            rating_count=5,
+            japanese=JapaneseDecision(
+                JapaneseClassification.UNRESOLVED,
+                "unresolved_missing_japanese_region",
+                "[]",
+            ),
+        ),
+    )
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(connection, unresolved)
+
+    run = sync.run(SyncScope(target, target))
+    result = run.quarters[0]
+
+    assert result.outcome_dominated == 1
+    assert result.auto_blacklisted[0]["reason"] == (
+        "outcome_dominated_low_rating"
+    )
+    assert repository.get_subject_facts(subject_id) is None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset({subject_id})
+    )
+
+
+def test_current_non_japanese_decision_removes_stale_japanese_review(
+    tmp_path: Path,
+) -> None:
+    target = Quarter(2026, 4)
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650056
+    review = ReviewIssue(
+        "JAPANESE_CLASSIFICATION_UNRESOLVED",
+        None,
+        "2026-04-02",
+        {"provenance": ["browse:MOVIE:2026-05"]},
+        "old",
+    )
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi(
+            {
+                subject_id: _detail(
+                    subject_id,
+                    media=MediaFormat.MOVIE,
+                    country="中国",
+                    cover=None,
+                )
+            }
+        ),
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.MOVIE),)),
+        settings_path=settings_path,
+    )
+    _store_existing(
+        repository,
+        subject_id,
+        media=MediaFormat.MOVIE,
+        premiere_quarter=None,
+        review_issues=(review,),
+    )
+
+    result = sync.run(SyncScope(target, target)).quarters[0]
+
+    assert result.rejected_non_japanese == 1
+    assert repository.get_subject_facts(subject_id) is None
+
+
 def test_low_rating_unresolved_japanese_is_auto_blacklisted_with_auditable_dominance(
     tmp_path: Path,
 ) -> None:

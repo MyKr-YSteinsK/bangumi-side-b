@@ -30,7 +30,14 @@ from bgm_side_b.admission import (
     quarter_for_date,
     should_auto_blacklist_unresolved_cold,
 )
-from bgm_side_b.api import BangumiApiClient, BangumiApiError, SubjectDetail
+from bgm_side_b.api import (
+    ApiInfoboxItem,
+    ApiTag,
+    BangumiApiClient,
+    BangumiApiError,
+    ImageUrls,
+    SubjectDetail,
+)
 from bgm_side_b.archive_config import (
     ArchiveSourceRules,
     ArchiveSyncSettings,
@@ -87,6 +94,13 @@ CONTINUING_EVIDENCE_CONFLICT = "CONTINUING_EVIDENCE_CONFLICT"
 _OUT_OF_SCOPE_REVIEW_ISSUES = frozenset(
     {
         DISCOVERY_DATE_MISMATCH,
+        JAPANESE_CLASSIFICATION_UNRESOLVED,
+        "JAPANESE_REGION_CONFLICT",
+        "JAPANESE_EVIDENCE_CONFLICT",
+    }
+)
+_JAPANESE_REVIEW_ISSUES = frozenset(
+    {
         JAPANESE_CLASSIFICATION_UNRESOLVED,
         "JAPANESE_REGION_CONFLICT",
         "JAPANESE_EVIDENCE_CONFLICT",
@@ -460,22 +474,27 @@ class ArchiveSynchronizer:
             if snapshot.premiere is None
             or snapshot.premiere.quarter == quarter
         }
+        dominated_count, dominated_events, dominance_errors = (
+            self._retire_dominated_reviews(quarter, current_candidate_ids)
+        )
 
         prepared: list[_PreparedSubject] = []
         reviews: list[ReviewIssue] = []
         external_reviews: list[dict[str, object]] = []
-        errors: list[dict[str, str]] = []
-        blacklisted = 0
+        errors: list[dict[str, str]] = list(dominance_errors)
+        blacklisted = dominated_count
         manual_blacklisted = 0
         existing_auto_blacklisted = 0
-        auto_blacklisted: list[dict[str, object]] = []
+        auto_blacklisted: list[dict[str, object]] = list(dominated_events)
         rejected_non_japanese = 0
         accepted_tv = 0
         accepted_movie = 0
         tv_candidates = 0
         admitted_japanese_tv = 0
         irrelevant_candidates = len(irrelevant_subject_ids)
-        outcome_dominated = 0
+        outcome_dominated = dominated_count
+        resolved_review_only_subject_ids: set[int] = set()
+        resolved_japanese_review_subject_ids: set[int] = set()
         premiere_conflict_warnings: list[dict[str, str]] = []
         canonical_detail_requests = 0
         try:
@@ -680,6 +699,17 @@ class ArchiveSynchronizer:
                 if decision.status is AdmissionStatus.REJECTED:
                     if decision.reason == "non_japanese":
                         rejected_non_japanese += 1
+                        if existing is not None and any(
+                            issue.issue_code in _JAPANESE_REVIEW_ISSUES
+                            for issue in existing.review_issues
+                        ):
+                            resolved_japanese_review_subject_ids.add(
+                                candidate.subject_id
+                            )
+                            if existing.premiere is None:
+                                resolved_review_only_subject_ids.add(
+                                    candidate.subject_id
+                                )
                     continue
                 if decision.media_format is None or decision.japanese is None:
                     external_reviews.append(
@@ -861,6 +891,7 @@ class ArchiveSynchronizer:
             )
         } - {item.snapshot.subject.subject_id for item in prepared}
         stale_ids |= irrelevant_subject_ids
+        stale_ids |= resolved_review_only_subject_ids
         completed_at = _timestamp()
         continuing_appearances = tuple(
             (subject_id, appearance)
@@ -904,6 +935,11 @@ class ArchiveSynchronizer:
                 quarter,
                 stale_review_subject_ids,
                 _OUT_OF_SCOPE_REVIEW_ISSUES,
+            )
+            self.repository.delete_unscoped_review_issues_for_subjects(
+                connection,
+                resolved_japanese_review_subject_ids,
+                _JAPANESE_REVIEW_ISSUES,
             )
             self.repository.delete_subjects(connection, frozenset(stale_ids))
             self.repository.replace_automatic_continuing_for_quarter(
@@ -1004,6 +1040,70 @@ class ArchiveSynchronizer:
             irrelevant_candidates=irrelevant_candidates,
             outcome_dominated=outcome_dominated,
         )
+
+    def _retire_dominated_reviews(
+        self, quarter: Quarter, current_candidate_ids: set[int]
+    ) -> tuple[int, tuple[dict[str, object], ...], tuple[dict[str, str], ...]]:
+        """Retire target reviews whose local facts already guarantee exclusion."""
+        items = self.repository.list_review_issues()
+        subject_ids = {
+            item.subject.subject_id
+            for item in items
+            if item.subject.subject_id not in current_candidate_ids
+            and item.issue.issue_code.startswith("JAPANESE_")
+            and _review_belongs_to_quarter(item.issue, quarter)
+            and not _stored_subject_is_out_of_scope(item.subject, quarter)
+            and should_auto_blacklist(
+                item.subject.air_date,
+                item.subject.rating_count,
+                self.evaluation_date,
+            )
+        }
+        snapshots = self.repository.get_subject_facts_many(subject_ids)
+        events: list[dict[str, object]] = []
+        errors: list[dict[str, str]] = []
+        dominated = 0
+        for subject_id in sorted(subject_ids):
+            snapshot = snapshots.get(subject_id)
+            if snapshot is None:
+                continue
+            issue = next(
+                (
+                    item.issue
+                    for item in items
+                    if item.subject.subject_id == subject_id
+                    and item.issue.issue_code.startswith("JAPANESE_")
+                    and _review_belongs_to_quarter(item.issue, quarter)
+                ),
+                None,
+            )
+            if issue is None:
+                continue
+            detail = _detail_from_snapshot(snapshot)
+            try:
+                added = self._record_auto_blacklist(detail, snapshot)
+            except Exception as error:
+                errors.append(
+                    {
+                        "code": "auto_blacklist_persist",
+                        "summary": _auto_blacklist_error_summary(error),
+                    }
+                )
+                continue
+            if not added:
+                continue
+            dominated += 1
+            events.append(
+                _auto_blacklist_event(
+                    detail,
+                    self.evaluation_date,
+                    reason=OUTCOME_DOMINATED_LOW_RATING,
+                    issue_code=issue.issue_code,
+                    target_quarter=quarter,
+                    japanese=snapshot.subject.japanese,
+                )
+            )
+        return dominated, tuple(events), tuple(errors)
 
     def _prepare_subject(
         self,
@@ -1884,22 +1984,34 @@ def _review_belongs_to_quarter(issue: object, quarter: Quarter) -> bool:
     expected_search = (
         f"search:air_date:{search_start.isoformat()}..{next_start.isoformat()}"
     )
-    following_quarter = _next_quarter(next_start_quarter)
-    quarter_months = (
-        (quarter.year, quarter.month),
-        (next_start_quarter.year, next_start_quarter.month),
-        (following_quarter.year, following_quarter.month),
-    )
-    expected_browse = {
-        f"browse:{media.value}:{year:04d}-{month:02d}"
-        for media in (MediaFormat.TV, MediaFormat.MOVIE)
-        for year, month in quarter_months
-    }
-    return any(
-        value == expected_search or value in expected_browse
-        for value in provenance
-        if isinstance(value, str)
-    )
+    target_index = quarter.year * 12 + quarter.month
+    for value in provenance:
+        if not isinstance(value, str):
+            continue
+        if value == expected_search:
+            return True
+        prefix, separator, month_value = value.partition(":")
+        if not separator or prefix != "browse":
+            continue
+        media_value, separator, date_value = month_value.partition(":")
+        if not separator:
+            continue
+        try:
+            observed_year, observed_month = (
+                int(part) for part in date_value.split("-", 1)
+            )
+        except (TypeError, ValueError):
+            continue
+        if not 1 <= observed_month <= 12:
+            continue
+        observed_index = observed_year * 12 + observed_month
+        if media_value == MediaFormat.MOVIE.value:
+            if target_index <= observed_index < target_index + 3:
+                return True
+        elif media_value == MediaFormat.TV.value:
+            if target_index - 1 <= observed_index < target_index + 3:
+                return True
+    return False
 
 
 def _stored_subject_is_out_of_scope(
@@ -1915,6 +2027,28 @@ def _stored_subject_is_out_of_scope(
     target_start = date(quarter.year, quarter.month, 1)
     days_before_target = (target_start - subject.air_date).days
     return not 1 <= days_before_target <= TV_BOUNDARY_LOOKBACK_DAYS
+
+
+def _detail_from_snapshot(snapshot: SubjectSnapshot) -> SubjectDetail:
+    """Recreate the small canonical DTO needed for local exclusion auditing."""
+    subject = snapshot.subject
+    return SubjectDetail(
+        subject.subject_id,
+        2,
+        subject.name_original,
+        subject.name_cn,
+        subject.summary_raw,
+        subject.air_date,
+        "TV" if subject.media_format is MediaFormat.TV else "剧场版",
+        subject.episode_count,
+        None,
+        subject.rating_score,
+        subject.rating_count,
+        (),
+        tuple(ApiTag(tag, None) for tag in snapshot.tags),
+        tuple(ApiInfoboxItem(item.item_key, item.value) for item in snapshot.infobox),
+        ImageUrls(),
+    )
 
 
 def _external_review(

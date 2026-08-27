@@ -129,3 +129,16 @@ Source push and Pages publication remain independent events; a push failure is
 a delivery failure and cannot be made to pass through force or history rewrite.
 Plans with no tracked source changes do not create an empty commit merely to
 perform a push.
+
+## D-017 — Natural quarter ownership and bounded TV boundary exception
+
+Premiere ownership defaults to the natural calendar quarter of the canonical
+air date. Movies remain strict natural-quarter premieres. A TV premiere dated
+1–7 days before the next quarter can move into that next quarter only when
+trusted planned-count evidence rules out a 1–2 episode short run and bounded
+main-story episode dates prove a regular multi-week run crossing the boundary,
+with strong target-quarter evidence and no structured conflict. Community
+quarter tags are supporting evidence, not a standalone override; title season
+words are never evidence. Unknown continuity stays REVIEW, and
+`TV_QUARTER_BOUNDARY` is excluded from the automatic permanent-exclusion
+allowlist. Manual quarter assignment remains the supported adjudication path.

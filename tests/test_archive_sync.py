@@ -19,7 +19,7 @@ from bgm_side_b.admission import (
     TV_QUARTER_DATE_UNRESOLVED,
     QuarterOverride,
 )
-from bgm_side_b.api import BangumiApiError, ImageResponse, SubjectDetail
+from bgm_side_b.api import ApiTag, BangumiApiError, ImageResponse, SubjectDetail
 from bgm_side_b.archive_config import (
     ArchiveSyncSettings,
     add_auto_excluded_subject,
@@ -425,6 +425,141 @@ def test_auto_blacklist_keeps_rule_a_strict_and_rule_b_immediate(
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
         frozenset({650003})
     )
+
+
+@pytest.mark.parametrize(
+    ("subject_id", "air_date", "episode_count"),
+    (
+        (565802, date(2025, 12, 31), 2),
+        (506120, date(2025, 12, 25), 1),
+    ),
+)
+def test_short_boundary_tv_is_kept_in_natural_quarter_without_blacklisting(
+    tmp_path: Path,
+    subject_id: int,
+    air_date: date,
+    episode_count: int,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    detail = replace(
+        _detail(subject_id, air_date=air_date.isoformat(), cover=None),
+        eps=episode_count,
+    )
+    api = FakeApi({subject_id: detail})
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.TV, air_date),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 1, 12),
+    )
+
+    result = sync.run(
+        SyncScope(Quarter(2026, 1), Quarter(2026, 1))
+    ).quarters[0]
+
+    facts = repository.get_subject_facts(subject_id)
+    assert result.auto_blacklisted == ()
+    assert result.reviews == ()
+    assert facts is not None and facts.premiere is not None
+    assert facts.premiere.quarter == Quarter(2025, 10)
+    assert facts.premiere.evidence_type == "air_date"
+    assert api.episode_calls == []
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset()
+    )
+
+
+def test_boundary_tag_alone_is_reviewed_and_not_auto_blacklisted(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650040
+    stable_id = 650042
+    detail = replace(
+        _detail(subject_id, air_date="2025-12-28", cover=None),
+        tags=(ApiTag("2026年1月", 448), ApiTag("TV", 500)),
+    )
+    stable_date = date(2026, 1, 2)
+    api = FakeApi(
+        {
+            subject_id: detail,
+            stable_id: _detail(
+                stable_id, air_date=stable_date.isoformat(), cover=None
+            ),
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch(
+            (
+                _candidate(subject_id, MediaFormat.TV, date(2025, 12, 28)),
+                _candidate(stable_id, MediaFormat.TV, stable_date),
+            )
+        ),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 1, 12),
+    )
+
+    result = sync.run(
+        SyncScope(Quarter(2026, 1), Quarter(2026, 1))
+    ).quarters[0]
+
+    facts = repository.get_subject_facts(subject_id)
+    assert result.auto_blacklisted == ()
+    assert result.reviews[0].issue_code == "TV_QUARTER_BOUNDARY"
+    assert facts is not None and facts.premiere is None
+    assert api.episode_calls == [subject_id]
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset()
+    )
+
+
+def test_proven_multi_week_boundary_tv_can_use_narrow_next_quarter_exception(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650041
+    detail = replace(
+        _detail(subject_id, air_date="2025-12-28", cover=None),
+        tags=(ApiTag("2026年1月", 448), ApiTag("TV", 500)),
+    )
+    api = FakeApi(
+        {subject_id: detail},
+        episode_airdates={
+            subject_id: (
+                date(2025, 12, 28),
+                date(2026, 1, 4),
+                date(2026, 1, 11),
+            )
+        },
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch(
+            (_candidate(subject_id, MediaFormat.TV, date(2025, 12, 28)),)
+        ),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 1, 12),
+    )
+
+    result = sync.run(
+        SyncScope(Quarter(2026, 1), Quarter(2026, 1))
+    ).quarters[0]
+
+    facts = repository.get_subject_facts(subject_id)
+    assert result.auto_blacklisted == ()
+    assert result.reviews == ()
+    assert facts is not None and facts.premiere is not None
+    assert facts.premiere.quarter == Quarter(2026, 1)
+    assert (
+        facts.premiere.evidence_type
+        == "community_quarter_tag_and_main_episode_airdates"
+    )
+    assert result.early_premieres[0]["subject_id"] == subject_id
+    assert api.episode_calls == [subject_id]
 
 
 def test_unresolved_movie_review_is_auto_blacklisted_immediately_and_cleaned(

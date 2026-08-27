@@ -2,7 +2,7 @@
 
 ## Current
 
-- App/product version: `0.8.1`.
+- App/product version: `0.8.2`.
 - Branch: `main`; upstream: `origin/main`.
 - Lifecycle stage: Production.
 - Current milestone: Production lifecycle checkpoint (Plan-41).
@@ -72,10 +72,28 @@ requirement for a file to contain its own commit SHA.
   or third-party business API marker was found in the runtime assets. The
   literal SQLite matches in Settings were historical changelog text only.
 
+## Plan-42 maintenance evidence
+
+- The quarter-boundary admission rule now defaults to the natural calendar
+  quarter. A 1–2 episode TV run remains in that quarter; a next-quarter
+  exception requires bounded regular main-episode dates, strong target-quarter
+  evidence, and no structured conflict. `TV_QUARTER_BOUNDARY` remains REVIEW
+  only and is not an automatic permanent-exclusion issue.
+- The authorized live refresh completed for `2025-10..2026-01` with complete
+  facts and no errors. The former mistaken auto-blacklist IDs `506120` and
+  `565802` are absent from automatic exclusions, are stored as TV premieres in
+  natural quarter `2025-10`, and have no duplicate `2026-01` premiere.
+- `bgmb review 2025 10`, `bgmb review 2026 1`, and `bgmb audit` completed with
+  zero unresolved subjects; the affected `2025-10` and `2026-01` outputs were
+  rebuilt successfully. No Pages publication was performed.
+
 ## Known limitations / risks
 
-- Plan-39 is acceptance and documentation only; it does not change product
+- Plan-39 was acceptance and documentation only; it did not change product
   behavior, configuration, generated-site output, or version.
+- Plan-42's bounded refresh encountered transient Bangumi API retries but
+  completed without sync errors. Other quarters were not refreshed by that
+  operation.
 - Browser automation and online Pages smoke cannot prove iPhone/iPad Safari
   touch behavior, standalone safe-area geometry, or installed-client lifecycle;
   current closure of those checks is based on the explicit user report above.
@@ -87,21 +105,26 @@ requirement for a file to contain its own commit SHA.
 
 ## Pending USER CHECK
 
-None for the Plan-41 lifecycle checkpoint. Plan-39's real-device Safari and
-standalone PWA checks were explicitly reported completed with no problems
-observed.
+Plan-39's real-device Safari and standalone PWA checks were explicitly
+reported completed with no problems observed. For Plan-42, manually inspect
+the generated `2025-10` page for IDs `506120` and `565802`, confirm neither is
+on the `2026-01` premiere page, and spot-check 2–3 newly auto-excluded works;
+there were no newly auto-excluded works in this run, so that last spot-check is
+not applicable. The corresponding SQLite/report/static-file assertions are
+automated and have already passed.
 
 ## Active work
 
-- No product runtime, schema, configuration, generated-site, or release work is
-  active. The lifecycle is now Production; normal maintenance, bug fixes, and
-  deliberate feature work still require formal Plans and risk-appropriate
-  validation.
+- No product runtime, schema, or release work is active after the Plan-42
+  maintenance change. The lifecycle remains Production; normal maintenance,
+  bug fixes, and deliberate feature work still require formal Plans and
+  risk-appropriate validation.
 
 ## Workflow / delivery facts that are currently material
 
-- No live Bangumi access, unknown-subject remote import, `release publish`, or
-  `gh-pages` mutation is part of Plan-41.
-- Application version remains `0.8.1`; the Production transition does not imply
-  a version bump, new publication, or feature freeze. Source commits and Pages
-  publication remain separate delivery events.
+- Plan-42 used only the authorized bounded live Bangumi refresh for
+  `2025-10..2026-01`; no other live refresh, `release publish`, or `gh-pages`
+  mutation was performed.
+- Application version is `0.8.2`. Source commits and Pages publication remain
+  separate delivery events; this maintenance change does not imply a Pages
+  publication.

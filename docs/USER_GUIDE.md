@@ -39,6 +39,9 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 同步在确认 Anime、日本、TV/MOVIE 基础范围后，还会应用两条自动永久冷门规则：可靠首播超过 7 天且
 评分人数少于 30；或明确 allowlist 中的信息不足型 REVIEW 立即自动排除，与目标季度成熟度和评分人数无关。
 第二条规则只处理信息不足的 allowlist issue；冲突型 REVIEW 不会自动排除。
+季度边界不确定性 `TV_QUARTER_BOUNDARY` 不在这个 allowlist 中：它会保留为 REVIEW，不能因为边界证据不足
+而被永久自动排除。TV 默认使用自然日历季度；1～2 集短篇即使在季度末几天首播也保留自然季度，只有
+连续多周主线播出证据与明确目标季度证据同时成立时，才会采用下一季度的窄例外。标题中的季节词不构成证据。
 命中作品会写入 `config/bangumi.toml` 的
 `auto_excluded_subject_ids`，同时记录标题注释和审计证据，并在本次同步中跳过季度归属、REVIEW、
 封面和站点输出。评分人数后来上涨也不会自动恢复。

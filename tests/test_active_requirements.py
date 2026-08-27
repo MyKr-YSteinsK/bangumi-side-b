@@ -166,7 +166,7 @@ def test_current_state_records_checkpoint_baseline_and_completion() -> None:
         "device model, iOS version, and Safari build were not supplied and are "
         "intentionally not inferred" in state
     )
-    assert "Pending USER CHECK None for the Plan-41 lifecycle checkpoint" in state
+    assert "For Plan-42, manually inspect" in state
     assert "Application-update candidate: `NOT EXERCISED` during Plan-39" in state
     assert "allowed non-failure state" in state
     assert "not a Production promotion blocker" in state

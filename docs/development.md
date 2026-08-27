@@ -45,6 +45,13 @@ issue family 可触发 `automatic permanent exclusion`。`factual conflict`
 继续保留为 REVIEW 并交由显式人工裁决；manual exclusion 与 automatic
 permanent exclusion 是不同状态。
 
+季度归属使用自然日历季度。Movie 只接受其 canonical premiere date 所在的
+自然季度；TV 只有在 canonical premiere date 落在目标季度开始前 1～7 天时
+才进入边界规则：计划总集数为 1 或 2 的作品仍归自然季度，长篇 TV 必须同时
+有连续多周、固定间隔的主线播出日期和明确的目标季度证据，且不能存在结构化
+冲突。标题中的季节词不是证据。`TV_QUARTER_BOUNDARY` 仅表示待人工裁决的
+季度 REVIEW，不属于 cold-cleanup allowlist，也不能单独触发永久自动黑名单。
+
 运行时使用静态 HTML、CSS 和原生 JavaScript，只请求同源生成的 JSON、页面
 和资源；不读取 SQLite，不请求 Bangumi 或第三方业务 API。SQLite 使用严格
 的 `bangumi-side-b-archive` / schema 2 合同，未知或更高版本直接失败。

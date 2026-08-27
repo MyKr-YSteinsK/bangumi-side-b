@@ -19,6 +19,7 @@ from bgm_side_b.admission import (
     AdmissionStatus,
     QuarterOverride,
     ReviewFinding,
+    TVBoundaryEvidence,
     admit_subject,
     is_conflict_review,
     is_unresolved_cold_review,
@@ -35,7 +36,9 @@ from bgm_side_b.archive_config import (
     should_auto_blacklist,
 )
 from bgm_side_b.discovery import (
+    TV_BOUNDARY_LOOKBACK_DAYS,
     BrowseDiscoveryAdapter,
+    DiscoveredSubject,
     DiscoveryFailure,
     SearchDiscoveryAdapter,
     merge_discovery_batches,
@@ -59,7 +62,12 @@ from bgm_side_b.repository import (
     SubjectRepository,
     SubjectSnapshot,
 )
-from bgm_side_b.rules import normalize_aliases, order_tag_candidates, resolve_source
+from bgm_side_b.rules import (
+    normalize_aliases,
+    normalize_text,
+    order_tag_candidates,
+    resolve_source,
+)
 
 FACTS_COMPLETE = "complete"
 FACTS_INCOMPLETE = "incomplete"
@@ -431,6 +439,30 @@ class ArchiveSynchronizer:
                 try:
                     canonical_detail_requests += 1
                     detail = self.api.get_subject(candidate.subject_id)
+                    episode_resolution: _EpisodeCountResolution | None = None
+                    boundary_evidence = None
+                    if _needs_tv_boundary_evidence(candidate, detail, quarter):
+                        episode_resolution = _resolve_episode_count_with_fallback(
+                            self.api,
+                            detail,
+                            candidate.subject_id,
+                            episode_warnings,
+                        )
+                        air_dates = None
+                        if (
+                            episode_resolution.warning is None
+                            and episode_resolution.value not in {1, 2}
+                        ):
+                            air_dates = _read_boundary_episode_airdates(
+                                self.api,
+                                candidate.subject_id,
+                                episode_warnings,
+                            )
+                        boundary_evidence = TVBoundaryEvidence(
+                            episode_resolution.value,
+                            air_dates,
+                            episode_resolution.warning is not None,
+                        )
                     decision = admit_subject(
                         candidate,
                         detail,
@@ -439,6 +471,7 @@ class ArchiveSynchronizer:
                             self._active_excluded_subject_ids
                         ),
                         override=overrides.get(candidate.subject_id),
+                        boundary_evidence=boundary_evidence,
                     )
                 except BangumiApiError as error:
                     errors.append({"code": error.code, "summary": error.summary})
@@ -572,38 +605,13 @@ class ArchiveSynchronizer:
                             }
                         )
                         continue
-                    episode_resolution = _resolve_episode_count(detail)
-                    if episode_resolution.source == "unknown":
-                        get_episode_count = getattr(
-                            self.api, "get_main_episode_count", None
+                    if episode_resolution is None:
+                        episode_resolution = _resolve_episode_count_with_fallback(
+                            self.api,
+                            detail,
+                            candidate.subject_id,
+                            episode_warnings,
                         )
-                        if callable(get_episode_count):
-                            try:
-                                registry_count = get_episode_count(candidate.subject_id)
-                            except BangumiApiError as error:
-                                episode_warnings.append(
-                                    {
-                                        "code": "episode_count_fallback",
-                                        "summary": (
-                                            f"episode registry unavailable for subject "
-                                            f"{candidate.subject_id}: {error.summary}"
-                                        ),
-                                    }
-                                )
-                            except (TypeError, ValueError):
-                                episode_warnings.append(
-                                    {
-                                        "code": "episode_count_fallback",
-                                        "summary": (
-                                            f"episode registry response invalid for "
-                                            f"subject {candidate.subject_id}"
-                                        ),
-                                    }
-                                )
-                            else:
-                                episode_resolution = _resolve_episode_count(
-                                    detail, registry_count=registry_count
-                                )
                     episode_source_counts[episode_resolution.source] += 1
                     if episode_resolution.warning is not None:
                         episode_warnings.append(
@@ -782,7 +790,8 @@ class ArchiveSynchronizer:
             if item.snapshot.subject.media_format.value == "TV"
             and item.snapshot.premiere is not None
             and item.snapshot.premiere.quarter == quarter
-            and item.snapshot.premiere.evidence_type == "community_quarter_tag"
+            and item.snapshot.premiere.evidence_type
+            == "community_quarter_tag_and_main_episode_airdates"
             and item.snapshot.subject.air_date is not None
         )
         boundary_reviews = sum(
@@ -1750,6 +1759,112 @@ def _resolve_episode_count(
     if registry is not None:
         return _EpisodeCountResolution(registry, "episode_registry")
     return _EpisodeCountResolution(None, "unknown")
+
+
+def _resolve_episode_count_with_fallback(
+    api: object,
+    detail: SubjectDetail,
+    subject_id: int,
+    warnings: list[dict[str, str]],
+) -> _EpisodeCountResolution:
+    """Resolve episode count once, using only the existing bounded fallback."""
+    resolution = _resolve_episode_count(detail)
+    if resolution.source != "unknown":
+        return resolution
+    get_episode_count = getattr(api, "get_main_episode_count", None)
+    if not callable(get_episode_count):
+        return resolution
+    try:
+        registry_count = get_episode_count(subject_id)
+    except BangumiApiError as error:
+        warnings.append(
+            {
+                "code": "episode_count_fallback",
+                "summary": (
+                    f"episode registry unavailable for subject {subject_id}: "
+                    f"{error.summary}"
+                ),
+            }
+        )
+    except (TypeError, ValueError):
+        warnings.append(
+            {
+                "code": "episode_count_fallback",
+                "summary": (
+                    f"episode registry response invalid for subject {subject_id}"
+                ),
+            }
+        )
+    else:
+        return _resolve_episode_count(detail, registry_count=registry_count)
+    return resolution
+
+
+def _needs_tv_boundary_evidence(
+    candidate: DiscoveredSubject, detail: SubjectDetail, target_quarter: Quarter
+) -> bool:
+    """Keep boundary probes limited to unambiguous TV candidates."""
+    if detail.air_date is None or candidate.has_date_conflict:
+        return False
+    if (
+        candidate.candidate_date is not None
+        and candidate.candidate_date != detail.air_date
+    ):
+        return False
+    if any(media is not MediaFormat.TV for media in candidate.media_formats):
+        return False
+    if detail.platform is None or normalize_text(detail.platform) != "TV":
+        return False
+    target_start = date(target_quarter.year, target_quarter.month, 1)
+    days_before_target = (target_start - detail.air_date).days
+    return 1 <= days_before_target <= TV_BOUNDARY_LOOKBACK_DAYS
+
+
+def _read_boundary_episode_airdates(
+    api: object,
+    subject_id: int,
+    warnings: list[dict[str, str]],
+) -> tuple[date, ...] | None:
+    """Read optional main-story dates without making a boundary guess on error."""
+    get_airdates = getattr(api, "get_main_episode_airdates", None)
+    if not callable(get_airdates):
+        return None
+    try:
+        values = get_airdates(subject_id)
+    except BangumiApiError as error:
+        warnings.append(
+            {
+                "code": "boundary_episode_evidence",
+                "summary": (
+                    f"main episode boundary evidence unavailable for subject "
+                    f"{subject_id}: {error.summary}"
+                ),
+            }
+        )
+        return None
+    except (TypeError, ValueError):
+        warnings.append(
+            {
+                "code": "boundary_episode_evidence",
+                "summary": (
+                    f"main episode boundary evidence invalid for subject {subject_id}"
+                ),
+            }
+        )
+        return None
+    if not isinstance(values, (tuple, list)) or not all(
+        isinstance(value, date) for value in values
+    ):
+        warnings.append(
+            {
+                "code": "boundary_episode_evidence",
+                "summary": (
+                    f"main episode boundary evidence invalid for subject {subject_id}"
+                ),
+            }
+        )
+        return None
+    return tuple(values)
 
 
 def _episode_count(detail: SubjectDetail) -> int | None:

@@ -34,7 +34,6 @@ _UNSUPPORTED_MEDIA_PLATFORMS: Final = frozenset({"WEB", "OVA", "OAD"})
 # rule. Conflict and classification REVIEWs remain human-only.
 UNRESOLVED_COLD_REVIEW_ISSUES: Final = frozenset(
     {
-        TV_QUARTER_BOUNDARY,
         TV_QUARTER_DATE_UNRESOLVED,
         MOVIE_DATE_UNRESOLVED,
         SEARCH_ONLY_MEDIA_UNRESOLVED,
@@ -83,6 +82,15 @@ class QuarterOverride:
 
 
 @dataclass(frozen=True)
+class TVBoundaryEvidence:
+    """Bounded deterministic evidence for a TV next-quarter exception."""
+
+    planned_episode_count: int | None = None
+    main_episode_airdates: tuple[date, ...] | None = None
+    episode_count_conflict: bool = False
+
+
+@dataclass(frozen=True)
 class ReviewFinding:
     """One actionable deterministic ambiguity before it is persisted."""
 
@@ -112,6 +120,7 @@ def admit_subject(
     *,
     excluded_subject_ids: frozenset[int] = frozenset(),
     override: QuarterOverride | None = None,
+    boundary_evidence: TVBoundaryEvidence | None = None,
 ) -> AdmissionDecision:
     """Apply blacklist, scope, Japanese-only, and quarter rules in fixed order."""
     if candidate.subject_id != detail.subject_id:
@@ -207,7 +216,13 @@ def admit_subject(
             ownership,
         )
 
-    quarter_review = _resolve_quarter(candidate, detail, target_quarter, media_format)
+    quarter_review = _resolve_quarter(
+        candidate,
+        detail,
+        target_quarter,
+        media_format,
+        boundary_evidence=boundary_evidence,
+    )
     if isinstance(quarter_review, ReviewFinding):
         return AdmissionDecision(
             AdmissionStatus.REVIEW,
@@ -269,6 +284,8 @@ def _resolve_quarter(
     detail: SubjectDetail,
     target_quarter: Quarter,
     media_format: MediaFormat,
+    *,
+    boundary_evidence: TVBoundaryEvidence | None = None,
 ) -> QuarterAppearance | ReviewFinding:
     if detail.air_date is None:
         issue_code = (
@@ -321,14 +338,24 @@ def _resolve_quarter(
     target_start = date(target_quarter.year, target_quarter.month, 1)
     days_before_target = (target_start - detail.air_date).days
     if 1 <= days_before_target <= TV_BOUNDARY_LOOKBACK_DAYS:
+        if _is_short_tv_run(detail, boundary_evidence):
+            return _natural_tv_premiere(detail.air_date, natural_quarter)
         consensus = _early_premiere_consensus(detail.tags, target_quarter)
-        if consensus is not None:
+        run = _continuing_boundary_run(
+            detail,
+            target_quarter,
+            boundary_evidence,
+        )
+        if consensus is not None and run is not None:
             return QuarterAppearance(
                 target_quarter,
                 QuarterAppearanceKind.PREMIERE,
                 QuarterAssignmentSource.AUTOMATIC,
-                "community_quarter_tag",
-                consensus,
+                "community_quarter_tag_and_main_episode_airdates",
+                (
+                    f"{consensus};run={run[0].isoformat()}"
+                    f"..{run[-1].isoformat()}"
+                ),
             )
         return ReviewFinding(
             TV_QUARTER_BOUNDARY,
@@ -341,6 +368,91 @@ def _resolve_quarter(
             },
         )
     return _date_mismatch(candidate, detail, target_quarter, natural_quarter)
+
+
+def _natural_tv_premiere(
+    air_date: date, natural_quarter: Quarter
+) -> QuarterAppearance:
+    return QuarterAppearance(
+        natural_quarter,
+        QuarterAppearanceKind.PREMIERE,
+        QuarterAssignmentSource.AUTOMATIC,
+        "air_date",
+        air_date.isoformat(),
+    )
+
+
+def _is_short_tv_run(
+    detail: SubjectDetail, evidence: TVBoundaryEvidence | None
+) -> bool:
+    if evidence is not None and evidence.episode_count_conflict:
+        return False
+    structured_count = _structured_episode_count(detail)
+    observed_count = None if evidence is None else evidence.planned_episode_count
+    if structured_count is not None and observed_count is not None:
+        return structured_count == observed_count and structured_count in {1, 2}
+    return (structured_count or observed_count) in {1, 2}
+
+
+def _structured_episode_count(detail: SubjectDetail) -> int | None:
+    values = []
+    if isinstance(detail.eps, int) and not isinstance(detail.eps, bool):
+        if detail.eps > 0:
+            values.append(detail.eps)
+    for item in detail.infobox:
+        if item.key != "话数":
+            continue
+        value = item.value.strip() if isinstance(item.value, str) else item.value
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            values.append(value)
+        elif isinstance(value, str) and value.isdecimal() and int(value) > 0:
+            values.append(int(value))
+    unique = set(values)
+    return next(iter(unique)) if len(unique) == 1 else None
+
+
+def _continuing_boundary_run(
+    detail: SubjectDetail,
+    target_quarter: Quarter,
+    evidence: TVBoundaryEvidence | None,
+) -> tuple[date, ...] | None:
+    """Return a direct multi-week run crossing into the target quarter."""
+    if evidence is None or evidence.episode_count_conflict:
+        return None
+    if evidence.planned_episode_count in {1, 2}:
+        return None
+    if evidence.main_episode_airdates is None:
+        return None
+    target_start = date(target_quarter.year, target_quarter.month, 1)
+    end_date = _structured_end_date(detail)
+    if end_date is not None and end_date < target_start:
+        return None
+    dates = tuple(sorted(set(evidence.main_episode_airdates)))
+    if len(dates) < 3:
+        return None
+    for index in range(len(dates) - 2):
+        window = dates[index : index + 3]
+        if window[0] >= target_start:
+            continue
+        if not any(quarter_for_date(item) == target_quarter for item in window):
+            continue
+        gaps = tuple(
+            (right - left).days for left, right in zip(window, window[1:])
+        )
+        if all(5 <= gap <= 14 for gap in gaps):
+            return window
+    return None
+
+
+def _structured_end_date(detail: SubjectDetail) -> date | None:
+    for item in detail.infobox:
+        if item.key != "播放结束" or not isinstance(item.value, str):
+            continue
+        try:
+            return date.fromisoformat(item.value)
+        except ValueError:
+            return None
+    return None
 
 
 def _media_review(

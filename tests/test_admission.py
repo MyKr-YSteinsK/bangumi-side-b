@@ -18,6 +18,7 @@ from bgm_side_b.admission import (
     UNRESOLVED_COLD_REVIEW_ISSUES,
     AdmissionStatus,
     QuarterOverride,
+    TVBoundaryEvidence,
     admit_subject,
     is_conflict_review,
     is_unresolved_cold_review,
@@ -166,12 +167,60 @@ def test_high_confidence_target_quarter_tag_resolves_early_tv_premiere() -> None
         _candidate(dates=frozenset({date(2026, 3, 28)})),
         detail,
         Quarter(2026, 4),
+        boundary_evidence=TVBoundaryEvidence(
+            planned_episode_count=12,
+            main_episode_airdates=(
+                date(2026, 3, 28),
+                date(2026, 4, 4),
+                date(2026, 4, 11),
+            ),
+        ),
     )
 
     assert decision.status is AdmissionStatus.ACCEPTED
     assert decision.premiere is not None
-    assert decision.premiere.evidence_type == "community_quarter_tag"
-    assert decision.premiere.evidence_value == "2026年4月:448"
+    assert (
+        decision.premiere.evidence_type
+        == "community_quarter_tag_and_main_episode_airdates"
+    )
+    assert decision.premiere.evidence_value == (
+        "2026年4月:448;run=2026-03-28..2026-04-11"
+    )
+
+
+def test_boundary_tag_without_continuity_evidence_stays_review() -> None:
+    detail = replace(
+        _detail(air_date="2026-03-28"),
+        tags=(ApiTag("2026年4月", 448), ApiTag("TV", 500)),
+    )
+
+    decision = admit_subject(
+        _candidate(dates=frozenset({date(2026, 3, 28)})),
+        detail,
+        Quarter(2026, 4),
+    )
+
+    assert decision.status is AdmissionStatus.REVIEW
+    assert decision.reviews[0].issue_code == TV_QUARTER_BOUNDARY
+
+
+@pytest.mark.parametrize(
+    ("air_date", "episode_count"),
+    ((date(2025, 12, 25), 1), (date(2025, 12, 31), 2)),
+)
+def test_short_boundary_tv_stays_in_natural_quarter(
+    air_date: date, episode_count: int
+) -> None:
+    decision = admit_subject(
+        _candidate(dates=frozenset({air_date})),
+        replace(_detail(air_date=air_date.isoformat()), eps=episode_count),
+        Quarter(2026, 1),
+    )
+
+    assert decision.status is AdmissionStatus.ACCEPTED
+    assert decision.premiere is not None
+    assert decision.premiere.quarter == Quarter(2025, 10)
+    assert decision.premiere.evidence_type == "air_date"
 
 
 def test_movie_uses_natural_quarter_and_missing_dates_are_reviewed() -> None:
@@ -201,7 +250,6 @@ def test_movie_uses_natural_quarter_and_missing_dates_are_reviewed() -> None:
 def test_unresolved_cold_allowlist_contains_only_evidence_missing_issues() -> None:
     assert UNRESOLVED_COLD_REVIEW_ISSUES == frozenset(
         {
-            TV_QUARTER_BOUNDARY,
             TV_QUARTER_DATE_UNRESOLVED,
             MOVIE_DATE_UNRESOLVED,
             "SEARCH_ONLY_MEDIA_UNRESOLVED",
@@ -212,6 +260,7 @@ def test_unresolved_cold_allowlist_contains_only_evidence_missing_issues() -> No
     )
     assert not is_unresolved_cold_review(DISCOVERY_DATE_MISMATCH)
     assert not is_unresolved_cold_review(DISCOVERY_MEDIA_CONFLICT)
+    assert not is_unresolved_cold_review(TV_QUARTER_BOUNDARY)
     assert not is_unresolved_cold_review("JAPANESE_REGION_CONFLICT")
     assert CONFLICT_REVIEW_ISSUES == frozenset(
         {
@@ -237,6 +286,7 @@ def test_unresolved_cold_rule_blacklists_allowlisted_issues_immediately(
 def test_unresolved_cold_rule_requires_allowlisted_issue() -> None:
     assert not should_auto_blacklist_unresolved_cold(DISCOVERY_DATE_MISMATCH)
     assert not should_auto_blacklist_unresolved_cold(DISCOVERY_MEDIA_CONFLICT)
+    assert not should_auto_blacklist_unresolved_cold(TV_QUARTER_BOUNDARY)
 
 
 def test_manual_override_wins_only_after_scope_and_japanese_admission() -> None:

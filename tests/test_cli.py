@@ -13,6 +13,10 @@ import pytest
 import bgm_side_b.cli as cli
 from bgm_side_b import __version__
 from bgm_side_b.api import ImageResponse, SubjectDetail
+from bgm_side_b.archive_config import (
+    add_auto_excluded_subject,
+    remove_auto_excluded_subject,
+)
 from bgm_side_b.cli import (
     _auto_blacklist_line,
     _relative_output_path,
@@ -43,7 +47,7 @@ def test_help_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_version_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
-    assert __version__ == "0.8.3"
+    assert __version__ == "0.8.4"
 
     with pytest.raises(SystemExit) as result:
         main(["--version"])
@@ -196,6 +200,75 @@ def test_shared_progress_arguments_are_available_on_every_long_command() -> None
     assert sync.progress == "plain"
     assert build.quiet
     assert publish.verbose
+
+
+def test_sync_cli_reloads_config_before_incremental_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "project"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "config", root / "config")
+    (root / "pyproject.toml").write_text("[project]\nname = 'test'\n", "utf-8")
+    settings_path = root / "config" / "bangumi.toml"
+    add_auto_excluded_subject(settings_path, 700001, name_cn="待恢复")
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class FakeSynchronizer:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["settings"] = args[2]
+            captured["settings_path"] = kwargs["settings_path"]
+
+        def run(self, scope: object) -> SimpleNamespace:
+            assert scope is not None
+            remove_auto_excluded_subject(settings_path, 700001)
+            report = root / "workspace" / "reports" / "sync.json"
+            report.parent.mkdir(parents=True)
+            report.write_text("{}", encoding="utf-8")
+            return SimpleNamespace(
+                exit_code=0,
+                report_path=report,
+                quarters=(
+                    QuarterSyncResult(
+                        Quarter(2026, 4),
+                        "complete",
+                        "complete",
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        (),
+                        (),
+                        (),
+                        (),
+                    ),
+                ),
+            )
+
+    class FakeBuilder:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["excluded"] = kwargs["excluded_subject_ids"]
+
+        def build(self) -> SimpleNamespace:
+            report = root / "workspace" / "reports" / "build.json"
+            report.write_text("{}", encoding="utf-8")
+            return SimpleNamespace(report_path=report)
+
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(cli, "BangumiApiClient", FakeClient)
+    monkeypatch.setattr(cli, "ArchiveSynchronizer", FakeSynchronizer)
+    monkeypatch.setattr(cli, "UnifiedSiteBuilder", FakeBuilder)
+
+    assert main(["sync", "2026", "4", "--quiet"]) == 0
+    assert 700001 not in captured["excluded"]
+    assert 184017 in captured["excluded"]
+    assert "incremental site build" in capsys.readouterr().out
 
 
 def test_quiet_and_verbose_are_rejected_together() -> None:

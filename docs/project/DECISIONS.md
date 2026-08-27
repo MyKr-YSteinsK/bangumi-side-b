@@ -87,10 +87,11 @@ quarantined as RED:REPEAT material and is never Bangumi evidence.
 Missing or insufficient information is not one universal disposition. Specific
 missing evidence, such as country evidence, follows its specialist contract
 and can enter REVIEW. The current rule-bound `information-insufficient` issue
-family may instead trigger `automatic permanent exclusion`; a `factual
-conflict` continues as REVIEW and requires human adjudication. Manual exclusion
-uses `excluded_subject_ids`; automatic permanent exclusion uses
-`auto_excluded_subject_ids`. They are distinct states. This prevents a
+family may instead trigger an automatic exclusion cache; a `factual conflict`
+continues as REVIEW and requires human adjudication. Manual exclusion uses
+`excluded_subject_ids`; automatic exclusion uses `auto_excluded_subject_ids`
+and is re-evaluable when a subject is rediscovered in an actively refreshed
+quarter. They are distinct states. This prevents a
 deterministic information-quality rule from being silently broadened into a
 conflict classifier or vice versa.
 
@@ -140,7 +141,7 @@ main-story episode dates prove a regular multi-week run crossing the boundary,
 with strong target-quarter evidence and no structured conflict. Community
 quarter tags are supporting evidence, not a standalone override; title season
 words are never evidence. Unknown continuity stays REVIEW, and
-`TV_QUARTER_BOUNDARY` is excluded from the automatic permanent-exclusion
+`TV_QUARTER_BOUNDARY` is excluded from the automatic-exclusion
 allowlist. Manual quarter assignment remains the supported adjudication path.
 
 ## D-018 — Quarter relevance precedes Japanese review and keeps scope decisions separate
@@ -156,3 +157,32 @@ the underlying Japanese classification. Any remaining inclusion-changing
 ambiguity is handled only through the separate
 `config/japanese-overrides.toml` and `bgmb classify` commands; it never changes
 media or quarter facts.
+
+## D-019 — Automatic exclusions are re-evaluable cached decisions
+
+Manual `excluded_subject_ids` entries are durable explicit operator decisions.
+`auto_excluded_subject_ids` records the current deterministic exclusion result,
+not an irreversible fact: when an ID is rediscovered in a quarter that is being
+actively synchronized, fresh canonical evidence is evaluated with the old
+automatic ID temporarily removed from the admission input. Reliable rating
+growth or improved evidence can restore an otherwise admissible subject;
+scope rules, manual exclusions, and inclusion-changing REVIEW remain binding.
+AI-assisted external research remains an operator workflow and is never runtime
+evidence. For a formal Plan authorized to use live data, the final bounded live
+validation, review, audit, and relevant regression must finish before the formal
+source delivery push.
+
+## D-020 — Split theatrical subjects remain separate from the WEB aggregate
+
+The fresh identity check for Bangumi subjects `604330` and `604331` confirms
+that they are the two independently released theatrical Movie parts of
+`藤本タツキ17-26`, released on the same date. The official announcement
+describes the eight works as a Part-1 / Part-2 theatrical split, and the
+publisher release records the same limited theatrical arrangement:
+[official announcement](https://fujimototatsuki17-26.com/news/detail/?id=1127948),
+[publisher release](https://avex-pictures.co.jp/topic/77380/). Their own
+canonical rating totals remain below the automatic low-rating threshold, so
+they stay excluded on their own evidence. Subject `582501` is a separate WEB
+aggregate and is outside the first-version theatrical Movie scope; its rating
+must not be borrowed to restore or replace either theatrical subject. This is
+an identity decision, not an alias model.

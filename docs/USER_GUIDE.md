@@ -36,21 +36,24 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 `sync` 会联网访问 Bangumi，获取可验证的事实和封面。事实成功提交后，它会自动触发受影响
 范围的增量 build。局部失败或中断不会把未验证资料标记为完整。
 
-同步在确认 Anime、日本、TV/MOVIE 基础范围后，还会应用两条自动永久冷门规则：可靠首播超过 7 天且
+同步在确认 Anime、日本、TV/MOVIE 基础范围后，还会应用两条自动冷门规则：可靠首播超过 7 天且
 评分人数少于 30；或明确 allowlist 中的信息不足型 REVIEW 立即自动排除，与目标季度成熟度和评分人数无关。
 第二条规则只处理信息不足的 allowlist issue；冲突型 REVIEW 不会自动排除。
 季度边界不确定性 `TV_QUARTER_BOUNDARY` 不在这个 allowlist 中：它会保留为 REVIEW，不能因为边界证据不足
-而被永久自动排除。TV 默认使用自然日历季度；1～2 集短篇即使在季度末几天首播也保留自然季度，只有
+而被自动排除。TV 默认使用自然日历季度；1～2 集短篇即使在季度末几天首播也保留自然季度，只有
 连续多周主线播出证据与明确目标季度证据同时成立时，才会采用下一季度的窄例外。标题中的季节词不构成证据。
 跨季度搜索回看只作为 TV 边界候选；非目标季度 Movie 会被自动视为无关，不产生日本性 REVIEW
 或错误的 `assign` 指引。未决或冲突的日本性在可靠日期超过 7 天且评分人数少于 30 时，会记录
 为 `outcome_dominated_low_rating` 自动排除；底层日本性仍保持 `UNRESOLVED`，不伪造人工结论。
 命中作品会写入 `config/bangumi.toml` 的
 `auto_excluded_subject_ids`，同时记录标题注释和审计证据，并在本次同步中跳过季度归属、REVIEW、
-封面和站点输出。评分人数后来上涨也不会自动恢复。
+封面和站点输出。`auto_excluded_subject_ids` 是可重新评估的自动缓存：作品再次出现在实际刷新
+的季度候选中时会重新读取 canonical detail；评分人数增长、证据补全等使其重新满足收录条件时，系统
+会自动移除旧自动排除并正常处理。重新评估仍遵守全部 Anime、日本、TV/MOVIE、季度和 REVIEW 规则。
 
-自动黑名单是永久状态。只有人工从 `auto_excluded_subject_ids` 删除对应 ID 后，作品才有机会在
-后续 sync 中重新评估。人工 `excluded_subject_ids` 与自动列表来源不同，均应保留配置中的现有注释。
+人工 `excluded_subject_ids` 仍是持久的显式排除，不会因评分或同步自动恢复；它与自动列表来源不同，
+均应保留配置中的现有注释。若只是想立即触发重新评估，应刷新包含该作品的目标季度，不要直接清空
+整个自动黑名单。
 同步报告会分别显示人工命中、历史自动命中和本次新增自动拉黑数量，并在 `new_auto_by_reason` 中
 区分可靠首播低评分和信息不足型未决冷门两类原因。
 
@@ -92,6 +95,15 @@ bgmb classify BGM_ID --clear
 恢复自动规则处理。日本范围决定写入独立的 `config/japanese-overrides.toml`，不会覆盖季度、
 媒体或继续播出事实；清除后若非日本裁决曾移除本地事实，需要再次 sync。对尚未在 SQLite 中
 的 BGM ID 执行 assign 可能联网导入该作品，classify 则要求作品已经存在本地 SQLite。
+
+推荐的 REVIEW 辅助流程是：
+
+1. 运行 `bgmb sync ...`，再运行 `bgmb review`；
+2. 将残留 REVIEW 输出复制给 ChatGPT，由操作者使用外部资料核实日本性、季度和范围事实；
+3. 只执行返回的明确 `bgmb classify ...`、`bgmb assign ...` 或人工排除命令；
+4. 重新运行 `bgmb review` 和 `bgmb audit`，并在提交前检查配置 diff。
+
+ChatGPT 的研究是操作者辅助，不是运行时证据，也不会被同步程序自动写入事实。
 
 同步输出中的 `persisted REVIEW` 只指已经写入 SQLite 且带当前季度作用域的 REVIEW 行，
 因此它与 `bgmb review YEAR QUARTER_MONTH` 和 `bgmb audit` 的待裁决季度保持一致。无季度作用域的

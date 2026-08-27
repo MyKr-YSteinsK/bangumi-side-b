@@ -125,13 +125,13 @@ def test_issue_taxonomy_distinguishes_information_gaps_from_conflicts() -> None:
     for path in canonical_docs:
         text = _compact(_read(path))
         assert "information-insufficient" in text
-        assert "automatic permanent exclusion" in text
+        assert "automatic exclusion" in text
         assert "factual conflict" in text
         assert "REVIEW" in text
 
     decisions = _compact(_read(PROJECT / "DECISIONS.md")).lower()
     assert "manual exclusion" in decisions
-    assert "automatic permanent exclusion uses" in decisions
+    assert "automatic exclusion uses" in decisions
     assert "`auto_excluded_subject_ids`" in decisions
     assert "not one universal disposition" in decisions
     assert "Conflicts and insufficient evidence remain REVIEW" not in decisions
@@ -153,7 +153,7 @@ def test_current_state_records_checkpoint_baseline_and_completion() -> None:
     assert "historical context, not the current adopted baseline" in state
     assert "Lifecycle stage: Production" in state
     assert "Lifecycle stage: Stabilization" not in state
-    assert "Current milestone: Production lifecycle checkpoint (Plan-41)" in state
+    assert "Current milestone: Production maintenance checkpoint (Plan-45)" in state
     assert (
         "exact resulting HEAD of state-only documentation updates is "
         "authoritative in its TASK_RESULT" in state

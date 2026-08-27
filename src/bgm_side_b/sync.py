@@ -43,6 +43,7 @@ from bgm_side_b.archive_config import (
     ArchiveSyncSettings,
     add_auto_excluded_subject,
     load_archive_sync_settings,
+    remove_auto_excluded_subjects,
     restore_archive_config,
     should_auto_blacklist,
 )
@@ -200,6 +201,8 @@ class QuarterSyncResult:
     legacy_zero_written: int = 0
     irrelevant_candidates: int = 0
     outcome_dominated: int = 0
+    auto_reconsidered: int = 0
+    auto_restored: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -495,18 +498,21 @@ class ArchiveSynchronizer:
         outcome_dominated = dominated_count
         resolved_review_only_subject_ids: set[int] = set()
         resolved_japanese_review_subject_ids: set[int] = set()
+        restored_auto_ids: set[int] = set()
         premiere_conflict_warnings: list[dict[str, str]] = []
         canonical_detail_requests = 0
+        auto_reconsidered = 0
         try:
             for candidate in batch.candidates:
                 if candidate.subject_id in self._manual_excluded_subject_ids:
                     blacklisted += 1
                     manual_blacklisted += 1
                     continue
-                if candidate.subject_id in self._auto_excluded_subject_ids:
-                    blacklisted += 1
-                    existing_auto_blacklisted += 1
-                    continue
+                was_auto_excluded = (
+                    candidate.subject_id in self._auto_excluded_subject_ids
+                )
+                if was_auto_excluded:
+                    auto_reconsidered += 1
                 candidate_is_tv = MediaFormat.TV in candidate.media_formats
                 try:
                     canonical_detail_requests += 1
@@ -541,6 +547,11 @@ class ArchiveSynchronizer:
                         quarter,
                         excluded_subject_ids=frozenset(
                             self._active_excluded_subject_ids
+                            - (
+                                {candidate.subject_id}
+                                if was_auto_excluded
+                                else set()
+                            )
                         ),
                         override=overrides.get(candidate.subject_id),
                         boundary_evidence=boundary_evidence,
@@ -571,6 +582,9 @@ class ArchiveSynchronizer:
                     admitted_japanese_tv += 1
                 existing = existing_by_subject.get(candidate.subject_id)
                 if decision.reason == OUT_OF_SCOPE_QUARTER:
+                    if was_auto_excluded:
+                        blacklisted += 1
+                        existing_auto_blacklisted += 1
                     irrelevant_candidates += 1
                     if candidate_is_tv or decision.media_format is MediaFormat.TV:
                         tv_candidates -= 1
@@ -586,22 +600,26 @@ class ArchiveSynchronizer:
                     blacklisted += 1
                     if candidate.subject_id in self._manual_excluded_subject_ids:
                         manual_blacklisted += 1
-                    elif candidate.subject_id in self._auto_excluded_subject_ids:
+                    elif was_auto_excluded:
                         existing_auto_blacklisted += 1
                     continue
                 if decision.outcome_dominated:
                     if candidate_is_tv or decision.media_format is MediaFormat.TV:
                         tv_candidates -= 1
-                    try:
-                        added = self._record_auto_blacklist(detail, existing)
-                    except Exception as error:
-                        errors.append(
-                            {
-                                "code": "auto_blacklist_persist",
-                                "summary": _auto_blacklist_error_summary(error),
-                            }
-                        )
-                        continue
+                    if was_auto_excluded:
+                        added = False
+                        existing_auto_blacklisted += 1
+                    else:
+                        try:
+                            added = self._record_auto_blacklist(detail, existing)
+                        except Exception as error:
+                            errors.append(
+                                {
+                                    "code": "auto_blacklist_persist",
+                                    "summary": _auto_blacklist_error_summary(error),
+                                }
+                            )
+                            continue
                     outcome_dominated += 1
                     blacklisted += 1
                     if added:
@@ -619,29 +637,10 @@ class ArchiveSynchronizer:
                 if _eligible_for_auto_blacklist(decision) and should_auto_blacklist(
                     detail.air_date, detail.rating_total, self.evaluation_date
                 ):
-                    try:
-                        added = self._record_auto_blacklist(
-                            detail,
-                            existing_by_subject.get(candidate.subject_id),
-                        )
-                    except Exception as error:
-                        errors.append(
-                            {
-                                "code": "auto_blacklist_persist",
-                                "summary": _auto_blacklist_error_summary(error),
-                            }
-                        )
-                        continue
-                    blacklisted += 1
-                    if added:
-                        auto_blacklisted.append(
-                            _auto_blacklist_event(detail, self.evaluation_date)
-                        )
-                    continue
-                unresolved_cold = _persisted_unresolved_cold_review(decision)
-                if unresolved_cold is not None:
-                    issue_code, target_quarter = unresolved_cold
-                    if should_auto_blacklist_unresolved_cold(issue_code):
+                    if was_auto_excluded:
+                        added = False
+                        existing_auto_blacklisted += 1
+                    else:
                         try:
                             added = self._record_auto_blacklist(
                                 detail,
@@ -655,6 +654,33 @@ class ArchiveSynchronizer:
                                 }
                             )
                             continue
+                    blacklisted += 1
+                    if added:
+                        auto_blacklisted.append(
+                            _auto_blacklist_event(detail, self.evaluation_date)
+                        )
+                    continue
+                unresolved_cold = _persisted_unresolved_cold_review(decision)
+                if unresolved_cold is not None:
+                    issue_code, target_quarter = unresolved_cold
+                    if should_auto_blacklist_unresolved_cold(issue_code):
+                        if was_auto_excluded:
+                            added = False
+                            existing_auto_blacklisted += 1
+                        else:
+                            try:
+                                added = self._record_auto_blacklist(
+                                    detail,
+                                    existing_by_subject.get(candidate.subject_id),
+                                )
+                            except Exception as error:
+                                errors.append(
+                                    {
+                                        "code": "auto_blacklist_persist",
+                                        "summary": _auto_blacklist_error_summary(error),
+                                    }
+                                )
+                                continue
                         blacklisted += 1
                         if added:
                             auto_blacklisted.append(
@@ -671,19 +697,23 @@ class ArchiveSynchronizer:
                 if external_cold is not None:
                     issue_code, target_quarter = external_cold
                     if should_auto_blacklist_unresolved_cold(issue_code):
-                        try:
-                            added = self._record_auto_blacklist(
-                                detail,
-                                existing_by_subject.get(candidate.subject_id),
-                            )
-                        except Exception as error:
-                            errors.append(
-                                {
-                                    "code": "auto_blacklist_persist",
-                                    "summary": _auto_blacklist_error_summary(error),
-                                }
-                            )
-                            continue
+                        if was_auto_excluded:
+                            added = False
+                            existing_auto_blacklisted += 1
+                        else:
+                            try:
+                                added = self._record_auto_blacklist(
+                                    detail,
+                                    existing_by_subject.get(candidate.subject_id),
+                                )
+                            except Exception as error:
+                                errors.append(
+                                    {
+                                        "code": "auto_blacklist_persist",
+                                        "summary": _auto_blacklist_error_summary(error),
+                                    }
+                                )
+                                continue
                         blacklisted += 1
                         if added:
                             auto_blacklisted.append(
@@ -697,6 +727,9 @@ class ArchiveSynchronizer:
                             )
                         continue
                 if decision.status is AdmissionStatus.REJECTED:
+                    if was_auto_excluded:
+                        blacklisted += 1
+                        existing_auto_blacklisted += 1
                     if decision.reason == "non_japanese":
                         rejected_non_japanese += 1
                         if existing is not None and any(
@@ -711,6 +744,8 @@ class ArchiveSynchronizer:
                                     candidate.subject_id
                                 )
                     continue
+                if was_auto_excluded:
+                    restored_auto_ids.add(candidate.subject_id)
                 if decision.media_format is None or decision.japanese is None:
                     external_reviews.append(
                         _external_review(candidate.subject_id, decision, quarter)
@@ -788,6 +823,7 @@ class ArchiveSynchronizer:
                 existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
                 canonical_detail_requests=canonical_detail_requests,
+                auto_reconsidered=auto_reconsidered,
             )
             raise
         if errors:
@@ -801,6 +837,7 @@ class ArchiveSynchronizer:
                 existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
                 canonical_detail_requests=canonical_detail_requests,
+                auto_reconsidered=auto_reconsidered,
             )
         if tv_candidates > 0 and admitted_japanese_tv == 0:
             self.reporter.error(
@@ -827,6 +864,7 @@ class ArchiveSynchronizer:
                 existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
                 canonical_detail_requests=canonical_detail_requests,
+                auto_reconsidered=auto_reconsidered,
             )
         if tv_candidates >= 20 and admitted_japanese_tv / tv_candidates < 0.20:
             premiere_conflict_warnings.append(
@@ -869,6 +907,7 @@ class ArchiveSynchronizer:
                 existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
                 canonical_detail_requests=canonical_detail_requests,
+                auto_reconsidered=auto_reconsidered,
             )
             raise
         if reconciliation.errors:
@@ -882,6 +921,7 @@ class ArchiveSynchronizer:
                 existing_auto_blacklisted=existing_auto_blacklisted,
                 auto_blacklisted=tuple(auto_blacklisted),
                 canonical_detail_requests=canonical_detail_requests,
+                auto_reconsidered=auto_reconsidered,
             )
 
         stale_ids = {
@@ -927,44 +967,69 @@ class ArchiveSynchronizer:
         boundary_reviews = sum(
             issue.issue_code == "TV_QUARTER_BOUNDARY" for issue in reviews
         )
-        with self.repository.transaction() as connection:
-            for item in prepared:
-                self.repository.replace_subject_snapshot(connection, item.snapshot)
-            self.repository.delete_review_issues_for_subjects(
-                connection,
-                quarter,
-                stale_review_subject_ids,
-                _OUT_OF_SCOPE_REVIEW_ISSUES,
-            )
-            self.repository.delete_unscoped_review_issues_for_subjects(
-                connection,
-                resolved_japanese_review_subject_ids,
-                _JAPANESE_REVIEW_ISSUES,
-            )
-            self.repository.delete_subjects(connection, frozenset(stale_ids))
-            self.repository.replace_automatic_continuing_for_quarter(
-                connection, quarter, continuing_appearances
-            )
-            self._replace_continuing_reviews(
-                connection,
-                reconciliation,
-                {
-                    item.snapshot.subject.subject_id: item.snapshot
-                    for item in prepared
-                },
-            )
-            self.repository.write_sync_state(
-                connection,
-                QuarterSyncState(
+        original_config = (
+            self.settings_path.read_bytes() if restored_auto_ids else None
+        )
+        try:
+            with self.repository.transaction() as connection:
+                for item in prepared:
+                    self.repository.replace_subject_snapshot(connection, item.snapshot)
+                self.repository.delete_review_issues_for_subjects(
+                    connection,
                     quarter,
-                    FACTS_COMPLETE,
-                    COVERS_INCOMPLETE,
-                    subject_count,
-                    subject_count,
-                    completed_at,
-                    completed_at,
-                ),
-            )
+                    stale_review_subject_ids,
+                    _OUT_OF_SCOPE_REVIEW_ISSUES,
+                )
+                self.repository.delete_unscoped_review_issues_for_subjects(
+                    connection,
+                    resolved_japanese_review_subject_ids,
+                    _JAPANESE_REVIEW_ISSUES,
+                )
+                self.repository.delete_subjects(connection, frozenset(stale_ids))
+                self.repository.replace_automatic_continuing_for_quarter(
+                    connection, quarter, continuing_appearances
+                )
+                self._replace_continuing_reviews(
+                    connection,
+                    reconciliation,
+                    {
+                        item.snapshot.subject.subject_id: item.snapshot
+                        for item in prepared
+                    },
+                )
+                self.repository.write_sync_state(
+                    connection,
+                    QuarterSyncState(
+                        quarter,
+                        FACTS_COMPLETE,
+                        COVERS_INCOMPLETE,
+                        subject_count,
+                        subject_count,
+                        completed_at,
+                        completed_at,
+                    ),
+                )
+                if restored_auto_ids:
+                    removed = remove_auto_excluded_subjects(
+                        self.settings_path, restored_auto_ids
+                    )
+                    if set(removed) != restored_auto_ids:
+                        raise SyncError(
+                            "automatic exclusion changed before reconciliation"
+                        )
+        except BaseException:
+            if original_config is not None:
+                try:
+                    if self.settings_path.read_bytes() != original_config:
+                        restore_archive_config(self.settings_path, original_config)
+                except OSError as error:
+                    raise SyncError(
+                        "automatic exclusion reconciliation rollback is incomplete"
+                    ) from error
+            raise
+        for subject_id in restored_auto_ids:
+            self._auto_excluded_subject_ids.discard(subject_id)
+            self._active_excluded_subject_ids.discard(subject_id)
         cleanup_warnings = self._remove_stale_covers(stale_ids)
         cover_downloaded, cover_reused, cover_missing, cover_warnings = (
             self._sync_covers(
@@ -1039,6 +1104,8 @@ class ArchiveSynchronizer:
             episode_source_counts=tuple(sorted(episode_source_counts.items())),
             irrelevant_candidates=irrelevant_candidates,
             outcome_dominated=outcome_dominated,
+            auto_reconsidered=auto_reconsidered,
+            auto_restored=tuple(sorted(restored_auto_ids)),
         )
 
     def _retire_dominated_reviews(
@@ -1509,6 +1576,7 @@ class ArchiveSynchronizer:
         auto_blacklisted: tuple[dict[str, object], ...] = (),
         canonical_detail_requests: int = 0,
         episode_source_counts: tuple[tuple[str, int], ...] = (),
+        auto_reconsidered: int = 0,
     ) -> QuarterSyncResult:
         with self.repository.transaction() as connection:
             self.repository.write_sync_state(
@@ -1543,6 +1611,7 @@ class ArchiveSynchronizer:
             canonical_detail_requests=canonical_detail_requests,
             persisted_review_count=persisted_review_count,
             episode_source_counts=episode_source_counts,
+            auto_reconsidered=auto_reconsidered,
         )
 
     def _sync_covers(
@@ -1678,6 +1747,14 @@ class ArchiveSynchronizer:
             "auto_blacklisted_count": sum(
                 len(item["auto_blacklisted"]) for item in serialized
             ),
+            "auto_reconsidered": sum(
+                item["auto_reconsidered"] for item in serialized
+            ),
+            "auto_restored": [
+                subject_id
+                for item in serialized
+                for subject_id in item["auto_restored"]
+            ],
             "new_auto_by_reason": dict(sorted(new_auto_by_reason.items())),
             "canonical_detail_requests": sum(
                 item["canonical_detail_requests"] for item in serialized
@@ -2311,6 +2388,8 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
         "manual_blacklisted": result.manual_blacklisted,
         "existing_auto_blacklisted": result.existing_auto_blacklisted,
         "auto_blacklisted": list(result.auto_blacklisted),
+        "auto_reconsidered": result.auto_reconsidered,
+        "auto_restored": list(result.auto_restored),
         "new_auto_by_reason": dict(
             sorted(
                 Counter(

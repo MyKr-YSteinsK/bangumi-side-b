@@ -41,16 +41,17 @@ Browse/Search 只负责候选发现；最终 subject facts 必须来自 canonica
 和确定性规则。国家、季度、媒体、来源、标签、黑名单和生成事实不由 AI
 推断。证据不足不是单一 disposition：特定 country evidence 的缺失按专项
 合同处理并可能进入 REVIEW；当前 rule-bound `information-insufficient`
-issue family 可触发 `automatic permanent exclusion`。`factual conflict`
+issue family 可触发自动排除缓存。自动排除在相关季度再次同步时会以新
+canonical evidence 重新评估；`factual conflict`
 继续保留为 REVIEW 并交由显式人工裁决；manual exclusion 与 automatic
-permanent exclusion 是不同状态。
+exclusion cache 是不同状态。
 
 季度归属使用自然日历季度。Movie 只接受其 canonical premiere date 所在的
 自然季度；TV 只有在 canonical premiere date 落在目标季度开始前 1～7 天时
 才进入边界规则：计划总集数为 1 或 2 的作品仍归自然季度，长篇 TV 必须同时
 有连续多周、固定间隔的主线播出日期和明确的目标季度证据，且不能存在结构化
 冲突。标题中的季节词不是证据。`TV_QUARTER_BOUNDARY` 仅表示待人工裁决的
-季度 REVIEW，不属于 cold-cleanup allowlist，也不能单独触发永久自动黑名单。
+季度 REVIEW，不属于 cold-cleanup allowlist，也不能单独触发自动黑名单。
 候选在 canonical 媒体与日期可用后先判定目标季度相关性，再进入日本性判定；
 Search 的前一季度回看只服务 TV 边界，Movie 的非目标季度候选直接忽略。
 未决或冲突日本性若已被可靠日期与评分人数确定性地支配为排除，会记录

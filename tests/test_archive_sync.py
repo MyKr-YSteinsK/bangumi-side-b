@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
+import bgm_side_b.sync as sync_module
 from bgm_side_b.admission import (
     MOVIE_DATE_UNRESOLVED,
     TV_QUARTER_DATE_UNRESOLVED,
@@ -66,6 +67,11 @@ from bgm_side_b.sync import (
 
 ROOT = Path(__file__).resolve().parents[1]
 QUARTER = Quarter(2026, 4)
+AUTO_EXCLUSION_CORPUS = json.loads(
+    (ROOT / "tests" / "fixtures" / "auto_exclusion_lifecycle.json").read_text(
+        encoding="utf-8"
+    )
+)
 
 
 class FakeDiscovery:
@@ -268,6 +274,16 @@ def _auto_settings_path(tmp_path: Path) -> Path:
     path = tmp_path / "bangumi.toml"
     source = (ROOT / "config" / "bangumi.toml").read_text(encoding="utf-8")
     lines = source.splitlines(keepends=True)
+    manual_start = next(
+        index
+        for index, line in enumerate(lines)
+        if line.lstrip().startswith("excluded_subject_ids")
+    )
+    manual_end = manual_start + 1
+    if "[" in lines[manual_start] and "]" not in lines[manual_start]:
+        while "]" not in lines[manual_end - 1]:
+            manual_end += 1
+    lines[manual_start:manual_end] = ["excluded_subject_ids = []\n"]
     start = next(
         index
         for index, line in enumerate(lines)
@@ -1055,7 +1071,6 @@ def test_conflict_review_is_never_cold_blacklisted(
         frozenset()
     )
 
-
 @pytest.mark.parametrize("rating_count", (None, 0, 500))
 def test_tv_quarter_date_unresolved_616616_blacklists_immediately(
     tmp_path: Path, rating_count: int | None
@@ -1363,7 +1378,7 @@ def test_auto_blacklist_database_failure_restores_cover_and_config(
     assert not list(covers.glob(".blacklist-*"))
 
 
-def test_auto_blacklist_is_permanent_and_does_not_repeat_event(
+def test_existing_auto_blacklist_is_retained_when_low_rating_still_holds(
     tmp_path: Path,
 ) -> None:
     settings_path = _auto_settings_path(tmp_path)
@@ -1393,6 +1408,246 @@ def test_auto_blacklist_is_permanent_and_does_not_repeat_event(
     assert repository.get_subject_facts(650008) is None
 
 
+def test_existing_auto_blacklist_is_reconsidered_when_rating_recovers(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650015
+    add_auto_excluded_subject(settings_path, subject_id, name_cn="旧自动排除")
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi(
+            {
+                subject_id: _detail(
+                    subject_id,
+                    air_date="2026-04-02",
+                    rating_count=30,
+                    cover=None,
+                )
+            }
+        ),
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.TV),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+    result = run.quarters[0]
+
+    assert run.exit_code == 0
+    assert result.auto_reconsidered == 1
+    assert result.auto_restored == (subject_id,)
+    assert result.existing_auto_blacklisted == 0
+    assert repository.get_subject_facts(subject_id) is not None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset()
+    )
+
+    second = sync.run(SyncScope(QUARTER, QUARTER)).quarters[0]
+    assert second.auto_reconsidered == 0
+    assert second.auto_restored == ()
+    assert second.accepted_tv == 1
+    snapshot = repository.get_subject_facts(subject_id)
+    assert snapshot is not None
+    assert len(snapshot.appearances) == 1
+
+
+def test_existing_auto_blacklist_is_reconsidered_when_evidence_becomes_accepted(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650016
+    add_auto_excluded_subject(settings_path, subject_id, name_cn="旧信息不足排除")
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi(
+            {
+                subject_id: _detail(
+                    subject_id,
+                    air_date="2026-04-02",
+                    rating_count=100,
+                    country="日本",
+                    cover=None,
+                )
+            }
+        ),
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.TV),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+
+    result = sync.run(SyncScope(QUARTER, QUARTER)).quarters[0]
+
+    assert result.auto_restored == (subject_id,)
+    assert result.accepted_tv == 1
+    assert result.reviews == ()
+    assert repository.get_subject_facts(subject_id) is not None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset()
+    )
+
+
+def test_existing_auto_blacklist_becomes_high_impact_review_after_reassessment(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650017
+    stable_id = 650018
+    add_auto_excluded_subject(settings_path, subject_id, name_cn="旧低信息排除")
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi(
+            {
+                subject_id: _detail(
+                    subject_id,
+                    country=None,
+                    rating_count=100,
+                    cover=None,
+                ),
+                stable_id: _detail(stable_id, cover=None),
+            }
+        ),
+        DiscoveryBatch(
+            (
+                _candidate(subject_id, MediaFormat.TV),
+                _candidate(stable_id, MediaFormat.TV),
+            )
+        ),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+
+    result = sync.run(SyncScope(QUARTER, QUARTER)).quarters[0]
+
+    assert result.auto_restored == (subject_id,)
+    assert result.accepted_tv == 1
+    assert [issue.issue_code for issue in result.reviews] == [
+        "JAPANESE_CLASSIFICATION_UNRESOLVED"
+    ]
+    assert repository.get_subject_facts(subject_id) is not None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset()
+    )
+
+
+def test_auto_reconciliation_restores_config_when_commit_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650019
+    add_auto_excluded_subject(settings_path, subject_id, name_cn="事务回滚")
+    original_config = settings_path.read_bytes()
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi({subject_id: _detail(subject_id, cover=None)}),
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.TV),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 11),
+    )
+    real_remove = sync_module.remove_auto_excluded_subjects
+
+    def remove_then_fail(path: Path, subject_ids: object) -> tuple[int, ...]:
+        real_remove(path, subject_ids)  # type: ignore[arg-type]
+        raise RuntimeError("commit failed after config update")
+
+    monkeypatch.setattr(sync_module, "remove_auto_excluded_subjects", remove_then_fail)
+
+    with pytest.raises(RuntimeError, match="commit failed after config update"):
+        sync.run(SyncScope(QUARTER, QUARTER))
+
+    assert settings_path.read_bytes() == original_config
+    assert repository.get_subject_facts(subject_id) is None
+    assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
+        frozenset({subject_id})
+    )
+
+
+@pytest.mark.parametrize(
+    "case", AUTO_EXCLUSION_CORPUS, ids=lambda item: item["name"]
+)
+def test_auto_exclusion_lifecycle_corpus_replay(
+    tmp_path: Path, case: dict[str, object]
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = int(case["subject_id"])
+    media = MediaFormat[str(case["media"])]
+    if case.get("old_auto"):
+        add_auto_excluded_subject(
+            settings_path,
+            subject_id,
+            name_cn=f"corpus {subject_id}",
+        )
+    if case.get("manual_excluded"):
+        content = settings_path.read_text(encoding="utf-8").replace(
+            "excluded_subject_ids = []",
+            f"excluded_subject_ids = [{subject_id}]",
+        )
+        settings_path.write_text(content, encoding="utf-8")
+    api = FakeApi(
+        {
+            subject_id: _detail(
+                subject_id,
+                media=media,
+                country=case["country"],  # type: ignore[arg-type]
+                rating_count=case["rating_count"],  # type: ignore[arg-type]
+                cover=None,
+            )
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(subject_id, media),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 20),
+    )
+    if case.get("old_review"):
+        _store_existing(
+            repository,
+            subject_id,
+            media=media,
+            review_issues=(
+                ReviewIssue(
+                    "JAPANESE_CLASSIFICATION_UNRESOLVED",
+                    None,
+                    "2026-04-02",
+                    {"subject_id": subject_id},
+                    "old",
+                ),
+            ),
+        )
+
+    result = sync.run(SyncScope(QUARTER, QUARTER)).quarters[0]
+    expected = case["expected"]
+    assert isinstance(expected, dict)
+    if media is MediaFormat.TV:
+        assert result.accepted_tv == expected["accepted"]
+    else:
+        assert result.accepted_movie == expected["accepted"]
+    assert result.rejected_non_japanese == expected["rejected_non_japanese"]
+    assert len(result.auto_blacklisted) == expected["auto_blacklisted"]
+    assert result.auto_reconsidered == (1 if case.get("old_auto") else 0)
+    assert result.auto_restored == (
+        (subject_id,) if expected["restored"] else ()
+    )
+    review_codes = [issue.issue_code for issue in result.reviews]
+    assert review_codes == (
+        [expected["review_code"]] if expected["review_code"] else []
+    )
+    assert (repository.get_subject_facts(subject_id) is not None) is expected["stored"]
+    settings = load_archive_sync_settings(settings_path)
+    if case.get("manual_excluded"):
+        assert subject_id in settings.excluded_subject_ids
+    elif case.get("old_auto") and not expected["restored"]:
+        assert subject_id in settings.auto_excluded_subject_ids
+    elif expected["auto_blacklisted"]:
+        assert subject_id in settings.auto_excluded_subject_ids
+    else:
+        assert subject_id not in settings.auto_excluded_subject_ids
+    if case.get("manual_excluded"):
+        assert api.subject_calls == []
+
+
 def test_blacklist_source_counts_mixed_manual_existing_and_new_auto(
     tmp_path: Path,
 ) -> None:
@@ -1406,6 +1661,12 @@ def test_blacklist_source_counts_mixed_manual_existing_and_new_auto(
     )
     api = FakeApi(
         {
+            650012: _detail(
+                650012,
+                air_date="2026-04-02",
+                rating_count=29,
+                cover=None,
+            ),
             650014: _detail(
                 650014,
                 air_date="2026-04-02",

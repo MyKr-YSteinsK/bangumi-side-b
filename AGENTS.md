@@ -75,7 +75,10 @@ active Codex Skills/runtime and are not repeated here.
 - For a formal approved Plan that produces tracked source changes, after
   implementation, docs, and tests changes are complete, required validation has
   passed, and the final source commit exists, Codex must automatically run one
-  ordinary `git push` to the current branch's configured upstream.
+  ordinary `git push` to the current branch's configured upstream. When the Plan
+  authorizes live data validation, that push is gated behind the final bounded
+  live validation, target/global review, audit, and relevant regression; no
+  intermediate source push is allowed unless the user explicitly authorizes it.
 - The upstream must accept that commit and the local branch HEAD must equal the
   configured upstream HEAD before the Plan can be reported as full `PASS` /
   `COMPLETE`.

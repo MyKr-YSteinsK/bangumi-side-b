@@ -1,0 +1,131 @@
+[
+  {
+    "name": "old_review_fresh_accepted",
+    "subject_id": 701001,
+    "media": "TV",
+    "country": "日本",
+    "rating_count": 100,
+    "old_review": true,
+    "expected": {
+      "accepted": 1,
+      "rejected_non_japanese": 0,
+      "auto_blacklisted": 0,
+      "restored": false,
+      "stored": true,
+      "review_code": null
+    }
+  },
+  {
+    "name": "old_review_fresh_non_japanese",
+    "subject_id": 701002,
+    "media": "MOVIE",
+    "country": "中国",
+    "rating_count": 100,
+    "old_review": true,
+    "expected": {
+      "accepted": 0,
+      "rejected_non_japanese": 1,
+      "auto_blacklisted": 0,
+      "restored": false,
+      "stored": false,
+      "review_code": null
+    }
+  },
+  {
+    "name": "old_review_outcome_dominated",
+    "subject_id": 701003,
+    "media": "TV",
+    "country": null,
+    "rating_count": 29,
+    "old_review": true,
+    "expected": {
+      "accepted": 0,
+      "rejected_non_japanese": 0,
+      "auto_blacklisted": 1,
+      "restored": false,
+      "stored": false,
+      "review_code": null
+    }
+  },
+  {
+    "name": "old_auto_rating_still_low",
+    "subject_id": 701004,
+    "media": "TV",
+    "country": "日本",
+    "rating_count": 29,
+    "old_auto": true,
+    "expected": {
+      "accepted": 0,
+      "rejected_non_japanese": 0,
+      "auto_blacklisted": 0,
+      "restored": false,
+      "stored": false,
+      "review_code": null
+    }
+  },
+  {
+    "name": "old_auto_rating_now_recovered",
+    "subject_id": 701005,
+    "media": "TV",
+    "country": "日本",
+    "rating_count": 30,
+    "old_auto": true,
+    "expected": {
+      "accepted": 1,
+      "rejected_non_japanese": 0,
+      "auto_blacklisted": 0,
+      "restored": true,
+      "stored": true,
+      "review_code": null
+    }
+  },
+  {
+    "name": "old_auto_evidence_now_accepted",
+    "subject_id": 701006,
+    "media": "TV",
+    "country": "日本",
+    "rating_count": 100,
+    "old_auto": true,
+    "old_auto_reason": "information_insufficient",
+    "expected": {
+      "accepted": 1,
+      "rejected_non_japanese": 0,
+      "auto_blacklisted": 0,
+      "restored": true,
+      "stored": true,
+      "review_code": null
+    }
+  },
+  {
+    "name": "old_auto_high_impact_review",
+    "subject_id": 701007,
+    "media": "MOVIE",
+    "country": null,
+    "rating_count": 100,
+    "old_auto": true,
+    "expected": {
+      "accepted": 0,
+      "rejected_non_japanese": 0,
+      "auto_blacklisted": 0,
+      "restored": true,
+      "stored": true,
+      "review_code": "JAPANESE_CLASSIFICATION_UNRESOLVED"
+    }
+  },
+  {
+    "name": "manual_exclusion_remains_excluded",
+    "subject_id": 701008,
+    "media": "TV",
+    "country": "日本",
+    "rating_count": 100,
+    "manual_excluded": true,
+    "expected": {
+      "accepted": 0,
+      "rejected_non_japanese": 0,
+      "auto_blacklisted": 0,
+      "restored": false,
+      "stored": false,
+      "review_code": null
+    }
+  }
+]

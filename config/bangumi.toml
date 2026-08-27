@@ -1,5 +1,7 @@
 [filters]
-excluded_subject_ids = []
+excluded_subject_ids = [
+    184017, # Bangumi Wiki 动画测试用沙盘
+]
 auto_excluded_subject_ids = [
     332677, # 贝里琉岛 -乐园的格尔尼卡
     363612, # 沙盒

@@ -452,6 +452,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(line)
         if run.exit_code == 0:
             try:
+                settings = load_archive_sync_settings(
+                    root / "config" / "bangumi.toml"
+                )
                 tags = load_tag_rules(
                     root / "config" / "allowed-tags.toml",
                 )

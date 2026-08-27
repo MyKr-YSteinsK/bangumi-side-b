@@ -2,16 +2,16 @@
 
 ## Current
 
-- App/product version: `0.8.3`.
+- App/product version: `0.8.4`.
 - Branch: `main`; upstream: `origin/main`.
 - Lifecycle stage: Production.
-- Current milestone: Production lifecycle checkpoint (Plan-41).
+- Current milestone: Production maintenance checkpoint (Plan-45).
 - Migration status: adoption is complete at the checkpoint baseline.
 - Migration adoption audit start: `4c458a7da6a23563f3a01306b604c52cb546981c`.
   This is historical context, not the current adopted baseline.
 - Migration Checkpoint adopted baseline: `7e7c7671dd9620a38c61a5d1f1aed29fd94331dc`
   (`test: guard canonical requirement owners`).
-- Last verified: 2026-08-27 local repository state, bounded Plan-44
+- Last verified: 2026-08-28 local repository state, bounded Plan-45
   validation, and user-reported real-device acceptance.
 
 The exact resulting HEAD of state-only documentation updates is authoritative
@@ -78,7 +78,7 @@ requirement for a file to contain its own commit SHA.
   quarter. A 1–2 episode TV run remains in that quarter; a next-quarter
   exception requires bounded regular main-episode dates, strong target-quarter
   evidence, and no structured conflict. `TV_QUARTER_BOUNDARY` remains REVIEW
-  only and is not an automatic permanent-exclusion issue.
+  only and is not an automatic-exclusion issue.
 - The authorized live refresh completed for `2025-10..2026-01` with complete
   facts and no errors. The former mistaken auto-blacklist IDs `506120` and
   `565802` are absent from automatic exclusions, are stored as TV premieres in
@@ -132,6 +132,36 @@ requirement for a file to contain its own commit SHA.
   entries. No existing exclusion was blindly removed; the generated
   workspace/report/config state remains local and is not folded into the
   source commit.
+
+## Plan-45 decision and automatic-exclusion lifecycle evidence
+
+- The 31 existing Japanese decisions were parsed and retained: 9
+  `ACCEPTED_JAPANESE` and 22 `REJECTED_NON_JAPANESE`, with unique valid IDs and
+  no silent reversal. `184017` is now an explicit manual exclusion with the
+  rationale `Bangumi Wiki 动画测试用沙盘`; its stale SQLite facts and
+  `JAPANESE_REGION_CONFLICT` review row were removed through the existing
+  recoverable blacklist lifecycle.
+- A one-time fresh canonical audit covered all 369 current automatic
+  exclusions. The measured categories were 240 information-insufficient, 100
+  low-rating, and 29 outcome-dominated exclusions. No stale/restorable,
+  unavailable/deleted, hard-scope, or unresolved high-impact IDs were found;
+  therefore no affected-quarter live refresh was required.
+- `646464` remains automatically excluded: its canonical rating total is 37,
+  but platform `其他` leaves the media format unresolved and the admission
+  result remains `SEARCH_ONLY_MEDIA_UNRESOLVED`. Rating growth alone does not
+  override a missing in-scope media identity.
+- The identity gate found `604330` and `604331` to be legitimate independent
+  in-scope theatrical Movie subjects released on the same date; their own
+  canonical rating totals are 0, so each remains a valid low-rating automatic
+  exclusion. `582501` is a separate WEB aggregate/out-of-scope subject and is
+  not used to restore or replace the two theatrical subjects. No alias model
+  was introduced.
+- The lifecycle now re-evaluates an old automatic exclusion when its subject is
+  rediscovered in an actively refreshed quarter, while manual exclusions,
+  scope rejection, and unresolved inclusion-changing REVIEW remain binding.
+  Configuration removal and SQLite/review convergence are transactional with
+  rollback coverage; repeated refreshes are idempotent. The offline lifecycle
+  corpus and focused regression passed.
 ## Known limitations / risks
 
 - Plan-39 was acceptance and documentation only; it did not change product
@@ -147,9 +177,9 @@ requirement for a file to contain its own commit SHA.
   was performed to manufacture one.
 - Date-stamped Bangumi API evidence remains periodic maintenance and an
   external-dependency risk, not a Production promotion blocker.
-- The global review queue still includes 25 unresolved rows from quarters
-  outside the bounded Plan-44 refresh. They remain genuine future/other-quarter
-  operator work and were not changed without an authorized refresh.
+- The final global review queue is empty after the authorized 184017 cleanup;
+  future review work still requires fresh bounded evidence and explicit
+  operator adjudication.
 
 ## Pending USER CHECK
 
@@ -164,9 +194,15 @@ from the former REVIEW corpus, and confirm the remaining global REVIEW is
 small and understandable. These are user sanity checks; the bounded
 SQLite/report/static-file assertions have already passed.
 
+For Plan-45, review the 369-ID audit summary, confirm `184017` is absent from
+generated output and REVIEW, and spot-check the retained exclusions listed in
+the TASK_RESULT. No restored ID required an affected-quarter page check. These
+are user sanity checks; the bounded canonical, SQLite, config, and static-build
+assertions have already passed.
+
 ## Active work
 
-- No product runtime, schema, or release work is active after the Plan-44
+- No product runtime, schema, or release work is active after the Plan-45
   maintenance change. The lifecycle remains Production; normal maintenance,
   bug fixes, and deliberate feature work still require formal Plans and
   risk-appropriate validation.
@@ -178,6 +214,11 @@ SQLite/report/static-file assertions have already passed.
   `2025-04..2025-07` refresh and the 69-ID read-only detail evidence. No other
   live refresh, `release publish`, or `gh-pages`
   mutation was performed.
-- Application version is `0.8.3`. Source commits and Pages publication remain
+- Plan-45 used only the authorized read-only canonical audit of the 369
+  automatic IDs, the exact `646464` probe, and the
+  `604330`/`604331`/`582501` identity evidence. No Plan-45 live sync or
+  affected-quarter refresh was necessary because no stale/restorable ID was
+  proven.
+- Application version is `0.8.4`. Source commits and Pages publication remain
   separate delivery events; this maintenance change does not imply a Pages
   publication.

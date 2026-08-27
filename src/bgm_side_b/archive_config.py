@@ -6,7 +6,7 @@ import os
 import re
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -145,6 +145,63 @@ def add_auto_excluded_subject(
             return True
         raise
     return True
+
+
+def remove_auto_excluded_subject(
+    path: Path, subject_id: int
+) -> bool:
+    """Remove one automatic exclusion while preserving all other config text."""
+    return bool(remove_auto_excluded_subjects(path, (subject_id,)))
+
+
+def remove_auto_excluded_subjects(
+    path: Path, subject_ids: Iterable[int]
+) -> tuple[int, ...]:
+    """Atomically remove selected automatic exclusions in stable order.
+
+    The caller may use the returned IDs to distinguish a no-op from a config
+    change.  Manual exclusions and all unrelated comments remain untouched.
+    """
+    requested = tuple(sorted(set(subject_ids)))
+    if not all(_positive_id(subject_id) for subject_id in requested):
+        raise ValueError("auto-excluded subject id must be positive")
+    settings = load_archive_sync_settings(path)
+    removed = tuple(
+        subject_id
+        for subject_id in requested
+        if subject_id in settings.auto_excluded_subject_ids
+    )
+    if not removed:
+        return ()
+    source = path.read_text(encoding="utf-8")
+    lines = source.splitlines(keepends=True)
+    filters_start, filters_end = _filters_section(lines)
+    auto_start = next(
+        (
+            index
+            for index in range(filters_start + 1, filters_end)
+            if _AUTO_KEY_RE.match(lines[index])
+        ),
+        None,
+    )
+    if auto_start is None:
+        raise ValueError("auto_excluded_subject_ids array is missing")
+    auto_end = _array_end(lines, auto_start)
+    comments = _auto_comments(lines[auto_start:auto_end])
+    remaining = sorted(
+        set(settings.auto_excluded_subject_ids).difference(removed)
+    )
+    lines[auto_start:auto_end] = [
+        _render_auto_exclusions(remaining, "", -1, comments)
+    ]
+    desired = "".join(lines)
+    try:
+        _atomic_replace_text(path, desired)
+    except OSError:
+        if path.read_text(encoding="utf-8") == desired:
+            return removed
+        raise
+    return removed
 
 
 def restore_archive_config(path: Path, content: bytes) -> None:

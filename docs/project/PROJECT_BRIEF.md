@@ -37,9 +37,10 @@ online and extended with explicit quarter-level offline downloads.
   or generated facts. Evidence gaps have no single disposition: specific facts
   such as country evidence follow their specialist contract and may enter
   REVIEW, while the current rule-bound `information-insufficient` issue family
-  may trigger `automatic permanent exclusion`. A `factual conflict` remains
-  REVIEW for explicit human adjudication; manual exclusion and automatic
-  permanent exclusion are distinct states.
+  may trigger an automatic exclusion cache that is re-evaluated when a subject
+  is rediscovered in an actively refreshed quarter. A `factual conflict`
+  remains REVIEW for explicit human adjudication; manual exclusion and
+  automatic exclusion are distinct states.
 - Browse/Search is candidate discovery. Canonical subject detail is the
   authority for persisted subject facts.
 - Source vocabulary and display tags use exact configured mappings and

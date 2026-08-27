@@ -8,6 +8,8 @@ import pytest
 from bgm_side_b.archive_config import (
     add_auto_excluded_subject,
     load_archive_sync_settings,
+    remove_auto_excluded_subject,
+    remove_auto_excluded_subjects,
     should_auto_blacklist,
 )
 from bgm_side_b.config import load_tag_rules
@@ -196,6 +198,46 @@ def test_add_auto_excluded_subject_write_failure_keeps_original(
 
     with pytest.raises(PermissionError, match="replace denied"):
         add_auto_excluded_subject(path, 202, name_cn="标题")
+
+    assert path.read_bytes() == original
+    assert not list(tmp_path.glob(".bangumi.toml.*.tmp"))
+
+
+def test_remove_auto_excluded_subjects_preserves_manual_config_and_comments(
+    tmp_path: Path,
+) -> None:
+    path = _blacklist_config(tmp_path)
+    add_auto_excluded_subject(path, 202, name_cn="保留中文名")
+    add_auto_excluded_subject(path, 303, name_original="保留原名")
+    before = path.read_text(encoding="utf-8")
+
+    assert remove_auto_excluded_subjects(path, (404, 202)) == (202,)
+    content = path.read_text(encoding="utf-8")
+
+    assert "excluded_subject_ids = [101, 404] # manual stays unchanged" in content
+    assert "202," not in content
+    assert "303, # 保留原名" in content
+    assert load_archive_sync_settings(path).auto_excluded_subject_ids == (
+        frozenset({303})
+    )
+    assert remove_auto_excluded_subject(path, 202) is False
+    assert remove_auto_excluded_subjects(path, (202,)) == ()
+    assert content != before
+
+
+def test_remove_auto_excluded_subject_write_failure_keeps_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _blacklist_config(tmp_path, auto="[202, 303]")
+    original = path.read_bytes()
+
+    def fail_replace(*_: object, **__: object) -> None:
+        raise PermissionError("replace denied")
+
+    monkeypatch.setattr("bgm_side_b.archive_config.os.replace", fail_replace)
+
+    with pytest.raises(PermissionError, match="replace denied"):
+        remove_auto_excluded_subject(path, 202)
 
     assert path.read_bytes() == original
     assert not list(tmp_path.glob(".bangumi.toml.*.tmp"))

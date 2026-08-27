@@ -13,6 +13,8 @@ from bgm_side_b.admission import (
     DISCOVERY_MEDIA_CONFLICT,
     JAPANESE_CLASSIFICATION_UNRESOLVED,
     MOVIE_DATE_UNRESOLVED,
+    OUT_OF_SCOPE_QUARTER,
+    OUTCOME_DOMINATED_LOW_RATING,
     TV_QUARTER_BOUNDARY,
     TV_QUARTER_DATE_UNRESOLVED,
     UNRESOLVED_COLD_REVIEW_ISSUES,
@@ -26,7 +28,12 @@ from bgm_side_b.admission import (
 )
 from bgm_side_b.api import ApiTag, SubjectDetail
 from bgm_side_b.discovery import DiscoveredSubject
-from bgm_side_b.domain import JapaneseClassification, MediaFormat, Quarter
+from bgm_side_b.domain import (
+    JapaneseClassification,
+    JapaneseDecision,
+    MediaFormat,
+    Quarter,
+)
 
 
 def _candidate(
@@ -47,6 +54,7 @@ def _detail(
     country: str | None = "日本",
     meta_tags: tuple[str, ...] = (),
     tags: tuple[str, ...] = (),
+    rating_count: int | None = 100,
 ) -> SubjectDetail:
     infobox = [] if country is None else [{"key": "国家/地区", "value": country}]
     return SubjectDetail.from_payload(
@@ -58,7 +66,7 @@ def _detail(
             "date": air_date,
             "platform": platform,
             "eps": 12,
-            "rating": {"score": 7.5, "total": 100},
+            "rating": {"score": 7.5, "total": rating_count},
             "infobox": infobox,
             "meta_tags": list(meta_tags),
             "tags": [{"name": value, "count": 1} for value in tags],
@@ -71,7 +79,7 @@ def test_blacklist_is_checked_before_any_candidate_or_detail_normalisation() -> 
     decision = admit_subject(
         _candidate(101),
         _detail(101, subject_type=None, country=None),
-        Quarter(2026, 4),
+        Quarter(2026, 1),
         excluded_subject_ids=frozenset({101}),
     )
 
@@ -86,7 +94,7 @@ def test_explicit_unsupported_platform_cannot_inherit_browse_tv(
     decision = admit_subject(
         _candidate(),
         _detail(platform=platform, country="日本"),
-        Quarter(2026, 4),
+        Quarter(2026, 1),
     )
 
     assert decision.status is AdmissionStatus.REJECTED
@@ -125,7 +133,7 @@ def test_public_regions_are_decisive_and_ordinary_region_tags_have_no_effect() -
 
     assert accepted.status is AdmissionStatus.ACCEPTED
     assert rejected.status is AdmissionStatus.REJECTED
-    assert conflict.reviews[0].issue_code == "JAPANESE_REGION_CONFLICT"
+    assert conflict.status is AdmissionStatus.ACCEPTED
     assert ordinary_tag.status is AdmissionStatus.REVIEW
 
 
@@ -149,7 +157,8 @@ def test_tv_boundary_observation_is_reviewed_at_one_to_seven_days_only() -> None
 
     assert boundary.reviews[0].issue_code == TV_QUARTER_BOUNDARY
     assert boundary.reviews[0].details["days_before_target"] == 6
-    assert mismatch.reviews[0].issue_code == DISCOVERY_DATE_MISMATCH
+    assert mismatch.status is AdmissionStatus.REJECTED
+    assert mismatch.reason == OUT_OF_SCOPE_QUARTER
     assert january.reviews[0].issue_code == TV_QUARTER_BOUNDARY
 
 
@@ -245,6 +254,71 @@ def test_movie_uses_natural_quarter_and_missing_dates_are_reviewed() -> None:
     assert movie.premiere is not None and movie.premiere.quarter == Quarter(2026, 4)
     assert missing_movie.reviews[0].issue_code == MOVIE_DATE_UNRESOLVED
     assert missing_tv.reviews[0].issue_code == TV_QUARTER_DATE_UNRESOLVED
+
+
+def test_movie_outside_target_is_irrelevant_before_japanese_review() -> None:
+    decision = admit_subject(
+        _candidate(
+            formats=frozenset({MediaFormat.MOVIE}),
+            dates=frozenset({date(2026, 6, 28)}),
+        ),
+        _detail(platform="剧场版", air_date="2026-06-28", country=None),
+        Quarter(2026, 1),
+    )
+
+    assert decision.status is AdmissionStatus.REJECTED
+    assert decision.reason == OUT_OF_SCOPE_QUARTER
+    assert decision.japanese is None
+    assert decision.reviews == ()
+
+
+def test_unresolved_low_rating_is_outcome_dominated_without_fake_resolution() -> None:
+    decision = admit_subject(
+        _candidate(),
+        _detail(country=None, rating_count=29),
+        Quarter(2026, 4),
+        evaluation_date=date(2026, 4, 20),
+    )
+
+    assert decision.status is AdmissionStatus.REVIEW
+    assert decision.outcome_dominated
+    assert decision.reason == JAPANESE_CLASSIFICATION_UNRESOLVED
+    assert decision.japanese is not None
+    assert decision.japanese.classification is JapaneseClassification.UNRESOLVED
+    assert OUTCOME_DOMINATED_LOW_RATING == "outcome_dominated_low_rating"
+
+
+def test_manual_japanese_override_does_not_change_quarter_scope() -> None:
+    manual = admit_subject(
+        _candidate(),
+        _detail(country=None),
+        Quarter(2026, 4),
+        japanese_override=JapaneseDecision(
+            JapaneseClassification.ACCEPTED_JAPANESE,
+            "manual_japanese_override",
+            "ACCEPTED_JAPANESE",
+        ),
+    )
+    out_of_scope = admit_subject(
+        _candidate(
+            formats=frozenset({MediaFormat.MOVIE}),
+            dates=frozenset({date(2026, 6, 28)}),
+        ),
+        _detail(
+            platform="剧场版",
+            air_date="2026-06-28",
+            country=None,
+        ),
+        Quarter(2026, 1),
+        japanese_override=JapaneseDecision(
+            JapaneseClassification.ACCEPTED_JAPANESE,
+            "manual_japanese_override",
+            "ACCEPTED_JAPANESE",
+        ),
+    )
+
+    assert manual.status is AdmissionStatus.ACCEPTED
+    assert out_of_scope.reason == OUT_OF_SCOPE_QUARTER
 
 
 def test_unresolved_cold_allowlist_contains_only_evidence_missing_issues() -> None:

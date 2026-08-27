@@ -156,6 +156,7 @@ class SearchDiscoveryAdapter:
         self.boundary_lookback_days = boundary_lookback_days
 
     def discover(self, quarter: Quarter) -> DiscoveryBatch:
+        target_start = date(quarter.year, quarter.month, 1)
         start = date(quarter.year, quarter.month, 1) - timedelta(
             days=self.boundary_lookback_days
         )
@@ -181,6 +182,9 @@ class SearchDiscoveryAdapter:
             [
                 _from_api_candidate(candidate, None, provenance)
                 for candidate in candidates
+                if candidate.candidate_date is None
+                or candidate.candidate_date >= target_start
+                or candidate.platform == "TV"
             ],
             (),
         )

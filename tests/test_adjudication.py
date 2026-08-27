@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from bgm_side_b.adjudication import ArchiveAdjudicator, AssignmentError, render_review
+from bgm_side_b.adjudication import (
+    ArchiveAdjudicator,
+    AssignmentError,
+    JapaneseAdjudicator,
+    render_review,
+)
 from bgm_side_b.admission import QuarterOverride
 from bgm_side_b.database import Database
 from bgm_side_b.domain import (
@@ -19,6 +24,7 @@ from bgm_side_b.domain import (
     QuarterAppearanceKind,
     QuarterAssignmentSource,
 )
+from bgm_side_b.japanese_overrides import load_japanese_overrides
 from bgm_side_b.overrides import load_quarter_overrides, save_quarter_overrides
 from bgm_side_b.repository import (
     InfoboxItem,
@@ -171,3 +177,114 @@ def test_review_rendering_is_actionable_and_missing_subject_is_refused(
             repository, tmp_path / "quarter-overrides.toml", frozenset()
         )
         adjudicator.assign(202, QuarterOverride(Quarter(2026, 4)))
+
+
+def test_japanese_adjudication_round_trip_restores_automatic_review(
+    repository: SubjectRepository, tmp_path: Path
+) -> None:
+    unresolved = replace(
+        _snapshot(),
+        subject=replace(
+            _snapshot().subject,
+            japanese=JapaneseDecision(
+                JapaneseClassification.UNRESOLVED,
+                "unresolved_missing_japanese_region",
+                "[]",
+            ),
+        ),
+        review_issues=(
+            ReviewIssue(
+                "JAPANESE_CLASSIFICATION_UNRESOLVED",
+                None,
+                "2026-03-31",
+                {"subject_id": 101},
+                "old",
+            ),
+            ReviewIssue(
+                "TV_QUARTER_BOUNDARY",
+                Quarter(2026, 4),
+                "2026-03-31",
+                {},
+                "old",
+            ),
+        ),
+    )
+    _store(repository, unresolved)
+    path = tmp_path / "japanese-overrides.toml"
+    adjudicator = JapaneseAdjudicator(repository, path, frozenset(), tmp_path)
+
+    accepted = adjudicator.set_classification(
+        101, JapaneseClassification.ACCEPTED_JAPANESE
+    )
+    assert accepted is not None
+    assert accepted.subject.japanese.evidence_type == "manual_japanese_override"
+    assert [issue.issue_code for issue in accepted.review_issues] == [
+        "TV_QUARTER_BOUNDARY"
+    ]
+    assert load_japanese_overrides(path)[101].classification is (
+        JapaneseClassification.ACCEPTED_JAPANESE
+    )
+
+    restored = adjudicator.clear(101)
+    assert restored is not None
+    assert restored.subject.japanese.classification is JapaneseClassification.UNRESOLVED
+    assert {issue.issue_code for issue in restored.review_issues} == {
+        "TV_QUARTER_BOUNDARY",
+        "JAPANESE_CLASSIFICATION_UNRESOLVED",
+    }
+    assert load_japanese_overrides(path) == {}
+
+
+def test_non_japanese_adjudication_removes_facts_and_clear_is_recoverable(
+    repository: SubjectRepository, tmp_path: Path
+) -> None:
+    _store(repository, _snapshot())
+    covers = tmp_path / "covers"
+    covers.mkdir()
+    (covers / "101.webp").write_bytes(b"cover")
+    path = tmp_path / "japanese-overrides.toml"
+    adjudicator = JapaneseAdjudicator(repository, path, frozenset(), tmp_path)
+
+    assert (
+        adjudicator.set_classification(
+            101, JapaneseClassification.REJECTED_NON_JAPANESE
+        )
+        is None
+    )
+    assert repository.get_subject_facts(101) is None
+    assert not (covers / "101.webp").exists()
+    assert load_japanese_overrides(path)[101].classification is (
+        JapaneseClassification.REJECTED_NON_JAPANESE
+    )
+
+    assert adjudicator.clear(101) is None
+    assert load_japanese_overrides(path) == {}
+
+
+def test_japanese_review_rendering_prints_classification_commands(
+    repository: SubjectRepository,
+) -> None:
+    unresolved = replace(
+        _snapshot(),
+        subject=replace(
+            _snapshot().subject,
+            japanese=JapaneseDecision(
+                JapaneseClassification.UNRESOLVED,
+                "unresolved_missing_japanese_region",
+                "[]",
+            ),
+        ),
+        review_issues=(
+            ReviewIssue(
+                "JAPANESE_CLASSIFICATION_UNRESOLVED",
+                None,
+                None,
+                {},
+                "now",
+            ),
+        ),
+    )
+    _store(repository, unresolved)
+    rendered = render_review(repository)
+    assert "bgmb classify 101 --japanese" in rendered
+    assert "bgmb classify 101 --non-japanese" in rendered

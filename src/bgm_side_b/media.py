@@ -77,7 +77,9 @@ class CoverRemovalBatch:
 class CoverStore:
     """Write only ``workspace/covers/<id>.webp`` after complete validation."""
 
-    def __init__(self, covers_directory: Path, fetcher: CoverFetcher) -> None:
+    def __init__(
+        self, covers_directory: Path, fetcher: CoverFetcher | None
+    ) -> None:
         self.covers_directory = covers_directory
         self.fetcher = fetcher
 
@@ -100,6 +102,8 @@ class CoverStore:
         ):
             return CoverResult("reused", existing)
         try:
+            if self.fetcher is None:
+                raise OSError("cover fetcher is unavailable")
             response = self.fetcher.fetch_image(source_url, max_bytes=MAX_IMAGE_BYTES)
             content, width, height = _webp_bytes(response.content)
             cover = CoverRecord(

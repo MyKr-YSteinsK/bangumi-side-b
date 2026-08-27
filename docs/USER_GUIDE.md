@@ -42,6 +42,9 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 季度边界不确定性 `TV_QUARTER_BOUNDARY` 不在这个 allowlist 中：它会保留为 REVIEW，不能因为边界证据不足
 而被永久自动排除。TV 默认使用自然日历季度；1～2 集短篇即使在季度末几天首播也保留自然季度，只有
 连续多周主线播出证据与明确目标季度证据同时成立时，才会采用下一季度的窄例外。标题中的季节词不构成证据。
+跨季度搜索回看只作为 TV 边界候选；非目标季度 Movie 会被自动视为无关，不产生日本性 REVIEW
+或错误的 `assign` 指引。未决或冲突的日本性在可靠日期超过 7 天且评分人数少于 30 时，会记录
+为 `outcome_dominated_low_rating` 自动排除；底层日本性仍保持 `UNRESOLVED`，不伪造人工结论。
 命中作品会写入 `config/bangumi.toml` 的
 `auto_excluded_subject_ids`，同时记录标题注释和审计证据，并在本次同步中跳过季度归属、REVIEW、
 封面和站点输出。评分人数后来上涨也不会自动恢复。
@@ -71,17 +74,24 @@ bgmb review
 bgmb review 2026 4
 ```
 
-REVIEW 表示确定性规则无法确认季度归属等事实，不会由 AI 自动判断。由使用者查证后作出明确
+REVIEW 表示确定性规则无法确认季度归属或日本范围等事实，不会由 AI 自动判断。由使用者查证后作出明确
 决定：
 
 ```powershell
 bgmb assign BGM_ID 2026 4
 bgmb assign BGM_ID --unassigned
 bgmb assign BGM_ID --clear
+
+# 日本范围裁决
+bgmb classify BGM_ID --japanese
+bgmb classify BGM_ID --non-japanese
+bgmb classify BGM_ID --clear
 ```
 
 `YEAR MONTH` 明确指定首播季度；`--unassigned` 明确保持未分配；`--clear` 移除已有人工决定并
-恢复自动规则处理。对尚未在 SQLite 中的 BGM ID 执行 assign 可能联网导入该作品。
+恢复自动规则处理。日本范围决定写入独立的 `config/japanese-overrides.toml`，不会覆盖季度、
+媒体或继续播出事实；清除后若非日本裁决曾移除本地事实，需要再次 sync。对尚未在 SQLite 中
+的 BGM ID 执行 assign 可能联网导入该作品，classify 则要求作品已经存在本地 SQLite。
 
 同步输出中的 `persisted REVIEW` 只指已经写入 SQLite 且带当前季度作用域的 REVIEW 行，
 因此它与 `bgmb review YEAR QUARTER_MONTH` 和 `bgmb audit` 的待裁决季度保持一致。无季度作用域的
@@ -207,7 +217,8 @@ bgmb release publish
 
 ### REVIEW 怎么办？
 
-先人工查证，再用 `bgmb assign` 明确分配、明确未分配或清除旧决定。不要用标题、简介或 AI 猜测。
+先人工查证，再用 `bgmb assign` 明确季度，或用 `bgmb classify` 明确日本范围。不要用标题、简介
+或 AI 猜测。跨季度 Movie 搜索回看属于自动忽略，不应手工 assign。
 自动黑名单不通过 REVIEW 处理；如需重新评估，先人工删除对应自动 ID，再重新执行目标季度同步。
 
 ### 为什么 build 不联网？

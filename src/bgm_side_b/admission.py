@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Final
 
 from bgm_side_b.api import ApiTag, SubjectDetail
+from bgm_side_b.archive_config import should_auto_blacklist
 from bgm_side_b.discovery import TV_BOUNDARY_LOOKBACK_DAYS, DiscoveredSubject
 from bgm_side_b.domain import (
     JapaneseClassification,
@@ -26,6 +27,8 @@ TV_QUARTER_DATE_UNRESOLVED: Final = "TV_QUARTER_DATE_UNRESOLVED"
 MOVIE_DATE_UNRESOLVED: Final = "MOVIE_DATE_UNRESOLVED"
 DISCOVERY_DATE_MISMATCH: Final = "DISCOVERY_DATE_MISMATCH"
 DISCOVERY_MEDIA_CONFLICT: Final = "DISCOVERY_MEDIA_CONFLICT"
+OUT_OF_SCOPE_QUARTER: Final = "out_of_scope_quarter"
+OUTCOME_DOMINATED_LOW_RATING: Final = "outcome_dominated_low_rating"
 JAPANESE_CLASSIFICATION_UNRESOLVED: Final = "JAPANESE_CLASSIFICATION_UNRESOLVED"
 SEARCH_ONLY_MEDIA_UNRESOLVED: Final = "SEARCH_ONLY_MEDIA_UNRESOLVED"
 _UNSUPPORTED_MEDIA_PLATFORMS: Final = frozenset({"WEB", "OVA", "OAD"})
@@ -111,6 +114,7 @@ class AdmissionDecision:
     premiere: QuarterAppearance | None = None
     reviews: tuple[ReviewFinding, ...] = ()
     reason: str | None = None
+    outcome_dominated: bool = False
 
 
 def admit_subject(
@@ -121,6 +125,9 @@ def admit_subject(
     excluded_subject_ids: frozenset[int] = frozenset(),
     override: QuarterOverride | None = None,
     boundary_evidence: TVBoundaryEvidence | None = None,
+    japanese_override: JapaneseDecision | None = None,
+    evaluation_date: date | None = None,
+    allow_out_of_scope: bool = False,
 ) -> AdmissionDecision:
     """Apply blacklist, scope, Japanese-only, and quarter rules in fixed order."""
     if candidate.subject_id != detail.subject_id:
@@ -156,7 +163,24 @@ def admit_subject(
         )
     assert media_format is not None
 
-    japanese = classify_japanese_with_public_regions(
+    date_conflict = candidate.has_date_conflict or (
+        detail.air_date is not None
+        and any(observed != detail.air_date for observed in candidate.candidate_dates)
+    )
+    if (
+        override is None
+        and not allow_out_of_scope
+        and not date_conflict
+        and _quarter_relevance(detail, target_quarter, media_format) is False
+    ):
+        return AdmissionDecision(
+            AdmissionStatus.REJECTED,
+            detail.subject_id,
+            media_format,
+            reason=OUT_OF_SCOPE_QUARTER,
+        )
+
+    japanese = japanese_override or classify_japanese_with_public_regions(
         detail.meta_tags, _country_values(detail)
     )
     if japanese.classification is JapaneseClassification.REJECTED_NON_JAPANESE:
@@ -185,6 +209,12 @@ def admit_subject(
             japanese,
             reviews=tuple(item for item in (media_review, review) if item is not None),
             reason=review.issue_code,
+            outcome_dominated=(
+                evaluation_date is not None
+                and should_auto_blacklist(
+                    detail.air_date, detail.rating_total, evaluation_date
+                )
+            ),
         )
     if media_review is not None:
         return AdmissionDecision(
@@ -244,6 +274,22 @@ def admit_subject(
 def quarter_for_date(value: date) -> Quarter:
     """Return the natural calendar quarter containing a reliable date."""
     return Quarter(value.year, ((value.month - 1) // 3) * 3 + 1)
+
+
+def _quarter_relevance(
+    detail: SubjectDetail, target_quarter: Quarter, media_format: MediaFormat
+) -> bool | None:
+    """Return known relevance without making a quarter ownership decision."""
+    if detail.air_date is None:
+        return None
+    natural_quarter = quarter_for_date(detail.air_date)
+    if natural_quarter == target_quarter:
+        return True
+    if media_format is MediaFormat.MOVIE:
+        return False
+    target_start = date(target_quarter.year, target_quarter.month, 1)
+    days_before_target = (target_start - detail.air_date).days
+    return 1 <= days_before_target <= TV_BOUNDARY_LOOKBACK_DAYS
 
 
 def _resolve_media(

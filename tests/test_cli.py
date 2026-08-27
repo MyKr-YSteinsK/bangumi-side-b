@@ -43,7 +43,7 @@ def test_help_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_version_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
-    assert __version__ == "0.8.2"
+    assert __version__ == "0.8.3"
 
     with pytest.raises(SystemExit) as result:
         main(["--version"])
@@ -166,6 +166,11 @@ def test_review_and_assign_parsers_accept_manual_workflow() -> None:
     assign = parser.parse_args(["assign", "101", "2026", "4"])
     unassigned = parser.parse_args(["assign", "101", "--unassigned"])
     clear = parser.parse_args(["assign", "101", "--clear"])
+    classify_japanese = parser.parse_args(["classify", "101", "--japanese"])
+    classify_non_japanese = parser.parse_args(
+        ["classify", "101", "--non-japanese"]
+    )
+    classify_clear = parser.parse_args(["classify", "101", "--clear"])
     range_sync = parser.parse_args(
         ["sync", "--from", "2026", "4", "--to", "2026", "7"]
     )
@@ -174,6 +179,9 @@ def test_review_and_assign_parsers_accept_manual_workflow() -> None:
     assert assign.assignment == ["2026", "4"]
     assert unassigned.unassigned
     assert clear.clear
+    assert classify_japanese.japanese
+    assert classify_non_japanese.non_japanese
+    assert classify_clear.clear
     assert range_sync.range_start == ["2026", "4"]
     assert range_sync.range_end == ["2026", "7"]
 

@@ -2,7 +2,7 @@
 
 ## Current
 
-- App/product version: `0.8.2`.
+- App/product version: `0.8.3`.
 - Branch: `main`; upstream: `origin/main`.
 - Lifecycle stage: Production.
 - Current milestone: Production lifecycle checkpoint (Plan-41).
@@ -11,8 +11,8 @@
   This is historical context, not the current adopted baseline.
 - Migration Checkpoint adopted baseline: `7e7c7671dd9620a38c61a5d1f1aed29fd94331dc`
   (`test: guard canonical requirement owners`).
-- Last verified: 2026-08-27 local repository state and user-reported
-  real-device acceptance.
+- Last verified: 2026-08-27 local repository state, bounded Plan-44
+  validation, and user-reported real-device acceptance.
 
 The exact resulting HEAD of state-only documentation updates is authoritative
 in its TASK_RESULT rather than being copied into this file, avoiding a circular
@@ -87,6 +87,48 @@ requirement for a file to contain its own commit SHA.
   zero unresolved subjects; the affected `2025-10` and `2026-01` outputs were
   rebuilt successfully. No Pages publication was performed.
 
+## Plan-44 review convergence evidence
+
+- Phase A measured the fresh 69-row corpus without changing policy first.
+  Thirty-three rows had provenance in the bounded 2025-04 / 2025-07 target
+  scope; the remaining 36 rows belonged to other historical provenance.
+  Four rows were the known Search lookback Movie spillovers. Twenty-four of
+  the 29 target-provenance Japanese ambiguity rows had reliable
+  `rating_count < 30` evidence; the remaining cases were not shortcut by
+  weak evidence. All 69 authorized read-only canonical detail probes
+  completed successfully.
+- Exact structured evidence remains the only Japanese signal. The measured
+  corpus supplied exact public region tokens and verified country-field
+  examples; the implementation now covers the verified Infobox keys
+  `制片国家/地区`, `国家/地区`, `制片国家`, `地区`, the `Japan` alias, and
+  the documented `・` separator. Two target conflict cases are accepted as
+  Japanese-inclusive co-productions under the new same-source-compatible
+  rule; independent Japan/non-Japan sources remain REVIEW.
+- The bounded `2025-04..2025-07 --refresh-existing` run completed with facts
+  and covers complete and zero sync errors. Its final aggregate was 125
+  accepted TV, 17 accepted Movie, 40 rejected non-Japanese, 156 blacklisted,
+  14 irrelevant candidates, and 29 outcome-dominated exclusions recorded in
+  the preceding idempotent run. The second run added no duplicate automatic
+  exclusions and rebuilt the unified static site successfully.
+- `bgmb review 2025 4` and `bgmb review 2025 7` both report zero unresolved
+  subjects. The four old Movie date-mismatch rows no longer produce REVIEW or
+  `assign` guidance. The global `bgmb review` contains 33 unresolved subjects:
+  28 classification-unknown, 2 structured-evidence conflicts, and 3
+  region conflicts. Eight are still inclusion-changing cases in the bounded
+  target (the other 25 belong to other quarters and were intentionally not
+  refreshed by this Plan), so the target corpus is reduced from 69 to 8
+  actionable cases (88.4%, exceeding the 80% gate).
+- The unified `bgmb audit` passed with no pending quarter state and six
+  publishable managed quarters. No duplicate premiere rows were observed.
+  The application schema remains the existing strict schema-2 contract; no
+  SQLite migration, PWA runtime change, Pages publication, or `gh-pages`
+  mutation was made.
+- The protected `config/bangumi.toml` diff retains the user's existing
+  exclusions and the 31 new Plan-44 automatic exclusions: 29
+  `outcome_dominated_low_rating` and 2 deterministic `low_rating_count`
+  entries. No existing exclusion was blindly removed; the generated
+  workspace/report/config state remains local and is not folded into the
+  source commit.
 ## Known limitations / risks
 
 - Plan-39 was acceptance and documentation only; it did not change product
@@ -102,6 +144,9 @@ requirement for a file to contain its own commit SHA.
   was performed to manufacture one.
 - Date-stamped Bangumi API evidence remains periodic maintenance and an
   external-dependency risk, not a Production promotion blocker.
+- The global review queue still includes 25 unresolved rows from quarters
+  outside the bounded Plan-44 refresh. They remain genuine future/other-quarter
+  operator work and were not changed without an authorized refresh.
 
 ## Pending USER CHECK
 
@@ -109,13 +154,16 @@ Plan-39's real-device Safari and standalone PWA checks were explicitly
 reported completed with no problems observed. For Plan-42, manually inspect
 the generated `2025-10` page for IDs `506120` and `565802`, confirm neither is
 on the `2026-01` premiere page, and spot-check 2–3 newly auto-excluded works;
-there were no newly auto-excluded works in this run, so that last spot-check is
-not applicable. The corresponding SQLite/report/static-file assertions are
-automated and have already passed.
+there were no newly auto-excluded works in that run, so that last spot-check
+is not applicable. For Plan-44, open the generated `2025-04` and `2025-07`
+pages, spot-check several known Japanese works and obvious non-Japanese works
+from the former REVIEW corpus, and confirm the remaining global REVIEW is
+small and understandable. These are user sanity checks; the bounded
+SQLite/report/static-file assertions have already passed.
 
 ## Active work
 
-- No product runtime, schema, or release work is active after the Plan-42
+- No product runtime, schema, or release work is active after the Plan-44
   maintenance change. The lifecycle remains Production; normal maintenance,
   bug fixes, and deliberate feature work still require formal Plans and
   risk-appropriate validation.
@@ -123,8 +171,10 @@ automated and have already passed.
 ## Workflow / delivery facts that are currently material
 
 - Plan-42 used only the authorized bounded live Bangumi refresh for
-  `2025-10..2026-01`; no other live refresh, `release publish`, or `gh-pages`
+  `2025-10..2026-01`; Plan-44 used only the separately authorized
+  `2025-04..2025-07` refresh and the 69-ID read-only detail evidence. No other
+  live refresh, `release publish`, or `gh-pages`
   mutation was performed.
-- Application version is `0.8.2`. Source commits and Pages publication remain
+- Application version is `0.8.3`. Source commits and Pages publication remain
   separate delivery events; this maintenance change does not imply a Pages
   publication.

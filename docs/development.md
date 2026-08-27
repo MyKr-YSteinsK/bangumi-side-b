@@ -51,6 +51,12 @@ permanent exclusion 是不同状态。
 有连续多周、固定间隔的主线播出日期和明确的目标季度证据，且不能存在结构化
 冲突。标题中的季节词不是证据。`TV_QUARTER_BOUNDARY` 仅表示待人工裁决的
 季度 REVIEW，不属于 cold-cleanup allowlist，也不能单独触发永久自动黑名单。
+候选在 canonical 媒体与日期可用后先判定目标季度相关性，再进入日本性判定；
+Search 的前一季度回看只服务 TV 边界，Movie 的非目标季度候选直接忽略。
+未决或冲突日本性若已被可靠日期与评分人数确定性地支配为排除，会记录
+`outcome_dominated_low_rating` 而不伪造事实结论；仍可能改变收录的日本性
+问题只能通过独立的 `config/japanese-overrides.toml` 与
+`bgmb classify` 人工裁决。
 
 运行时使用静态 HTML、CSS 和原生 JavaScript，只请求同源生成的 JSON、页面
 和资源；不读取 SQLite，不请求 Bangumi 或第三方业务 API。SQLite 使用严格

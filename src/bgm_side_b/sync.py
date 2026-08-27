@@ -10,10 +10,14 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from bgm_side_b.admission import (
+    DISCOVERY_DATE_MISMATCH,
+    JAPANESE_CLASSIFICATION_UNRESOLVED,
+    OUT_OF_SCOPE_QUARTER,
+    OUTCOME_DOMINATED_LOW_RATING,
     SEARCH_ONLY_MEDIA_UNRESOLVED,
     AdmissionDecision,
     AdmissionStatus,
@@ -45,11 +49,16 @@ from bgm_side_b.discovery import (
 )
 from bgm_side_b.domain import (
     JapaneseClassification,
+    JapaneseDecision,
     MediaFormat,
     Quarter,
     QuarterAppearanceKind,
     QuarterAssignmentSource,
     SourceEvidence,
+)
+from bgm_side_b.japanese_overrides import (
+    JapaneseOverride,
+    load_japanese_overrides,
 )
 from bgm_side_b.media import MAX_COVER_CONCURRENCY, CoverResult, CoverStore
 from bgm_side_b.overrides import load_quarter_overrides
@@ -75,6 +84,14 @@ COVERS_COMPLETE = "complete"
 COVERS_INCOMPLETE = "incomplete"
 CONTINUING_EVIDENCE_UNRESOLVED = "CONTINUING_EVIDENCE_UNRESOLVED"
 CONTINUING_EVIDENCE_CONFLICT = "CONTINUING_EVIDENCE_CONFLICT"
+_OUT_OF_SCOPE_REVIEW_ISSUES = frozenset(
+    {
+        DISCOVERY_DATE_MISMATCH,
+        JAPANESE_CLASSIFICATION_UNRESOLVED,
+        "JAPANESE_REGION_CONFLICT",
+        "JAPANESE_EVIDENCE_CONFLICT",
+    }
+)
 
 
 class SyncError(RuntimeError):
@@ -167,6 +184,8 @@ class QuarterSyncResult:
     episode_unknown: int = 0
     episode_source_counts: tuple[tuple[str, int], ...] = ()
     legacy_zero_written: int = 0
+    irrelevant_candidates: int = 0
+    outcome_dominated: int = 0
 
 
 @dataclass(frozen=True)
@@ -232,6 +251,7 @@ class ArchiveSynchronizer:
         source_rules: ArchiveSourceRules,
         *,
         overrides_path: Path,
+        japanese_overrides_path: Path | None = None,
         workspace_directory: Path,
         reports_directory: Path,
         reporter: ProgressReporter | None = None,
@@ -245,6 +265,10 @@ class ArchiveSynchronizer:
         self.settings = settings
         self.source_rules = source_rules
         self.overrides_path = overrides_path
+        self.japanese_overrides_path = (
+            japanese_overrides_path
+            or overrides_path.with_name("japanese-overrides.toml")
+        )
         self.workspace_directory = workspace_directory
         self.reports_directory = reports_directory
         self.reporter = reporter or NullProgressReporter()
@@ -256,6 +280,7 @@ class ArchiveSynchronizer:
         self._manual_excluded_subject_ids = set(settings.excluded_subject_ids)
         self._auto_excluded_subject_ids = set(settings.auto_excluded_subject_ids)
         self._active_excluded_subject_ids = set(settings.all_excluded_subject_ids)
+        self._japanese_overrides: dict[int, JapaneseOverride] = {}
 
     def run(self, scope: SyncScope) -> SyncRun:
         """Synchronize the requested scope without writing any legacy fact tables."""
@@ -267,6 +292,9 @@ class ArchiveSynchronizer:
         self.repository.database.initialize()
         self._purge_blacklist()
         overrides = load_quarter_overrides(self.overrides_path)
+        self._japanese_overrides = load_japanese_overrides(
+            self.japanese_overrides_path
+        )
         started = _timestamp()
         results: list[QuarterSyncResult] = []
         self.reporter.start(
@@ -332,6 +360,9 @@ class ArchiveSynchronizer:
         if subject_id in self._active_excluded_subject_ids:
             raise SyncError("blacklisted subjects cannot be imported")
         self.repository.database.initialize()
+        self._japanese_overrides = load_japanese_overrides(
+            self.japanese_overrides_path
+        )
         detail = self.api.get_subject(subject_id)
         target = override.quarter or (
             quarter_for_date(detail.air_date)
@@ -349,6 +380,11 @@ class ArchiveSynchronizer:
             target,
             excluded_subject_ids=frozenset(self._active_excluded_subject_ids),
             override=override,
+            japanese_override=(
+                self._japanese_overrides.get(subject_id).decision
+                if subject_id in self._japanese_overrides
+                else None
+            ),
         )
         if decision.status is not AdmissionStatus.ACCEPTED:
             raise SyncError(
@@ -409,6 +445,21 @@ class ArchiveSynchronizer:
         existing_by_subject = self.repository.get_subject_facts_many(
             candidate.subject_id for candidate in batch.candidates
         )
+        current_candidate_ids = {candidate.subject_id for candidate in batch.candidates}
+        stale_review_subject_ids = _stale_out_of_scope_review_ids(
+            self.repository.list_review_issues(),
+            quarter,
+            current_candidate_ids,
+        )
+        stale_review_snapshots = self.repository.get_subject_facts_many(
+            stale_review_subject_ids
+        )
+        irrelevant_subject_ids = {
+            subject_id
+            for subject_id, snapshot in stale_review_snapshots.items()
+            if snapshot.premiere is None
+            or snapshot.premiere.quarter == quarter
+        }
 
         prepared: list[_PreparedSubject] = []
         reviews: list[ReviewIssue] = []
@@ -423,6 +474,8 @@ class ArchiveSynchronizer:
         accepted_movie = 0
         tv_candidates = 0
         admitted_japanese_tv = 0
+        irrelevant_candidates = len(irrelevant_subject_ids)
+        outcome_dominated = 0
         premiere_conflict_warnings: list[dict[str, str]] = []
         canonical_detail_requests = 0
         try:
@@ -472,6 +525,12 @@ class ArchiveSynchronizer:
                         ),
                         override=overrides.get(candidate.subject_id),
                         boundary_evidence=boundary_evidence,
+                        japanese_override=(
+                            self._japanese_overrides.get(candidate.subject_id).decision
+                            if candidate.subject_id in self._japanese_overrides
+                            else None
+                        ),
+                        evaluation_date=self.evaluation_date,
                     )
                 except BangumiApiError as error:
                     errors.append({"code": error.code, "summary": error.summary})
@@ -491,12 +550,52 @@ class ArchiveSynchronizer:
                     and decision.media_format is MediaFormat.TV
                 ):
                     admitted_japanese_tv += 1
+                existing = existing_by_subject.get(candidate.subject_id)
+                if decision.reason == OUT_OF_SCOPE_QUARTER:
+                    irrelevant_candidates += 1
+                    if candidate_is_tv or decision.media_format is MediaFormat.TV:
+                        tv_candidates -= 1
+                    if existing is not None and (
+                        existing.premiere is None
+                        or existing.premiere.quarter == quarter
+                    ):
+                        irrelevant_subject_ids.add(candidate.subject_id)
+                    continue
                 if decision.status is AdmissionStatus.BLACKLISTED:
+                    if candidate_is_tv or decision.media_format is MediaFormat.TV:
+                        tv_candidates -= 1
                     blacklisted += 1
                     if candidate.subject_id in self._manual_excluded_subject_ids:
                         manual_blacklisted += 1
                     elif candidate.subject_id in self._auto_excluded_subject_ids:
                         existing_auto_blacklisted += 1
+                    continue
+                if decision.outcome_dominated:
+                    if candidate_is_tv or decision.media_format is MediaFormat.TV:
+                        tv_candidates -= 1
+                    try:
+                        added = self._record_auto_blacklist(detail, existing)
+                    except Exception as error:
+                        errors.append(
+                            {
+                                "code": "auto_blacklist_persist",
+                                "summary": _auto_blacklist_error_summary(error),
+                            }
+                        )
+                        continue
+                    outcome_dominated += 1
+                    blacklisted += 1
+                    if added:
+                        auto_blacklisted.append(
+                            _auto_blacklist_event(
+                                detail,
+                                self.evaluation_date,
+                                reason=OUTCOME_DOMINATED_LOW_RATING,
+                                issue_code=_japanese_issue_code(decision),
+                                target_quarter=quarter,
+                                japanese=decision.japanese,
+                            )
+                        )
                     continue
                 if _eligible_for_auto_blacklist(decision) and should_auto_blacklist(
                     detail.air_date, detail.rating_total, self.evaluation_date
@@ -588,7 +687,6 @@ class ArchiveSynchronizer:
                     )
                     continue
                 try:
-                    existing = existing_by_subject.get(candidate.subject_id)
                     if (
                         existing is not None
                         and existing.premiere is not None
@@ -762,6 +860,7 @@ class ArchiveSynchronizer:
                 quarter, appearance_kind=QuarterAppearanceKind.PREMIERE
             )
         } - {item.snapshot.subject.subject_id for item in prepared}
+        stale_ids |= irrelevant_subject_ids
         completed_at = _timestamp()
         continuing_appearances = tuple(
             (subject_id, appearance)
@@ -800,6 +899,12 @@ class ArchiveSynchronizer:
         with self.repository.transaction() as connection:
             for item in prepared:
                 self.repository.replace_subject_snapshot(connection, item.snapshot)
+            self.repository.delete_review_issues_for_subjects(
+                connection,
+                quarter,
+                stale_review_subject_ids,
+                _OUT_OF_SCOPE_REVIEW_ISSUES,
+            )
             self.repository.delete_subjects(connection, frozenset(stale_ids))
             self.repository.replace_automatic_continuing_for_quarter(
                 connection, quarter, continuing_appearances
@@ -896,6 +1001,8 @@ class ArchiveSynchronizer:
             episode_known=episode_known,
             episode_unknown=episode_unknown,
             episode_source_counts=tuple(sorted(episode_source_counts.items())),
+            irrelevant_candidates=irrelevant_candidates,
+            outcome_dominated=outcome_dominated,
         )
 
     def _prepare_subject(
@@ -1455,6 +1562,12 @@ class ArchiveSynchronizer:
                 item["rejected_non_japanese"] for item in serialized
             ),
             "blacklisted": sum(item["blacklisted"] for item in serialized),
+            "irrelevant_candidates": sum(
+                item["irrelevant_candidates"] for item in serialized
+            ),
+            "outcome_dominated_count": sum(
+                item["outcome_dominated"] for item in serialized
+            ),
             "manual_blacklisted": sum(
                 item["manual_blacklisted"]
                 for item in serialized
@@ -1683,6 +1796,7 @@ def _auto_blacklist_event(
     reason: str = "low_rating_count",
     issue_code: str | None = None,
     target_quarter: Quarter | None = None,
+    japanese: JapaneseDecision | None = None,
 ) -> dict[str, object]:
     event: dict[str, object] = {
         "subject_id": detail.subject_id,
@@ -1690,7 +1804,7 @@ def _auto_blacklist_event(
         "evaluation_date": evaluation_date.isoformat(),
         "reason": reason,
     }
-    if reason == "low_rating_count":
+    if reason in {"low_rating_count", OUTCOME_DOMINATED_LOW_RATING}:
         assert detail.air_date is not None
         assert detail.rating_total is not None
         event.update(
@@ -1702,12 +1816,105 @@ def _auto_blacklist_event(
                 "protection_days": "> 7 days",
             }
         )
-    else:
+    if reason != "low_rating_count":
         assert issue_code is not None
         event["issue_code"] = issue_code
         if target_quarter is not None:
             event["target_quarter"] = _quarter_label(target_quarter)
+        if japanese is not None:
+            event["japanese_evidence"] = {
+                "classification": japanese.classification.value,
+                "evidence_type": japanese.evidence_type,
+                "evidence_value": japanese.evidence_value,
+            }
     return event
+
+
+def _japanese_issue_code(decision: AdmissionDecision) -> str:
+    for finding in decision.reviews:
+        if finding.issue_code.startswith("JAPANESE_"):
+            return finding.issue_code
+    return "JAPANESE_CLASSIFICATION_UNRESOLVED"
+
+
+def _stale_out_of_scope_review_ids(
+    items: Iterable[object],
+    quarter: Quarter,
+    current_candidate_ids: set[int],
+) -> set[int]:
+    """Find old relevance-first issues that a bounded refresh must retire.
+
+    A stored subject with a premiere in another quarter remains valid archive
+    data; only its stale target-quarter review is removed. Review-only subjects
+    or subjects assigned to the refreshed quarter are removed entirely.
+    """
+    stale_review_subject_ids: set[int] = set()
+    for item in items:
+        subject = getattr(item, "subject", None)
+        issue = getattr(item, "issue", None)
+        subject_id = getattr(subject, "subject_id", None)
+        if (
+            subject is None
+            or issue is None
+            or not isinstance(subject_id, int)
+            or subject_id in current_candidate_ids
+            or issue.issue_code not in _OUT_OF_SCOPE_REVIEW_ISSUES
+            or not _review_belongs_to_quarter(issue, quarter)
+            or not _stored_subject_is_out_of_scope(subject, quarter)
+        ):
+            continue
+        stale_review_subject_ids.add(subject_id)
+    return stale_review_subject_ids
+
+
+def _review_belongs_to_quarter(issue: object, quarter: Quarter) -> bool:
+    candidate_quarter = getattr(issue, "candidate_quarter", None)
+    if candidate_quarter is not None:
+        return candidate_quarter == quarter
+    details = getattr(issue, "details", {})
+    provenance = details.get("provenance") if isinstance(details, Mapping) else None
+    if not isinstance(provenance, (list, tuple)):
+        return False
+    target_start = date(quarter.year, quarter.month, 1)
+    next_start_quarter = _next_quarter(quarter)
+    next_start = date(
+        next_start_quarter.year, next_start_quarter.month, 1
+    )
+    search_start = target_start - timedelta(days=TV_BOUNDARY_LOOKBACK_DAYS)
+    expected_search = (
+        f"search:air_date:{search_start.isoformat()}..{next_start.isoformat()}"
+    )
+    following_quarter = _next_quarter(next_start_quarter)
+    quarter_months = (
+        (quarter.year, quarter.month),
+        (next_start_quarter.year, next_start_quarter.month),
+        (following_quarter.year, following_quarter.month),
+    )
+    expected_browse = {
+        f"browse:{media.value}:{year:04d}-{month:02d}"
+        for media in (MediaFormat.TV, MediaFormat.MOVIE)
+        for year, month in quarter_months
+    }
+    return any(
+        value == expected_search or value in expected_browse
+        for value in provenance
+        if isinstance(value, str)
+    )
+
+
+def _stored_subject_is_out_of_scope(
+    subject: SubjectRecord, quarter: Quarter
+) -> bool:
+    if subject.air_date is None:
+        return False
+    natural_quarter = quarter_for_date(subject.air_date)
+    if natural_quarter == quarter:
+        return False
+    if subject.media_format is MediaFormat.MOVIE:
+        return True
+    target_start = date(quarter.year, quarter.month, 1)
+    days_before_target = (target_start - subject.air_date).days
+    return not 1 <= days_before_target <= TV_BOUNDARY_LOOKBACK_DAYS
 
 
 def _external_review(
@@ -1965,6 +2172,8 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
         "accepted_movie": result.accepted_movie,
         "rejected_non_japanese": result.rejected_non_japanese,
         "blacklisted": result.blacklisted,
+        "irrelevant_candidates": result.irrelevant_candidates,
+        "outcome_dominated": result.outcome_dominated,
         "manual_blacklisted": result.manual_blacklisted,
         "existing_auto_blacklisted": result.existing_auto_blacklisted,
         "auto_blacklisted": list(result.auto_blacklisted),

@@ -7,7 +7,12 @@ import webbrowser
 from pathlib import Path
 
 from bgm_side_b import __version__
-from bgm_side_b.adjudication import ArchiveAdjudicator, AssignmentError, render_review
+from bgm_side_b.adjudication import (
+    ArchiveAdjudicator,
+    AssignmentError,
+    JapaneseAdjudicator,
+    render_review,
+)
 from bgm_side_b.admission import QuarterOverride
 from bgm_side_b.api import BangumiApiClient
 from bgm_side_b.archive_config import (
@@ -24,7 +29,7 @@ from bgm_side_b.build.site_builder import (
 from bgm_side_b.config import load_tag_rules
 from bgm_side_b.database import Database as ArchiveDatabase
 from bgm_side_b.database import DatabaseError
-from bgm_side_b.domain import Quarter
+from bgm_side_b.domain import JapaneseClassification, Quarter
 from bgm_side_b.overrides import load_quarter_overrides, save_quarter_overrides
 from bgm_side_b.progress import create_progress_reporter
 from bgm_side_b.release.unified_audit import UnifiedReleaseAuditor
@@ -106,6 +111,23 @@ def build_parser() -> argparse.ArgumentParser:
     assign_group = assign_command.add_mutually_exclusive_group()
     assign_group.add_argument("--unassigned", action="store_true")
     assign_group.add_argument("--clear", action="store_true")
+    classify_command = subparsers.add_parser(
+        "classify", help="Set one manual Japanese-scope decision."
+    )
+    classify_command.add_argument("subject_id", type=int, metavar="BGM_ID")
+    classify_group = classify_command.add_mutually_exclusive_group(required=True)
+    classify_group.add_argument(
+        "--japanese", action="store_true", help="Include the subject as Japanese."
+    )
+    classify_group.add_argument(
+        "--non-japanese",
+        dest="non_japanese",
+        action="store_true",
+        help="Exclude the subject as non-Japanese.",
+    )
+    classify_group.add_argument(
+        "--clear", action="store_true", help="Remove the manual decision."
+    )
     build_command = subparsers.add_parser(
         "build", help="Build offline static archive pages from local SQLite facts."
     )
@@ -172,6 +194,53 @@ def main(argv: list[str] | None = None) -> int:
         result = UnifiedReleaseAuditor(root, settings).audit()
         print(result.render())
         return 0 if result.passed else 1
+    if args.command == "classify":
+        root = find_project_root()
+        if root is None:
+            parser.error(
+                "could not find a project root containing pyproject.toml and config"
+            )
+        try:
+            settings = load_archive_sync_settings(root / "config" / "bangumi.toml")
+            database = ArchiveDatabase(
+                root / "workspace" / "data" / "bangumi-side-b.sqlite3"
+            )
+            if not database.path.exists():
+                raise AssignmentError(
+                    "subject is not stored; sync or single-subject import is required"
+                )
+            database.initialize()
+            adjudicator = JapaneseAdjudicator(
+                ArchiveSubjectRepository(database),
+                root / "config" / "japanese-overrides.toml",
+                settings.all_excluded_subject_ids,
+                root / "workspace",
+            )
+            if args.clear:
+                snapshot = adjudicator.clear(args.subject_id)
+                if snapshot is None:
+                    print(
+                        f"classification cleared: {args.subject_id}; "
+                        "sync required to repopulate local facts"
+                    )
+                else:
+                    print(f"classification cleared: {args.subject_id}")
+            else:
+                classification = (
+                    JapaneseClassification.ACCEPTED_JAPANESE
+                    if args.japanese
+                    else JapaneseClassification.REJECTED_NON_JAPANESE
+                )
+                snapshot = adjudicator.set_classification(
+                    args.subject_id, classification
+                )
+                print(
+                    f"classification saved: {args.subject_id} -> "
+                    f"{'japanese' if args.japanese else 'non_japanese'}"
+                )
+        except (AssignmentError, DatabaseError, ValueError) as error:
+            parser.error(str(error))
+        return 0
     if args.command in {"review", "assign"}:
         root = find_project_root()
         if root is None:
@@ -203,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
                 repository,
                 root / "config" / "quarter-overrides.toml",
                 settings.all_excluded_subject_ids,
+                root / "config" / "japanese-overrides.toml",
             )
             existing = repository.get_subject_facts(args.subject_id)
             report_warning = None
@@ -240,6 +310,9 @@ def main(argv: list[str] | None = None) -> int:
                             root / "config" / "source-rules.toml"
                         ),
                         overrides_path=root / "config" / "quarter-overrides.toml",
+                        japanese_overrides_path=root
+                        / "config"
+                        / "japanese-overrides.toml",
                         workspace_directory=root / "workspace",
                         reports_directory=root / "workspace" / "reports",
                         settings_path=root / "config" / "bangumi.toml",
@@ -352,6 +425,9 @@ def main(argv: list[str] | None = None) -> int:
                     settings,
                     source_rules,
                     overrides_path=root / "config" / "quarter-overrides.toml",
+                    japanese_overrides_path=root
+                    / "config"
+                    / "japanese-overrides.toml",
                     workspace_directory=root / "workspace",
                     reports_directory=root / "workspace" / "reports",
                     reporter=reporter,

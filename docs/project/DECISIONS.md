@@ -142,3 +142,17 @@ quarter tags are supporting evidence, not a standalone override; title season
 words are never evidence. Unknown continuity stays REVIEW, and
 `TV_QUARTER_BOUNDARY` is excluded from the automatic permanent-exclusion
 allowlist. Manual quarter assignment remains the supported adjudication path.
+
+## D-018 — Quarter relevance precedes Japanese review and keeps scope decisions separate
+
+Canonical quarter relevance is resolved before asking an unresolved candidate
+for Japanese adjudication. Movie search lookback is never a second Movie
+quarter; only TV may use the bounded prior-quarter boundary rule. Exact
+structured country sources may accept compatible co-production, but an
+independent Japan/non-Japan disagreement remains REVIEW. When reliable age and
+rating evidence makes both Japanese branches ineligible, synchronization may
+record an auditable `outcome_dominated_low_rating` exclusion without changing
+the underlying Japanese classification. Any remaining inclusion-changing
+ambiguity is handled only through the separate
+`config/japanese-overrides.toml` and `bgmb classify` commands; it never changes
+media or quarter facts.

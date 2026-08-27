@@ -20,6 +20,7 @@ material under `docs/archive/` is historical evidence only.
 | `config/allowed-tags.toml` | Exact display-tag membership and order. |
 | `config/bangumi.toml` | Sync settings and manual/automatic exclusion configuration. |
 | `config/quarter-overrides.toml` | Explicit human quarter adjudication; AI must not populate it autonomously. |
+| `config/japanese-overrides.toml` | Explicit human Japanese-scope adjudication; separate from quarter ownership and AI must not populate it autonomously. |
 | `docs/static-build.md` | Offline, incremental build, staging, rollback, and single-output contract. |
 | `docs/pwa.md` | Online shell, runtime cache, complete-quarter download, replacement, GC, and update lifecycle. |
 | `docs/visual-system.md` | Visual tokens, layout, accessibility, responsive UX, and local motion details. |

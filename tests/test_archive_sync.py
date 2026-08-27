@@ -41,6 +41,10 @@ from bgm_side_b.domain import (
     QuarterAppearanceKind,
     QuarterAssignmentSource,
 )
+from bgm_side_b.japanese_overrides import (
+    JapaneseOverride,
+    save_japanese_overrides,
+)
 from bgm_side_b.media import MAX_COVER_CONCURRENCY, CoverResult
 from bgm_side_b.repository import (
     QuarterAppearance,
@@ -217,7 +221,7 @@ def _store_existing(
     air_date: date = date(2026, 4, 2),
     end_date: date | None = None,
     episode_count: int | None = None,
-    premiere_quarter: Quarter = QUARTER,
+    premiere_quarter: Quarter | None = QUARTER,
     continuing: tuple[QuarterAppearance, ...] = (),
     tags: tuple[str, ...] = (),
     review_issues: tuple[ReviewIssue, ...] = (),
@@ -242,12 +246,16 @@ def _store_existing(
             ),
         ),
         tags=tags,
-        premiere=QuarterAppearance(
-            premiere_quarter,
-            QuarterAppearanceKind.PREMIERE,
-            QuarterAssignmentSource.AUTOMATIC,
-            "air_date",
-            air_date.isoformat(),
+        premiere=(
+            None
+            if premiere_quarter is None
+            else QuarterAppearance(
+                premiere_quarter,
+                QuarterAppearanceKind.PREMIERE,
+                QuarterAssignmentSource.AUTOMATIC,
+                "air_date",
+                air_date.isoformat(),
+            )
         ),
         continuing=continuing,
         review_issues=review_issues,
@@ -625,6 +633,181 @@ def test_unresolved_movie_review_is_auto_blacklisted_immediately_and_cleaned(
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
         frozenset({659091})
     )
+
+
+def test_movie_search_spillover_is_irrelevant_without_review_or_assignment(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    target = Quarter(2026, 1)
+    subject_id = 650050
+    detail = _detail(
+        subject_id,
+        media=MediaFormat.MOVIE,
+        air_date="2026-06-28",
+        country=None,
+        cover=None,
+    )
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi({subject_id: detail}),
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.MOVIE, date(2026, 6, 28)),)),
+        settings_path=settings_path,
+    )
+    _store_existing(
+        repository,
+        subject_id,
+        media=MediaFormat.MOVIE,
+        air_date=date(2026, 6, 28),
+        premiere_quarter=target,
+    )
+    covers = tmp_path / "covers"
+    covers.mkdir(exist_ok=True)
+    (covers / f"{subject_id}.webp").write_bytes(b"old cover")
+
+    run = sync.run(SyncScope(target, target))
+    result = run.quarters[0]
+
+    assert result.irrelevant_candidates == 1
+    assert result.reviews == ()
+    assert result.external_reviews == ()
+    assert result.rejected_non_japanese == 0
+    assert repository.get_subject_facts(subject_id) is None
+    assert not (covers / f"{subject_id}.webp").exists()
+    report = json.loads(run.report_path.read_text("utf-8"))
+    assert report["quarters"][0]["irrelevant_candidates"] == 1
+
+
+def test_stale_out_of_scope_movie_review_is_cleared_but_natural_premiere_survives(
+    tmp_path: Path,
+) -> None:
+    target = Quarter(2026, 7)
+    subject_id = 650053
+    review = ReviewIssue(
+        "DISCOVERY_DATE_MISMATCH",
+        target,
+        "2026-06-28",
+        {"provenance": ["search:air_date:2026-06-24..2026-10-01"]},
+        "old",
+    )
+    sync, repository = _sync(tmp_path, FakeApi({}), DiscoveryBatch(()))
+    _store_existing(
+        repository,
+        subject_id,
+        media=MediaFormat.MOVIE,
+        air_date=date(2026, 6, 28),
+        premiere_quarter=Quarter(2026, 4),
+        review_issues=(review,),
+    )
+
+    run = sync.run(SyncScope(target, target))
+
+    facts = repository.get_subject_facts(subject_id)
+    assert run.exit_code == 0
+    assert facts is not None
+    assert facts.premiere is not None
+    assert facts.premiere.quarter == Quarter(2026, 4)
+    assert facts.review_issues == ()
+
+
+def test_stale_out_of_scope_review_only_movie_is_removed(
+    tmp_path: Path,
+) -> None:
+    target = Quarter(2026, 1)
+    subject_id = 650054
+    review = ReviewIssue(
+        "DISCOVERY_DATE_MISMATCH",
+        target,
+        "2025-12-28",
+        {"provenance": ["search:air_date:2025-12-25..2026-04-01"]},
+        "old",
+    )
+    sync, repository = _sync(tmp_path, FakeApi({}), DiscoveryBatch(()))
+    _store_existing(
+        repository,
+        subject_id,
+        media=MediaFormat.MOVIE,
+        air_date=date(2025, 12, 28),
+        premiere_quarter=None,
+        review_issues=(review,),
+    )
+
+    run = sync.run(SyncScope(target, target))
+
+    assert run.exit_code == 0
+    assert repository.get_subject_facts(subject_id) is None
+
+
+def test_low_rating_unresolved_japanese_is_auto_blacklisted_with_auditable_dominance(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 650051
+    detail = _detail(
+        subject_id,
+        country=None,
+        rating_count=29,
+        cover=None,
+    )
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi({subject_id: detail}),
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.TV),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 20),
+    )
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+    result = run.quarters[0]
+
+    assert result.outcome_dominated == 1
+    assert result.reviews == ()
+    assert result.auto_blacklisted[0]["reason"] == "outcome_dominated_low_rating"
+    assert result.auto_blacklisted[0]["issue_code"] == (
+        "JAPANESE_CLASSIFICATION_UNRESOLVED"
+    )
+    assert result.auto_blacklisted[0]["japanese_evidence"]["classification"] == (
+        "UNRESOLVED"
+    )
+    assert repository.get_subject_facts(subject_id) is None
+    report = json.loads(run.report_path.read_text("utf-8"))
+    assert report["new_auto_by_reason"] == {"outcome_dominated_low_rating": 1}
+
+
+def test_manual_japanese_override_survives_repeated_sync(
+    tmp_path: Path,
+) -> None:
+    subject_id = 650052
+    automatic = JapaneseDecision(
+        JapaneseClassification.UNRESOLVED,
+        "unresolved_missing_japanese_region",
+        "[]",
+    )
+    save_japanese_overrides(
+        tmp_path / "japanese-overrides.toml",
+        {
+            subject_id: JapaneseOverride.from_decision(
+                subject_id,
+                JapaneseClassification.ACCEPTED_JAPANESE,
+                automatic,
+            )
+        },
+    )
+    detail = _detail(subject_id, country=None, cover=None)
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi({subject_id: detail}),
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.TV),)),
+    )
+
+    first = sync.run(SyncScope(QUARTER, QUARTER)).quarters[0]
+    second = sync.run(SyncScope(QUARTER, QUARTER)).quarters[0]
+
+    assert first.accepted_tv == second.accepted_tv == 1
+    facts = repository.get_subject_facts(subject_id)
+    assert facts is not None
+    assert facts.subject.japanese.evidence_type == "manual_japanese_override"
+    assert facts.review_issues == ()
 
 
 def test_search_only_cold_reviews_are_blacklisted_immediately_without_storage(

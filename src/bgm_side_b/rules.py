@@ -16,10 +16,18 @@ from bgm_side_b.domain import (
     SourceType,
 )
 
-_COUNTRY_KEYS = frozenset({"制片国家/地区", "国家/地区"})
+_COUNTRY_KEYS = frozenset(
+    {
+        "制片国家/地区",
+        "国家/地区",
+        "制片国家",
+        "地区",
+    }
+)
 _JAPANESE_TOKENS = frozenset({"日本", "Japan"})
-_PUBLIC_REGION_TAGS = frozenset({"日本", "中国", "美国", "韩国", "欧美"})
-_COUNTRY_SEPARATOR = re.compile(r"[/／,，、;；|]")
+_PUBLIC_REGION_TAGS = frozenset({"日本", "Japan", "中国", "美国", "韩国", "欧美"})
+_BROAD_REGION_TOKENS = frozenset({"欧美"})
+_COUNTRY_SEPARATOR = re.compile(r"[/／,，、;；|｜・]")
 _SUMMARY_MARKER = re.compile(r"\[\s*简介原文\s*\]")
 _KANA = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")
 _SUMMARY_CHARACTERS = re.compile(
@@ -116,93 +124,38 @@ def resolve_source(evidence: Iterable[SourceEvidence]) -> SourceDecision:
 
 def classify_japanese(infobox: Iterable[tuple[str, str]]) -> JapaneseDecision:
     """Classify only exact structured country evidence; never inspect summary."""
-    accepted = False
-    rejected = False
-    observed: set[str] = set()
-    for item_key, value in infobox:
-        if normalize_text(item_key) not in _COUNTRY_KEYS:
-            continue
-        normalized = normalize_text(value)
-        tokens = tuple(
-            token
-            for part in _COUNTRY_SEPARATOR.split(normalized)
-            if (token := normalize_text(part))
-        )
-        if not tokens:
-            continue
-        observed.add(normalized)
-        if _JAPANESE_TOKENS.intersection(tokens):
-            accepted = True
-        else:
-            rejected = True
-    evidence_value = _evidence_json(observed)
-    if accepted and not rejected:
-        return JapaneseDecision(
-            JapaneseClassification.ACCEPTED_JAPANESE,
-            "infobox_country",
-            evidence_value,
-        )
-    if rejected and not accepted:
-        return JapaneseDecision(
-            JapaneseClassification.REJECTED_NON_JAPANESE,
-            "infobox_country",
-            evidence_value,
-        )
-    if observed:
-        return JapaneseDecision(
-            JapaneseClassification.UNRESOLVED,
-            "unresolved_conflicting_infobox_country",
-            evidence_value,
-        )
-    return JapaneseDecision(
-        JapaneseClassification.UNRESOLVED,
-        "unresolved_missing_infobox_country",
-        "[]",
+    sources = tuple(
+        source
+        for item_key, value in infobox
+        if (source := _infobox_country_source(item_key, value)) is not None
+    )
+    return _resolve_country_sources(
+        sources,
+        missing_evidence_type="unresolved_missing_infobox_country",
+        conflict_evidence_type="unresolved_conflicting_infobox_country",
     )
 
 
 def classify_japanese_with_public_regions(
     meta_tags: Iterable[str], infobox: Iterable[tuple[str, str]]
 ) -> JapaneseDecision:
-    """Use exact public region tags first, then strict structured country fallback."""
-    public_regions = {
-        normalized
-        for value in meta_tags
-        if (normalized := normalize_text(value)) in _PUBLIC_REGION_TAGS
-    }
-    infobox_regions = _infobox_regions(infobox)
-    if public_regions and infobox_regions and public_regions != infobox_regions:
-        return JapaneseDecision(
-            JapaneseClassification.UNRESOLVED,
-            "unresolved_japanese_evidence_conflict",
-            _evidence_json(public_regions | infobox_regions),
+    """Fuse exact public region and Infobox country evidence by source."""
+    public_source = _public_region_source(meta_tags)
+    sources = tuple(
+        source
+        for source in (
+            public_source,
+            *(
+                _infobox_country_source(item_key, value)
+                for item_key, value in infobox
+            ),
         )
-    regions = public_regions or infobox_regions
-    evidence_type = (
-        "bangumi_public_region_tag" if public_regions else "infobox_country"
+        if source is not None
     )
-    if regions == {"日本"}:
-        return JapaneseDecision(
-            JapaneseClassification.ACCEPTED_JAPANESE,
-            evidence_type,
-            "日本",
-        )
-    if regions and "日本" not in regions:
-        return JapaneseDecision(
-            JapaneseClassification.REJECTED_NON_JAPANESE,
-            evidence_type,
-            _evidence_json(regions),
-        )
-    if regions:
-        return JapaneseDecision(
-            JapaneseClassification.UNRESOLVED,
-            "unresolved_japanese_region_conflict",
-            _evidence_json(regions),
-        )
-    return JapaneseDecision(
-        JapaneseClassification.UNRESOLVED,
-        "unresolved_missing_japanese_region",
-        "[]",
+    return _resolve_country_sources(
+        sources,
+        missing_evidence_type="unresolved_missing_japanese_region",
+        conflict_evidence_type="unresolved_japanese_evidence_conflict",
     )
 
 
@@ -231,19 +184,111 @@ def _normalize_summary(value: str) -> str:
     return re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", normalized).strip()
 
 
-def _evidence_json(values: set[str]) -> str:
-    return json.dumps(sorted(values), ensure_ascii=False, separators=(",", ":"))
+@dataclass(frozen=True)
+class _CountrySource:
+    """Exact country observations from one public structured source."""
+
+    evidence_type: str
+    regions: frozenset[str]
+
+
+def _resolve_country_sources(
+    sources: Iterable[_CountrySource],
+    *,
+    missing_evidence_type: str,
+    conflict_evidence_type: str,
+) -> JapaneseDecision:
+    observed_sources = tuple(source for source in sources if source.regions)
+    if not observed_sources:
+        return JapaneseDecision(
+            JapaneseClassification.UNRESOLVED,
+            missing_evidence_type,
+            "[]",
+        )
+    positive_sources = tuple(
+        source for source in observed_sources if "日本" in source.regions
+    )
+    negative_only_sources = tuple(
+        source for source in observed_sources if "日本" not in source.regions
+    )
+    evidence_value = _evidence_json(
+        region for source in observed_sources for region in source.regions
+    )
+    if positive_sources and negative_only_sources:
+        return JapaneseDecision(
+            JapaneseClassification.UNRESOLVED,
+            conflict_evidence_type,
+            evidence_value,
+        )
+    if positive_sources:
+        return JapaneseDecision(
+            JapaneseClassification.ACCEPTED_JAPANESE,
+            _combined_evidence_type(observed_sources),
+            evidence_value,
+        )
+    return JapaneseDecision(
+        JapaneseClassification.REJECTED_NON_JAPANESE,
+        _combined_evidence_type(observed_sources),
+        evidence_value,
+    )
+
+
+def _evidence_json(values: Iterable[str]) -> str:
+    return json.dumps(sorted(set(values)), ensure_ascii=False, separators=(",", ":"))
+
+
+def _combined_evidence_type(sources: Iterable[_CountrySource]) -> str:
+    evidence_types = tuple(dict.fromkeys(source.evidence_type for source in sources))
+    return "+".join(evidence_types)
+
+
+def _public_region_source(meta_tags: Iterable[str]) -> _CountrySource | None:
+    regions = {
+        canonical
+        for value in meta_tags
+        if (normalized := normalize_text(value)) in _PUBLIC_REGION_TAGS
+        if (canonical := _canonical_region(normalized)) is not None
+    }
+    if not regions:
+        return None
+    return _CountrySource("bangumi_public_region_tag", frozenset(regions))
+
+
+def _infobox_country_source(
+    item_key: str, value: str
+) -> _CountrySource | None:
+    if normalize_text(item_key) not in _COUNTRY_KEYS:
+        return None
+    regions = {
+        canonical
+        for token in _country_tokens(value)
+        if (canonical := _canonical_region(token)) is not None
+    }
+    if not regions:
+        return None
+    return _CountrySource("infobox_country", frozenset(regions))
+
+
+def _country_tokens(value: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for part in _COUNTRY_SEPARATOR.split(normalize_text(value))
+        if (token := normalize_text(part))
+    )
+
+
+def _canonical_region(token: str) -> str | None:
+    if token in _JAPANESE_TOKENS:
+        return "日本"
+    if token in _BROAD_REGION_TOKENS:
+        return None
+    return token
 
 
 def _infobox_regions(infobox: Iterable[tuple[str, str]]) -> set[str]:
-    regions: set[str] = set()
-    for item_key, value in infobox:
-        if normalize_text(item_key) not in _COUNTRY_KEYS:
-            continue
-        for part in _COUNTRY_SEPARATOR.split(normalize_text(value)):
-            token = normalize_text(part)
-            if token in _JAPANESE_TOKENS:
-                regions.add("日本")
-            elif token:
-                regions.add(token)
-    return regions
+    return {
+        region
+        for item_key, value in infobox
+        if (source := _infobox_country_source(item_key, value)) is not None
+        for region in source.regions
+    }

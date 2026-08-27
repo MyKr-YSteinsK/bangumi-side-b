@@ -63,6 +63,25 @@ def test_search_posts_documented_date_filter_and_paginates() -> None:
     }
 
 
+def test_search_lookback_keeps_only_tv_boundary_candidates() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "total": 3,
+                "data": [
+                    {**FIXTURES["tv"], "id": 201, "date": "2026-03-28"},
+                    {**FIXTURES["movie"], "id": 202, "date": "2026-03-28"},
+                    {**FIXTURES["movie"], "id": 203, "date": "2026-04-02"},
+                ],
+            },
+        )
+
+    batch = SearchDiscoveryAdapter(_client(handler)).discover(Quarter(2026, 4))
+
+    assert [candidate.subject_id for candidate in batch.candidates] == [201, 203]
+
+
 def test_main_episode_airdates_paginate_at_two_hundred_and_discard_other_fields(
 ) -> None:
     requests: list[httpx.Request] = []

@@ -20,7 +20,7 @@ def test_source_metadata_and_settings_share_one_application_version(
         encoding="utf-8"
     )
 
-    assert __version__ == "0.8.4"
+    assert __version__ == "0.8.5"
     assert distribution_version("bgm-side-b") == __version__
     assert f"当前程序版本</dt><dd>{__version__}</dd>" in settings
 

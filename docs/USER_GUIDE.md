@@ -50,12 +50,19 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 封面和站点输出。`auto_excluded_subject_ids` 是可重新评估的自动缓存：作品再次出现在实际刷新
 的季度候选中时会重新读取 canonical detail；评分人数增长、证据补全等使其重新满足收录条件时，系统
 会自动移除旧自动排除并正常处理。重新评估仍遵守全部 Anime、日本、TV/MOVIE、季度和 REVIEW 规则。
+如果 fresh canonical 结果已经成为非日本或明确的非院线特殊场所硬拒绝，旧自动排除也会事务性
+移除，并在同步报告的 `auto_reconciled` 中单列，不再显示为历史低评分黑名单。
+
+`platform=剧场版` 不是普通院线上映的充分证明；已核验的 Infobox `其他=游乐设施电影` 或
+`其他=プラネタリウム上映作品` 会直接排除。标题和官网 URL 不参与这个判断；缺少可复用结构化
+证据的已核实个案应使用精确人工 `excluded_subject_ids`。
 
 人工 `excluded_subject_ids` 仍是持久的显式排除，不会因评分或同步自动恢复；它与自动列表来源不同，
 均应保留配置中的现有注释。若只是想立即触发重新评估，应刷新包含该作品的目标季度，不要直接清空
 整个自动黑名单。
-同步报告会分别显示人工命中、历史自动命中和本次新增自动拉黑数量，并在 `new_auto_by_reason` 中
-区分可靠首播低评分和信息不足型未决冷门两类原因。
+同步报告会分别显示人工命中、历史自动命中和本次新增自动拉黑数量，在 `new_auto_by_reason` 中
+区分可靠首播低评分和信息不足型未决冷门两类原因，并用 `auto_reconciled` 记录已由硬拒绝取代的
+旧自动状态。
 
 Browse/Search 只发现候选，正式 subject facts 会再通过 canonical detail 验证。`episode_count`
 只表示作品计划正片总话数，优先使用 canonical detail 的 `eps`；Bangumi 的 `total_episodes`

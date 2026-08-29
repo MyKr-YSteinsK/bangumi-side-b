@@ -153,7 +153,7 @@ def test_current_state_records_checkpoint_baseline_and_completion() -> None:
     assert "historical context, not the current adopted baseline" in state
     assert "Lifecycle stage: Production" in state
     assert "Lifecycle stage: Stabilization" not in state
-    assert "Current milestone: Production maintenance checkpoint (Plan-45)" in state
+    assert "Current milestone: Production maintenance checkpoint (Plan-47)" in state
     assert (
         "exact resulting HEAD of state-only documentation updates is "
         "authoritative in its TASK_RESULT" in state

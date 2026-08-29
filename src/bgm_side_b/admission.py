@@ -29,9 +29,13 @@ DISCOVERY_DATE_MISMATCH: Final = "DISCOVERY_DATE_MISMATCH"
 DISCOVERY_MEDIA_CONFLICT: Final = "DISCOVERY_MEDIA_CONFLICT"
 OUT_OF_SCOPE_QUARTER: Final = "out_of_scope_quarter"
 OUTCOME_DOMINATED_LOW_RATING: Final = "outcome_dominated_low_rating"
+NON_THEATRICAL_SPECIAL_VENUE: Final = "non_theatrical_special_venue"
 JAPANESE_CLASSIFICATION_UNRESOLVED: Final = "JAPANESE_CLASSIFICATION_UNRESOLVED"
 SEARCH_ONLY_MEDIA_UNRESOLVED: Final = "SEARCH_ONLY_MEDIA_UNRESOLVED"
 _UNSUPPORTED_MEDIA_PLATFORMS: Final = frozenset({"WEB", "OVA", "OAD"})
+_SPECIAL_VENUE_INFOBOX_VALUES: Final = frozenset(
+    {"游乐设施电影", "プラネタリウム上映作品"}
+)
 
 # Only evidence-missing REVIEWs may participate in the immediate cold cleanup
 # rule. Conflict and classification REVIEWs remain human-only.
@@ -141,6 +145,12 @@ def admit_subject(
     ):
         return AdmissionDecision(
             AdmissionStatus.REJECTED, detail.subject_id, reason="not_anime"
+        )
+    if _special_venue_infobox_value(detail) is not None:
+        return AdmissionDecision(
+            AdmissionStatus.REJECTED,
+            detail.subject_id,
+            reason=NON_THEATRICAL_SPECIAL_VENUE,
         )
     if (
         detail.platform is not None
@@ -540,6 +550,16 @@ def _country_values(detail: SubjectDetail) -> tuple[tuple[str, str], ...]:
         for item in detail.infobox
         if isinstance(item.value, str) and normalize_text(item.value)
     )
+
+
+def _special_venue_infobox_value(detail: SubjectDetail) -> str | None:
+    for item in detail.infobox:
+        if normalize_text(item.key) != "其他" or not isinstance(item.value, str):
+            continue
+        value = normalize_text(item.value)
+        if value in _SPECIAL_VENUE_INFOBOX_VALUES:
+            return value
+    return None
 
 
 def _platform_media_format(value: str | None) -> MediaFormat | None:

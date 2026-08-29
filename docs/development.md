@@ -58,6 +58,10 @@ Search 的前一季度回看只服务 TV 边界，Movie 的非目标季度候选
 `outcome_dominated_low_rating` 而不伪造事实结论；仍可能改变收录的日本性
 问题只能通过独立的 `config/japanese-overrides.toml` 与
 `bgmb classify` 人工裁决。
+canonical `platform=剧场版` 仍需通过非院线特殊场所门：当前只识别 Infobox
+`其他` 中两个已核验的精确值，不读取标题或 URL。旧自动排除在 fresh canonical
+结果变为非日本或非院线硬拒绝时，会事务性删除并记录 `auto_reconciled`，不会继续
+计入自动黑名单。
 
 运行时使用静态 HTML、CSS 和原生 JavaScript，只请求同源生成的 JSON、页面
 和资源；不读取 SQLite，不请求 Bangumi 或第三方业务 API。SQLite 使用严格

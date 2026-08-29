@@ -2,16 +2,16 @@
 
 ## Current
 
-- App/product version: `0.8.4`.
+- App/product version: `0.8.5`.
 - Branch: `main`; upstream: `origin/main`.
 - Lifecycle stage: Production.
-- Current milestone: Production maintenance checkpoint (Plan-45).
+- Current milestone: Production maintenance checkpoint (Plan-47).
 - Migration status: adoption is complete at the checkpoint baseline.
 - Migration adoption audit start: `4c458a7da6a23563f3a01306b604c52cb546981c`.
   This is historical context, not the current adopted baseline.
 - Migration Checkpoint adopted baseline: `7e7c7671dd9620a38c61a5d1f1aed29fd94331dc`
   (`test: guard canonical requirement owners`).
-- Last verified: 2026-08-28 local repository state, bounded Plan-45
+- Last verified: 2026-08-29 local repository state, bounded Plan-47 live
   validation, and user-reported real-device acceptance.
 
 The exact resulting HEAD of state-only documentation updates is authoritative
@@ -162,6 +162,50 @@ requirement for a file to contain its own commit SHA.
   Configuration removal and SQLite/review convergence are transactional with
   rollback coverage; repeated refreshes are idempotent. The offline lifecycle
   corpus and focused regression passed.
+
+## Plan-47 country and theatrical-scope convergence evidence
+
+- The 2025-01 control audit separated two defects. Eleven known foreign works
+  had remained `UNRESOLVED` and then entered
+  `outcome_dominated_low_rating`; this was not an automatic
+  `ACCEPTED_JAPANESE` false positive. Exact public `法国` evidence now rejects
+  `556595` and `624369`; the other nine evidence-missing controls use the
+  user-approved Japanese-scope decisions. `533466` retains its separately
+  approved non-Japanese decision. Broad `欧美` remains unresolved. The current
+  local fact corpus has zero rows for all four supported country Infobox keys,
+  so generic `地区` was neither broadened nor removed without evidence.
+- Canonical `platform=剧场版` was the direct media source for `537745`,
+  `551459`, and `611704`; Browse fallback was not the root cause. Exact
+  Infobox `其他=游乐设施电影` and
+  `其他=プラネタリウム上映作品` now hard-reject `537745` and `611704`.
+  `551459` exposes no reusable structured special-venue marker, so it is the
+  isolated manual exclusion. No title, summary, URL heuristic, media override
+  family, schema change, or migration was introduced.
+- The single authorized `2025-01 --refresh-existing` completed with facts and
+  covers complete: 228 discovered, 57 accepted TV, 9 accepted Movie, 36
+  rejected non-Japanese, 53 blacklisted, 4 outcome-dominated, 0 new automatic
+  exclusions, and 0 errors. Sixty-five old automatic IDs were reconsidered;
+  13 hard-rejected IDs were transactionally reported as `auto_reconciled`, 0
+  were restored, and the separately migrated `551459` counted as one manual
+  exclusion. The 48 warnings were 47 bounded continuing-not-confirmed notices
+  and one retained earlier premiere for `404753`.
+- The resulting configuration contains 2 manual exclusions, 414 automatic
+  exclusions, and 42 Japanese decisions (10 Japanese / 32 non-Japanese).
+  None of `483865`, `529580`, `531939`, `536356`, `536370`, `536405`,
+  `556595`, `556742`, `561637`, `624369`, `640936`, `537745`, `551459`, or
+  `611704` remains automatic. The valid low-rating controls `504666`,
+  `505378`, `517532`, `523821`, and `529199` remain automatic exclusions;
+  `504666` also has an explicit Japanese-inclusive decision so later rating
+  growth cannot turn missing country evidence into a false rejection.
+- The automatic incremental build completed with 11 written, 530 reused, and
+  0 deleted artifacts; `2025-01` and its affected `2025-04` continuation
+  projection were rebuilt with no build errors or warnings. The generated
+  `2025-01` data contains exactly 57 TV premieres and 9 Movie premieres and
+  none of the above control IDs. Target and global REVIEW both report zero;
+  unified audit passes with 513 subjects and seven publishable quarters.
+- A recoverable pre-live private snapshot was stored outside the repository;
+  its private absolute path is intentionally not tracked. No Pages publication
+  or `gh-pages` mutation was performed.
 ## Known limitations / risks
 
 - Plan-39 was acceptance and documentation only; it did not change product
@@ -177,7 +221,7 @@ requirement for a file to contain its own commit SHA.
   was performed to manufacture one.
 - Date-stamped Bangumi API evidence remains periodic maintenance and an
   external-dependency risk, not a Production promotion blocker.
-- The final global review queue is empty after the authorized 184017 cleanup;
+- The final global review queue is empty after the authorized Plan-47 refresh;
   future review work still requires fresh bounded evidence and explicit
   operator adjudication.
 
@@ -200,9 +244,16 @@ the TASK_RESULT. No restored ID required an affected-quarter page check. These
 are user sanity checks; the bounded canonical, SQLite, config, and static-build
 assertions have already passed.
 
+For Plan-47, open the generated local `2025-01` page and spot-check expected
+Japanese titles. Confirm `483865`, `537745`, `551459`, and `611704` are absent;
+optionally confirm one valid Japanese low-rating control such as `505378` is
+also absent for the intended low-rating reason. These are user sanity checks;
+the report, SQLite, configuration, generated JSON, review, and audit assertions
+have already passed.
+
 ## Active work
 
-- No product runtime, schema, or release work is active after the Plan-45
+- No product runtime, schema, or release work is active after the Plan-47
   maintenance change. The lifecycle remains Production; normal maintenance,
   bug fixes, and deliberate feature work still require formal Plans and
   risk-appropriate validation.
@@ -219,6 +270,11 @@ assertions have already passed.
   `604330`/`604331`/`582501` identity evidence. No Plan-45 live sync or
   affected-quarter refresh was necessary because no stale/restorable ID was
   proven.
-- Application version is `0.8.4`. Source commits and Pages publication remain
+- Plan-47 used only the bounded control detail probes and the single authorized
+  live `2025-01 --refresh-existing`. The run encountered Bangumi throttling but
+  completed through built-in retry/backoff with zero sync errors. No second
+  refresh, `release publish`, Pages publication, or `gh-pages` mutation was
+  performed.
+- Application version is `0.8.5`. Source commits and Pages publication remain
   separate delivery events; this maintenance change does not imply a Pages
   publication.

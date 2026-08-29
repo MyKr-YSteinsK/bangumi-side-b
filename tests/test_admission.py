@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +15,7 @@ from bgm_side_b.admission import (
     DISCOVERY_MEDIA_CONFLICT,
     JAPANESE_CLASSIFICATION_UNRESOLVED,
     MOVIE_DATE_UNRESOLVED,
+    NON_THEATRICAL_SPECIAL_VENUE,
     OUT_OF_SCOPE_QUARTER,
     OUTCOME_DOMINATED_LOW_RATING,
     TV_QUARTER_BOUNDARY,
@@ -35,6 +38,13 @@ from bgm_side_b.domain import (
     Quarter,
 )
 
+ROOT = Path(__file__).resolve().parents[1]
+PLAN47_ADMISSION_CONTROLS = json.loads(
+    (ROOT / "tests" / "fixtures" / "plan47_admission_controls.json").read_text(
+        encoding="utf-8"
+    )
+)
+
 
 def _candidate(
     subject_id: int = 101,
@@ -55,8 +65,11 @@ def _detail(
     meta_tags: tuple[str, ...] = (),
     tags: tuple[str, ...] = (),
     rating_count: int | None = 100,
+    other: str | None = None,
 ) -> SubjectDetail:
     infobox = [] if country is None else [{"key": "国家/地区", "value": country}]
+    if other is not None:
+        infobox.append({"key": "其他", "value": other})
     return SubjectDetail.from_payload(
         {
             "id": subject_id,
@@ -100,6 +113,59 @@ def test_explicit_unsupported_platform_cannot_inherit_browse_tv(
     assert decision.status is AdmissionStatus.REJECTED
     assert decision.media_format is None
     assert decision.reason == "unsupported_media"
+
+
+@pytest.mark.parametrize(
+    "control", PLAN47_ADMISSION_CONTROLS, ids=lambda item: str(item["subject_id"])
+)
+def test_plan47_admission_control_corpus(control: dict[str, object]) -> None:
+    subject_id = int(control["subject_id"])
+    platform = str(control["platform"])
+    media = MediaFormat.TV if platform == "TV" else MediaFormat.MOVIE
+    manual_excluded = bool(control.get("manual_excluded"))
+    japanese_override = (
+        JapaneseDecision(
+            JapaneseClassification.ACCEPTED_JAPANESE,
+            "manual_japanese_override",
+            "ACCEPTED_JAPANESE",
+        )
+        if control.get("manual_japanese")
+        else None
+    )
+    decision = admit_subject(
+        _candidate(subject_id, formats=frozenset({media})),
+        _detail(
+            subject_id,
+            platform=platform,
+            country=None,
+            meta_tags=tuple(control.get("meta_tags", ())),
+            other=(str(control["other"]) if control.get("other") else None),
+        ),
+        Quarter(2026, 4),
+        excluded_subject_ids=(
+            frozenset({subject_id}) if manual_excluded else frozenset()
+        ),
+        japanese_override=japanese_override,
+    )
+
+    assert decision.status.value == control["expected_status"]
+    assert decision.reason == control["expected_reason"]
+
+
+def test_special_venue_gate_is_exact_and_does_not_use_title_or_website() -> None:
+    ordinary_movie = admit_subject(
+        _candidate(formats=frozenset({MediaFormat.MOVIE})),
+        _detail(
+            platform="剧场版",
+            country="日本",
+            other="プラネタリウム作品ではない",
+        ),
+        Quarter(2026, 4),
+    )
+
+    assert ordinary_movie.status is AdmissionStatus.ACCEPTED
+    assert ordinary_movie.reason is None
+    assert NON_THEATRICAL_SPECIAL_VENUE == "non_theatrical_special_venue"
 
 
 def test_japanese_three_state_admission_never_guesses() -> None:

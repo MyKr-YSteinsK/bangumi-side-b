@@ -144,8 +144,11 @@ def _detail(
     platform: str | None = None,
     meta_tags: tuple[str, ...] = (),
     rating_count: int | None = 100,
+    other: str | None = None,
 ) -> SubjectDetail:
     infobox = [] if country is None else [{"key": "国家/地区", "value": country}]
+    if other is not None:
+        infobox.append({"key": "其他", "value": other})
     return SubjectDetail.from_payload(
         {
             "id": subject_id,
@@ -1591,6 +1594,7 @@ def test_auto_exclusion_lifecycle_corpus_replay(
                 country=case["country"],  # type: ignore[arg-type]
                 rating_count=case["rating_count"],  # type: ignore[arg-type]
                 cover=None,
+                other=(str(case["other"]) if case.get("other") else None),
             )
         }
     )
@@ -1630,6 +1634,9 @@ def test_auto_exclusion_lifecycle_corpus_replay(
     assert result.auto_restored == (
         (subject_id,) if expected["restored"] else ()
     )
+    assert result.auto_reconciled == (
+        (subject_id,) if expected.get("reconciled") else ()
+    )
     review_codes = [issue.issue_code for issue in result.reviews]
     assert review_codes == (
         [expected["review_code"]] if expected["review_code"] else []
@@ -1638,7 +1645,11 @@ def test_auto_exclusion_lifecycle_corpus_replay(
     settings = load_archive_sync_settings(settings_path)
     if case.get("manual_excluded"):
         assert subject_id in settings.excluded_subject_ids
-    elif case.get("old_auto") and not expected["restored"]:
+    elif (
+        case.get("old_auto")
+        and not expected["restored"]
+        and not expected.get("reconciled")
+    ):
         assert subject_id in settings.auto_excluded_subject_ids
     elif expected["auto_blacklisted"]:
         assert subject_id in settings.auto_excluded_subject_ids
@@ -1646,6 +1657,10 @@ def test_auto_exclusion_lifecycle_corpus_replay(
         assert subject_id not in settings.auto_excluded_subject_ids
     if case.get("manual_excluded"):
         assert api.subject_calls == []
+    if expected.get("reconciled"):
+        second = sync.run(SyncScope(QUARTER, QUARTER)).quarters[0]
+        assert second.auto_reconsidered == 0
+        assert second.auto_reconciled == ()
 
 
 def test_blacklist_source_counts_mixed_manual_existing_and_new_auto(

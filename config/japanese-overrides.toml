@@ -30,6 +30,13 @@ automatic_evidence_type = "unresolved_missing_japanese_region"
 automatic_evidence_value = "[]"
 
 [[classifications]]
+subject_id = 483865
+classification = "non_japanese"
+automatic_classification = "UNRESOLVED"
+automatic_evidence_type = "unresolved_missing_japanese_region"
+automatic_evidence_value = "[]"
+
+[[classifications]]
 subject_id = 484701
 classification = "japanese"
 automatic_classification = "UNRESOLVED"
@@ -38,6 +45,62 @@ automatic_evidence_value = "[\"日本\",\"欧美\",\"美国\"]"
 
 [[classifications]]
 subject_id = 487185
+classification = "non_japanese"
+automatic_classification = "UNRESOLVED"
+automatic_evidence_type = "unresolved_missing_japanese_region"
+automatic_evidence_value = "[]"
+
+[[classifications]]
+subject_id = 504666
+classification = "japanese"
+automatic_classification = "UNRESOLVED"
+automatic_evidence_type = "unresolved_missing_japanese_region"
+automatic_evidence_value = "[]"
+
+[[classifications]]
+subject_id = 529580
+classification = "non_japanese"
+automatic_classification = "UNRESOLVED"
+automatic_evidence_type = "unresolved_missing_japanese_region"
+automatic_evidence_value = "[]"
+
+[[classifications]]
+subject_id = 531939
+classification = "non_japanese"
+automatic_classification = "UNRESOLVED"
+automatic_evidence_type = "unresolved_missing_japanese_region"
+automatic_evidence_value = "[]"
+
+[[classifications]]
+subject_id = 533466
+classification = "non_japanese"
+automatic_classification = "UNRESOLVED"
+automatic_evidence_type = "unresolved_missing_japanese_region"
+automatic_evidence_value = "[]"
+
+[[classifications]]
+subject_id = 536356
+classification = "non_japanese"
+automatic_classification = "UNRESOLVED"
+automatic_evidence_type = "unresolved_missing_japanese_region"
+automatic_evidence_value = "[]"
+
+[[classifications]]
+subject_id = 536370
+classification = "non_japanese"
+automatic_classification = "UNRESOLVED"
+automatic_evidence_type = "unresolved_missing_japanese_region"
+automatic_evidence_value = "[]"
+
+[[classifications]]
+subject_id = 536405
+classification = "non_japanese"
+automatic_classification = "UNRESOLVED"
+automatic_evidence_type = "unresolved_missing_japanese_region"
+automatic_evidence_value = "[]"
+
+[[classifications]]
+subject_id = 556742
 classification = "non_japanese"
 automatic_classification = "UNRESOLVED"
 automatic_evidence_type = "unresolved_missing_japanese_region"
@@ -59,6 +122,13 @@ automatic_evidence_value = "[]"
 
 [[classifications]]
 subject_id = 561266
+classification = "non_japanese"
+automatic_classification = "UNRESOLVED"
+automatic_evidence_type = "unresolved_missing_japanese_region"
+automatic_evidence_value = "[]"
+
+[[classifications]]
+subject_id = 561637
 classification = "non_japanese"
 automatic_classification = "UNRESOLVED"
 automatic_evidence_type = "unresolved_missing_japanese_region"
@@ -115,6 +185,13 @@ automatic_evidence_value = "[]"
 
 [[classifications]]
 subject_id = 640931
+classification = "non_japanese"
+automatic_classification = "UNRESOLVED"
+automatic_evidence_type = "unresolved_missing_japanese_region"
+automatic_evidence_value = "[]"
+
+[[classifications]]
+subject_id = 640936
 classification = "non_japanese"
 automatic_classification = "UNRESOLVED"
 automatic_evidence_type = "unresolved_missing_japanese_region"

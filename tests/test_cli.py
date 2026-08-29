@@ -47,7 +47,7 @@ def test_help_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_version_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
-    assert __version__ == "0.8.4"
+    assert __version__ == "0.8.5"
 
     with pytest.raises(SystemExit) as result:
         main(["--version"])
@@ -426,6 +426,27 @@ def test_sync_summary_is_compact_and_lists_early_premiere_evidence() -> None:
         "AUTO PREMIERE 101: 2026-03-28 -> 2026-04 (2026年4月:448)",
         "exceptions: warnings=1, errors=0",
     )
+
+
+def test_sync_summary_separates_hard_rejection_reconciliation() -> None:
+    result = QuarterSyncResult(
+        Quarter(2026, 4),
+        "complete",
+        "complete",
+        2,
+        0,
+        0,
+        0,
+        0,
+        (),
+        (),
+        (),
+        (),
+        auto_reconsidered=2,
+        auto_reconciled=(537745, 611704),
+    )
+
+    assert "AUTO RECONCILED 537745, 611704" in _sync_summary_lines(result)
 
 
 def test_sync_review_summary_uses_scoped_persisted_count() -> None:

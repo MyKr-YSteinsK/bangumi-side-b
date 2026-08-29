@@ -1,0 +1,44 @@
+[
+  {
+    "subject_id": 556595,
+    "platform": "TV",
+    "meta_tags": ["TV", "欧美", "法国"],
+    "expected_status": "rejected",
+    "expected_reason": "non_japanese"
+  },
+  {
+    "subject_id": 624369,
+    "platform": "TV",
+    "meta_tags": ["TV", "法国"],
+    "expected_status": "rejected",
+    "expected_reason": "non_japanese"
+  },
+  {
+    "subject_id": 537745,
+    "platform": "剧场版",
+    "other": "游乐设施电影",
+    "expected_status": "rejected",
+    "expected_reason": "non_theatrical_special_venue"
+  },
+  {
+    "subject_id": 611704,
+    "platform": "剧场版",
+    "other": "プラネタリウム上映作品",
+    "expected_status": "rejected",
+    "expected_reason": "non_theatrical_special_venue"
+  },
+  {
+    "subject_id": 551459,
+    "platform": "剧场版",
+    "manual_excluded": true,
+    "expected_status": "blacklisted",
+    "expected_reason": "blacklist"
+  },
+  {
+    "subject_id": 504666,
+    "platform": "剧场版",
+    "manual_japanese": true,
+    "expected_status": "accepted",
+    "expected_reason": null
+  }
+]

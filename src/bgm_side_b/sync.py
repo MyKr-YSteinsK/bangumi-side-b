@@ -203,6 +203,7 @@ class QuarterSyncResult:
     outcome_dominated: int = 0
     auto_reconsidered: int = 0
     auto_restored: tuple[int, ...] = ()
+    auto_reconciled: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -499,6 +500,7 @@ class ArchiveSynchronizer:
         resolved_review_only_subject_ids: set[int] = set()
         resolved_japanese_review_subject_ids: set[int] = set()
         restored_auto_ids: set[int] = set()
+        reconciled_auto_ids: set[int] = set()
         premiere_conflict_warnings: list[dict[str, str]] = []
         canonical_detail_requests = 0
         auto_reconsidered = 0
@@ -728,8 +730,7 @@ class ArchiveSynchronizer:
                         continue
                 if decision.status is AdmissionStatus.REJECTED:
                     if was_auto_excluded:
-                        blacklisted += 1
-                        existing_auto_blacklisted += 1
+                        reconciled_auto_ids.add(candidate.subject_id)
                     if decision.reason == "non_japanese":
                         rejected_non_japanese += 1
                         if existing is not None and any(
@@ -967,8 +968,9 @@ class ArchiveSynchronizer:
         boundary_reviews = sum(
             issue.issue_code == "TV_QUARTER_BOUNDARY" for issue in reviews
         )
+        auto_removal_ids = restored_auto_ids | reconciled_auto_ids
         original_config = (
-            self.settings_path.read_bytes() if restored_auto_ids else None
+            self.settings_path.read_bytes() if auto_removal_ids else None
         )
         try:
             with self.repository.transaction() as connection:
@@ -1009,11 +1011,11 @@ class ArchiveSynchronizer:
                         completed_at,
                     ),
                 )
-                if restored_auto_ids:
+                if auto_removal_ids:
                     removed = remove_auto_excluded_subjects(
-                        self.settings_path, restored_auto_ids
+                        self.settings_path, auto_removal_ids
                     )
-                    if set(removed) != restored_auto_ids:
+                    if set(removed) != auto_removal_ids:
                         raise SyncError(
                             "automatic exclusion changed before reconciliation"
                         )
@@ -1027,7 +1029,7 @@ class ArchiveSynchronizer:
                         "automatic exclusion reconciliation rollback is incomplete"
                     ) from error
             raise
-        for subject_id in restored_auto_ids:
+        for subject_id in auto_removal_ids:
             self._auto_excluded_subject_ids.discard(subject_id)
             self._active_excluded_subject_ids.discard(subject_id)
         cleanup_warnings = self._remove_stale_covers(stale_ids)
@@ -1106,6 +1108,7 @@ class ArchiveSynchronizer:
             outcome_dominated=outcome_dominated,
             auto_reconsidered=auto_reconsidered,
             auto_restored=tuple(sorted(restored_auto_ids)),
+            auto_reconciled=tuple(sorted(reconciled_auto_ids)),
         )
 
     def _retire_dominated_reviews(
@@ -1755,6 +1758,11 @@ class ArchiveSynchronizer:
                 for item in serialized
                 for subject_id in item["auto_restored"]
             ],
+            "auto_reconciled": [
+                subject_id
+                for item in serialized
+                for subject_id in item["auto_reconciled"]
+            ],
             "new_auto_by_reason": dict(sorted(new_auto_by_reason.items())),
             "canonical_detail_requests": sum(
                 item["canonical_detail_requests"] for item in serialized
@@ -2390,6 +2398,7 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
         "auto_blacklisted": list(result.auto_blacklisted),
         "auto_reconsidered": result.auto_reconsidered,
         "auto_restored": list(result.auto_restored),
+        "auto_reconciled": list(result.auto_reconciled),
         "new_auto_by_reason": dict(
             sorted(
                 Counter(

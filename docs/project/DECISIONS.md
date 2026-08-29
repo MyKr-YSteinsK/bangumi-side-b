@@ -186,3 +186,19 @@ they stay excluded on their own evidence. Subject `582501` is a separate WEB
 aggregate and is outside the first-version theatrical Movie scope; its rating
 must not be borrowed to restore or replace either theatrical subject. This is
 an identity decision, not an alias model.
+
+## D-021 — Exact special-venue evidence limits theatrical Movie admission
+
+Canonical `platform=剧场版` is a Bangumi media category, not sufficient proof
+of ordinary theatrical exhibition. Exact Infobox `其他` values
+`游乐设施电影` and `プラネタリウム上映作品` are deterministic hard
+rejections from the first-version theatrical Movie scope. Titles, summaries,
+official-site domains, and URL paths are not runtime evidence; a verified
+isolated case without reusable structured evidence uses a manual subject
+exclusion instead of a heuristic or a new media-override family. Exact public
+region token `法国` is accepted as negative country evidence, while broad
+`欧美` remains unresolved and cannot cancel precise Japanese evidence. When a
+fresh canonical evaluation turns an old automatic exclusion into a hard
+non-Japanese or special-venue rejection, synchronization transactionally
+removes the stale automatic entry and reports it as `auto_reconciled` rather
+than retaining a misleading low-rating status.

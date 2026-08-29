@@ -25,7 +25,9 @@ _COUNTRY_KEYS = frozenset(
     }
 )
 _JAPANESE_TOKENS = frozenset({"日本", "Japan"})
-_PUBLIC_REGION_TAGS = frozenset({"日本", "Japan", "中国", "美国", "韩国", "欧美"})
+_PUBLIC_REGION_TAGS = frozenset(
+    {"日本", "Japan", "中国", "美国", "韩国", "法国", "欧美"}
+)
 _BROAD_REGION_TOKENS = frozenset({"欧美"})
 _COUNTRY_SEPARATOR = re.compile(r"[/／,，、;；|｜・]")
 _SUMMARY_MARKER = re.compile(r"\[\s*简介原文\s*\]")

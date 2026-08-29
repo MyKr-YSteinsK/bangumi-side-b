@@ -572,6 +572,11 @@ def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:
         for item in result.early_premieres
     )
     lines.extend(_auto_blacklist_line(item) for item in result.auto_blacklisted)
+    if result.auto_reconciled:
+        lines.append(
+            "AUTO RECONCILED "
+            + ", ".join(str(subject_id) for subject_id in result.auto_reconciled)
+        )
     if result.blacklisted:
         lines.append(
             "BLACKLIST "

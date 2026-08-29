@@ -13,8 +13,40 @@ from bgm_side_b.archive_config import (
     should_auto_blacklist,
 )
 from bgm_side_b.config import load_tag_rules
+from bgm_side_b.domain import JapaneseClassification
+from bgm_side_b.japanese_overrides import load_japanese_overrides
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_plan47_checked_in_scope_decisions_are_exact_and_separate() -> None:
+    settings = load_archive_sync_settings(ROOT / "config" / "bangumi.toml")
+    overrides = load_japanese_overrides(
+        ROOT / "config" / "japanese-overrides.toml"
+    )
+    non_japanese = {
+        483865,
+        529580,
+        531939,
+        533466,
+        536356,
+        536370,
+        536405,
+        556742,
+        561637,
+        640936,
+    }
+
+    assert 551459 in settings.excluded_subject_ids
+    assert 551459 not in settings.auto_excluded_subject_ids
+    assert overrides[504666].classification is (
+        JapaneseClassification.ACCEPTED_JAPANESE
+    )
+    assert all(
+        overrides[subject_id].classification
+        is JapaneseClassification.REJECTED_NON_JAPANESE
+        for subject_id in non_japanese
+    )
 
 
 def test_checked_in_tag_whitelist_loads_without_alias_metadata() -> None:

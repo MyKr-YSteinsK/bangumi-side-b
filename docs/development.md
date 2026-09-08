@@ -4,6 +4,17 @@
 和协作流程由 `frugal-dev-runner` 等活动 Skills/runtime 负责；仓库级安全
 边界见根目录 `AGENTS.md`。
 
+## 浏览器测试依赖
+
+完整浏览器/PWA 测试还需要在当前电脑安装 Playwright 浏览器；Windows 使用：
+
+~~~powershell
+python -m playwright install chromium webkit
+~~~
+
+Linux CI 还会按工作流需要使用 --with-deps 安装系统依赖。只运行不带
+browser 标记的单元和集成测试时，不需要安装浏览器。
+
 ## 环境与版本
 
 项目需要 Python 3.11 或更高版本。程序版本直接来自

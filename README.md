@@ -129,6 +129,9 @@ bgmb release publish
 日常使用从[用户指南](docs/USER_GUIDE.md)开始；开发与验收说明见
 [开发文档](docs/development.md)。
 
+新电脑迁移、私有 workspace 恢复和跨机器继续 Plan 的步骤见
+[迁移恢复指南](docs/migration.md)。
+
 仓库跟踪源代码、配置、模板、静态资源、测试和文档。SQLite 数据库、下载封面、报告、备份、
 生成站点、缓存、临时文件和密钥不应提交。
 

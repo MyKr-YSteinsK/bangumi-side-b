@@ -47,6 +47,11 @@ python -m pytest -m "not browser" -q
 - workspace/data/bangumi-side-b.sqlite3：当前 SQLite 事实库；
 - workspace/covers/：已核验封面。
 
+workspace/media/ 下的旧版下载封面缓存不被当前 build 或 serve 读取；除非需要保留历史原始
+下载资产，否则不必迁移。workspace/backups/、workspace/state/、workspace/reports/、
+workspace/cache/ 和 workspace/releases/ 也属于回滚、审计或构建派生物，不是恢复开发的
+必要输入。
+
 假设旧电脑导出的 workspace 备份目录用 <OLD_WORKSPACE_BACKUP> 表示，在新仓库根目录执行：
 
 ~~~powershell

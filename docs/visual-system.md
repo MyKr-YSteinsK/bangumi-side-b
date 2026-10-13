@@ -81,10 +81,12 @@ Settings 按 01 / 离线季度、02 / 下载任务、03 / 批量下载、04 / �
 
 Quarter 与 Archive 的 TV 结果使用同一条真实 DOM 序列，排序按当前 pipeline 结果移动已有作品节点，不重新创建重复卡片。排序浮层使用固定定位锚定触发按钮，打开和关闭不改变结果列表几何位置；Grid / List 只改变展示层，作品节点身份基于 subject、季度和 appearance 保持稳定。
 
-浏览连续性不依赖 CSS View Transition 或跨文档 root snapshot。运行时使用很薄的
-`withResultMotion(reason, root, mutate)`：只捕获 viewport 及上下缓冲区内、最多 32 个已有作品节点，
-在 DOM mutation 后用 FLIP/WAAPI 恢复其位置；TV/MOVIE 或新季度集合使用最多 12 个短促入场节点。
-快速重入会取消旧节点动画，不建立队列；新季度首屏最多 10 项使用一次性的轻量渐入。`prefers-
-reduced-motion: reduce` 会跳过位置、入场和 stagger，但不跳过状态更新。
+浏览连续性不依赖 CSS View Transition 或跨文档 root snapshot。普通搜索沿用现有查询 pipeline
+同步更新结果，不进入通用 FLIP 路径，不扫描并取消整棵结果树的动画，也不为搜索读取结果几何；
+排序、媒体集合变化和 Grid / List 切换继续使用局部作品动效并保留现有节点身份。其他需要位置恢复的
+操作使用很薄的 `withResultMotion(reason, root, mutate)`：只捕获 viewport 及上下缓冲区内、最多 32
+个已有作品节点，在 DOM mutation 后用 FLIP/WAAPI 恢复其位置；TV/MOVIE 或新季度集合使用最多 12 个
+短促入场节点。快速重入会取消旧节点动画，不建立队列；新季度首屏最多 10 项使用一次性的轻量渐入。
+`prefers-reduced-motion: reduce` 会跳过位置、入场和 stagger，但不跳过状态更新。
 
 CSS 不加载远程字体或 CDN。运行时 JavaScript 只处理页面交互、PWA 缓存与下载，并请求构建生成的同源 JSON 和静态资源；不能读取 SQLite、访问 Bangumi 或其它远程业务 API、载入远程图片或埋点。

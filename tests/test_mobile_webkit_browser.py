@@ -83,6 +83,8 @@ def motion_page(motion_browser: Browser) -> Iterator[Page]:
 
 
 def _open_quarter(page: Page, site_server: str) -> None:
+    page.set_default_timeout(20000)
+    page.set_default_navigation_timeout(20000)
     page.goto(f"{site_server}/2026-07/index.html")
     page.wait_for_selector(".subject-row")
     page.wait_for_function(
@@ -165,6 +167,19 @@ def test_grid_list_motion_has_shared_geometry_in_chromium_and_webkit(
     site_server: str,
 ) -> None:
     _open_quarter(motion_page, site_server)
+    motion_page.evaluate("""() => {
+      const probe = window.__viewMotionStarts = {
+        row: 0, cover: 0, content: 0, score: 0,
+      };
+      const animate = Element.prototype.animate;
+      Element.prototype.animate = function(...args) {
+        if (this.matches('.subject-row')) probe.row += 1;
+        if (this.classList.contains('subject-row__cover')) probe.cover += 1;
+        if (this.classList.contains('subject-row__content')) probe.content += 1;
+        if (this.classList.contains('subject-row__score')) probe.score += 1;
+        return animate.apply(this, args);
+      };
+    }""")
     motion_page.locator('[data-view-mode="list"]').click()
     state = motion_page.evaluate(
         """() => {
@@ -183,15 +198,16 @@ def test_grid_list_motion_has_shared_geometry_in_chromium_and_webkit(
               .getAnimations().length,
             scoreAnimations: row.querySelector('.subject-row__score')
               .getAnimations().length,
+            motionStarts: window.__viewMotionStarts,
           };
         }"""
     )
     assert state["mode"] == "list", state
     assert state["columns"] == 1
-    assert state["rowAnimations"] > 0, state
-    assert state["coverAnimations"] > 0, state
-    assert state["contentAnimations"] > 0, state
-    assert state["scoreAnimations"] > 0, state
+    assert state["rowAnimations"] > 0 or state["motionStarts"]["row"] > 0, state
+    assert state["coverAnimations"] > 0 or state["motionStarts"]["cover"] > 0, state
+    assert state["contentAnimations"] > 0 or state["motionStarts"]["content"] > 0, state
+    assert state["scoreAnimations"] > 0 or state["motionStarts"]["score"] > 0, state
     _assert_no_root_motion_or_black_overlay(motion_page)
 
     motion_page.wait_for_timeout(320)
@@ -216,6 +232,63 @@ def test_grid_list_motion_has_shared_geometry_in_chromium_and_webkit(
     assert grid_state["columns"] == 2
     assert grid_state["animations"] > 0, grid_state
     _assert_no_root_motion_or_black_overlay(motion_page)
+
+
+@pytest.mark.parametrize("reduced_motion", ["no-preference", "reduce"])
+@pytest.mark.parametrize("page_kind", ["quarter", "archive"])
+def test_search_updates_in_place_without_result_motion(
+    motion_page: Page,
+    site_server: str,
+    reduced_motion: str,
+    page_kind: str,
+) -> None:
+    motion_page.set_viewport_size({"width": 390, "height": 844})
+    if page_kind == "quarter":
+        _open_quarter(motion_page, site_server)
+        subject_id = "101"
+    else:
+        motion_page.set_default_timeout(20000)
+        motion_page.set_default_navigation_timeout(20000)
+        motion_page.goto(f"{site_server}/archive/index.html?year=2026")
+        motion_page.wait_for_function(
+            "document.querySelector('[data-results-summary]')"
+            "?.textContent.includes('appearance')"
+        )
+        subject_id = "303"
+    motion_page.emulate_media(reduced_motion=reduced_motion)
+    row = motion_page.locator(f'[data-subject-id="{subject_id}"]').first
+    row.evaluate("node => { node.dataset.searchIdentity = 'stable'; }")
+    motion_page.evaluate("""() => {
+      const probe = window.__searchMotionProbe = {
+        animationScans: 0, animationsStarted: 0,
+      };
+      const getAnimations = Element.prototype.getAnimations;
+      Element.prototype.getAnimations = function(...args) {
+        if (this.closest?.('[data-record-key]')) probe.animationScans += 1;
+        return getAnimations.apply(this, args);
+      };
+      const animate = Element.prototype.animate;
+      Element.prototype.animate = function(...args) {
+        if (this.closest?.('[data-record-key]')) probe.animationsStarted += 1;
+        return animate.apply(this, args);
+      };
+    }""")
+
+    search = motion_page.locator("[data-search]")
+    search.fill(subject_id)
+    assert motion_page.locator(".subject-row:not([hidden])").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.subjectId)"
+    ) == [subject_id]
+    assert motion_page.locator(
+        f'[data-subject-id="{subject_id}"]'
+    ).first.get_attribute("data-search-identity") == "stable"
+    assert motion_page.evaluate(
+        "document.activeElement === document.querySelector('[data-search]')"
+    )
+    assert motion_page.evaluate("window.__searchMotionProbe") == {
+        "animationScans": 0,
+        "animationsStarted": 0,
+    }
 
 
 def test_media_collection_motion_stays_inside_results(

@@ -3397,6 +3397,118 @@ def test_quarter_and_archive_details_show_all_aliases_and_search_them(
     assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
 
 
+@pytest.mark.parametrize("page_kind", ["quarter", "archive"])
+def test_search_input_paste_rapid_changes_and_ime_commit(
+    chromium: BrowserContext,
+    site_server_mixed: str,
+    page_kind: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    if page_kind == "quarter":
+        _open_quarter(page, site_server_mixed, (390, 844))
+    else:
+        page.goto(f"{site_server_mixed}/archive/index.html?year=2026")
+        page.wait_for_function(
+            "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+        )
+
+    initial_ids = page.locator(
+        ".subject-row:not([hidden]) [data-open-subject]"
+    ).evaluate_all(
+        "nodes => nodes.map(node => node.closest('.subject-row').dataset.subjectId)"
+    )
+    assert "303" in initial_ids
+    stable_row = page.locator('[data-subject-id="303"]').first
+    stable_row.evaluate("node => { node.dataset.searchIdentity = 'preserved'; }")
+    search = page.locator("[data-search]")
+
+    search.fill("中文 303")
+    assert page.locator(".subject-row:not([hidden])").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.subjectId)"
+    ) == ["303"]
+    assert page.locator('[data-subject-id="303"]').first.get_attribute(
+        "data-search-identity"
+    ) == "preserved"
+
+    search.fill("")
+    search.focus()
+    page.evaluate("""() => {
+      const input = document.querySelector('[data-search]');
+      const text = 'Original 303';
+      const clipboard = new DataTransfer();
+      clipboard.setData('text/plain', text);
+      input.dispatchEvent(new ClipboardEvent('paste', {
+        bubbles: true, cancelable: true, clipboardData: clipboard,
+      }));
+      input.setRangeText(text, 0, input.value.length, 'end');
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true, inputType: 'insertFromPaste', data: text,
+      }));
+    }""")
+    assert search.input_value() == "Original 303"
+    assert page.locator(".subject-row:not([hidden])").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.subjectId)"
+    ) == ["303"]
+    assert page.evaluate(
+        "document.activeElement === document.querySelector('[data-search]')"
+    )
+
+    page.locator('[data-subject-id="303"] [data-open-subject]').first.click()
+    page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    search.fill("999999")
+    search.fill("101")
+    assert page.locator("[data-detail-panel]").is_hidden()
+    assert set(page.locator(".subject-row:not([hidden])").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.subjectId)"
+    )) == {"101"}
+
+    interim = page.evaluate("""() => {
+      const input = document.querySelector('[data-search]');
+      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      input.value = '303';
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertCompositionText',
+        data: '303',
+        isComposing: true,
+      }));
+      return {
+        chip: document.querySelector('[data-active-filter-type="query"]')
+          ?.textContent || '',
+        ids: [...document.querySelectorAll('.subject-row:not([hidden])')]
+          .map(node => node.dataset.subjectId),
+      };
+    }""")
+    assert interim["chip"] == "搜索：101 ×"
+    assert set(interim["ids"]) == {"101"}
+    page.evaluate("""() => {
+      const input = document.querySelector('[data-search]');
+      input.dispatchEvent(new CompositionEvent('compositionend', {
+        bubbles: true, data: '303',
+      }));
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true, inputType: 'insertText', data: '303', isComposing: false,
+      }));
+    }""")
+    assert page.locator("[data-search]").input_value() == "303"
+    assert page.locator(".subject-row:not([hidden])").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.subjectId)"
+    ) == ["303"]
+    assert page.locator(
+        '[data-active-filter-type="query"]'
+    ).inner_text() == "搜索：303 ×"
+
+    search.fill("no matching fixture title")
+    assert page.locator("[data-no-results]").is_visible()
+    search.fill("")
+    assert page.locator("[data-no-results]").is_hidden()
+    assert page.locator(".subject-row:not([hidden])").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.subjectId)"
+    ) == initial_ids
+    assert page.locator('[data-active-filter-type="query"]').count() == 0
+
+
 def test_archive_detail_failure_stays_same_origin_and_reports_rebuild(
     chromium: BrowserContext,
     site_server: str,

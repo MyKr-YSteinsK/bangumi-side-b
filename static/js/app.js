@@ -206,6 +206,19 @@
     };
   }
 
+  function reconcileChildren(parent, desiredNodes) {
+    if (!parent) return;
+    let index = 0;
+    for (const node of desiredNodes) {
+      const current = parent.children[index] || null;
+      if (current !== node) parent.insertBefore(node, current);
+      index += 1;
+    }
+    while (parent.children.length > desiredNodes.length) {
+      parent.lastElementChild.remove();
+    }
+  }
+
   function positionPopover(popover, anchor) {
     if (!popover || !anchor) return;
     const anchorBox = anchor.getBoundingClientRect();
@@ -675,6 +688,7 @@
     matchesFilters,
     compareRecords,
     applyPipeline,
+    reconcileChildren,
     positionPopover,
     clearPopoverPosition,
     releaseBrowsePrepaint,
@@ -1249,6 +1263,8 @@
   let detailHistoryEntry = false;
   let detailGesture = null;
   let entrancePlayed = false;
+  let pagerSignature = "";
+  let searchComposing = false;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -1313,10 +1329,83 @@
       <div><dt>MOVIE</dt><dd>${info.counts.movie}</dd></div>
       <div><dt>PREMIERE</dt><dd>${info.counts.premiere}</dd></div>
       <div><dt>CONTINUING</dt><dd>${info.counts.continuing}</dd></div></dl>
-      <p class="workspace-panel__summary">${info.filters.length ? esc(info.filters.join(" · ")) : "当前没有额外筛选"}</p>`;
+      <p class="workspace-panel__summary" data-scope-summary>${info.filters.length ? esc(info.filters.join(" · ")) : "当前没有额外筛选"}</p>`;
   }
 
-  function renderRows(result) {
+  function renderScopeSummary(result) {
+    const summaryNode = scopePanel?.querySelector("[data-scope-summary]");
+    if (!summaryNode) return;
+    const filters = [];
+    if (state.query) filters.push(`搜索“${state.query}”`);
+    if (state.filters.sources.length) filters.push(`来源 ${state.filters.sources.length}`);
+    if (state.filters.tags.length) filters.push(`标签 ${state.filters.tags.length}`);
+    if (state.filters.sections.length) filters.push(`分区 ${state.filters.sections.length}`);
+    const text = filters.length ? filters.join(" · ") : "当前没有额外筛选";
+    if (summaryNode.textContent !== text) summaryNode.textContent = text;
+  }
+
+  function updateRowSelection(recordKey, selected) {
+    const row = rowByKey.get(recordKey);
+    if (!row) return;
+    if (row.classList.contains("is-selected") !== selected) {
+      row.classList.toggle("is-selected", selected);
+    }
+    const button = row.querySelector("[data-open-subject]");
+    const expanded = String(selected && !row.hidden);
+    if (button?.getAttribute("aria-expanded") !== expanded) {
+      button?.setAttribute("aria-expanded", expanded);
+    }
+  }
+
+  function renderWorkspaceVisibility() {
+    for (const [panel, visible] of [
+      [detailPanel, state.workspaceMode === "detail"],
+      [scopePanel, state.workspaceMode === "scope"],
+      [filterPanel, state.workspaceMode === "filter"],
+    ]) {
+      if (panel && panel.hidden === visible) panel.hidden = !visible;
+    }
+    if (quarterRoot.dataset.workspaceMode !== state.workspaceMode) {
+      quarterRoot.dataset.workspaceMode = state.workspaceMode;
+    }
+    const filterButton = quarterRoot.querySelector("[data-filter-toggle]");
+    const expanded = String(state.workspaceMode === "filter");
+    if (filterButton?.getAttribute("aria-expanded") !== expanded) {
+      filterButton?.setAttribute("aria-expanded", expanded);
+    }
+  }
+
+  function updateQueryFilterChip() {
+    if (!activeFilters) return;
+    let button = activeFilters.querySelector('[data-active-filter-type="query"]');
+    if (state.query) {
+      const label = `搜索：${state.query} ×`;
+      if (!button) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "active-filter";
+        button.dataset.activeFilterType = "query";
+        button.addEventListener("click", () => {
+          state.query = "";
+          if (search) search.value = "";
+          state.page = 1;
+          clearSelection(true);
+          render();
+        });
+        activeFilters.prepend(button);
+      }
+      if (button.firstChild?.nodeType === Node.TEXT_NODE) {
+        if (button.firstChild.nodeValue !== label) button.firstChild.nodeValue = label;
+      } else {
+        button.textContent = label;
+      }
+    } else {
+      button?.remove();
+    }
+    activeFilters.hidden = activeFilters.childElementCount === 0;
+  }
+
+  function renderRows(result, { preserveUnmatchedOrder = false } = {}) {
     const visibleRecords = window.innerWidth < 768 ? result.all : result.pageRecords;
     const visible = new Set(visibleRecords.map((record) => record.key));
     const position = new Map(result.all.map((record, index) => [record.key, index + 1]));
@@ -1331,28 +1420,40 @@
         record.media === media
         && (appearance === "all" || record.appearance === appearance)
       )).map((record) => record.key));
+      const list = section.querySelector("[data-list]");
+      const remainder = preserveUnmatchedOrder
+        ? [...(list?.children || [])]
+          .map((row) => recordByKey.get(row.dataset.recordKey))
+          .filter((record) => record && !orderedKeys.has(record.key))
+        : sectionRecords.filter((record) => !orderedKeys.has(record.key));
       const orderedRecords = [
         ...result.all.filter((record) => (
           record.media === media
           && (appearance === "all" || record.appearance === appearance)
         )),
-        ...sectionRecords.filter((record) => !orderedKeys.has(record.key)),
+        ...remainder,
       ];
-      const list = section.querySelector("[data-list]");
-      orderedRecords.forEach((record) => {
-        const row = rowByKey.get(record.key);
-        if (row) list?.append(row);
-      });
+      archive.reconcileChildren(
+        list,
+        orderedRecords.map((record) => rowByKey.get(record.key)).filter(Boolean),
+      );
     }
     for (const row of rows) {
       const record = recordByKey.get(row.dataset.recordKey);
       const show = record && visible.has(record.key);
-      row.hidden = !show;
-      row.classList.toggle("is-selected", Boolean(record && state.selectedOccurrence === record.key));
+      if (row.hidden === Boolean(show)) row.hidden = !show;
+      const selected = Boolean(record && state.selectedOccurrence === record.key);
+      if (row.classList.contains("is-selected") !== selected) {
+        row.classList.toggle("is-selected", selected);
+      }
       const button = row.querySelector("[data-open-subject]");
-      if (button) button.setAttribute("aria-expanded", String(show && state.selectedOccurrence === record.key));
+      const expanded = String(Boolean(show && selected));
+      if (button?.getAttribute("aria-expanded") !== expanded) {
+        button?.setAttribute("aria-expanded", expanded);
+      }
       const sequence = row.querySelector(".subject-row__sequence");
-      if (sequence && record) sequence.textContent = String(position.get(record.key) || 0).padStart(3, "0");
+      const number = String(position.get(record?.key) || 0).padStart(3, "0");
+      if (sequence && sequence.textContent !== number) sequence.textContent = number;
     }
     for (const section of sections) {
       const media = section.dataset.listSection;
@@ -1360,25 +1461,37 @@
       const count = result.all.filter((record) =>
         (record.media === (media === "movie" ? "MOVIE" : "TV"))
         && (appearance === "all" || record.appearance === appearance)).length;
-      section.hidden = state.media !== media || count === 0;
+      const hidden = state.media !== media || count === 0;
+      if (section.hidden !== hidden) section.hidden = hidden;
       const counter = section.querySelector("[data-section-count]");
-      if (counter) counter.textContent = String(count).padStart(2, "0");
+      const countText = String(count).padStart(2, "0");
+      if (counter && counter.textContent !== countText) counter.textContent = countText;
     }
     if (summary) {
       const total = records.filter(
         (record) => record.media === (state.media === "movie" ? "MOVIE" : "TV"),
       ).length;
-      summary.textContent = window.innerWidth < 768
+      const text = window.innerWidth < 768
         ? `${result.total} / ${total} 部`
         : `${result.total} / ${total} 部 · 第 ${result.page} / ${result.pageCount} 页`;
+      if (summary.textContent !== text) summary.textContent = text;
     }
-    if (noResults) noResults.hidden = result.total !== 0;
+    if (noResults && noResults.hidden !== (result.total !== 0)) {
+      noResults.hidden = result.total !== 0;
+    }
   }
 
   function renderPager(result) {
     if (!pager) return;
+    const mobile = window.innerWidth < 768;
+    const tokens = result.pageCount <= 1
+      ? []
+      : archive.paginationTokens(result.page, result.pageCount);
+    const signature = `${mobile}:${result.page}:${result.pageCount}:${tokens.join(",")}`;
+    if (signature === pagerSignature) return;
+    pagerSignature = signature;
     pager.replaceChildren();
-    if (window.innerWidth < 768) {
+    if (mobile) {
       pager.hidden = true;
       return;
     }
@@ -1403,7 +1516,7 @@
       pager.append(button);
     };
     add("上一页", result.page - 1, result.page <= 1);
-    for (const token of archive.paginationTokens(result.page, result.pageCount)) {
+    for (const token of tokens) {
       if (token === "ellipsis") {
         const ellipsis = document.createElement("span");
         ellipsis.textContent = "…";
@@ -1431,6 +1544,7 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "active-filter";
+      button.dataset.activeFilterType = item.type;
       button.textContent = `${item.label} ×`;
       button.addEventListener("click", () => {
         if (item.type === "query") {
@@ -1456,10 +1570,7 @@
     renderScope(result);
     renderActiveFilters();
     renderPager(result);
-    if (detailPanel) detailPanel.hidden = state.workspaceMode !== "detail";
-    if (scopePanel) scopePanel.hidden = state.workspaceMode !== "scope";
-    if (filterPanel) filterPanel.hidden = state.workspaceMode !== "filter";
-    quarterRoot.dataset.workspaceMode = state.workspaceMode;
+    renderWorkspaceVisibility();
     const sortButton = quarterRoot.querySelector("[data-sort-toggle]");
     if (sortButton) sortButton.textContent = archive.SORTS[state.sort];
     quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
@@ -1471,9 +1582,24 @@
     const filterButton = quarterRoot.querySelector("[data-filter-toggle]");
     if (filterButton) {
       filterButton.querySelector("[data-filter-count]").textContent = filterCount() ? `(${filterCount()})` : "";
-      filterButton.setAttribute("aria-expanded", String(state.workspaceMode === "filter"));
     }
     if (sortButton) sortButton.setAttribute("aria-expanded", String(quarterRoot.querySelector("[data-sort-popover]")?.hidden === false));
+  }
+
+  function renderSearchResults() {
+    if (loadError || !search || state.query === search.value) return;
+    const previousSelection = state.selectedOccurrence;
+    state.query = search.value;
+    state.page = 1;
+    clearSelection(true);
+    if (previousSelection) updateRowSelection(previousSelection, false);
+    const result = archive.applyPipeline(records, state);
+    state.page = result.page;
+    renderRows(result, { preserveUnmatchedOrder: true });
+    renderScopeSummary(result);
+    updateQueryFilterChip();
+    renderPager(result);
+    renderWorkspaceVisibility();
   }
 
   function filterCount() {
@@ -1588,6 +1714,7 @@
       detailGesture?.lockBackground?.();
     }
     const hadSelection = state.selectedOccurrence !== null;
+    const previousSelection = state.selectedOccurrence;
     const nextDetailHistoryEntry = hadSelection
       ? detailHistoryEntry
       : replace
@@ -1608,22 +1735,33 @@
       detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(record));
       detailPanel.scrollTop = 0;
     }
-    render();
+    if (replace) {
+      render();
+    } else {
+      if (previousSelection && previousSelection !== record.key) {
+        updateRowSelection(previousSelection, false);
+      }
+      updateRowSelection(record.key, true);
+      renderWorkspaceVisibility();
+    }
   }
 
   function closeDetail(recordKey) {
     const currentHash = window.location.hash === hashFor({ id: state.selectedSubjectId });
+    const previousSelection = state.selectedOccurrence;
     if (detailHistoryEntry && currentHash) {
       detailHistoryEntry = false;
       clearSelection(false);
-      render();
+      if (previousSelection) updateRowSelection(previousSelection, false);
+      renderWorkspaceVisibility();
       focusRecordTrigger(recordKey);
       restoreListScroll();
       window.history.back();
       return;
     }
     clearSelection(true);
-    render();
+    if (previousSelection) updateRowSelection(previousSelection, false);
+    renderWorkspaceVisibility();
     focusRecordTrigger(recordKey);
     restoreListScroll();
   }
@@ -1658,7 +1796,8 @@
       if (!match && state.selectedOccurrence !== null) {
         const previousKey = state.selectedOccurrence;
         clearSelection(false);
-        render();
+        updateRowSelection(previousKey, false);
+        renderWorkspaceVisibility();
         focusRecordTrigger(previousKey);
         restoreListScroll();
       }
@@ -1681,13 +1820,14 @@
   function bindControls() {
     pageSizeSelect();
     let closeSortPopover = () => {};
-    search?.addEventListener("input", () => {
-      archive.withResultMotion("search", quarterRoot, () => {
-        state.query = search.value;
-        state.page = 1;
-        clearSelection(true);
-        render();
-      });
+    search?.addEventListener("compositionstart", () => { searchComposing = true; });
+    search?.addEventListener("compositionend", () => {
+      searchComposing = false;
+      renderSearchResults();
+    });
+    search?.addEventListener("input", (event) => {
+      if (searchComposing || event.isComposing) return;
+      renderSearchResults();
     });
     quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -2021,6 +2161,7 @@
   let records = [];
   let rows = [];
   let listSignature = "";
+  let signatureRecords = null;
   let listSections = new Map();
   let rowByKey = new Map();
   let recordByKey = new Map();
@@ -2035,6 +2176,8 @@
   let detailHistoryEntry = false;
   let detailGesture = null;
   let entrancePlayed = false;
+  let pagerSignature = "";
+  let searchComposing = false;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -2366,80 +2509,91 @@
 
   function buildLists(result) {
     if (!selectors.list) return;
-    const signature = records.map((record) => record.key).join("\u0000");
-    if (signature !== listSignature) {
-      selectors.list.replaceChildren();
-      listSections = new Map();
-      rowByKey = new Map();
-      const groups = [
-        ["tv", "all", "电视节目"],
-        ["movie", "premiere", "剧场版"],
-      ];
-      groups.forEach(([media, appearance, title]) => {
-        const sectionRecords = records.filter((record) => (
-          record.media === (media === "movie" ? "MOVIE" : "TV")
-          && (appearance === "all" || record.appearance === appearance)
-        ));
-        const section = document.createElement("section");
-        section.className = "result-section";
-        section.dataset.listSection = media;
-        section.dataset.appearanceSection = appearance;
-        const header = document.createElement("header");
-        header.className = "result-section__header";
-        const code = document.createElement("p");
-        code.className = "result-section__code";
-        code.textContent = `${media.toUpperCase()} / ${appearance.toUpperCase()}`;
-        const heading = document.createElement("h2");
-        heading.textContent = title;
-        const counter = document.createElement("span");
-        counter.dataset.sectionCount = "true";
-        header.append(code, heading, counter);
-        const list = document.createElement("div");
-        list.className = "result-list";
-        sectionRecords.forEach((record, index) => {
-          const row = createRow(record, index + 1);
-          rowByKey.set(record.key, row);
-          list.append(row);
+    if (records !== signatureRecords) {
+      const signature = records.map((record) => record.key).join("\u0000");
+      if (signature !== listSignature) {
+        selectors.list.replaceChildren();
+        listSections = new Map();
+        rowByKey = new Map();
+        const groups = [
+          ["tv", "all", "电视节目"],
+          ["movie", "premiere", "剧场版"],
+        ];
+        groups.forEach(([media, appearance, title]) => {
+          const sectionRecords = records.filter((record) => (
+            record.media === (media === "movie" ? "MOVIE" : "TV")
+            && (appearance === "all" || record.appearance === appearance)
+          ));
+          const section = document.createElement("section");
+          section.className = "result-section";
+          section.dataset.listSection = media;
+          section.dataset.appearanceSection = appearance;
+          const header = document.createElement("header");
+          header.className = "result-section__header";
+          const code = document.createElement("p");
+          code.className = "result-section__code";
+          code.textContent = `${media.toUpperCase()} / ${appearance.toUpperCase()}`;
+          const heading = document.createElement("h2");
+          heading.textContent = title;
+          const counter = document.createElement("span");
+          counter.dataset.sectionCount = "true";
+          header.append(code, heading, counter);
+          const list = document.createElement("div");
+          list.className = "result-list";
+          sectionRecords.forEach((record, index) => {
+            const row = createRow(record, index + 1);
+            rowByKey.set(record.key, row);
+            list.append(row);
+          });
+          section.append(header, list);
+          selectors.list.append(section);
+          listSections.set(media, { section, list });
         });
-        section.append(header, list);
-        selectors.list.append(section);
-        listSections.set(media, { section, list, records: sectionRecords });
-      });
-      rows = [...selectors.list.querySelectorAll(".subject-row")];
-      listSignature = signature;
+        rows = [...rowByKey.values()];
+        listSignature = signature;
+      }
+      signatureRecords = records;
     }
     const positions = new Map(result.all.map((record, index) => [record.key, index + 1]));
     const visibleRecords = result.pageRecords;
-    const visible = new Set(visibleRecords.map((record) => record.key));
     for (const [media, group] of listSections) {
       const sectionMedia = media === "movie" ? "MOVIE" : "TV";
       const matching = result.all.filter((record) => record.media === sectionMedia);
-      const matchingKeys = new Set(matching.map((record) => record.key));
-      const ordered = [
-        ...matching,
-        ...group.records.filter((record) => !matchingKeys.has(record.key)),
-      ];
-      group.list.replaceChildren(
-        ...ordered
-          .filter((record) => visible.has(record.key))
-          .map((record) => rowByKey.get(record.key)),
-      );
+      const pageRows = visibleRecords
+        .filter((record) => record.media === sectionMedia)
+        .map((record) => rowByKey.get(record.key))
+        .filter(Boolean);
+      archive.reconcileChildren(group.list, pageRows);
       const count = matching.length;
-      group.section.hidden = state.media !== media || count === 0;
+      const hidden = state.media !== media || count === 0;
+      if (group.section.hidden !== hidden) group.section.hidden = hidden;
       const counter = group.section.querySelector("[data-section-count]");
-      if (counter) counter.textContent = String(count).padStart(2, "0");
-      group.records.forEach((record) => {
+      const countText = String(count).padStart(2, "0");
+      if (counter && counter.textContent !== countText) counter.textContent = countText;
+      for (const record of visibleRecords) {
+        if (record.media !== sectionMedia) continue;
         const row = rowByKey.get(record.key);
-        if (!row) return;
-        row.hidden = false;
-        row.classList.toggle("is-selected", record.key === state.selectedOccurrence);
-        const button = row.querySelector("[data-open-subject]");
-        if (button) button.setAttribute("aria-expanded", String(record.key === state.selectedOccurrence));
+        if (!row) continue;
+        if (row.hidden) row.hidden = false;
+        updateRowSelection(record.key, record.key === state.selectedOccurrence);
         const sequence = row.querySelector(".subject-row__sequence");
-        if (sequence) sequence.textContent = String(positions.get(record.key) || 0).padStart(3, "0");
-      });
+        const number = String(positions.get(record.key) || 0).padStart(3, "0");
+        if (sequence && sequence.textContent !== number) sequence.textContent = number;
+      }
     }
-    rows = [...rowByKey.values()];
+  }
+
+  function updateRowSelection(recordKey, selected) {
+    const row = rowByKey.get(recordKey);
+    if (!row) return;
+    if (row.classList.contains("is-selected") !== selected) {
+      row.classList.toggle("is-selected", selected);
+    }
+    const button = row.querySelector("[data-open-subject]");
+    const expanded = String(selected);
+    if (button?.getAttribute("aria-expanded") !== expanded) {
+      button?.setAttribute("aria-expanded", expanded);
+    }
   }
 
   function scopeCounts() {
@@ -2456,7 +2610,32 @@
       <p class="workspace-panel__lead">范围内每个 quarter appearance 都保留其原始坐标。</p>
       <dl class="scope-facts"><div><dt>TV</dt><dd>${counts.tv}</dd></div><div><dt>MOVIE</dt><dd>${counts.movie}</dd></div>
       <div><dt>PREMIERE</dt><dd>${counts.premiere}</dd></div><div><dt>CONTINUING</dt><dd>${counts.continuing}</dd></div></dl>
-      <p class="workspace-panel__summary">当前结果 ${result.total} / ${records.length} 部 appearance。</p>`;
+      <p class="workspace-panel__summary" data-scope-summary>当前结果 ${result.total} / ${records.length} 部 appearance。</p>`;
+  }
+
+  function renderScopeSummary(result) {
+    const summaryNode = selectors.scopePanel?.querySelector("[data-scope-summary]");
+    if (!summaryNode) return;
+    const text = `当前结果 ${result.total} / ${records.length} 部 appearance。`;
+    if (summaryNode.textContent !== text) summaryNode.textContent = text;
+  }
+
+  function renderWorkspaceVisibility() {
+    for (const [panel, visible] of [
+      [selectors.detailPanel, state.workspaceMode === "detail"],
+      [selectors.scopePanel, state.workspaceMode === "scope"],
+      [selectors.filterPanel, state.workspaceMode === "filter"],
+    ]) {
+      if (panel && panel.hidden === visible) panel.hidden = !visible;
+    }
+    if (root.dataset.workspaceMode !== state.workspaceMode) {
+      root.dataset.workspaceMode = state.workspaceMode;
+    }
+    const filterButton = root.querySelector("[data-filter-toggle]");
+    const expanded = String(state.workspaceMode === "filter");
+    if (filterButton?.getAttribute("aria-expanded") !== expanded) {
+      filterButton?.setAttribute("aria-expanded", expanded);
+    }
   }
 
   function clearSelection(removeHash = false) {
@@ -2495,18 +2674,26 @@
 
   function renderRows(result) {
     buildLists(result);
-    rows.forEach((row) => {
-      const record = recordByKey.get(row.dataset.recordKey);
-      row.classList.toggle("is-selected", Boolean(record && record.key === state.selectedOccurrence));
-      const button = row.querySelector("[data-open-subject]");
-      if (button) button.setAttribute("aria-expanded", String(record && record.key === state.selectedOccurrence));
-    });
-    if (selectors.summary) selectors.summary.textContent = `${result.total} / ${records.filter((record) => record.media === (state.media === "movie" ? "MOVIE" : "TV")).length} 部 appearance · 第 ${result.page} / ${result.pageCount} 页`;
-    if (selectors.noResults) selectors.noResults.hidden = result.total !== 0;
+    if (selectors.summary) {
+      const total = records.filter(
+        (record) => record.media === (state.media === "movie" ? "MOVIE" : "TV"),
+      ).length;
+      const text = `${result.total} / ${total} 部 appearance · 第 ${result.page} / ${result.pageCount} 页`;
+      if (selectors.summary.textContent !== text) selectors.summary.textContent = text;
+    }
+    if (selectors.noResults && selectors.noResults.hidden !== (result.total !== 0)) {
+      selectors.noResults.hidden = result.total !== 0;
+    }
   }
 
   function renderPager(result) {
     if (!selectors.pager) return;
+    const tokens = result.pageCount <= 1
+      ? []
+      : archive.paginationTokens(result.page, result.pageCount);
+    const signature = `${result.page}:${result.pageCount}:${tokens.join(",")}`;
+    if (signature === pagerSignature) return;
+    pagerSignature = signature;
     selectors.pager.replaceChildren();
     selectors.pager.hidden = result.pageCount <= 1;
     if (result.pageCount <= 1) return;
@@ -2526,7 +2713,7 @@
       selectors.pager.append(button);
     };
     add("上一页", result.page - 1, result.page <= 1);
-    for (const token of archive.paginationTokens(result.page, result.pageCount)) {
+    for (const token of tokens) {
       if (token === "ellipsis") {
         const ellipsis = document.createElement("span");
         ellipsis.textContent = "…";
@@ -2554,6 +2741,7 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "active-filter";
+      button.dataset.activeFilterType = item.type;
       button.textContent = `${item.label} ×`;
       button.addEventListener("click", () => {
         if (item.type === "query") {
@@ -2568,6 +2756,36 @@
     });
   }
 
+  function updateQueryFilterChip() {
+    if (!selectors.activeFilters) return;
+    let button = selectors.activeFilters.querySelector('[data-active-filter-type="query"]');
+    if (state.query) {
+      const label = `搜索：${state.query} ×`;
+      if (!button) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "active-filter";
+        button.dataset.activeFilterType = "query";
+        button.addEventListener("click", () => {
+          state.query = "";
+          if (selectors.search) selectors.search.value = "";
+          state.page = 1;
+          clearSelection(true);
+          render();
+        });
+        selectors.activeFilters.prepend(button);
+      }
+      if (button.firstChild?.nodeType === Node.TEXT_NODE) {
+        if (button.firstChild.nodeValue !== label) button.firstChild.nodeValue = label;
+      } else {
+        button.textContent = label;
+      }
+    } else {
+      button?.remove();
+    }
+    selectors.activeFilters.hidden = selectors.activeFilters.childElementCount === 0;
+  }
+
   function render() {
     if (scopePending || loadError) return;
     root.dataset.viewMode = state.viewMode;
@@ -2577,10 +2795,7 @@
     renderScope(result);
     renderActiveFilters();
     renderPager(result);
-    if (selectors.scopePanel) selectors.scopePanel.hidden = state.workspaceMode !== "scope";
-    if (selectors.detailPanel) selectors.detailPanel.hidden = state.workspaceMode !== "detail";
-    if (selectors.filterPanel) selectors.filterPanel.hidden = state.workspaceMode !== "filter";
-    root.dataset.workspaceMode = state.workspaceMode;
+    renderWorkspaceVisibility();
     const sortButton = root.querySelector("[data-sort-toggle]");
     if (sortButton) sortButton.textContent = archive.SORTS[state.sort];
     root.querySelectorAll("[data-media-mode]").forEach((button) => {
@@ -2592,9 +2807,25 @@
     const filterButton = root.querySelector("[data-filter-toggle]");
     if (filterButton) {
       filterButton.querySelector("[data-filter-count]").textContent = filterCount() ? `(${filterCount()})` : "";
-      filterButton.setAttribute("aria-expanded", String(state.workspaceMode === "filter"));
     }
     if (sortButton) sortButton.setAttribute("aria-expanded", String(selectors.sortPopover?.hidden === false));
+  }
+
+  function renderSearchResults() {
+    if (!selectors.search || state.query === selectors.search.value) return;
+    const previousSelection = state.selectedOccurrence;
+    state.query = selectors.search.value;
+    state.page = 1;
+    clearSelection(true);
+    if (previousSelection) updateRowSelection(previousSelection, false);
+    if (scopePending || loadError) return;
+    const result = archive.applyPipeline(records, state);
+    state.page = result.page;
+    renderRows(result);
+    renderScopeSummary(result);
+    updateQueryFilterChip();
+    renderPager(result);
+    renderWorkspaceVisibility();
   }
 
   function filterCount() {
@@ -2693,6 +2924,7 @@
     }
     const request = ++detailRequest;
     const hadSelection = state.selectedOccurrence !== null;
+    const previousSelection = state.selectedOccurrence;
     const nextDetailHistoryEntry = hadSelection
       ? detailHistoryEntry
       : replace
@@ -2710,7 +2942,15 @@
       selectors.detailPanel.innerHTML = '<p class="workspace-panel__code">DETAIL</p><p class="loading-state">正在读取季度详情…</p>';
       selectors.detailPanel.scrollTop = 0;
     }
-    render();
+    if (replace) {
+      render();
+    } else {
+      if (previousSelection && previousSelection !== record.key) {
+        updateRowSelection(previousSelection, false);
+      }
+      updateRowSelection(record.key, true);
+      renderWorkspaceVisibility();
+    }
     try {
       const detail = await loadDetailRecord(record);
       if (request !== detailRequest || state.selectedOccurrence !== record.key) return;
@@ -2729,17 +2969,20 @@
 
   function closeDetail(recordKey) {
     const currentHash = window.location.hash === `#bgm-${state.selectedSubjectId}`;
+    const previousSelection = state.selectedOccurrence;
     if (detailHistoryEntry && currentHash) {
       detailHistoryEntry = false;
       clearSelection(false);
-      render();
+      if (previousSelection) updateRowSelection(previousSelection, false);
+      renderWorkspaceVisibility();
       focusRecordTrigger(recordKey);
       restoreListScroll();
       window.history.back();
       return;
     }
     clearSelection(true);
-    render();
+    if (previousSelection) updateRowSelection(previousSelection, false);
+    renderWorkspaceVisibility();
     focusRecordTrigger(recordKey);
     restoreListScroll();
   }
@@ -2760,7 +3003,8 @@
       if (!match && state.selectedOccurrence !== null) {
         const previousKey = state.selectedOccurrence;
         clearSelection(false);
-        render();
+        updateRowSelection(previousKey, false);
+        renderWorkspaceVisibility();
         focusRecordTrigger(previousKey);
         restoreListScroll();
       }
@@ -2934,7 +3178,15 @@
         },
       });
     }
-    selectors.search?.addEventListener("input", () => archive.withResultMotion("search", root, () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); }));
+    selectors.search?.addEventListener("compositionstart", () => { searchComposing = true; });
+    selectors.search?.addEventListener("compositionend", () => {
+      searchComposing = false;
+      renderSearchResults();
+    });
+    selectors.search?.addEventListener("input", (event) => {
+      if (searchComposing || event.isComposing) return;
+      renderSearchResults();
+    });
     root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withResultMotion("media", root, () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }); }));
     root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withResultMotion("view-mode", root, () => { state.viewMode = archive.writeViewMode(button.dataset.viewMode); render(); }); button.focus(); }));
     root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {

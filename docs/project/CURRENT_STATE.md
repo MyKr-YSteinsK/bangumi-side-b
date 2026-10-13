@@ -260,9 +260,13 @@ have already passed.
 
 ## Active work
 
-- No product runtime, schema, or release work is active after the Plan-47
-  maintenance change. The lifecycle remains Production; normal maintenance,
-  bug fixes, and deliberate feature work still require formal Plans and
+- Plan-49 Rev1 made a bounded Quarter/Archive search-response change: ordinary
+  search keeps the existing query pipeline and row identities while avoiding
+  result FLIP, broad animation cancellation, and result-geometry reads. Sort,
+  media collection, and Grid/List local motion remain. No schema, facts,
+  controlled configuration, PWA/cache contract, release, or formal `dist/site`
+  changed. This does not approve or advance the A–F candidate program; the
+  lifecycle remains Production, and later work still requires formal Plans and
   risk-appropriate validation.
 
 ## 2026-10-13 experience-upgrade research status
@@ -273,15 +277,24 @@ have already passed.
   D local snapshot data access, E personal workspace/exploration, and F
   maintainer update efficiency. These candidates have not become an approved
   implementation Plan; their ordering, targets, and product tradeoffs remain
-  proposals. The Production stage and Plan-47 checkpoint are unchanged.
-- This documentation task read the report and inspected its local measurement
-  JSON, script headers, and artifact inventory without copying or rerunning
-  them. The report and `measurements.json` identify source baseline
+  proposals. The bounded Plan-49 change does not approve the broader program or
+  move the Production lifecycle into a new phase.
+- The original research report and `measurements.json` were read; their JSON,
+  script headers, and artifact inventory were inspected without copying or
+  rerunning those original research scripts. They identify source baseline
   `1864b71b9fc98a930dad3889385e4103774fc532` / app `0.8.5`; the research uses
   local Chromium, simulated CPU/network conditions, and synthetic data.
   Research measurements are not production acceptance, real-device evidence,
   formal INP, or proof of future performance targets. Production and
   real-device research verification were not executed.
+- Plan-49 also used a separate private synthetic-site before/after browser
+  benchmark: Chromium 149, 390×844 viewport, 4× CPU throttle, 30 distinct ID
+  queries for each of Quarter and Archive in both motion preferences. It
+  recorded synchronous input-handler timing, next-animation-frame latency,
+  DOM mutation/node-move counts, geometry reads, and animation scans. These
+  are local lab measurements only, not production INP, online acceptance, or
+  real-device evidence; benchmark artifacts remain under the ignored local
+  `workspace/reports/ui-upgrade-20261013/plan49/` directory.
 - Proposed UX, IndexedDB/data access, framework, and cache changes do not
   supersede `PROJECT_BRIEF.md`, `DECISIONS.md`, `docs/visual-system.md`, or
   `docs/pwa.md`. A later approved Plan must identify any changed contract,

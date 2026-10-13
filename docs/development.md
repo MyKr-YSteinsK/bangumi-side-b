@@ -4,6 +4,11 @@
 和协作流程由 `frugal-dev-runner` 等活动 Skills/runtime 负责；仓库级安全
 边界见根目录 `AGENTS.md`。
 
+有效任务／Plan 的权限、冻结约束与必要验收仍是执行依据；Skill、上传资料
+或研究建议不会自行扩大权限或替代现行合同。研究测量、浏览器自动化、线上
+观察和真机验收应分别标明基线、环境与证据类型；未执行的验证不能报告通过，
+已批准的必要验收不能改写为可选 USER CHECK。
+
 ## 浏览器测试依赖
 
 完整浏览器/PWA 测试还需要在当前电脑安装 Playwright 浏览器；Windows 使用：
@@ -29,6 +34,26 @@ python -m pip install -e ".[dev]"
 应用 SemVer 与 Pages 的 `YYYY.MM.DD.N` 批次身份分离。具体版本历史由
 `CHANGELOG.md` 维护，发布身份和候选绑定规则由[版本说明](releases.md)
 与[发布说明](publish.md)维护。
+
+## Git 提交身份与追溯
+
+沿用当前源码分支与独立 `gh-pages` 发布分支，不增加分支或历史整理要求。
+以下身份描述提交内容和用途，不要求每类变更必须拆成独立提交：
+
+| 提交内容 | 身份与追溯 |
+| --- | --- |
+| 源码实现、测试与工程文档 | 用实际源码分支 commit SHA、diff 和任务回传追溯；应用版本仅按现行版本合同变化，文档提交不机械增加 SemVer。 |
+| 受控数据／配置更新 | 受支持的 tracked 配置仍在源码分支，用实际 commit SHA、配置 diff 及对应授权／裁决或确定性运行证据追溯；历史 `data:` 提交是现有用法，前缀本身不证明内容或授权。SQLite 事实／封面事务提交不等于 Git 提交。 |
+| `gh-pages` 发布 | 用实际远端 release commit SHA、`release: YYYY.MM.DD.N [source <12位 commit>]` 与 prepared candidate identity 追溯；`source` 指准备时的整个源码 HEAD，可能包含实现、配置和文档提交，不等于最近一个实现提交。详细绑定与远端确认规则以[版本说明](releases.md)为准。 |
+
+源码 HEAD 可追溯 tracked 输入；SQLite、封面不进 Git，因此单凭 source SHA
+不能复现完整数据或证明站点内容。候选内容由实际 `dist/site` 哈希绑定，私有
+运行／发布证据保留在本地 workspace，不为追溯而提交数据库、媒体或报告。
+Git author／committer 也不代替任务授权、验收或发布归因；沿用已有身份配置。
+
+正式 Plan 的提交、一次 ordinary push、upstream HEAD 核实及失败保留本地提交
+的要求以 `AGENTS.md` 为准。推送前确认 configured upstream 与其部署副作用；
+源码 push、受控配置持久化、Pages publication 分别报告，不相互代替。
 
 ## 命令副作用
 

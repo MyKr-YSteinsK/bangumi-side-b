@@ -11,8 +11,14 @@
   This is historical context, not the current adopted baseline.
 - Migration Checkpoint adopted baseline: `7e7c7671dd9620a38c61a5d1f1aed29fd94331dc`
   (`test: guard canonical requirement owners`).
-- Last verified: 2026-08-29 local repository state, bounded Plan-47 live
-  validation, and user-reported real-device acceptance.
+- Last runtime/data verification recorded here: 2026-08-29 bounded Plan-47
+  live validation; real-device acceptance remains the earlier user-reported
+  Plan-39 evidence below.
+- Last engineering-document/Git check: 2026-10-13, source baseline
+  `1864b71b9fc98a930dad3889385e4103774fc532` (`main` / `origin/main`),
+  clean tracked worktree, and matching local/remote source HEAD. This was a
+  read-only check before this documentation change, not renewed runtime,
+  data, production, or real-device acceptance.
 
 The exact resulting HEAD of state-only documentation updates is authoritative
 in its TASK_RESULT rather than being copied into this file, avoiding a circular
@@ -61,12 +67,13 @@ requirement for a file to contain its own commit SHA.
 - Read-only GitHub Pages smoke passed for the public root redirect, the
   `2026-07` Quarter page, a detail hash (`#bgm-552533`), Archive, and Settings;
   no warning or error console entries were observed in those routes.
-- The deployed `gh-pages` head is `493ed9f57defad499eea700ec878f9fdf5f2b83b`,
+- At the Plan-39 observation, the deployed `gh-pages` head was
+  `493ed9f57defad499eea700ec878f9fdf5f2b83b`,
   with release message `release: 2026.08.24.2 [source 4c458a7]`. Settings
   reported app version `0.8.1`, PWA `supported`, Service Worker `ready ·
-  controlling`, and app update `current`. The current `main` head is newer
-  only through docs/tests canonical-state work, so this is not a runtime
-  deployment drift or a reason to publish.
+  controlling`, and app update `current`. At that checkpoint, `main` was newer
+  only through docs/tests canonical-state work. These are historical deployment
+  observations, not the current remote HEAD or a reason to publish.
 - The live manifest and `sw.js` returned HTTP 200. The inspected page resource
   references and fetched runtime assets were same-origin; no SQLite, Bangumi,
   or third-party business API marker was found in the runtime assets. The
@@ -258,6 +265,29 @@ have already passed.
   bug fixes, and deliberate feature work still require formal Plans and
   risk-appropriate validation.
 
+## 2026-10-13 experience-upgrade research status
+
+- The local report `BGMB-总体体验升级与架构优化研究报告.md` under
+  `workspace/reports/ui-upgrade-20261013/` proposes A–F candidates: A browsing
+  response/rendering, B first-screen/image delivery, C browsing state/context,
+  D local snapshot data access, E personal workspace/exploration, and F
+  maintainer update efficiency. These candidates have not become an approved
+  implementation Plan; their ordering, targets, and product tradeoffs remain
+  proposals. The Production stage and Plan-47 checkpoint are unchanged.
+- This documentation task read the report and inspected its local measurement
+  JSON, script headers, and artifact inventory without copying or rerunning
+  them. The report and `measurements.json` identify source baseline
+  `1864b71b9fc98a930dad3889385e4103774fc532` / app `0.8.5`; the research uses
+  local Chromium, simulated CPU/network conditions, and synthetic data.
+  Research measurements are not production acceptance, real-device evidence,
+  formal INP, or proof of future performance targets. Production and
+  real-device research verification were not executed.
+- Proposed UX, IndexedDB/data access, framework, and cache changes do not
+  supersede `PROJECT_BRIEF.md`, `DECISIONS.md`, `docs/visual-system.md`, or
+  `docs/pwa.md`. A later approved Plan must identify any changed contract,
+  its owner, permissions, and necessary acceptance. Research artifacts remain
+  private local evidence and are not source build inputs.
+
 ## Workflow / delivery facts that are currently material
 
 - Plan-42 used only the authorized bounded live Bangumi refresh for
@@ -278,3 +308,23 @@ have already passed.
 - Application version is `0.8.5`. Source commits and Pages publication remain
   separate delivery events; this maintenance change does not imply a Pages
   publication.
+- Existing Git history includes implementation commit
+  `8101f69ce5c85b0bd0d13b6f94f4286533f35203`, controlled configuration
+  persistence commit `72d78868d5eb5791332f527bc0b6ba5863d1ae36`
+  (`data: persist reviewed archive decisions`), and later maintenance commit
+  `8bae429a8c1f0d7e621a103a04bec96877dcc01b` containing both implementation
+  and configuration changes. Historical local-only configuration statements
+  above describe those tasks' observation points, not a permanent prohibition
+  on authorized tracked configuration delivery. The tracing semantics are
+  maintained in `docs/development.md`.
+- On 2026-10-13, read-only remote inspection found `gh-pages` at
+  `b35e51ece216e3d8cba8cb3f2a32ec64c887513c`, with message
+  `release: 2026.08.28.1 [source 72d78868d5eb]`. Its source identity is the
+  configuration persistence HEAD, not a separate implementation SHA. GitHub
+  Pages reports branch publication from `gh-pages` at `/`; current source
+  workflows run CI and contain no Pages deployment. This inspection does not
+  prove current served content or runtime health and does not authorize
+  publication of newer source.
+- This documentation task does not authorize Bangumi access, data/config
+  changes, build, release, or `gh-pages` mutation. Its final source delivery
+  SHA and ordinary-push/remote confirmation belong in its TASK_RESULT.

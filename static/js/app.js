@@ -2024,8 +2024,11 @@
   let listSections = new Map();
   let rowByKey = new Map();
   let recordByKey = new Map();
+  let loadedScope = null;
   const detailByQuarter = new Map();
   let detailRequest = 0;
+  let scopeIntent = 0;
+  let scopePending = false;
   let loadError = false;
   let yearControl = null;
   let pageSizeControl = null;
@@ -2079,17 +2082,69 @@
   }
 
   function sameScope(left, right) {
-    if (left.kind !== right.kind) return false;
+    if (!left || !right || left.kind !== right.kind) return false;
     if (left.kind === "range") {
       return left.value?.from === right.value.from && left.value?.to === right.value.to;
     }
     return String(left.value) === String(right.value);
   }
 
+  function scopeLabel(kind, value) {
+    return kind === "range"
+      ? `RANGE / ${value.from}—${value.to}`
+      : `YEAR / ${value}`;
+  }
+
+  function updateScopeAvailability() {
+    const loaded = !scopePending && !loadError && sameScope(loadedScope, state.scope);
+    const masterPane = root.querySelector(".master-pane");
+    if (masterPane) masterPane.inert = !loaded;
+    if (selectors.detailPanel) selectors.detailPanel.inert = !loaded;
+    if (selectors.filterPanel) selectors.filterPanel.inert = !loaded;
+    if (selectors.scopeLabel) {
+      selectors.scopeLabel.setAttribute("aria-busy", String(scopePending));
+    }
+    if (selectors.scopePanel) {
+      selectors.scopePanel.setAttribute("aria-busy", String(scopePending));
+    }
+    if (scopePending) root.dataset.scopePending = "true";
+    else delete root.dataset.scopePending;
+  }
+
+  function applyScope(kind, value) {
+    state.scope = { kind, value };
+    state.page = 1;
+    state.query = "";
+    state.filters = { sources: [], tags: [], sections: [] };
+    discardFilterDraft();
+    if (selectors.search) selectors.search.value = "";
+    clearSelection(false);
+    setTab(kind);
+    renderYearSelector();
+    if (kind === "range") {
+      const from = root.querySelector("[data-archive-from]");
+      const to = root.querySelector("[data-archive-to]");
+      if (from) from.value = String(value.from);
+      if (to) to.value = String(value.to);
+    }
+    if (selectors.scopeLabel) selectors.scopeLabel.textContent = scopeLabel(kind, value);
+  }
+
   async function restoreArchiveLocation() {
     if (!index) return;
     const location = scopeFromLocation();
-    if (sameScope(state.scope, location) && records.length) {
+    if (sameScope(loadedScope, location)) {
+      if (!scopePending && !loadError && sameScope(state.scope, location)) {
+        await openHash();
+        return;
+      }
+      scopeIntent += 1;
+      scopePending = false;
+      loadError = false;
+      applyScope(location.kind, location.value);
+      updateScopeAvailability();
+      renderFilterPanel();
+      render();
       await openHash();
       return;
     }
@@ -2514,7 +2569,7 @@
   }
 
   function render() {
-    if (loadError) return;
+    if (scopePending || loadError) return;
     root.dataset.viewMode = state.viewMode;
     const result = archive.applyPipeline(records, state);
     state.page = result.page;
@@ -2625,7 +2680,13 @@
   }
 
   async function selectRecord(record, replace = false) {
-    if (!record) return;
+    if (
+      !record
+      || scopePending
+      || loadError
+      || !sameScope(loadedScope, state.scope)
+      || !recordByKey.has(record.key)
+    ) return;
     if (window.innerWidth < 768 && state.workspaceMode !== "detail") {
       state.listScrollTop = window.scrollY;
       detailGesture?.lockBackground?.();
@@ -2693,6 +2754,7 @@
   }
 
   async function openHash() {
+    if (scopePending || loadError || !sameScope(loadedScope, state.scope)) return;
     const match = window.location.hash.match(/^#bgm-(\d+)$/);
     if (!match || !records.length) {
       if (!match && state.selectedOccurrence !== null) {
@@ -3000,29 +3062,30 @@
     if (!index) return;
     const normalized = kind === "range" ? normalRange(value.from, value.to) : String(value);
     if (kind === "range" && !normalized) return;
-    state.scope = { kind, value: normalized };
-    state.page = 1;
-    state.query = "";
-    state.filters = { sources: [], tags: [], sections: [] };
-    discardFilterDraft();
-    if (selectors.search) selectors.search.value = "";
-    clearSelection(false);
-    if (push) setScopeUrl(kind, normalized);
-    setTab(kind);
-    renderYearSelector();
-    if (kind === "range") {
-      const from = root.querySelector("[data-archive-from]");
-      const to = root.querySelector("[data-archive-to]");
-      if (from) from.value = String(normalized.from);
-      if (to) to.value = String(normalized.to);
-    }
-    if (kind === "quarter") return;
+    const intent = ++scopeIntent;
+    scopePending = true;
     loadError = false;
+    applyScope(kind, normalized);
+    if (push) setScopeUrl(kind, normalized);
+    updateScopeAvailability();
+    if (kind === "quarter") return;
+    if (selectors.scopePanel) {
+      selectors.scopePanel.hidden = false;
+      if (selectors.detailPanel) selectors.detailPanel.hidden = true;
+      if (selectors.filterPanel) selectors.filterPanel.hidden = true;
+      const label = kind === "range" ? `${normalized.from}—${normalized.to}` : normalized;
+      selectors.scopePanel.innerHTML = `<p class="workspace-panel__code">ARCHIVE SCOPE</p><h2>${esc(label)}</h2><p class="loading-state">正在读取范围目录…</p>`;
+    }
     try {
-      records = await loadCatalogs(yearsForScope(kind, normalized));
+      const nextRecords = await loadCatalogs(yearsForScope(kind, normalized));
+      if (intent !== scopeIntent) return;
+      records = nextRecords;
       recordByKey = new Map(records.map((record) => [record.key, record]));
+      loadedScope = { kind, value: kind === "range" ? { ...normalized } : normalized };
+      scopePending = false;
+      loadError = false;
+      updateScopeAvailability();
       renderFilterPanel();
-      if (selectors.scopeLabel) selectors.scopeLabel.textContent = kind === "range" ? `RANGE / ${normalized.from}—${normalized.to}` : `YEAR / ${normalized}`;
       render();
       archive.releaseBrowsePrepaint(root, state.viewMode);
       if (!entrancePlayed) {
@@ -3031,8 +3094,14 @@
       }
       await openHash();
     } catch {
+      if (intent !== scopeIntent) return;
+      scopePending = false;
       loadError = true;
-      if (selectors.scopePanel) selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>页面资料未完整生成</h2><p>建议重新 build。</p>';
+      updateScopeAvailability();
+      if (selectors.scopePanel) {
+        selectors.scopePanel.hidden = false;
+        selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>页面资料未完整生成</h2><p>建议重新 build。</p>';
+      }
     }
   }
 

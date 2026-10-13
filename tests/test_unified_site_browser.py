@@ -7,7 +7,9 @@ import http.server
 import json
 import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 from playwright.sync_api import BrowserContext, Page, sync_playwright
@@ -29,6 +31,211 @@ def _server(handler: object) -> http.server.ThreadingHTTPServer:
         except OSError:
             continue
     raise RuntimeError("could not allocate a safe browser test port")
+
+
+def _catalog_gate(status: int = 200) -> dict[str, object]:
+    return {
+        "requested": threading.Event(),
+        "release": threading.Event(),
+        "finished": threading.Event(),
+        "status": status,
+    }
+
+
+@contextmanager
+def _archive_catalog_server(
+    site: Path,
+    gates: dict[str, list[dict[str, object]]],
+) -> Iterator[str]:
+    request_counts: dict[str, int] = {}
+    lock = threading.Lock()
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def end_headers(self) -> None:
+            self.send_header("Cache-Control", "no-store")
+            super().end_headers()
+
+        def do_GET(self) -> None:
+            parts = urlparse(self.path).path.split("/")
+            gate_key = None
+            gate = None
+            if len(parts) == 4 and parts[1:3] == ["data", "catalog"]:
+                filename = parts[3]
+                if filename.endswith(".json") and filename[:-5].isdigit():
+                    year = int(filename[:-5])
+                    gate_key = f"catalog:{year}"
+            elif len(parts) == 4 and parts[1:3] == ["data", "quarters"]:
+                filename = parts[3]
+                if filename.endswith(".json"):
+                    gate_key = f"quarter:{filename[:-5]}"
+            if gate_key is not None:
+                with lock:
+                    position = request_counts.get(gate_key, 0)
+                    request_counts[gate_key] = position + 1
+                    resource_gates = gates.get(gate_key, [])
+                    gate = (
+                        resource_gates[position]
+                        if position < len(resource_gates)
+                        else None
+                    )
+                if gate is not None:
+                    requested = gate["requested"]
+                    release = gate["release"]
+                    assert isinstance(requested, threading.Event)
+                    assert isinstance(release, threading.Event)
+                    requested.set()
+                    if not release.wait(timeout=30):
+                        self.send_error(504, "archive resource gate timed out")
+                        finished = gate["finished"]
+                        assert isinstance(finished, threading.Event)
+                        finished.set()
+                        return
+                    status = int(gate["status"])
+                    if status != 200:
+                        self.send_response(status)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        finished = gate["finished"]
+                        assert isinstance(finished, threading.Event)
+                        finished.set()
+                        return
+            super().do_GET()
+            if gate is not None:
+                finished = gate["finished"]
+                assert isinstance(finished, threading.Event)
+                finished.set()
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    handler = functools.partial(Handler, directory=str(site))
+    server = _server(handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        for year_gates in gates.values():
+            for gate in year_gates:
+                release = gate["release"]
+                assert isinstance(release, threading.Event)
+                release.set()
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def _add_second_archive_year(site: Path) -> None:
+    catalog_path = site / "data" / "catalog" / "2026.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    record = next(
+        item
+        for item in catalog["records"]
+        if item["id"] == 101
+        and item["quarter"] == "2026-04"
+        and item["appearance"] == "premiere"
+    )
+    current = {**record, "preferred_title": "Fixture 2026"}
+    previous = {
+        **record,
+        "id": 505,
+        "preferred_title": "Fixture 2025",
+        "original_title": "Fixture Original 2025",
+        "quarter": "2025-04",
+        "air_date": "2025-04-02",
+        "premiere_quarter": "2025-04",
+    }
+    catalog["records"] = [current]
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    (site / "data" / "catalog" / "2025.json").write_text(
+        json.dumps({"year": 2025, "records": [previous]}),
+        encoding="utf-8",
+    )
+
+    index_path = site / "data" / "archive-index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["years"] = [2025, 2026]
+    index["quarters"] = [
+        {"quarter": "2025-04", "year": 2025, "count": 1},
+        {"quarter": "2026-04", "year": 2026, "count": 1},
+    ]
+    index["latest_quarter"] = "2026-04"
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+
+    quarter_path = site / "data" / "quarters" / "2026-04.json"
+    quarter = json.loads(quarter_path.read_text(encoding="utf-8"))
+    quarter["tv"]["premiere"] = [
+        {**quarter["tv"]["premiere"][0], "preferred_title": "Fixture 2026"}
+    ]
+    quarter_path.write_text(json.dumps(quarter), encoding="utf-8")
+    quarter["quarter"] = "2025-04"
+    quarter["tv"]["premiere"] = [
+        {
+            **quarter["tv"]["premiere"][0],
+            "subject_id": 505,
+            "preferred_title": "Fixture 2025",
+            "original_title": "Fixture Original 2025",
+            "air_date": "2025-04-02",
+            "premiere_quarter": "2025-04",
+        }
+    ]
+    quarter["tv"]["continuing"] = []
+    quarter["movie"]["premiere"] = []
+    (site / "data" / "quarters" / "2025-04.json").write_text(
+        json.dumps(quarter),
+        encoding="utf-8",
+    )
+
+
+def _open_two_year_archive(
+    page: Page,
+    site: Path,
+    server: str,
+    viewport: tuple[int, int] = (1440, 900),
+) -> None:
+    _add_second_archive_year(site)
+    page.add_init_script(
+        """(() => {
+          window.__catalogResponses = [];
+          const fetchResource = window.fetch.bind(window);
+          window.fetch = (input, init) => {
+            const url = String(input instanceof Request ? input.url : input);
+            return fetchResource(input, init).then(response => {
+              if (url.includes('/data/catalog/')) {
+                window.__catalogResponses.push({url, status: response.status});
+              }
+              return response;
+            });
+          };
+        })();"""
+    )
+    page.set_viewport_size({"width": viewport[0], "height": viewport[1]})
+    page.set_default_timeout(8000)
+    page.goto(f"{server}/archive/index.html?year=2026")
+    _wait_archive_scope(page, "YEAR / 2026")
+    assert "1 / 1" in page.locator("[data-results-summary]").inner_text()
+    assert page.evaluate(
+        "window.__catalogResponses?.some(response => "
+        "response.url.includes('/data/catalog/2026.json'))"
+    )
+
+
+def _choose_archive_year(page: Page, year: int) -> None:
+    page.locator("[data-archive-year-select] .select-trigger").click()
+    page.get_by_role("option", name=str(year), exact=True).click()
+
+
+def _wait_archive_scope(page: Page, label: str) -> None:
+    page.wait_for_function(
+        "expected => {"
+        "const root = document.querySelector('[data-page=archive]');"
+        "const master = document.querySelector('.master-pane');"
+        "const scope = document.querySelector('[data-archive-scope-label]');"
+        "return root?.dataset.scopePending !== 'true' && !master?.inert "
+        "&& scope?.textContent.includes(expected);"
+        "}",
+        arg=label,
+    )
 
 
 @pytest.fixture
@@ -1016,6 +1223,253 @@ def test_archive_year_listbox_updates_scope_without_native_select(
         "?.textContent.includes('YEAR / 2026')"
     )
     assert "year=2026" in page.url
+
+
+@pytest.mark.parametrize("viewport", [(1440, 900), (390, 844)])
+def test_archive_latest_scope_success_wins_when_older_request_finishes_last(
+    chromium: BrowserContext,
+    unified_site: Path,
+    viewport: tuple[int, int],
+) -> None:
+    old_request = _catalog_gate()
+    page = chromium.new_page(viewport={"width": viewport[0], "height": viewport[1]})
+    with _archive_catalog_server(
+        unified_site,
+        {"catalog:2025": [old_request]},
+    ) as server:
+        _open_two_year_archive(page, unified_site, server, viewport)
+        _choose_archive_year(page, 2025)
+        old_requested = old_request["requested"]
+        assert isinstance(old_requested, threading.Event)
+        assert old_requested.wait(timeout=3)
+
+        _choose_archive_year(page, 2026)
+        _wait_archive_scope(page, "YEAR / 2026")
+        assert "1 / 1" in page.locator("[data-results-summary]").inner_text()
+        assert page.locator('[data-subject-id="101"]').count() == 1
+        assert page.locator('[data-subject-id="505"]').count() == 0
+
+        with page.expect_response(
+            lambda response: "catalog/2025.json" in response.url
+        ) as old_response:
+            old_release = old_request["release"]
+            assert isinstance(old_release, threading.Event)
+            old_release.set()
+        assert old_response.value.status == 200
+        assert "YEAR / 2026" in page.locator("[data-archive-scope-label]").inner_text()
+        assert "1 / 1" in page.locator("[data-results-summary]").inner_text()
+        assert page.locator('[data-subject-id="101"]').count() == 1
+        assert page.locator('[data-subject-id="505"]').count() == 0
+        assert "DATA UNAVAILABLE" not in page.locator("[data-scope-panel]").inner_text()
+    page.close()
+
+
+def test_archive_stale_failure_cannot_poison_latest_scope(
+    chromium: BrowserContext,
+    unified_site: Path,
+) -> None:
+    old_failure = _catalog_gate(status=503)
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    with _archive_catalog_server(
+        unified_site,
+        {"catalog:2025": [old_failure]},
+    ) as server:
+        _open_two_year_archive(page, unified_site, server)
+        _choose_archive_year(page, 2025)
+        requested = old_failure["requested"]
+        assert isinstance(requested, threading.Event)
+        assert requested.wait(timeout=3)
+
+        _choose_archive_year(page, 2026)
+        _wait_archive_scope(page, "YEAR / 2026")
+        release = old_failure["release"]
+        assert isinstance(release, threading.Event)
+        release.set()
+        finished = old_failure["finished"]
+        assert isinstance(finished, threading.Event)
+        assert finished.wait(timeout=3)
+        page.wait_for_function(
+            "window.__catalogResponses?.some(response => "
+            "response.url.includes('/data/catalog/2025.json') "
+            "&& response.status === 503)"
+        )
+        assert "YEAR / 2026" in page.locator(
+            "[data-archive-scope-label]"
+        ).inner_text()
+        assert page.locator('[data-subject-id="101"]').count() == 1
+        assert page.locator('[data-subject-id="505"]').count() == 0
+        assert "DATA UNAVAILABLE" not in page.locator("[data-scope-panel]").inner_text()
+        page.locator("[data-search]").fill("no matching fixture")
+        page.wait_for_function(
+            "document.querySelector('[data-no-results]')?.hidden === false"
+        )
+        assert "0 / 1" in page.locator("[data-results-summary]").inner_text()
+        page.locator("[data-search]").fill("")
+        page.locator('[data-subject-id="101"] [data-open-subject]').click()
+        page.wait_for_function(
+            "document.querySelector('[data-detail-panel]')"
+            "?.textContent.includes('Fixture 2026')"
+        )
+        assert "#bgm-101" in page.url
+    page.close()
+
+
+def test_archive_a_to_b_to_a_uses_latest_scope_intent(
+    chromium: BrowserContext,
+    unified_site: Path,
+) -> None:
+    first_year_request = _catalog_gate()
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    with _archive_catalog_server(
+        unified_site,
+        {"catalog:2025": [first_year_request]},
+    ) as server:
+        _open_two_year_archive(page, unified_site, server)
+        _choose_archive_year(page, 2025)
+        requested = first_year_request["requested"]
+        assert isinstance(requested, threading.Event)
+        assert requested.wait(timeout=3)
+
+        _choose_archive_year(page, 2026)
+        _wait_archive_scope(page, "YEAR / 2026")
+        _choose_archive_year(page, 2025)
+        assert "year=2025" in page.url
+        assert "YEAR / 2025" in page.locator(
+            "[data-archive-scope-label]"
+        ).inner_text()
+
+        release = first_year_request["release"]
+        assert isinstance(release, threading.Event)
+        release.set()
+        _wait_archive_scope(page, "YEAR / 2025")
+        assert page.locator('[data-subject-id="505"]').count() == 1
+        assert page.locator('[data-subject-id="101"]').count() == 0
+        assert "1 / 1" in page.locator("[data-results-summary]").inner_text()
+        assert "DATA UNAVAILABLE" not in page.locator("[data-scope-panel]").inner_text()
+    page.close()
+
+
+def test_archive_current_scope_failure_recovers_on_next_valid_choice(
+    chromium: BrowserContext,
+    unified_site: Path,
+) -> None:
+    failed_request = _catalog_gate(status=503)
+    release = failed_request["release"]
+    assert isinstance(release, threading.Event)
+    release.set()
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    with _archive_catalog_server(
+        unified_site,
+        {"catalog:2025": [failed_request]},
+    ) as server:
+        _open_two_year_archive(page, unified_site, server)
+        _choose_archive_year(page, 2025)
+        page.wait_for_function(
+            "document.querySelector('[data-scope-panel]')"
+            "?.textContent.includes('DATA UNAVAILABLE')"
+        )
+        assert "YEAR / 2025" in page.locator("[data-archive-scope-label]").inner_text()
+        assert page.locator(".master-pane").evaluate("node => node.inert")
+
+        _choose_archive_year(page, 2026)
+        _wait_archive_scope(page, "YEAR / 2026")
+        page.locator("[data-search]").fill("Fixture 2026")
+        assert "1 / 1" in page.locator("[data-results-summary]").inner_text()
+        page.locator('[data-subject-id="101"] [data-open-subject]').click()
+        page.wait_for_function(
+            "document.querySelector('[data-detail-panel]')"
+            "?.textContent.includes('Fixture 2026')"
+        )
+    page.close()
+
+
+def test_archive_popstate_cancels_pending_range_and_preserves_history(
+    chromium: BrowserContext,
+    unified_site: Path,
+) -> None:
+    pending_range_request = _catalog_gate()
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    with _archive_catalog_server(
+        unified_site,
+        {"catalog:2025": [pending_range_request]},
+    ) as server:
+        _open_two_year_archive(page, unified_site, server)
+        initial_history_length = page.evaluate("history.length")
+        page.locator('[data-scope-choice="range"]').click()
+        page.locator("[data-archive-from]").fill("2025")
+        page.locator("[data-archive-to]").fill("2026")
+        page.locator("[data-range-apply]").click()
+        assert "from=2025" in page.url and "to=2026" in page.url, (
+            page.url,
+            page.locator("[data-archive-scope-label]").inner_text(),
+            page.locator("[data-scope-panel]").inner_text(),
+        )
+        assert page.evaluate("history.length") == initial_history_length + 1
+        range_requested = pending_range_request["requested"]
+        assert isinstance(range_requested, threading.Event)
+        assert range_requested.wait(timeout=3)
+
+        page.go_back()
+        _wait_archive_scope(page, "YEAR / 2026")
+        assert page.url.endswith("?year=2026")
+        assert page.evaluate("history.length") == initial_history_length + 1
+        assert "1 / 1" in page.locator("[data-results-summary]").inner_text()
+
+        page.go_forward()
+        assert "from=2025" in page.url and "to=2026" in page.url
+        assert page.evaluate("history.length") == initial_history_length + 1
+
+        range_release = pending_range_request["release"]
+        assert isinstance(range_release, threading.Event)
+        range_release.set()
+        _wait_archive_scope(page, "RANGE / 2025—2026")
+        assert page.evaluate("history.length") == initial_history_length + 1
+        assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
+        assert page.locator('[data-subject-id="101"]').count() == 1
+        assert page.locator('[data-subject-id="505"]').count() == 1
+
+        assert "RANGE / 2025—2026" in page.locator(
+            "[data-archive-scope-label]"
+        ).inner_text()
+        assert "DATA UNAVAILABLE" not in page.locator("[data-scope-panel]").inner_text()
+        assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
+    page.close()
+
+
+def test_archive_late_detail_cannot_replace_new_scope_selection(
+    chromium: BrowserContext,
+    unified_site: Path,
+) -> None:
+    old_detail = _catalog_gate()
+    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    with _archive_catalog_server(
+        unified_site,
+        {"quarter:2025-04": [old_detail]},
+    ) as server:
+        _open_two_year_archive(page, unified_site, server)
+        _choose_archive_year(page, 2025)
+        _wait_archive_scope(page, "YEAR / 2025")
+        page.locator('[data-subject-id="505"] [data-open-subject]').click()
+        detail_requested = old_detail["requested"]
+        assert isinstance(detail_requested, threading.Event)
+        assert detail_requested.wait(timeout=3)
+        assert "正在读取季度详情" in page.locator("[data-detail-panel]").inner_text()
+
+        _choose_archive_year(page, 2026)
+        _wait_archive_scope(page, "YEAR / 2026")
+        assert page.locator('[data-subject-id="101"]').count() == 1
+        assert page.locator("[data-detail-panel]").is_hidden()
+        with page.expect_response(
+            lambda response: "quarters/2025-04.json" in response.url
+        ) as detail_response:
+            detail_release = old_detail["release"]
+            assert isinstance(detail_release, threading.Event)
+            detail_release.set()
+        assert detail_response.value.status == 200
+        assert page.locator("[data-detail-panel]").is_hidden()
+        assert page.url.endswith("?year=2026")
+        assert "YEAR / 2026" in page.locator("[data-archive-scope-label]").inner_text()
+    page.close()
 
 
 @pytest.mark.parametrize("viewport", [(390, 844), (360, 800)])

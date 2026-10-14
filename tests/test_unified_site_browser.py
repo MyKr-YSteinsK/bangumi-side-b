@@ -653,6 +653,10 @@ def test_mobile_menu_uses_top_layer_and_closes_competing_surfaces(
     )
     page.locator("[data-mobile-menu]").wait_for(state="hidden")
     assert not page.locator("[data-mobile-menu]").is_visible()
+    assert page.locator("[data-mobile-menu]").get_attribute(
+        "data-menu-open"
+    ) == "false"
+    assert menu_toggle.get_attribute("aria-expanded") == "false"
     page.locator("[data-mobile-menu-toggle]").click()
     page.keyboard.press("Escape")
     assert not page.locator("[data-mobile-menu]").is_visible()

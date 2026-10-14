@@ -1000,7 +1000,7 @@
   if (menu && menuToggle) {
     let useNativePopover = typeof menu.showPopover === "function"
       && typeof menu.hidePopover === "function";
-    let restoreFocusOnClose = false;
+    let pointerToggleShouldClose = false;
     menu.dataset.menuMode = useNativePopover ? "popover" : "fallback";
 
     const isOpen = () => useNativePopover
@@ -1062,25 +1062,17 @@
         .forEach((button) => button.click());
     };
     const closeMenu = (restoreFocus = false) => {
-      restoreFocusOnClose = restoreFocus;
       if (useNativePopover && isOpen()) {
         try {
           menu.hidePopover();
-          setOpenState(false);
-          clearMenuPosition();
-          if (restoreFocus) menuToggle.focus();
         } catch {
           useNativePopover = false;
           menu.dataset.menuMode = "fallback";
-          setOpenState(false);
-          clearMenuPosition();
-          if (restoreFocus) menuToggle.focus();
         }
-      } else {
-        setOpenState(false);
-        clearMenuPosition();
-        if (restoreFocus) menuToggle.focus();
       }
+      setOpenState(false);
+      clearMenuPosition();
+      if (restoreFocus && document.activeElement !== menuToggle) menuToggle.focus();
     };
     const openMenu = () => {
       closeCompetingSurfaces();
@@ -1098,23 +1090,28 @@
       setOpenState(true);
       positionMenu();
       requestAnimationFrame(positionMenu);
-      menu.querySelector("a, button")?.focus();
     };
     menu.addEventListener("toggle", (event) => {
-      const open = event.newState === "open";
+      const open = useNativePopover ? isOpen() : event.newState === "open";
       setOpenState(open);
       if (open) {
         positionMenu();
         requestAnimationFrame(positionMenu);
       } else {
         clearMenuPosition();
-        if (restoreFocusOnClose) menuToggle.focus();
-        restoreFocusOnClose = false;
       }
     });
+    document.addEventListener("pointerdown", (event) => {
+      pointerToggleShouldClose = event.isPrimary
+        && event.button === 0
+        && event.composedPath().includes(menuToggle)
+        && isOpen();
+    }, true);
     menuToggle.addEventListener("pointerdown", (event) => event.stopPropagation());
-    menuToggle.addEventListener("click", () => {
-      if (isOpen()) closeMenu();
+    menuToggle.addEventListener("click", (event) => {
+      const pointerToggleClosed = event.detail > 0 && pointerToggleShouldClose;
+      pointerToggleShouldClose = false;
+      if (pointerToggleClosed || isOpen()) closeMenu(true);
       else openMenu();
     });
     menu.addEventListener("click", (event) => {

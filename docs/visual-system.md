@@ -38,6 +38,8 @@
 
 排序菜单和选择器都锚定触发器，打开时更新 `aria-expanded`，关闭时支持 Escape、点击外部和再次点击触发器。带明确触发器的浮层关闭后把焦点还给触发器；鼠标打开菜单不会制造不必要的焦点跳闪。
 
+移动主导航使用按钮控制的 disclosure，导航链接保持原生 Tab 顺序。指针、Enter 或 Space 打开时不把焦点程序化移入菜单；Escape 或再次激活按钮关闭时，焦点回到触发器，若浏览器已将焦点留在触发器则不重复调用 `focus()`。点击菜单外关闭时保留用户点击目标的自然焦点。支持时优先使用原生 Popover，受限 fallback 也同步可见状态与 `aria-expanded`。
+
 ## Select / Listbox
 
 站点不向用户展示原生 `<select>` 展开 UI。Archive、Quarter 和 Settings 使用共享的轻量 `window.BsbListbox`：按钮触发器关联 `role="listbox"`，选项使用 `role="option"` 与 selected 状态，支持 Arrow Up / Down、Home / End、Enter / Space、Escape、Tab、点击外部关闭和再次打开。选择后立即调用原有状态更新与 localStorage 逻辑，长选项在自身可滚动的浮层内显示，不撑宽页面。

@@ -372,6 +372,37 @@ have already passed.
   bounded Plan does not approve broader A–F work or advance the Production
   lifecycle.
 
+## Plan-54 bounded mobile-menu interaction evidence (2026-10-14)
+
+- Plan-54 Rev1 began on `main` / `origin/main` at
+  `958e1bb03598c7048e0f19df6d4255038cfe1610`, with a clean tracked worktree.
+  The known second-activation issue was reproduced in Chromium 149.0.7827.55
+  and Playwright WebKit 26.5. In both, the native Popover emitted `closed`
+  between the trigger `pointerdown` and `click`; the click handler then saw a
+  closed menu and reopened it. During this sequence WebKit also moved focus to
+  `body`, while the old open path then moved focus into the menu.
+- The shared handler now records primary-pointer activation intent before
+  native light-dismiss, so the corresponding click completes a close instead
+  of toggling the menu open again. It synchronizes actual Popover state,
+  restores focus to the trigger only when needed on explicit close, and leaves
+  focus in its natural order when opening. The existing fallback path was
+  exercised by removing the fixture's Popover attribute and verifying its
+  `showPopover()` failure recovery, repeated activation, Escape, and ARIA state.
+- Targeted Chromium/WebKit tests covered the exact `closed → open → closed`
+  event trace, subsequent reopening, Enter/Space, Escape focus return, Archive
+  link navigation, and native/fallback state. Nine related browser cases also
+  passed for outside close, placement, competing sort/Quarter surfaces, and
+  Quarter/Archive shared-header behavior. Only these targeted cases ran; the
+  full browser/PWA suites were not run. Real iOS Safari and installed-PWA
+  behavior remain unverified.
+- `docs/visual-system.md` now specifies the mobile disclosure focus behavior.
+  No builder, CSS, PWA/SW, facts, configuration, database, cover, formal site,
+  release, Pages, or `gh-pages` change occurred. Generated test fixtures were
+  temporary; no diagnostic report or screenshot was added to the repository.
+  Source delivery and post-push CI are reported in the TASK_RESULT. This
+  localized fix does not approve Phase B/C or the wider A–F program and does
+  not advance the Production lifecycle.
+
 ## 2026-10-13 experience-upgrade research status
 
 - The local report `BGMB-总体体验升级与架构优化研究报告.md` under

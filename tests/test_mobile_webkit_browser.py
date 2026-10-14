@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import functools
 import http.server
+import json
 import threading
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Browser, Page, sync_playwright
+from playwright.sync_api import Browser, Page, Route, sync_playwright
 
 from tests.test_site_builder import _build_fixture
 
@@ -162,6 +163,159 @@ def test_mobile_menu_is_anchored_without_fullscreen_overlay(
     _assert_no_root_motion_or_black_overlay(motion_page)
 
 
+def test_mobile_menu_second_trigger_activation_closes_and_stays_closed(
+    motion_page: Page,
+    site_server: str,
+) -> None:
+    _open_quarter(motion_page, site_server)
+    toggle = motion_page.locator("[data-mobile-menu-toggle]")
+    menu = motion_page.locator("[data-mobile-menu]")
+    motion_page.evaluate("""() => {
+      const toggle = document.querySelector('[data-mobile-menu-toggle]');
+      const menu = document.querySelector('[data-mobile-menu]');
+      const trace = window.__menuTrace = [];
+      const record = (type, event) => trace.push({
+        type,
+        eventState: event?.newState ?? null,
+        open: menu.matches(':popover-open'),
+        dataOpen: menu.dataset.menuOpen,
+        expanded: toggle.getAttribute('aria-expanded'),
+        focus: document.activeElement?.getAttribute('data-mobile-menu-toggle')
+          !== null ? 'toggle'
+          : document.activeElement?.closest('[data-mobile-menu]') ? 'menu'
+          : document.activeElement?.tagName ?? null,
+      });
+      document.addEventListener('pointerdown', event => {
+        if (event.target === toggle) record('document-pointerdown-capture', event);
+      }, true);
+      toggle.addEventListener(
+        'pointerdown', event => record('trigger-pointerdown', event), true,
+      );
+      toggle.addEventListener(
+        'click', event => record('trigger-click-capture', event), true,
+      );
+      menu.addEventListener(
+        'beforetoggle', event => record('menu-beforetoggle', event),
+      );
+      menu.addEventListener('toggle', event => record('menu-toggle', event));
+    }""")
+
+    toggle.click()
+    assert menu.is_visible()
+    assert not menu.evaluate("node => node.contains(document.activeElement)")
+    motion_page.wait_for_function("""() => new Promise(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    })""")
+    toggle.click()
+    motion_page.wait_for_function("""() => new Promise(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    })""")
+
+    state = motion_page.evaluate("""() => {
+      const toggle = document.querySelector('[data-mobile-menu-toggle]');
+      const menu = document.querySelector('[data-mobile-menu]');
+      return {
+        mode: menu.dataset.menuMode,
+        open: menu.matches(':popover-open'),
+        visible: menu.getClientRects().length > 0
+          && getComputedStyle(menu).visibility !== 'hidden',
+        dataOpen: menu.dataset.menuOpen,
+        expanded: toggle.getAttribute('aria-expanded'),
+        focusOnToggle: document.activeElement === toggle,
+        trace: window.__menuTrace,
+      };
+    }""")
+    assert state["open"] is False, json.dumps(state, ensure_ascii=False)
+    assert state["visible"] is False, json.dumps(state, ensure_ascii=False)
+    assert state["dataOpen"] == "false", json.dumps(state, ensure_ascii=False)
+    assert state["expanded"] == "false", json.dumps(state, ensure_ascii=False)
+    assert state["focusOnToggle"] is True, json.dumps(state, ensure_ascii=False)
+    assert [
+        (entry["type"], entry["eventState"])
+        for entry in state["trace"]
+        if entry["type"] in {"menu-beforetoggle", "menu-toggle"}
+    ] == [
+        ("menu-beforetoggle", "open"),
+        ("menu-toggle", "open"),
+        ("menu-beforetoggle", "closed"),
+        ("menu-toggle", "closed"),
+    ], json.dumps(state["trace"], ensure_ascii=False)
+
+    toggle.click()
+    assert menu.is_visible()
+    assert not menu.evaluate("node => node.contains(document.activeElement)")
+    toggle.focus()
+    motion_page.keyboard.press("Enter")
+    motion_page.wait_for_function("""() => new Promise(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    })""")
+    assert menu.is_hidden()
+    assert motion_page.evaluate(
+        "document.activeElement === document.querySelector('[data-mobile-menu-toggle]')"
+    )
+    motion_page.keyboard.press("Enter")
+    assert menu.is_visible()
+    assert motion_page.evaluate(
+        "document.activeElement === document.querySelector('[data-mobile-menu-toggle]')"
+    )
+    motion_page.keyboard.press("Escape")
+    motion_page.wait_for_function("""() => new Promise(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    })""")
+    assert menu.is_hidden()
+    assert motion_page.evaluate(
+        "document.activeElement === document.querySelector('[data-mobile-menu-toggle]')"
+    )
+    motion_page.keyboard.press("Space")
+    assert menu.is_visible()
+    assert motion_page.evaluate(
+        "document.activeElement === document.querySelector('[data-mobile-menu-toggle]')"
+    )
+    menu.get_by_role("link", name="档案", exact=True).click()
+    motion_page.wait_for_url("**/archive/index.html")
+    assert menu.is_hidden()
+    assert motion_page.locator("[data-mobile-menu-toggle]").get_attribute(
+        "aria-expanded"
+    ) == "false"
+
+
+def test_mobile_menu_fallback_second_activation_and_escape_focus(
+    motion_page: Page,
+    site_server: str,
+) -> None:
+    def without_native_popover(route: Route) -> None:
+        response = route.fetch()
+        body = response.text().replace(' popover="auto"', "", 1)
+        assert body != response.text()
+        route.fulfill(response=response, body=body)
+
+    motion_page.route("**/2026-07/index.html", without_native_popover)
+    _open_quarter(motion_page, site_server)
+    toggle = motion_page.locator("[data-mobile-menu-toggle]")
+    menu = motion_page.locator("[data-mobile-menu]")
+
+    toggle.click()
+    assert menu.is_visible()
+    assert menu.get_attribute("data-menu-mode") == "fallback"
+    toggle.click()
+    assert menu.is_hidden()
+    assert menu.get_attribute("data-menu-open") == "false"
+    assert toggle.get_attribute("aria-expanded") == "false"
+    assert motion_page.evaluate(
+        "document.activeElement === document.querySelector('[data-mobile-menu-toggle]')"
+    )
+
+    toggle.click()
+    assert menu.is_visible()
+    motion_page.keyboard.press("Escape")
+    assert menu.is_hidden()
+    assert menu.get_attribute("data-menu-open") == "false"
+    assert toggle.get_attribute("aria-expanded") == "false"
+    assert motion_page.evaluate(
+        "document.activeElement === document.querySelector('[data-mobile-menu-toggle]')"
+    )
+
+
 @pytest.mark.parametrize("page_kind", ["quarter", "archive"])
 def test_mobile_browse_first_screen_keeps_scope_and_actions(
     motion_page: Page,
@@ -245,13 +399,19 @@ def test_mobile_browse_first_screen_keeps_scope_and_actions(
                 "YEAR / 2026"
             )
 
-    motion_page.locator("[data-mobile-menu-toggle]").click()
-    assert motion_page.locator("[data-mobile-menu]").is_visible()
-    assert motion_page.locator("[data-mobile-menu]").get_by_role(
+    menu_toggle = motion_page.locator("[data-mobile-menu-toggle]")
+    menu_toggle.click()
+    menu = motion_page.locator("[data-mobile-menu]")
+    assert menu.is_visible()
+    assert menu.get_by_role(
         "link", name="档案", exact=True
     ).is_visible()
     motion_page.keyboard.press("Escape")
-    motion_page.locator("[data-mobile-menu]").wait_for(state="hidden")
+    menu.wait_for(state="hidden")
+    assert menu_toggle.get_attribute("aria-expanded") == "false"
+    assert motion_page.evaluate(
+        "document.activeElement === document.querySelector('[data-mobile-menu-toggle]')"
+    )
     if page_kind == "quarter":
         root.locator("[data-quarter-selector]").click()
         assert root.locator("[data-quarter-sheet]").is_visible()

@@ -62,6 +62,14 @@ Quarter 与 Archive 的结果工具栏共用轻量的 Grid / List segmented cont
 
 所有页面由统一 builder 生成同一套原生 HTML shell：skip link、档案栏、品牌、季度标识、主内容和页脚保持一致，不存在第二套模板或前端输出。
 
+767px 及以下的 Quarter / Archive 首屏优先展示当前范围和作品。保留品牌与菜单，将重复的
+header 档案栏、Quarter 的 `QUARTER` 装饰标签，以及 Archive intro 的档案代码和辅助说明
+从手机文档流中隐藏；可见的语义 `h1`、当前季度 / 年份 / 范围及其操作入口仍保留。
+Quarter 的媒体选择与搜索共用第一行，筛选、排序和 Grid / List 使用第二行；Archive 保留
+完整宽度搜索，将年份标签与选择器并排，并减少范围区、媒体工具行和结果标题周围的留白。
+Grid / List 按钮也至少为 44×44px，不以缩小触控区域换取内容前置。此密度规则不改变
+768px 及以上桌面布局或 Settings header，也不新增 sticky / fixed 全局导航。
+
 Settings 按 01 / 离线季度、02 / 下载任务、03 / 批量下载、04 / 存储与应用、05 / 高级诊断、
 06 / CHANGELOG 排列。更新日志使用原生 `<details>` / `<summary>`：standalone patch 直接显示，
 `major.minor.0` 作为默认收起的 milestone，并在一级 summary 同时显示 anchor release 的正式

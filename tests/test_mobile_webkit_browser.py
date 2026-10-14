@@ -162,6 +162,161 @@ def test_mobile_menu_is_anchored_without_fullscreen_overlay(
     _assert_no_root_motion_or_black_overlay(motion_page)
 
 
+@pytest.mark.parametrize("page_kind", ["quarter", "archive"])
+def test_mobile_browse_first_screen_keeps_scope_and_actions(
+    motion_page: Page,
+    site_server: str,
+    page_kind: str,
+) -> None:
+    path = "2026-07/index.html" if page_kind == "quarter" else "archive/index.html"
+    motion_page.set_default_timeout(20000)
+    motion_page.goto(f"{site_server}/{path}")
+    motion_page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes(' / ')"
+    )
+    root = motion_page.locator(f'[data-page="{page_kind}"][data-archive-app]')
+    initial_keys = root.locator(".subject-row:visible").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.recordKey)"
+    )
+
+    for width, height in ((390, 844), (360, 800)):
+        motion_page.set_viewport_size({"width": width, "height": height})
+        motion_page.emulate_media(
+            reduced_motion="reduce" if width == 360 else "no-preference"
+        )
+        motion_page.evaluate("scrollTo(0, 0)")
+        geometry = motion_page.evaluate("""() => {
+          const visible = node => node.getClientRects().length
+            && getComputedStyle(node).visibility !== 'hidden';
+          const root = document.querySelector('[data-archive-app]');
+          const rows = [...root.querySelectorAll('.subject-row')].filter(visible);
+          const controls = [...document.querySelectorAll(`
+            [data-mobile-menu-toggle], .quarter-nav a, .quarter-nav button,
+            .scope-tabs button, .archive-selector .select-trigger,
+            .browser-controls button, .browser-controls input,
+            .archive-browser__toolbar button`)].filter(visible);
+          const search = root.querySelector('[data-search]').getBoundingClientRect();
+          const cover = rows[0].querySelector('.subject-row__cover')
+            .getBoundingClientRect();
+          return {
+            firstTop: rows[0].getBoundingClientRect().top,
+            h1Visible: visible(root.querySelector('h1')),
+            pageWidth: document.documentElement.scrollWidth,
+            searchWidth: search.width,
+            controls: controls.map(node => {
+              const rect = node.getBoundingClientRect();
+              const hit = document.elementFromPoint(
+                rect.left + rect.width / 2, rect.top + rect.height / 2
+              );
+              const text = node.innerText
+                || node.getAttribute('aria-label') || 'search';
+              return {text,
+                x: rect.x, width: rect.width, height: rect.height,
+                unobscured: hit === node || node.contains(hit)};
+            }),
+            coverRatio: cover.width / cover.height,
+          };
+        }""")
+        assert 0 < geometry["firstTop"] < (
+            380 if page_kind == "quarter" else 520
+        ), geometry
+        assert geometry["h1Visible"] is True
+        assert geometry["pageWidth"] <= width
+        assert geometry["searchWidth"] >= 180
+        assert abs(geometry["coverRatio"] - 2 / 3) < 0.01
+        for control in geometry["controls"]:
+            assert control["height"] >= 44, control
+            assert control["width"] >= 44, control
+            assert control["x"] >= 0, control
+            assert control["x"] + control["width"] <= width + 1, control
+            assert control["unobscured"] is True, control
+        assert root.locator(".subject-row:visible").evaluate_all(
+            "nodes => nodes.map(node => node.dataset.recordKey)"
+        ) == initial_keys
+        if page_kind == "quarter":
+            assert len(initial_keys) == 26
+            assert root.locator("[data-pager]").is_hidden()
+            assert root.locator(".page-size").is_hidden()
+        else:
+            assert len(initial_keys) == 20
+            assert root.locator("[data-page-size] .select-trigger").inner_text() == "20"
+            assert root.locator("[data-pager]").is_visible()
+            assert root.locator("[data-archive-scope-label]").inner_text() == (
+                "YEAR / 2026"
+            )
+
+    motion_page.locator("[data-mobile-menu-toggle]").click()
+    assert motion_page.locator("[data-mobile-menu]").is_visible()
+    assert motion_page.locator("[data-mobile-menu]").get_by_role(
+        "link", name="档案", exact=True
+    ).is_visible()
+    motion_page.keyboard.press("Escape")
+    motion_page.locator("[data-mobile-menu]").wait_for(state="hidden")
+    if page_kind == "quarter":
+        root.locator("[data-quarter-selector]").click()
+        assert root.locator("[data-quarter-sheet]").is_visible()
+        root.locator("[data-quarter-sheet-close]").click()
+        assert root.locator("[data-quarter-sheet]").is_hidden()
+    else:
+        root.locator("[data-archive-year-select] .select-trigger").click()
+        assert root.locator("[data-archive-year-select] [role='listbox']").is_visible()
+        motion_page.keyboard.press("Escape")
+        root.locator('[data-scope-choice="range"]').click()
+        assert root.locator("[data-archive-from]").is_visible()
+        assert root.locator("[data-range-apply]").is_visible()
+        assert motion_page.evaluate(
+            "document.documentElement.scrollWidth <= innerWidth"
+        )
+        root.locator('[data-scope-choice="year"]').click()
+        motion_page.wait_for_function(
+            "document.querySelector('[data-results-summary]')"
+            "?.textContent.includes(' / ')"
+        )
+
+    root.locator("[data-filter-toggle]").focus()
+    motion_page.keyboard.press("Tab")
+    assert root.locator("[data-sort-toggle]").evaluate(
+        "node => node === document.activeElement && node.matches(':focus-visible')"
+    )
+    assert root.locator("[data-sort-toggle]").evaluate(
+        "node => parseFloat(getComputedStyle(node).outlineWidth) >= 3"
+    )
+    assert root.locator("[data-filter-toggle]").evaluate(
+        "node => parseFloat(getComputedStyle(node).transitionDuration) <= 0.001"
+    )
+    search = root.locator("[data-search]")
+    search.fill("303")
+    assert root.locator(".subject-row:visible").count() == 1
+    search.fill("")
+    assert root.locator(".subject-row:visible").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.recordKey)"
+    ) == initial_keys
+    motion_page.evaluate("""() => {
+      scrollTo(0, 0);
+      window.__compactRows = [...document.querySelectorAll('.subject-row')];
+      window.__compactFirstTop = document.querySelector('.subject-row')
+        .getBoundingClientRect().top;
+    }""")
+    root.locator(".subject-row:visible [data-open-subject]").first.click()
+    detail = root.locator("[data-detail-panel]")
+    detail.wait_for(state="visible")
+    assert detail.bounding_box()["width"] >= 358
+    motion_page.go_back()
+    detail.wait_for(state="hidden")
+    root.locator("[data-filter-toggle]").click()
+    assert root.locator("[data-filter-panel]").is_visible()
+    motion_page.get_by_role("button", name="关闭筛选").click()
+    assert root.get_attribute("data-workspace-mode") == "scope"
+    motion_page.wait_for_function("Math.abs(scrollY) <= 2")
+    assert motion_page.evaluate("""() => {
+      const rows = [...document.querySelectorAll('.subject-row')];
+      const topDelta = rows[0].getBoundingClientRect().top - window.__compactFirstTop;
+      return rows.every((row, index) => row === window.__compactRows[index])
+        && rows.length === window.__compactRows.length
+        && Math.abs(topDelta) <= 1;
+    }""")
+
+
 def test_grid_list_motion_has_shared_geometry_in_chromium_and_webkit(
     motion_page: Page,
     site_server: str,

@@ -294,6 +294,25 @@ have already passed.
   percentile is claimed. The full large pre-change matrix remains incomplete.
   Real Safari/standalone, production, CI, and Pages were not tested. The
   Production lifecycle and A–F approval state do not change.
+- Plan-51 Rev1 makes the separately authorized, bounded mobile first-screen
+  layout exception: repeated header/archive decoration and explanatory copy
+  leave the mobile flow, while the visible h1, current scope, navigation, and
+  browse controls remain. Quarter combines media and search in one row;
+  Archive uses a compact intro and inline year selector. All tested controls,
+  including Grid/List, retain at least 44px touch targets. In the same loaded
+  synthetic fixture at scroll 0, Chromium 149 / 390×844 measured the first
+  Quarter row at 504.1px before and 317.4px after (186.8px higher), and the
+  default Archive year view at 745.8px before and 442.7px after (303.1px higher).
+  Visible result keys/order did not change. Measured 1440×900 geometry and
+  order matched the baseline exactly; the 390px Settings header also matched.
+  Seven targeted cases have passing evidence across Chromium/WebKit, 390/360px
+  layouts, focus, search, detail/filter restoration, continuous Quarter rows,
+  and Archive pagination. Real Safari/standalone, online production, and CI
+  results were not verified. An inherited native-popover issue was reproduced
+  with both old and new CSS: clicking the open menu trigger again can reopen
+  it; Escape closes it in both engines. No runtime JS, PWA, facts, configuration,
+  private formal site, or release behavior changed. This does not complete or
+  approve the broader B phase; the lifecycle remains Production.
 
 ## 2026-10-13 experience-upgrade research status
 
@@ -302,9 +321,10 @@ have already passed.
   response/rendering, B first-screen/image delivery, C browsing state/context,
   D local snapshot data access, E personal workspace/exploration, and F
   maintainer update efficiency. These candidates have not become an approved
-  implementation Plan; their ordering, targets, and product tradeoffs remain
-  proposals. The bounded Plan-49 change does not approve the broader program or
-  move the Production lifecycle into a new phase.
+  overall implementation Plan; their ordering, targets, and product tradeoffs
+  remain proposals outside separately approved scopes. Plans 49–51 authorize
+  only their bounded changes and do not approve the broader program or move
+  the Production lifecycle into a new phase.
 - The original research report and `measurements.json` were read; their JSON,
   script headers, and artifact inventory were inspected without copying or
   rerunning those original research scripts. They identify source baseline

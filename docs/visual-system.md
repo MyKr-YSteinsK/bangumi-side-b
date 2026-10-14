@@ -83,10 +83,13 @@ Quarter 与 Archive 的 TV 结果使用同一条真实 DOM 序列，排序按当
 
 浏览连续性不依赖 CSS View Transition 或跨文档 root snapshot。普通搜索沿用现有查询 pipeline
 同步更新结果，不进入通用 FLIP 路径，不扫描并取消整棵结果树的动画，也不为搜索读取结果几何；
-排序、媒体集合变化和 Grid / List 切换继续使用局部作品动效并保留现有节点身份。其他需要位置恢复的
-操作使用很薄的 `withResultMotion(reason, root, mutate)`：只捕获 viewport 及上下缓冲区内、最多 32
-个已有作品节点，在 DOM mutation 后用 FLIP/WAAPI 恢复其位置；TV/MOVIE 或新季度集合使用最多 12 个
-短促入场节点。快速重入会取消旧节点动画，不建立队列；新季度首屏最多 10 项使用一次性的轻量渐入。
-`prefers-reduced-motion: reduce` 会跳过位置、入场和 stagger，但不跳过状态更新。
+排序、媒体集合变化和 Grid / List 切换继续使用局部作品动效并保留现有节点身份。页面渲染维护按结果
+区段排列的可见作品组，`withResultMotion(reason, root, mutate)` 在组内二分定位 viewport 及上下缓冲区，
+最多检查 32 个已有作品节点，不先测量全部结果行的几何。Grid / List 几何变形复用这些节点的行及组件
+引用；TV/MOVIE 或新季度集合使用最多 12 个短促入场节点。季度上一季、下一季和选择器链接保留原生
+同源导航，点击处理器不阻止默认动作或等待退场动画；同一浏览上下文可记录最多有效 10 秒、且须与
+目标季度匹配的到达 token，目标页最多为 10 个可见结果播放局部入场反馈。页面只跟踪自身创建的 WAAPI
+活动句柄，取消和完成后都会释放句柄；快速重入取消旧动画，不建立队列。`prefers-reduced-motion: reduce`
+直接执行状态更新，跳过结果几何采样及新的非必要动效。
 
 CSS 不加载远程字体或 CDN。运行时 JavaScript 只处理页面交互、PWA 缓存与下载，并请求构建生成的同源 JSON 和静态资源；不能读取 SQLite、访问 Bangumi 或其它远程业务 API、载入远程图片或埋点。

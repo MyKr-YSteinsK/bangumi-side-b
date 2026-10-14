@@ -260,6 +260,8 @@
 
   const MAX_RESULT_MOTION_NODES = 32;
   const MAX_RESULT_ENTRANCES = 12;
+  const resultMotionGroups = new WeakMap();
+  const activeResultAnimations = new WeakMap();
 
   function resultHost(root) {
     if (root?.matches?.("[data-archive-app]")) return root;
@@ -267,25 +269,58 @@
       || document.querySelector("[data-archive-app]");
   }
 
+  function setResultMotionGroups(root, groups) {
+    const host = resultHost(root);
+    if (!host) return;
+    const normalized = (Array.isArray(groups) ? groups : [])
+      .map((group) => (Array.isArray(group) ? group : [])
+        .filter((node) => node?.matches?.("[data-record-key]")))
+      .filter((group) => group.length > 0);
+    resultMotionGroups.set(host, normalized);
+  }
+
   function visibleResultNodes(root) {
     if (!root) return [];
     const viewportTop = -window.innerHeight;
     const viewportBottom = window.innerHeight * 2;
-    return [...root.querySelectorAll("[data-record-key]")]
-      .filter((node) => {
-        if (node.hidden) return false;
+    const candidates = [];
+    for (const group of resultMotionGroups.get(root) || []) {
+      if (candidates.length >= MAX_RESULT_MOTION_NODES) break;
+      if (group[0].closest("[data-list-section]")?.hidden) continue;
+
+      let low = 0;
+      let high = group.length;
+      while (low < high) {
+        const middle = low + Math.floor((high - low) / 2);
+        if (group[middle].getBoundingClientRect().bottom < viewportTop) {
+          low = middle + 1;
+        } else {
+          high = middle;
+        }
+      }
+
+      for (let index = low; index < group.length; index += 1) {
+        const node = group[index];
         const rect = node.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0
-          && rect.bottom >= viewportTop && rect.top <= viewportBottom;
-      })
-      .slice(0, MAX_RESULT_MOTION_NODES);
+        if (rect.top > viewportBottom) break;
+        if (node.hidden || rect.width <= 0 || rect.height <= 0
+          || rect.bottom < viewportTop) continue;
+        candidates.push(node);
+        if (candidates.length >= MAX_RESULT_MOTION_NODES) break;
+      }
+    }
+    return candidates;
   }
 
   function cancelResultMotion(root) {
     if (!root) return;
-    root.querySelectorAll("[data-record-key], [data-record-key] *").forEach((node) => {
-      node.getAnimations?.().forEach((animation) => animation.cancel());
-    });
+    const active = activeResultAnimations.get(root);
+    if (!active) return;
+    activeResultAnimations.delete(root);
+    for (const animation of [...active]) {
+      active.delete(animation);
+      animation.cancel();
+    }
   }
 
   function cancelActiveResultAnimations(root) {
@@ -321,7 +356,7 @@
             }];
           }),
       );
-      return [row.dataset.recordKey, geometry];
+      return [row.dataset.recordKey, { elements, geometry }];
     }));
   }
 
@@ -332,10 +367,33 @@
       easing: "cubic-bezier(.2, .7, .2, 1)",
       fill: "both",
     });
-    animation.finished?.then(
-      () => animation.cancel(),
-      () => {},
-    );
+    const host = resultHost(node);
+    if (host) {
+      let active = activeResultAnimations.get(host);
+      if (!active) {
+        active = new Set();
+        activeResultAnimations.set(host, active);
+      }
+      active.add(animation);
+      const cleanup = () => {
+        active.delete(animation);
+        if (!active.size && activeResultAnimations.get(host) === active) {
+          activeResultAnimations.delete(host);
+        }
+      };
+      const finished = animation.finished;
+      if (finished?.then) {
+        finished.then(
+          () => {
+            cleanup();
+            animation.cancel();
+          },
+          cleanup,
+        );
+      } else {
+        cleanup();
+      }
+    }
     return animation;
   }
 
@@ -367,41 +425,39 @@
       ],
       duration,
     );
-    animation?.finished?.then(
-      () => element.style.removeProperty("transform-origin"),
-      () => element.style.removeProperty("transform-origin"),
-    );
+    const clearTransformOrigin = () => element.style.removeProperty("transform-origin");
+    animation?.finished?.then(clearTransformOrigin, clearTransformOrigin);
     return animation;
   }
 
   function animateViewModeMorph(root, before) {
     if (!root || prefersReducedMotion()) return;
     const after = captureResultGeometry(root);
-    for (const [key, geometry] of after) {
-      const previous = before.get(key);
+    for (const [key, next] of after) {
+      const previous = before.get(key)?.geometry;
       if (!previous) continue;
       animateGeometry(
-        root.querySelector(`[data-record-key="${CSS.escape(key)}"]`),
+        next.elements.outer,
         previous.outer,
-        geometry.outer,
+        next.geometry.outer,
         { duration: 230, force: true },
       );
       animateGeometry(
-        root.querySelector(`[data-record-key="${CSS.escape(key)}"] .subject-row__cover`),
+        next.elements.cover,
         previous.cover,
-        geometry.cover,
+        next.geometry.cover,
         { scale: true, duration: 240, force: true },
       );
       animateGeometry(
-        root.querySelector(`[data-record-key="${CSS.escape(key)}"] .subject-row__content`),
+        next.elements.content,
         previous.content,
-        geometry.content,
+        next.geometry.content,
         { duration: 220, force: true },
       );
       animateGeometry(
-        root.querySelector(`[data-record-key="${CSS.escape(key)}"] .subject-row__score`),
+        next.elements.score,
         previous.score,
-        geometry.score,
+        next.geometry.score,
         { duration: 220, force: true },
       );
     }
@@ -424,20 +480,29 @@
   const QUARTER_MOTION_KEY = "bsb-quarter-motion";
 
   function quarterFromHref(link) {
-    const match = new URL(link.href, window.location.href).pathname.match(
-      /\/(\d{4}-\d{2})\/index\.html$/,
-    );
-    return match?.[1] || null;
+    try {
+      const url = new URL(link.href, window.location.href);
+      if (url.origin !== window.location.origin) return null;
+      const match = url.pathname.match(/\/(\d{4}-\d{2})\/index\.html$/);
+      return match?.[1] || null;
+    } catch {
+      return null;
+    }
   }
 
   function prepareQuarterDeparture(event) {
-    if (event.defaultPrevented || event.button !== 0
+    const keyboardActivation = event.detail === 0 && event.button === -1;
+    if (event.defaultPrevented || (event.button !== 0 && !keyboardActivation)
       || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const link = event.target.closest?.(
       'a[data-quarter-prev], a[data-quarter-next], a[data-quarter-option]',
     );
     const root = document.querySelector('[data-page="quarter"][data-archive-app]');
-    if (!link || !root || link.target === "_blank") return;
+    if (!link || !root || link.hasAttribute("download")) return;
+    const declaredTarget = link.getAttribute("target");
+    const baseTarget = document.querySelector("base[target]")?.getAttribute("target");
+    const target = (declaredTarget?.trim() || baseTarget?.trim() || "_self").toLowerCase();
+    if (target !== "_self") return;
     const from = root.dataset.quarter;
     const to = quarterFromHref(link);
     if (!from || !to || from === to || prefersReducedMotion()) return;
@@ -453,20 +518,8 @@
       }));
     } catch {
       // Navigation remains available when sessionStorage is unavailable.
+      return;
     }
-    event.preventDefault();
-    const sign = direction === "next" ? -1 : 1;
-    visibleResultNodes(root).slice(0, MAX_RESULT_ENTRANCES).forEach((row) => {
-      animateResultNode(
-        row,
-        [
-          { opacity: 1, transform: "translateX(0)" },
-          { opacity: 0.65, transform: `translateX(${sign * 12}px)` },
-        ],
-        110,
-      );
-    });
-    window.setTimeout(() => window.location.assign(link.href), 110);
   }
 
   function playQuarterArrival(root) {
@@ -477,8 +530,9 @@
     } catch {
       return false;
     }
+    const tokenAge = Date.now() - Number(token?.timestamp);
     if (!token || token.to !== root?.dataset.quarter
-      || Date.now() - Number(token.timestamp) > 2000) return false;
+      || !Number.isFinite(tokenAge) || tokenAge < 0 || tokenAge > 10000) return false;
     if (prefersReducedMotion()) return true;
     const sign = token.direction === "next" ? 1 : -1;
     visibleResultNodes(root).slice(0, MAX_RESULT_ENTRANCES).forEach((row, index) => {
@@ -536,6 +590,7 @@
     if (typeof mutate !== "function") return undefined;
     const host = resultHost(root);
     cancelResultMotion(host);
+    if (prefersReducedMotion()) return mutate();
     const before = reason === "view-mode"
       ? captureResultGeometry(host)
       : captureResultPositions(host);
@@ -695,6 +750,7 @@
     prefersReducedMotion,
     withResultMotion,
     withBrowseTransition,
+    setResultMotionGroups,
     captureResultGeometry,
     animateViewModeMorph,
     animateCollectionChange,
@@ -1479,6 +1535,15 @@
     if (noResults && noResults.hidden !== (result.total !== 0)) {
       noResults.hidden = result.total !== 0;
     }
+    archive.setResultMotionGroups(quarterRoot, sections.map((section) => {
+      const media = section.dataset.listSection === "movie" ? "MOVIE" : "TV";
+      const appearance = section.dataset.appearanceSection;
+      return visibleRecords
+        .filter((record) => record.media === media
+          && (appearance === "all" || record.appearance === appearance))
+        .map((record) => rowByKey.get(record.key))
+        .filter(Boolean);
+    }));
   }
 
   function renderPager(result) {
@@ -1848,9 +1913,14 @@
         closeSortPopover();
         archive.withResultMotion("view-mode", quarterRoot, () => {
           state.viewMode = archive.writeViewMode(button.dataset.viewMode);
-          render();
+          quarterRoot.dataset.viewMode = state.viewMode;
+          quarterRoot.querySelectorAll("[data-view-mode]").forEach((viewButton) => {
+            viewButton.setAttribute(
+              "aria-pressed",
+              String(viewButton.dataset.viewMode === state.viewMode),
+            );
+          });
         });
-        button.focus();
       });
     });
     const sortButton = quarterRoot.querySelector("[data-sort-toggle]");
@@ -2556,6 +2626,7 @@
     }
     const positions = new Map(result.all.map((record, index) => [record.key, index + 1]));
     const visibleRecords = result.pageRecords;
+    const motionGroups = [];
     for (const [media, group] of listSections) {
       const sectionMedia = media === "movie" ? "MOVIE" : "TV";
       const matching = result.all.filter((record) => record.media === sectionMedia);
@@ -2563,6 +2634,7 @@
         .filter((record) => record.media === sectionMedia)
         .map((record) => rowByKey.get(record.key))
         .filter(Boolean);
+      motionGroups.push(pageRows);
       archive.reconcileChildren(group.list, pageRows);
       const count = matching.length;
       const hidden = state.media !== media || count === 0;
@@ -2581,6 +2653,7 @@
         if (sequence && sequence.textContent !== number) sequence.textContent = number;
       }
     }
+    archive.setResultMotionGroups(root, motionGroups);
   }
 
   function updateRowSelection(recordKey, selected) {
@@ -3188,7 +3261,19 @@
       renderSearchResults();
     });
     root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withResultMotion("media", root, () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }); }));
-    root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withResultMotion("view-mode", root, () => { state.viewMode = archive.writeViewMode(button.dataset.viewMode); render(); }); button.focus(); }));
+    root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => {
+      closeSortPopover();
+      archive.withResultMotion("view-mode", root, () => {
+        state.viewMode = archive.writeViewMode(button.dataset.viewMode);
+        root.dataset.viewMode = state.viewMode;
+        root.querySelectorAll("[data-view-mode]").forEach((viewButton) => {
+          viewButton.setAttribute(
+            "aria-pressed",
+            String(viewButton.dataset.viewMode === state.viewMode),
+          );
+        });
+      });
+    }));
     root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
       closeSortPopover();
       if (state.workspaceMode === "filter") closeFilterAndRestoreFocus(false);

@@ -318,62 +318,321 @@ def test_media_collection_motion_stays_inside_results(
     _assert_no_root_motion_or_black_overlay(motion_page)
 
 
-def test_quarter_departure_and_arrival_use_result_only_motion(
+@pytest.mark.parametrize("viewport", [(393, 852), (1280, 900)])
+@pytest.mark.parametrize("reduced_motion", ["no-preference", "reduce"])
+def test_quarter_navigation_keeps_native_default_and_arrival_feedback(
+    motion_page: Page,
+    site_server: str,
+    viewport: tuple[int, int],
+    reduced_motion: str,
+) -> None:
+    motion_page.add_init_script("""(() => {
+      const key = '__plan50-nav-observation';
+      const originalSetTimeout = window.setTimeout.bind(window);
+      const originalGetItem = Storage.prototype.getItem;
+      window.__plan50NavCurrent = null;
+      window.__plan50ArrivalAnimations = 0;
+      window.__plan50MotionTokenReads = [];
+      Storage.prototype.getItem = function(storageKey) {
+        const value = originalGetItem.call(this, storageKey);
+        if (storageKey === 'bsb-quarter-motion') {
+          window.__plan50MotionTokenReads.push(value);
+        }
+        return value;
+      };
+      window.setTimeout = (callback, delay, ...args) => {
+        if (window.__plan50NavCurrent && Number(delay) >= 80) {
+          window.__plan50NavCurrent.longTimers.push(Number(delay));
+        }
+        return originalSetTimeout(callback, delay, ...args);
+      };
+      const animate = Element.prototype.animate;
+      Element.prototype.animate = function(...args) {
+        if (this.closest?.('[data-page="quarter"] [data-record-key]')) {
+          window.__plan50ArrivalAnimations += 1;
+        }
+        return animate.apply(this, args);
+      };
+      document.addEventListener('click', event => {
+        const link = event.target.closest?.(
+          'a[data-quarter-prev], a[data-quarter-next], a[data-quarter-option]'
+        );
+        if (!link || event.button !== 0 || event.metaKey || event.ctrlKey
+          || event.shiftKey || event.altKey) return;
+        const observation = {
+          href: link.href,
+          clickEpochMs: Date.now(),
+          defaultPrevented: null,
+          longTimers: [],
+              button: event.button,
+              detail: event.detail,
+              isTrusted: event.isTrusted,
+        };
+        window.__plan50NavCurrent = observation;
+        sessionStorage.setItem(key, JSON.stringify(observation));
+        queueMicrotask(() => {
+          observation.defaultPrevented = event.defaultPrevented;
+          sessionStorage.setItem(key, JSON.stringify(observation));
+          window.__plan50NavCurrent = null;
+        });
+      }, true);
+    })();""")
+    motion_page.set_viewport_size({"width": viewport[0], "height": viewport[1]})
+    motion_page.emulate_media(reduced_motion=reduced_motion)
+    _open_quarter(motion_page, site_server)
+
+    def activate(
+        selector: str,
+        expected_path: str,
+        *,
+        via_enter: bool = False,
+    ) -> dict[str, object]:
+        link = motion_page.locator(selector)
+        if via_enter:
+            link.focus()
+            motion_page.keyboard.press("Enter")
+        else:
+            link.click()
+        motion_page.wait_for_url(f"**{expected_path}")
+        motion_page.wait_for_load_state("load")
+        motion_page.wait_for_function(
+            "document.querySelector('[data-results-summary]')"
+            "?.textContent.trim().length > 0"
+        )
+        state = motion_page.evaluate("""() => {
+          const observation = JSON.parse(sessionStorage.getItem(
+            '__plan50-nav-observation'
+          ) || 'null');
+          const navigation = performance.getEntriesByType('navigation')[0];
+          return {
+            observation,
+            clickToRequestStartMs: observation && navigation
+              ? performance.timeOrigin + navigation.requestStart
+                - observation.clickEpochMs
+              : null,
+            arrivalAnimations: window.__plan50ArrivalAnimations,
+            appToken: sessionStorage.getItem('bsb-quarter-motion'),
+                tokenReads: window.__plan50MotionTokenReads,
+                reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+                geometryCandidates: window.BsbArchive.captureResultGeometry(
+                  document.querySelector('[data-page="quarter"][data-archive-app]')
+                ).size,
+          };
+        }""")
+        assert state["observation"]["href"].endswith(expected_path), state
+        assert state["observation"]["defaultPrevented"] is False, state
+        assert state["observation"]["longTimers"] == [], state
+        assert state["clickToRequestStartMs"] is not None, state
+        assert state["appToken"] is None, state
+        assert state["geometryCandidates"] > 0, state
+        if reduced_motion == "reduce":
+            assert state["arrivalAnimations"] == 0, state
+        else:
+            assert state["arrivalAnimations"] > 0, (
+                f"observation={state['observation']!r}, "
+                f"tokenReads={state['tokenReads']!r}, "
+                f"geometryCandidates={state['geometryCandidates']}, "
+                f"prefersReducedMotion={state['reducedMotion']}"
+            )
+        _assert_no_root_motion_or_black_overlay(motion_page)
+        return state
+
+    activate("[data-quarter-prev]", "/2026-04/index.html")
+    activate("[data-quarter-next]", "/2026-07/index.html", via_enter=True)
+    motion_page.locator("[data-quarter-selector]").click()
+    activate('[data-quarter-option="2026-04"]', "/2026-04/index.html")
+    motion_page.go_back()
+    motion_page.wait_for_url("**/2026-07/index.html")
+    assert motion_page.locator('[data-page="quarter"][data-archive-app]').get_attribute(
+        "data-quarter"
+    ) == "2026-07"
+
+
+def test_rapid_quarter_activation_keeps_one_native_navigation(
     motion_page: Page,
     site_server: str,
 ) -> None:
     _open_quarter(motion_page, site_server)
-    departure = motion_page.evaluate(
-        """() => {
-          const link = document.querySelector('[data-quarter-prev]');
-          const originalSetTimeout = window.setTimeout;
-          window.setTimeout = () => 0;
-          const event = new MouseEvent('click', {
-            bubbles: true,
-            cancelable: true,
-            button: 0,
-          });
-          link.dispatchEvent(event);
-          window.setTimeout = originalSetTimeout;
-          return {
-            defaultPrevented: event.defaultPrevented,
-            token: JSON.parse(sessionStorage.getItem('bsb-quarter-motion')),
-            rowAnimations: document.querySelector('[data-list-sections] .subject-row')
-              .getAnimations().length,
-          };
-        }"""
+    motion_page.goto(f"{site_server}/2026-04/index.html")
+    motion_page.wait_for_selector(".subject-row")
+    target_url = f"{site_server}/2026-07/index.html"
+    history_length = motion_page.evaluate("history.length")
+    motion_page.evaluate(
+        "sessionStorage.setItem('__plan50-history-before', String(history.length))"
     )
-    assert departure["defaultPrevented"] is True
-    assert departure["token"]["from"] == "2026-07"
-    assert departure["token"]["to"] == "2026-04"
-    assert departure["token"]["direction"] == "prev"
-    assert departure["rowAnimations"] > 0, departure
-    _assert_no_root_motion_or_black_overlay(motion_page)
+    target_requests: list[str] = []
+    motion_page.on(
+        "request",
+        lambda request: target_requests.append(request.url)
+        if request.url == target_url
+        else None,
+    )
 
-    arrival = motion_page.evaluate(
-        """() => {
-          const root = document.querySelector(
-            '[data-page="quarter"][data-archive-app]'
-          );
-          sessionStorage.setItem('bsb-quarter-motion', JSON.stringify({
-            from: '2026-04',
-            to: root.dataset.quarter,
-            direction: 'next',
-            timestamp: Date.now(),
-          }));
-          const played = window.BsbArchive.playQuarterArrival(root);
-          return {
-            played,
-            token: sessionStorage.getItem('bsb-quarter-motion'),
-            rowAnimations: root.querySelector('[data-list-sections] .subject-row')
-              .getAnimations().length,
-          };
-        }"""
+    motion_page.evaluate("""() => {
+      const link = document.querySelector('[data-quarter-next]');
+      link.click();
+      link.click();
+    }""")
+    motion_page.wait_for_function(
+        "location.pathname === '/2026-07/index.html'",
+        timeout=20000,
     )
-    assert arrival["played"] is True
-    assert arrival["token"] is None
-    assert arrival["rowAnimations"] > 0, arrival
-    _assert_no_root_motion_or_black_overlay(motion_page)
+    motion_page.wait_for_selector('[data-page="quarter"][data-archive-app]')
+    motion_page.wait_for_load_state("networkidle")
+
+    assert motion_page.url == target_url
+    assert target_requests, target_requests
+    assert motion_page.evaluate(
+        "history.length - Number(sessionStorage.getItem('__plan50-history-before'))"
+    ) == 1
+    assert history_length == motion_page.evaluate(
+        "Number(sessionStorage.getItem('__plan50-history-before'))"
+    )
+    motion_page.go_back()
+    motion_page.wait_for_url("**/2026-04/index.html")
+    assert motion_page.locator(
+        '[data-page="quarter"][data-archive-app]'
+    ).get_attribute("data-quarter") == "2026-04"
+
+
+def test_quarter_navigation_ignores_modified_and_nonlocal_clicks(
+    motion_page: Page,
+    site_server: str,
+) -> None:
+    _open_quarter(motion_page, site_server)
+    motion_page.emulate_media(reduced_motion="no-preference")
+    results = motion_page.evaluate("""() => {
+      const link = document.querySelector('[data-quarter-prev]');
+      const originalHref = link.href;
+      const originalTarget = link.getAttribute('target');
+      const originalDownload = link.getAttribute('download');
+      const run = overrides => {
+        sessionStorage.removeItem('bsb-quarter-motion');
+        const event = {
+          target: { closest: selector => link.matches(selector) ? link : null },
+          button: 0,
+          defaultPrevented: false,
+          metaKey: false,
+          ctrlKey: false,
+          shiftKey: false,
+          altKey: false,
+          preventDefault() { this.defaultPrevented = true; },
+          ...overrides,
+        };
+        window.BsbArchive.prepareQuarterDeparture(event);
+        return {
+          defaultPrevented: event.defaultPrevented,
+          token: sessionStorage.getItem('bsb-quarter-motion'),
+        };
+      };
+      const cases = {};
+      cases.primary = run({});
+      cases.keyboard = run({ button: -1, detail: 0 });
+      cases.alreadyPrevented = run({ defaultPrevented: true });
+      cases.middle = run({ button: 1 });
+      for (const modifier of ['metaKey', 'ctrlKey', 'shiftKey', 'altKey']) {
+        cases[modifier] = run({ [modifier]: true });
+      }
+      link.target = '_blank';
+      cases.blankTarget = run({});
+      link.target = 'named-context';
+      cases.namedTarget = run({});
+      link.removeAttribute('target');
+      const base = document.createElement('base');
+      base.target = '_blank';
+      document.head.append(base);
+      cases.baseTarget = run({});
+      base.remove();
+      link.setAttribute('download', 'quarter.html');
+      cases.download = run({});
+      link.removeAttribute('download');
+      link.href = 'https://example.invalid/2026-04/index.html';
+      cases.external = run({});
+      link.href = location.href;
+      cases.sameQuarter = run({});
+      link.href = originalHref;
+      const originalSetItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key, value) {
+        if (key === 'bsb-quarter-motion') throw new Error('storage unavailable');
+        return originalSetItem.call(this, key, value);
+      };
+      cases.storageUnavailable = run({});
+      Storage.prototype.setItem = originalSetItem;
+      if (originalTarget === null) link.removeAttribute('target');
+      else link.setAttribute('target', originalTarget);
+      if (originalDownload === null) link.removeAttribute('download');
+      else link.setAttribute('download', originalDownload);
+      link.href = originalHref;
+      return cases;
+    }""")
+    assert results["primary"]["defaultPrevented"] is False
+    assert results["primary"]["token"] is not None
+    assert results["keyboard"]["defaultPrevented"] is False
+    assert results["keyboard"]["token"] is not None
+    for name in (
+        "alreadyPrevented", "middle", "metaKey", "ctrlKey", "shiftKey",
+        "altKey", "blankTarget", "namedTarget", "baseTarget", "download", "external",
+        "sameQuarter", "storageUnavailable",
+    ):
+        assert results[name]["defaultPrevented"] is (name == "alreadyPrevented"), name
+        assert results[name]["token"] is None, name
+
+
+def test_quarter_arrival_rejects_expired_and_wrong_target_tokens(
+    motion_page: Page,
+    site_server: str,
+) -> None:
+    _open_quarter(motion_page, site_server)
+    motion_page.emulate_media(reduced_motion="no-preference")
+    result = motion_page.evaluate("""() => {
+      const root = document.querySelector('[data-page="quarter"][data-archive-app]');
+      const originalAnimate = Element.prototype.animate;
+      let animationsStarted = 0;
+      Element.prototype.animate = function(...args) {
+        animationsStarted += 1;
+        return originalAnimate.apply(this, args);
+      };
+      const apply = (to, timestamp) => {
+        sessionStorage.setItem('bsb-quarter-motion', JSON.stringify({
+          from: '2026-04', to, direction: 'next', timestamp,
+        }));
+        return {
+          played: window.BsbArchive.playQuarterArrival(root),
+          token: sessionStorage.getItem('bsb-quarter-motion'),
+        };
+      };
+      const expired = apply(root.dataset.quarter, Date.now() - 10001);
+      const wrongTarget = apply('2026-04', Date.now());
+      Element.prototype.animate = originalAnimate;
+      return { expired, wrongTarget, animationsStarted };
+    }""")
+    assert result == {
+        "expired": {"played": False, "token": None},
+        "wrongTarget": {"played": False, "token": None},
+        "animationsStarted": 0,
+    }
+
+
+def test_quarter_blank_target_keeps_native_new_tab_navigation(
+    motion_page: Page,
+    site_server: str,
+) -> None:
+    _open_quarter(motion_page, site_server)
+    link = motion_page.locator("[data-quarter-prev]")
+    link.evaluate("element => { element.target = '_blank'; }")
+    with motion_page.expect_popup() as popup_info:
+        link.click()
+    popup = popup_info.value
+    popup.wait_for_load_state("load")
+    popup.wait_for_selector('[data-page="quarter"][data-archive-app]')
+    assert popup.locator(
+        '[data-page="quarter"][data-archive-app]'
+    ).get_attribute("data-quarter") == "2026-04"
+    assert motion_page.url.endswith("/2026-07/index.html")
+    assert motion_page.evaluate(
+        "sessionStorage.getItem('bsb-quarter-motion')"
+    ) is None
+    assert popup.evaluate("sessionStorage.getItem('bsb-quarter-motion')") is None
 
 
 def test_reduced_motion_remains_a_direct_path(
@@ -382,8 +641,41 @@ def test_reduced_motion_remains_a_direct_path(
 ) -> None:
     _open_quarter(motion_page, site_server)
     motion_page.emulate_media(reduced_motion="reduce")
+    motion_page.evaluate("""() => {
+      const probe = window.__reducedMotionWork = {
+        enabled: true, geometryReads: 0, animationScans: 0, animationsStarted: 0,
+      };
+      const rect = Element.prototype.getBoundingClientRect;
+      Element.prototype.getBoundingClientRect = function() {
+        if (probe.enabled && this.closest('[data-record-key]')) {
+          probe.geometryReads += 1;
+        }
+        return rect.call(this);
+      };
+      const getAnimations = Element.prototype.getAnimations;
+      Element.prototype.getAnimations = function(...args) {
+        if (probe.enabled && this.closest('[data-archive-app]')) {
+          probe.animationScans += 1;
+        }
+        return getAnimations.apply(this, args);
+      };
+      const animate = Element.prototype.animate;
+      Element.prototype.animate = function(...args) {
+        if (probe.enabled) probe.animationsStarted += 1;
+        return animate.apply(this, args);
+      };
+    }""")
     motion_page.locator('[data-view-mode="list"]').click()
     motion_page.locator('[data-media-mode="movie"]').click()
+    work = motion_page.evaluate("""() => {
+      const probe = window.__reducedMotionWork;
+      probe.enabled = false;
+      return {
+        geometryReads: probe.geometryReads,
+        animationScans: probe.animationScans,
+        animationsStarted: probe.animationsStarted,
+      };
+    }""")
     state = motion_page.evaluate(
         """() => ({
           rowAnimations: [...document.querySelectorAll('.subject-row')]
@@ -393,3 +685,8 @@ def test_reduced_motion_remains_a_direct_path(
         })"""
     )
     assert state == {"rowAnimations": 0, "resultRegionAnimations": 0}
+    assert work == {
+        "geometryReads": 0,
+        "animationScans": 0,
+        "animationsStarted": 0,
+    }

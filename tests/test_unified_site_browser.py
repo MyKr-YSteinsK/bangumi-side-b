@@ -8,12 +8,14 @@ import json
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
 from playwright.sync_api import BrowserContext, Page, sync_playwright
 
+from bgm_side_b.repository import SubjectRepository
 from tests.test_site_builder import _build_fixture
 
 pytestmark = [pytest.mark.browser, pytest.mark.deep_regression]
@@ -270,6 +272,30 @@ def unified_site_many(tmp_path: Path) -> Iterator[Path]:
     yield tmp_path / "dist" / "site"
 
 
+@pytest.fixture
+def unified_site_motion_large(tmp_path: Path) -> Iterator[Path]:
+    builder, database = _build_fixture(
+        tmp_path,
+        include_same_quarter_tv=True,
+        extra_same_quarter_tv=500,
+    )
+    repository = SubjectRepository(database)
+    snapshots = repository.get_subject_facts_many(range(304, 804))
+    with repository.transaction() as connection:
+        for subject_id, snapshot in snapshots.items():
+            varied_subject = replace(
+                snapshot.subject,
+                rating_score=4.0 + (subject_id % 500) / 1000,
+                rating_count=100 + subject_id,
+            )
+            repository.replace_subject_snapshot(
+                connection,
+                replace(snapshot, subject=varied_subject),
+            )
+    builder.build()
+    yield tmp_path / "dist" / "site"
+
+
 class BrowserHarness:
     def __init__(self, context: BrowserContext) -> None:
         self.context = context
@@ -353,6 +379,23 @@ def site_server_many(unified_site_many: Path) -> Iterator[str]:
     handler = functools.partial(
         http.server.SimpleHTTPRequestHandler,
         directory=str(unified_site_many),
+    )
+    server = _server(handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.fixture
+def site_server_motion_large(unified_site_motion_large: Path) -> Iterator[str]:
+    handler = functools.partial(
+        http.server.SimpleHTTPRequestHandler,
+        directory=str(unified_site_motion_large),
     )
     server = _server(handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -597,7 +640,9 @@ def test_archive_grid_keeps_full_date_for_list_and_desktop_grid(
     assert metadata.locator(".subject-row__meta-grid").is_hidden()
 
     page.set_viewport_size({"width": 1024, "height": 768})
-    page.locator('[data-page="archive"] [data-view-mode="grid"]').click()
+    page.locator(
+        '[data-page="archive"] .view-switch [data-view-mode="grid"]'
+    ).click()
     assert metadata.locator(".subject-row__meta-full").is_visible()
     assert metadata.locator(".subject-row__meta-grid").is_hidden()
 
@@ -615,9 +660,21 @@ def test_grid_list_view_switch_persists_and_preserves_detail(
     assert switch.locator('[data-view-mode="grid"]').get_attribute(
         "aria-pressed"
     ) == "true"
+    page.evaluate("""() => {
+      window.__quarterViewRow = document.querySelector(
+        '[data-list-section="tv"] .subject-row'
+      );
+    }""")
 
     switch.locator('[data-view-mode="list"]').click()
     assert root.get_attribute("data-view-mode") == "list"
+    assert switch.locator('[data-view-mode="list"]').get_attribute(
+        "aria-pressed"
+    ) == "true"
+    assert page.evaluate("""() => window.__quarterViewRow === document.querySelector(
+      '[data-list-section="tv"] .subject-row'
+    )""")
+    assert page.evaluate("document.activeElement.dataset.viewMode") == "list"
     assert page.evaluate("localStorage.getItem('bsb-browse-view-mode')") == "list"
     assert len(
         page.locator('[data-list-section="tv"] .result-list').evaluate(
@@ -648,6 +705,11 @@ def test_grid_list_view_switch_persists_and_preserves_detail(
     )
     archive_root = page.locator('[data-page="archive"][data-archive-app]')
     assert archive_root.get_attribute("data-view-mode") == "list"
+    page.evaluate("""() => {
+      window.__archiveViewRow = document.querySelector(
+        '[data-list-section="tv"] .subject-row'
+      );
+    }""")
     archive_cover = page.locator(
         '[data-subject-id="101"][data-quarter="2026-07"] .subject-row__cover'
     ).first
@@ -655,6 +717,12 @@ def test_grid_list_view_switch_persists_and_preserves_detail(
     assert archive_cover_box is not None and archive_cover_box["width"] < 80
     page.locator('[data-page="archive"] [data-view-mode="grid"]').click()
     assert archive_root.get_attribute("data-view-mode") == "grid"
+    assert page.locator(
+        '[data-page="archive"] .view-switch [data-view-mode="grid"]'
+    ).get_attribute("aria-pressed") == "true"
+    assert page.evaluate("""() => window.__archiveViewRow === document.querySelector(
+      '[data-list-section="tv"] .subject-row'
+    )""")
     assert len(
         page.locator('[data-list-section="tv"] .result-list').evaluate(
             "node => getComputedStyle(node).gridTemplateColumns"
@@ -2988,6 +3056,238 @@ def test_archive_tv_sort_reuses_rows_without_duplicate_nodes(
     ).get_attribute("data-identity") == "archive-stable"
 
 
+def test_large_quarter_motion_candidates_stay_bounded_at_top_middle_and_end(
+    chromium: BrowserContext,
+    site_server_motion_large: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(15000)
+    page.emulate_media(reduced_motion="no-preference")
+    _open_quarter(page, site_server_motion_large, (390, 844))
+    assert page.locator("[data-record-key]").count() == 503
+    page.wait_for_timeout(350)
+    page.evaluate("document.documentElement.style.scrollBehavior = 'auto'")
+    page.evaluate("""() => {
+      const probe = window.__boundedMotionProbe = {
+        enabled: false,
+        geometryReads: 0,
+        animationScans: 0,
+        selectorNodesScanned: 0,
+        animationsStarted: 0,
+        animationKeys: [],
+        handlerMs: null,
+        frameMs: null,
+      };
+      const rect = Element.prototype.getBoundingClientRect;
+      Element.prototype.getBoundingClientRect = function() {
+        if (probe.enabled) probe.geometryReads += 1;
+        return rect.call(this);
+      };
+      const getAnimations = Element.prototype.getAnimations;
+      Element.prototype.getAnimations = function(...args) {
+        if (probe.enabled) probe.animationScans += 1;
+        return getAnimations.apply(this, args);
+      };
+      const query = Element.prototype.querySelectorAll;
+      Element.prototype.querySelectorAll = function(selector) {
+        const result = query.call(this, selector);
+        if (probe.enabled && /data-record-key/.test(String(selector))) {
+          probe.selectorNodesScanned += result.length;
+        }
+        return result;
+      };
+      const animate = Element.prototype.animate;
+      Element.prototype.animate = function(...args) {
+        if (probe.enabled) {
+          probe.animationsStarted += 1;
+          const row = this.closest('[data-record-key]');
+          if (row) probe.animationKeys.push(row.dataset.recordKey);
+        }
+        return animate.apply(this, args);
+      };
+      const selector = '[role="menuitemradio"], [data-view-mode], [data-media-mode]';
+      document.addEventListener('click', event => {
+        if (!probe.enabled || !event.target.closest?.(selector)) return;
+        probe.startedAt = performance.now();
+      }, true);
+      document.addEventListener('click', event => {
+        if (!probe.enabled || !event.target.closest?.(selector)) return;
+        const current = probe;
+        current.handlerMs = performance.now() - current.startedAt;
+        requestAnimationFrame(() => {
+          if (!current.enabled) return;
+          current.frameMs = performance.now() - current.startedAt;
+        });
+      });
+    }""")
+
+    measurements: list[dict[str, object]] = []
+    for name, fraction, sort_index in (
+        ("top", 0.0, 1),
+        ("middle", 0.5, 0),
+        ("end", 1.0, 1),
+    ):
+        page.evaluate("""fraction => {
+          const maxScroll = document.documentElement.scrollHeight - innerHeight;
+          window.scrollTo(0, Math.round(maxScroll * fraction));
+        }""", fraction)
+        page.wait_for_timeout(80)
+        page.locator("[data-sort-toggle]").evaluate("element => element.click()")
+        page.evaluate("""() => {
+          const probe = window.__boundedMotionProbe;
+          probe.geometryReads = 0;
+          probe.animationScans = 0;
+          probe.selectorNodesScanned = 0;
+          probe.animationsStarted = 0;
+          probe.animationKeys = [];
+          probe.handlerMs = null;
+          probe.frameMs = null;
+          probe.enabled = true;
+        }""")
+        page.locator('[data-sort-popover] [role="menuitemradio"]') \
+            .nth(sort_index).evaluate("element => element.click()")
+        page.wait_for_function(
+            "window.__boundedMotionProbe.frameMs !== null",
+            timeout=15000,
+        )
+        measurement = page.evaluate("""() => {
+          const probe = window.__boundedMotionProbe;
+          probe.enabled = false;
+          const root = document.querySelector('[data-archive-app]');
+          const visibleKeys = [...root.querySelectorAll('[data-record-key]')]
+            .filter(node => {
+              if (node.hidden) return false;
+              const rect = node.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0
+                && rect.bottom >= -innerHeight && rect.top <= innerHeight * 2;
+            })
+            .map(node => node.dataset.recordKey);
+          return {
+            geometryReads: probe.geometryReads,
+            animationScans: probe.animationScans,
+            selectorNodesScanned: probe.selectorNodesScanned,
+            animationsStarted: probe.animationsStarted,
+            animationKeys: probe.animationKeys,
+            handlerMs: probe.handlerMs,
+            frameMs: probe.frameMs,
+            visibleKeys,
+            scrollY,
+          };
+        }""")
+        measurement["position"] = name
+        assert measurement["animationScans"] == 0, measurement
+        assert measurement["selectorNodesScanned"] == 0, measurement
+        assert measurement["geometryReads"] < 240, measurement
+        assert 0 < measurement["animationsStarted"] <= 32, measurement
+        assert set(measurement["animationKeys"]) <= set(measurement["visibleKeys"]), (
+            measurement
+        )
+        assert measurement["animationKeys"], measurement
+        measurements.append(measurement)
+        page.wait_for_timeout(350)
+
+    assert [item["position"] for item in measurements] == ["top", "middle", "end"]
+
+    page.evaluate("window.scrollTo(0, 0)")
+    page.wait_for_timeout(80)
+    current_mode = page.locator(
+        '[data-page="quarter"][data-archive-app]'
+    ).get_attribute("data-view-mode")
+    next_mode = "list" if current_mode == "grid" else "grid"
+    page.evaluate("""() => {
+      const probe = window.__boundedMotionProbe;
+      probe.geometryReads = 0;
+      probe.animationScans = 0;
+      probe.selectorNodesScanned = 0;
+      probe.animationsStarted = 0;
+      probe.animationKeys = [];
+      probe.handlerMs = null;
+      probe.frameMs = null;
+      probe.enabled = true;
+    }""")
+    page.locator(f'[data-view-mode="{next_mode}"]').evaluate(
+        "element => element.click()"
+    )
+    page.wait_for_function(
+        "window.__boundedMotionProbe.frameMs !== null",
+        timeout=15000,
+    )
+    view_measurement = page.evaluate("""() => {
+      const probe = window.__boundedMotionProbe;
+      probe.enabled = false;
+      const root = document.querySelector('[data-archive-app]');
+      const visibleKeys = [...root.querySelectorAll('[data-record-key]')]
+        .filter(node => {
+          if (node.hidden) return false;
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0
+            && rect.bottom >= -innerHeight && rect.top <= innerHeight * 2;
+        })
+        .map(node => node.dataset.recordKey);
+      return {
+        geometryReads: probe.geometryReads,
+        animationScans: probe.animationScans,
+        selectorNodesScanned: probe.selectorNodesScanned,
+        animationsStarted: probe.animationsStarted,
+        animationKeys: probe.animationKeys,
+        visibleKeys,
+        mode: root.dataset.viewMode,
+      };
+    }""")
+    assert view_measurement["mode"] == next_mode, view_measurement
+    assert view_measurement["animationScans"] == 0, view_measurement
+    assert view_measurement["selectorNodesScanned"] == 0, view_measurement
+    assert view_measurement["geometryReads"] < 360, view_measurement
+    assert 0 < view_measurement["animationsStarted"] <= 128, view_measurement
+    view_animated_keys = set(view_measurement["animationKeys"])
+    view_visible_keys = set(view_measurement["visibleKeys"])
+    assert view_animated_keys <= view_visible_keys, view_measurement
+    page.wait_for_timeout(350)
+
+    page.evaluate("""() => {
+      const probe = window.__boundedMotionProbe;
+      probe.geometryReads = 0;
+      probe.animationScans = 0;
+      probe.selectorNodesScanned = 0;
+      probe.animationsStarted = 0;
+      probe.animationKeys = [];
+      probe.handlerMs = null;
+      probe.frameMs = null;
+      probe.enabled = true;
+    }""")
+    page.locator('[data-media-mode="movie"]').evaluate("element => element.click()")
+    page.wait_for_function(
+        "window.__boundedMotionProbe.frameMs !== null",
+        timeout=15000,
+    )
+    media_measurement = page.evaluate("""() => {
+      const probe = window.__boundedMotionProbe;
+      probe.enabled = false;
+      const root = document.querySelector('[data-archive-app]');
+      const visibleKeys = [...root.querySelectorAll('[data-record-key]')]
+        .filter(node => {
+          if (node.hidden) return false;
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0
+            && rect.bottom >= -innerHeight && rect.top <= innerHeight * 2;
+        })
+        .map(node => node.dataset.recordKey);
+      return {
+        animationScans: probe.animationScans,
+        selectorNodesScanned: probe.selectorNodesScanned,
+        animationsStarted: probe.animationsStarted,
+        animationKeys: probe.animationKeys,
+        visibleKeys,
+      };
+    }""")
+    assert media_measurement["animationScans"] == 0, media_measurement
+    assert media_measurement["selectorNodesScanned"] == 0, media_measurement
+    media_animated_keys = set(media_measurement["animationKeys"])
+    media_visible_keys = set(media_measurement["visibleKeys"])
+    assert media_animated_keys <= media_visible_keys, media_measurement
+    page.close()
+
+
 def test_result_motion_is_local_and_stagger_remains_bounded(
     chromium: BrowserContext,
     site_server_many: str,
@@ -3014,7 +3314,11 @@ def test_result_motion_is_local_and_stagger_remains_bounded(
           const nodes = [...list.children];
           let mutated = 0;
           const result = window.BsbArchive.withResultMotion(
-            'sort', root, () => { mutated += 1; list.append(...nodes.reverse()); }
+            'sort', root, () => {
+              mutated += 1;
+              list.append(...nodes.reverse());
+              window.BsbArchive.setResultMotionGroups(root, [[...list.children]]);
+            }
           );
           const animated = nodes.filter((node) => node.getAnimations().length).length;
           const original = document.startViewTransition;
@@ -3088,7 +3392,11 @@ def test_result_motion_cancels_rapid_reentry_without_view_transition(
           const nodes = [...list.children];
           let mutations = 0;
           const first = window.BsbArchive.withResultMotion(
-            'normal', root, () => { mutations += 1; list.append(...nodes.reverse()); }
+            'normal', root, () => {
+              mutations += 1;
+              list.append(...nodes.reverse());
+              window.BsbArchive.setResultMotionGroups(root, [[...list.children]]);
+            }
           );
           const firstAnimations = nodes.reduce(
             (count, node) => count + node.getAnimations().length, 0
@@ -3097,6 +3405,7 @@ def test_result_motion_cancels_rapid_reentry_without_view_transition(
             'rapid-reentry', root, () => {
               mutations += 1;
               list.append(...nodes.reverse());
+              window.BsbArchive.setResultMotionGroups(root, [[...list.children]]);
             }
           );
           document.startViewTransition = original;

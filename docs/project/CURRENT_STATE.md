@@ -14,11 +14,14 @@
 - Last runtime/data verification recorded here: 2026-08-29 bounded Plan-47
   live validation; real-device acceptance remains the earlier user-reported
   Plan-39 evidence below.
-- Last engineering-document/Git check: 2026-10-13, source baseline
-  `1864b71b9fc98a930dad3889385e4103774fc532` (`main` / `origin/main`),
-  clean tracked worktree, and matching local/remote source HEAD. This was a
-  read-only check before this documentation change, not renewed runtime,
-  data, production, or real-device acceptance.
+- Plan-50 Rev2 began from source baseline
+  `806cf96541db29142804a363a3d8b27e79e19b20` (`main` / `origin/main`); the
+  remote source HEAD matched, and the tracked worktree changes were limited to
+  the five scoped Plan-50 files. At that pre-delivery check, local `gh-pages`
+  was `ddec0cfdfff490dec4175ed0dbcf44aca1ba02d2` and remote `gh-pages` was
+  `b35e51ece216e3d8cba8cb3f2a32ec64c887513c`; neither was changed. This was
+  not runtime, data, production, or real-device acceptance. Final source
+  delivery evidence is recorded in this task's TASK_RESULT.
 
 The exact resulting HEAD of state-only documentation updates is authoritative
 in its TASK_RESULT rather than being copied into this file, avoiding a circular
@@ -268,6 +271,29 @@ have already passed.
   changed. This does not approve or advance the A–F candidate program; the
   lifecycle remains Production, and later work still requires formal Plans and
   risk-appropriate validation.
+- Plan-50 Rev2 closed the Rev1 partial result at the revised minimum-evidence
+  boundary. Gates A and C reuse the code-matched Rev1 results (380 non-browser,
+  111 unified Chromium, and 32 Chromium/WebKit tests); after the final focused
+  view-mode change, five targeted Chromium/WebKit cases passed. The patch
+  removes the fixed quarter-navigation wait, bounds motion candidates to
+  viewport-adjacent result groups, tracks its own active animation handles, and
+  updates Grid/List mode without rerendering unchanged result data. Existing
+  503-row reduced-motion measurements on the pre-focus-fix code sampled the
+  small/large × Quarter/Archive × motion-preference combinations 30 times; the
+  large Quarter / `reduce` / 4× CPU view switch measured about 2.4 s median,
+  4.3 s P95, and 4.7 s maximum, with zero geometry reads, animation scans, or
+  animation starts. A low-instrumentation replay measured 3.43 s and 2.69 s
+  for Grid→List and List→Grid. A follow-up stage probe on the matching source
+  attributed about 3.17 s to the explicit `button.focus()` call; dataset,
+  selector, and ARIA updates together took under 1 ms. Both view-mode handlers
+  now rely on browser-native activation focus and omit that forced focus call.
+  The targeted suite verified focus, view state, and row identity. Under Rev2's
+  minimum evidence standard, Gate B passed on the structural counts, visible
+  candidate checks, and bounded diagnosis; performance was not remeasured
+  after the narrow focus fix, so no exact final latency or improvement
+  percentile is claimed. The full large pre-change matrix remains incomplete.
+  Real Safari/standalone, production, CI, and Pages were not tested. The
+  Production lifecycle and A–F approval state do not change.
 
 ## 2026-10-13 experience-upgrade research status
 

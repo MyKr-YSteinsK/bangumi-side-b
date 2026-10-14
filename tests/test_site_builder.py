@@ -452,7 +452,11 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert "Bangumi Side B｜MyKr" in settings_html
     assert 'id="settings-app-title"' in settings_html
     assert "<dd>MyKr</dd>" in settings_html
-    assert 'src="../covers/101.webp?v=' in july_html
+    cover_url = july["tv"]["continuing"][0]["cover_url"]
+    preview_path = site_builder._cover_preview_path(cover_url)
+    assert preview_path is not None
+    assert f'src="../{preview_path}"' in july_html
+    assert f'data-cover-fallback="../{cover_url}"' in july_html
     assert july_html.count('data-list-section="tv"') == 1
     assert july_html.count('data-list-section="movie"') == 1
     assert 'data-appearance-section="continuing"' not in july_html
@@ -493,6 +497,12 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert cover_resource["content_hash"] == hashlib.sha256(
         _valid_cover_bytes()
     ).hexdigest()
+    assert cover_resource["size_bytes"] == len(_valid_cover_bytes())
+    preview_resource = next(
+        item for item in offline["resources"] if item["url"] == preview_path
+    )
+    assert preview_resource["content_hash"] == cover_resource["content_hash"]
+    assert preview_resource["size_bytes"] == cover_resource["size_bytes"]
     second = builder.build()
     assert second.patch.written == ()
     assert second.dirty.skipped_quarters == ("2026-04", "2026-07")

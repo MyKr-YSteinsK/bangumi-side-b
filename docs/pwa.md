@@ -88,7 +88,7 @@ cleanup may be deferred rather than risking verified offline content.
 
 ## Cover cache identity
 
-The offline manifest identifies one physical cover as:
+The offline manifest identifies an original physical cover as:
 
 ```text
 covers/<ID>.webp
@@ -103,6 +103,23 @@ covers/<ID>.webp?v=<content-hash>
 The Service Worker must deterministically normalize the browser URL to the same
 content-addressed cache entry described by the manifest. It must not cache a
 second duplicate copy of the cover as a workaround.
+
+Browse previews additionally use `covers/previews/<identity>.webp`, without a
+query parameter. The deterministic full SHA256 identity combines the original
+content hash with the encoding-rule fingerprint defined in [Static build](static-build.md).
+It is distinct from the actual preview content SHA256. The quarter manifest
+includes both the page's previews and all original covers, each with its actual
+SHA256 and size; detail/Lightbox therefore remain available offline. Small or
+non-beneficial previews can contain the original bytes, and equal-content hashes
+share one content-store entry through the existing deduplication protocol.
+
+A preview rule change is resource/package maintenance: manifest `revision` may
+change while unchanged quarter JSON retains its facts `data_revision`. Missing
+or invalid new preview content cannot complete the replacement. The existing
+active package remains available while staging is incomplete; pause/resume,
+complete-quarter units, verification, and reference-safe GC keep their existing
+semantics. Old pages without a preview rule use originals; a failed browse
+preview falls back once to its original, then to the real missing-cover state.
 
 ## Updates
 

@@ -8,12 +8,17 @@ import html
 import json
 import posixpath
 import re
+import warnings
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from time import monotonic
+
+import PIL
+from PIL import Image, ImageOps, features
 
 from bgm_side_b import __version__
 from bgm_side_b.build.changelog import (
@@ -59,6 +64,7 @@ from bgm_side_b.build.writer import (
 from bgm_side_b.config import TagRules
 from bgm_side_b.database import Database
 from bgm_side_b.domain import Quarter
+from bgm_side_b.media import MAX_COVER_EDGE, MAX_IMAGE_BYTES
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 
 
@@ -72,6 +78,21 @@ class BuildBlocked(BuildError):
 
 _HREF_RE = re.compile(r"(?:href|src)=\"([^\"]+)\"")
 _HEX_64 = re.compile(r"[0-9a-f]{64}")
+_COVER_URL = re.compile(r"covers/([1-9][0-9]*)\.webp\?v=([0-9a-f]{64})")
+_PREVIEW_PATH = re.compile(r"covers/previews/[0-9a-f]{64}\.webp")
+_COVER_PREVIEW_RULE = {
+    "version": 1,
+    "max_edge": 640,
+    "quality": 78,
+    "method": 6,
+    "exact": True,
+    "resampling": "LANCZOS",
+    "orientation": "exif-transpose",
+    "color": "RGB-or-RGBA-preserve-ICC",
+    "fallback": "original-bytes-small-animated-no-byte-benefit",
+    "pillow": PIL.__version__,
+    "webp": features.version("webp"),
+}
 _THEME_COLOR = "#17201d"
 _PWA_SOURCE_PATHS = {
     "assets/app.css": "static/css/site.css",
@@ -195,6 +216,7 @@ class UnifiedSiteBuilder:
                     "application_version": __version__,
                     "document": changelog.to_dict(),
                 },
+                cover_preview_rule=_COVER_PREVIEW_RULE,
             )
             quarter_projections, years, archive, current = assign_fingerprints(
                 quarter_projections,
@@ -420,8 +442,17 @@ class UnifiedSiteBuilder:
             for item in _quarter_items(quarter)
             if isinstance((cover := item.get("cover_url")), str)
         }
+        try:
+            expected_covers |= _preview_dependencies(
+                label,
+                (self.site_directory / label / "index.html").read_bytes(),
+                quarter,
+            )
+        except (OSError, BuildError):
+            return False
         if any(
             re.fullmatch(r"covers/[1-9][0-9]*\.webp", relative) is None
+            and _PREVIEW_PATH.fullmatch(relative) is None
             for relative in expected_covers
         ) or expected_covers != set(cover_resources):
             return False
@@ -738,6 +769,27 @@ class UnifiedSiteBuilder:
                     "cover",
                     None if reusable else cover.source_path,
                 )
+                preview = _cover_preview_path(item.cover_url)
+                if preview is not None and preview not in specs:
+                    target = self.site_directory / preview
+                    preview_size = previous_sizes.get(preview)
+                    if (
+                        preview in previous_artifacts
+                        and preview_size is not None
+                        and target.is_file()
+                        and target.stat().st_size == preview_size
+                    ):
+                        specs[preview] = _reused_spec(
+                            preview, previous_artifacts, previous_sizes
+                        )
+                    else:
+                        value = _cover_preview_bytes(
+                            cover.source_path, cover.content_hash, cover.size_bytes
+                        )
+                        specs[preview] = ArtifactSpec(
+                            preview, hashlib.sha256(value).hexdigest(),
+                            len(value), "cover-preview", value,
+                        )
             manifest_path = f"data/offline/{label}.json"
             generated(
                 manifest_path,
@@ -758,14 +810,15 @@ class UnifiedSiteBuilder:
                     previous_artifacts,
                     previous_sizes,
                 )
-            payload = _read_site_json(
-                self.site_directory / "data" / "quarters" / f"{label}.json"
+            manifest = _read_site_json(
+                self.site_directory / "data" / "offline" / f"{label}.json"
             )
-            for item in _quarter_items(payload):
-                cover = item.get("cover_url")
-                if not isinstance(cover, str):
+            for resource in manifest.get("resources", []):
+                relative = resource.get("url")
+                if not isinstance(relative, str) or not relative.startswith("covers/"):
                     continue
-                relative = cover.split("?", 1)[0]
+                if relative in specs and specs[relative].content_hash != resource.get("content_hash"):
+                    raise BuildError("retained cover conflicts with current output; previous site kept")
                 if relative not in specs:
                     specs[relative] = _reused_spec(
                         relative,
@@ -919,6 +972,8 @@ def _validate_site_mapping(
         if isinstance(item, dict)
     }
     for path, content in mapping.items():
+        if _PREVIEW_PATH.fullmatch(path):
+            _validate_preview_image(content)
         if path.startswith("data/quarters/") and path.endswith(".json"):
             payload = _load_json(mapping, path)
             label = payload.get("quarter")
@@ -936,6 +991,13 @@ def _validate_site_mapping(
     for path, content in mapping.items():
         if path.startswith("data/offline/") and path.endswith(".json"):
             payload = _load_json(mapping, path)
+            label = payload.get("quarter")
+            if not isinstance(label, str):
+                raise BuildError("offline manifest quarter is invalid")
+            _validate_offline_closure(
+                payload, _load_json(mapping, f"data/quarters/{label}.json"),
+                mapping.get(f"{label}/index.html", b""),
+            )
             for resource in payload.get("resources", []):
                 if not isinstance(resource, dict):
                     raise BuildError("offline resource entry is invalid")
@@ -977,11 +1039,13 @@ def _validate_dirty_mapping(
         spec = plan.specs.get(path)
         if spec is None:
             raise BuildError(f"artifact is not in the current plan: {path}")
-        if spec.kind == "cover":
+        if spec.kind in {"cover", "cover-preview"}:
             if spec.content_hash != hashlib.sha256(content).hexdigest():
                 raise BuildError(f"cover artifact hash is invalid: {path}")
             if spec.size_bytes is not None and spec.size_bytes != len(content):
                 raise BuildError(f"cover artifact size is invalid: {path}")
+            if spec.kind == "cover-preview":
+                _validate_preview_image(content)
         if path.endswith(".html"):
             _validate_html_links(path, content, plan, site)
         if path.startswith("data/quarters/") and path.endswith(".json"):
@@ -1123,6 +1187,15 @@ def _validate_offline_payload(
             raise BuildError(f"offline manifest data payload is unreadable: {quarter}") from error
     if hashlib.sha256(quarter_bytes).hexdigest() != data_revision:
         raise BuildError(f"offline manifest data revision is invalid: {quarter}")
+    page_bytes = mapping.get(f"{quarter}/index.html")
+    if page_bytes is None:
+        try:
+            page_bytes = (site / quarter / "index.html").read_bytes()
+        except OSError as error:
+            raise BuildError("offline manifest page is unavailable") from error
+    _validate_offline_closure(
+        payload, _load_json({"quarter.json": quarter_bytes}, "quarter.json"), page_bytes,
+    )
     resources = payload.get("resources", [])
     if not isinstance(resources, list):
         raise BuildError("offline manifest resources are invalid")
@@ -1322,7 +1395,7 @@ def _archive_html(revisions: Mapping[str, str]) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "ARCHIVE")
         + '<main id="main-content" tabindex="-1" class="archive-page" data-archive-app data-page="archive" data-workspace-mode="scope" data-view-mode="grid" '
-        'data-archive-index-url="../data/archive-index.json" data-site-root="../">'
+        f'data-archive-index-url="../data/archive-index.json" data-site-root="../" data-cover-preview-rule="{_cover_preview_rule_id()}">'
         '<section class="archive-intro">'
         '<p class="archive-intro__code">ARCHIVE / INDEX</p>'
         '<div><h1>播出档案</h1><p class="archive-intro__summary">'
@@ -1615,7 +1688,7 @@ def _quarter_html(
         )
         + f'<main id="main-content" tabindex="-1" class="quarter-page season-{html.escape(quarter.quarter[-2:])}" '
         f'data-archive-app data-page="quarter" data-quarter="{label}" data-workspace-mode="scope" data-view-mode="grid" '
-        f'data-data-url="../data/quarters/{label}.json" data-site-root="../" '
+        f'data-data-url="../data/quarters/{label}.json" data-site-root="../" data-cover-preview-rule="{_cover_preview_rule_id()}" '
         f'data-count-tv="{counts["tv"]}" data-count-movie="{counts["movie"]}" '
         f'data-count-premiere="{counts["premiere"]}" data-count-continuing="{counts["continuing"]}">'
         '<section class="archive-intro archive-intro--quarter">'
@@ -1799,15 +1872,121 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
     )
 
 
+def _cover_preview_rule_id() -> str:
+    return fingerprint(_COVER_PREVIEW_RULE)
+
+
+def _cover_preview_path(cover: object, *, rule: str | None = None) -> str | None:
+    match = _COVER_URL.fullmatch(cover) if isinstance(cover, str) else None
+    if match is None:
+        return None
+    identity = hashlib.sha256(f"{rule or _cover_preview_rule_id()}\n{match[2]}".encode("ascii")).hexdigest()
+    return f"covers/previews/{identity}.webp"
+
+
+def _validate_preview_image(content: bytes) -> None:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(content)) as image:
+                if image.format != "WEBP" or min(image.size) <= 0 or max(image.size) > MAX_COVER_EDGE:
+                    raise BuildError("preview source is not a bounded verified WebP")
+                image.load()
+    except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
+        raise BuildError("preview image cannot be safely decoded") from error
+
+
+def _cover_preview_bytes(source: Path, content_hash: str, size_bytes: int) -> bytes:
+    if size_bytes <= 0 or size_bytes > MAX_IMAGE_BYTES:
+        raise BuildError("preview source exceeds the cover byte limit")
+    try:
+        with source.open("rb") as stream:
+            content = stream.read(MAX_IMAGE_BYTES + 1)
+    except OSError as error:
+        raise BuildError("preview source is unavailable") from error
+    if len(content) != size_bytes or hashlib.sha256(content).hexdigest() != content_hash:
+        raise BuildError("preview source identity is invalid")
+    _validate_preview_image(content)
+    try:
+        with Image.open(BytesIO(content)) as source_image:
+            edge = int(_COVER_PREVIEW_RULE["max_edge"])
+            if max(source_image.size) <= edge or source_image.is_animated:
+                return content
+            source_image.load()
+            image = ImageOps.exif_transpose(source_image)
+            image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+            image.thumbnail((edge, edge), Image.Resampling.LANCZOS)
+            output = BytesIO()
+            image.save(
+                output, format="WEBP", quality=int(_COVER_PREVIEW_RULE["quality"]),
+                method=int(_COVER_PREVIEW_RULE["method"]),
+                exact=bool(_COVER_PREVIEW_RULE["exact"]),
+                icc_profile=source_image.info.get("icc_profile", b""),
+            )
+            preview = output.getvalue()
+    except (OSError, ValueError) as error:
+        raise BuildError("preview encoding failed") from error
+    _validate_preview_image(preview)
+    return preview if len(preview) < len(content) else content
+
+
+def _preview_dependencies(label: str, page: bytes, quarter: Mapping[str, object]) -> set[str]:
+    previews: set[str] = set()
+    try:
+        references = _HREF_RE.findall(page.decode("utf-8"))
+    except UnicodeDecodeError as error:
+        raise BuildError("offline page is not UTF-8") from error
+    rule_match = re.search(r'data-cover-preview-rule="([0-9a-f]{64})"', page.decode("utf-8"))
+    expected = {
+        _cover_preview_path(item.get("cover_url"), rule=rule_match[1])
+        for item in _quarter_items(quarter)
+    } if rule_match is not None else set()
+    for reference in references:
+        path = posixpath.normpath(f"{label}/{reference.split('?', 1)[0]}")
+        if not path.startswith("covers/previews/"):
+            continue
+        if _PREVIEW_PATH.fullmatch(path) is None or path not in expected:
+            raise BuildError("preview dependency does not match the quarter source")
+        previews.add(path)
+    return previews
+
+
+def _validate_offline_closure(payload: Mapping[str, object], quarter: Mapping[str, object], page: bytes) -> None:
+    label = payload.get("quarter")
+    if not isinstance(label, str) or not page:
+        raise BuildError("offline page dependency is missing")
+    required = {
+        f"{label}/index.html", f"data/quarters/{label}.json",
+        "assets/app.css", "assets/app.js", "assets/pwa.js",
+        *(
+            cover.split("?", 1)[0]
+            for item in _quarter_items(quarter)
+            if isinstance((cover := item.get("cover_url")), str)
+        ),
+        *_preview_dependencies(label, page, quarter),
+    }
+    resources = payload.get("resources", [])
+    supplied = {
+        item.get("url") for item in resources if isinstance(item, dict)
+    } if isinstance(resources, list) else set()
+    if not required.issubset(supplied):
+        raise BuildError("offline manifest omits a page or cover dependency")
+
+
 def _cover_markup(cover: object, sequence: int, subject_id: int) -> str:
     if not cover:
         return '<span class="subject-row__cover subject-row__cover--missing" aria-label="缺少封面"><span>ARCHIVE</span></span>'
-    path = str(cover)
+    original = str(cover)
+    path = _cover_preview_path(original) or original
+    fallback = (
+        f' data-cover-fallback="../{html.escape(original, quote=True)}"'
+        if path != original else ""
+    )
     loading = "eager" if sequence <= 10 else "lazy"
     return (
         '<span class="subject-row__cover"><img width="52" height="74" '
-        f'loading="{loading}" src="../{html.escape(path, quote=True)}" '
-        f'alt="" data-cover-subject="{subject_id}"></span>'
+        f'loading="{loading}" decoding="async" src="../{html.escape(path, quote=True)}" '
+        f'alt="" data-cover-subject="{subject_id}"{fallback}></span>'
     )
 
 
@@ -1985,6 +2164,12 @@ def _offline_manifest_bytes(
             }
         )
     )
+    required.extend(sorted({
+        preview
+        for group in (quarter.tv_premiere, quarter.tv_continuing, quarter.movie_premiere)
+        for item in group
+        if (preview := _cover_preview_path(item.cover_url)) is not None
+    }))
     resources: list[dict[str, object]] = []
     for relative in required:
         spec = specs.get(relative)

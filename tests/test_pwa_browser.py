@@ -18,8 +18,9 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import Browser, Page, sync_playwright
 
+from bgm_side_b.build import site_builder
 from bgm_side_b.repository import SubjectRepository
-from tests.test_site_builder import _build_fixture
+from tests.test_site_builder import _build_fixture, _build_preview_fixture
 
 pytestmark = [pytest.mark.browser, pytest.mark.deep_regression]
 
@@ -95,6 +96,141 @@ def pwa_server(pwa_site: Path) -> Iterator[str]:
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+@pytest.fixture
+def preview_pwa_site(
+    tmp_path: Path,
+) -> tuple[site_builder.UnifiedSiteBuilder, Path]:
+    builder, _ = _build_preview_fixture(tmp_path)
+    builder.site_directory = (tmp_path / "served/bangumi-side-b").resolve()
+    builder.build()
+    return builder, builder.site_directory
+
+
+@pytest.fixture
+def preview_pwa_server(
+    preview_pwa_site: tuple[site_builder.UnifiedSiteBuilder, Path],
+) -> Iterator[str]:
+    _, site = preview_pwa_site
+    handler = functools.partial(
+        http.server.SimpleHTTPRequestHandler, directory=str(site.parent)
+    )
+    server = _server(handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_preview_package_failure_preserves_active_offline_and_reference_safe_gc(
+    chromium: Browser,
+    preview_pwa_server: str,
+    preview_pwa_site: tuple[site_builder.UnifiedSiteBuilder, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder, site = preview_pwa_site
+    context = chromium.new_context()
+    context.add_init_script("""(() => {
+      const native = window.setTimeout.bind(window);
+      window.setTimeout = (callback, delay, ...args) => native(
+        callback, [1000, 3000, 10000].includes(Number(delay)) ? 5 : delay, ...args
+      );
+    })();""")
+    page = context.new_page()
+    page.set_default_timeout(20000)
+    page.goto(f"{preview_pwa_server}/settings/index.html")
+    _wait_for_pwa_startup_queue_quiescent(page)
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07', '2026-04'])")
+    _wait_for_queue(page, 2)
+    old = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert old["status"] == "COMPLETE" and old["staging"] is None
+    quarter = json.loads((site / "data/quarters/2026-07.json").read_text("utf-8"))
+    original = quarter["tv"]["continuing"][0]["cover_url"]
+    old_path = site_builder._cover_preview_path(original)
+    old_resource = next(r for r in old["active"]["resources"] if r["url"] == old_path)
+    monkeypatch.setitem(site_builder._COVER_PREVIEW_RULE, "quality", 79)
+    builder.build()
+    current = json.loads((site / "data/offline/2026-07.json").read_text("utf-8"))
+    new_path = site_builder._cover_preview_path(original)
+    new_resource = next(r for r in current["resources"] if r["url"] == new_path)
+    assert current["data_revision"] == old["active"]["data_revision"]
+    assert current["revision"] != old["active"]["revision"]
+    assert new_resource["content_hash"] != old_resource["content_hash"]
+    updates = page.evaluate("async () => window.BsbPwa.detectUpdates()")
+    assert updates["dataUpdates"] == []
+    assert set(updates["packageMaintenance"]) == {"2026-04", "2026-07"}
+    assert new_path is not None
+    target = (site / new_path).resolve()
+    assert target.is_relative_to(site)
+    valid_preview = target.read_bytes()
+    target.unlink()
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    page.wait_for_function("""async () => {
+      const queue = await window.BsbPwa.currentQueue();
+      return queue.state === 'idle' && queue.failed.includes('2026-07');
+    }""")
+    failed = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert failed["status"] == "INCOMPLETE"
+    assert failed["active"]["revision"] == old["active"]["revision"]
+    assert failed["staging"]["revision"] == current["revision"]
+    assert new_resource["content_hash"] not in failed["staging"]["verified_hashes"]
+
+    def assert_offline_images(expected: str) -> None:
+        context.set_offline(True)
+        page.goto(f"{preview_pwa_server}/2026-07/index.html")
+        page.wait_for_function(
+            "document.querySelector('[data-results-summary]')"
+            "?.textContent.includes(' / ')"
+        )
+        image = page.locator('[data-subject-id="101"] .subject-row__cover img')
+        page.wait_for_function(
+            "document.querySelector('[data-subject-id=\"101\"] img')?.naturalWidth > 0"
+        )
+        assert image.evaluate("node => node.currentSrc") == (
+            f"{preview_pwa_server}/{expected}"
+        )
+        page.locator('[data-subject-id="101"] [data-open-subject]').click()
+        page.wait_for_function(
+            "document.querySelector('.detail-cover-button img')?.naturalWidth === 800"
+        )
+        page.locator("[data-lightbox]").click()
+        assert page.locator(".cover-lightbox img").evaluate(
+            "node => node.currentSrc"
+        ) == f"{preview_pwa_server}/{original}"
+        page.keyboard.press("Escape")
+        page.go_back()
+        page.locator("[data-detail-panel]").wait_for(state="hidden")
+
+    assert old_path is not None
+    assert_offline_images(old_path)
+    context.set_offline(False)
+    target.write_bytes(valid_preview)
+    page.goto(f"{preview_pwa_server}/settings/index.html")
+    _wait_for_pwa_startup_queue_quiescent(page)
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    page.wait_for_function("""async revision => {
+      const state = await window.BsbPwa.getQuarterState('2026-07');
+      const queue = await window.BsbPwa.currentQueue();
+      return queue.state === 'idle' && state.status === 'COMPLETE'
+        && state.active?.revision === revision && state.staging === null;
+    }""", arg=current["revision"])
+    has_content = """async hash => {
+      const content = await caches.open('bsb-content-v1');
+      return Boolean(await content.match(new Request(new URL(
+        `../__bsb_content__/${hash}`, location.href
+      ))));
+    }"""
+    assert page.evaluate(has_content, old_resource["content_hash"])
+    page.evaluate("async () => window.BsbPwa.removeQuarter('2026-04')")
+    assert not page.evaluate(has_content, old_resource["content_hash"])
+    assert page.evaluate(has_content, new_resource["content_hash"])
+    assert_offline_images(new_path)
+    context.close()
 
 
 @pytest.fixture

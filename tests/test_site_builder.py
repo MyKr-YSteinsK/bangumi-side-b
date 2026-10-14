@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import random
 import re
 import shutil
 from dataclasses import replace
@@ -12,8 +13,9 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
+from bgm_side_b.build import site_builder
 from bgm_side_b.build.site_builder import (
     BuildError,
     UnifiedSiteBuilder,
@@ -165,6 +167,242 @@ def _build_fixture(
         reports_directory=workspace / "reports",
     )
     return builder, database
+
+
+def _set_preview_fixture_cover(
+    tmp_path: Path, database: Database, subject_id: int, *, large: bool
+) -> bytes:
+    size = (800, 1200) if large else (200, 300)
+    image = Image.new("RGB", size, (56, 75, 120))
+    if large:
+        noise = Image.frombytes(
+            "RGB", size, random.Random(subject_id).randbytes(size[0] * size[1] * 3)
+        )
+        image = Image.blend(image, noise, 0.28)
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((30, 40, 770, 170), fill="white")
+        draw.text((50, 70), "SYNTHETIC ARCHIVE", fill="black")
+    content = io.BytesIO()
+    image.save(content, format="WEBP", quality=82, method=6)
+    value = content.getvalue()
+    (tmp_path / "workspace" / "covers" / f"{subject_id}.webp").write_bytes(value)
+    repository = SubjectRepository(database)
+    snapshot = repository.get_subject_facts(subject_id)
+    assert snapshot is not None
+    cover = CoverRecord(
+        f"https://example.invalid/{subject_id}", "large",
+        hashlib.sha256(value).hexdigest(), *size, len(value),
+    )
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(connection, replace(snapshot, cover=cover))
+    return value
+
+
+def _build_preview_fixture(tmp_path: Path) -> tuple[UnifiedSiteBuilder, Database]:
+    builder, database = _build_fixture(
+        tmp_path, include_same_quarter_tv=True, extra_same_quarter_tv=1
+    )
+    _set_preview_fixture_cover(tmp_path, database, 101, large=True)
+    _set_preview_fixture_cover(tmp_path, database, 303, large=False)
+    return builder, database
+
+
+def test_preview_preserves_alpha_and_exif_orientation(tmp_path: Path) -> None:
+    size = (800, 1200)
+    image = Image.frombytes(
+        "RGB", size, random.Random(52).randbytes(size[0] * size[1] * 3)
+    ).convert("RGBA")
+    image.putalpha(160)
+    orientation = Image.Exif()
+    orientation[274] = 6
+    output = io.BytesIO()
+    image.save(output, format="WEBP", quality=82, exif=orientation)
+    body = output.getvalue()
+    source = tmp_path / "portrait.webp"
+    source.write_bytes(body)
+    preview = site_builder._cover_preview_bytes(
+        source, hashlib.sha256(body).hexdigest(), len(body)
+    )
+    assert len(preview) < len(body)
+    with Image.open(io.BytesIO(preview)) as decoded:
+        assert decoded.size == (640, 427)
+        assert decoded.getexif().get(274) is None
+        assert decoded.getchannel("A").getextrema() == (160, 160)
+    assert source.read_bytes() == body
+
+
+@pytest.mark.parametrize("format_name", ["PNG", "WEBP"])
+def test_preview_rejects_unverified_format_and_oversized_dimensions(
+    tmp_path: Path, format_name: str,
+) -> None:
+    output = io.BytesIO()
+    Image.new("RGB", (1201, 1)).save(output, format=format_name)
+    body = output.getvalue()
+    source = tmp_path / "invalid.webp"
+    source.write_bytes(body)
+    with pytest.raises(BuildError):
+        site_builder._cover_preview_bytes(
+            source, hashlib.sha256(body).hexdigest(), len(body)
+        )
+
+
+def test_cover_previews_include_originals_repair_and_reuse_without_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder, _ = _build_preview_fixture(tmp_path)
+    builder.build()
+    site = tmp_path / "dist/site"
+    manifest = json.loads((site / "data/offline/2026-07.json").read_text("utf-8"))
+    originals = [r for r in manifest["resources"] if re.fullmatch(
+        r"covers/[0-9]+\.webp", r["url"]
+    )]
+    previews = [r for r in manifest["resources"] if "/previews/" in r["url"]]
+    assert len(originals) == len(previews) == 2
+    for resource in (*originals, *previews):
+        body = (site / resource["url"]).read_bytes()
+        assert hashlib.sha256(body).hexdigest() == resource["content_hash"]
+        assert len(body) == resource["size_bytes"]
+        with Image.open(io.BytesIO(body)) as image:
+            image.load()
+            assert image.format == "WEBP"
+    quarter = json.loads((site / "data/quarters/2026-07.json").read_text("utf-8"))
+    urls = {item["subject_id"]: item["cover_url"]
+            for item in (*quarter["tv"]["premiere"], *quarter["tv"]["continuing"])}
+    large = next(r for r in previews
+                 if r["url"] == site_builder._cover_preview_path(urls[101]))
+    small = next(r for r in previews
+                 if r["url"] == site_builder._cover_preview_path(urls[303]))
+    with Image.open(site / large["url"]) as image:
+        assert image.size == (427, 640)
+    assert (site / small["url"]).read_bytes() == (site / "covers/303.webp").read_bytes()
+    page = (site / "2026-07/index.html").read_text("utf-8")
+    assert f'../{large["url"]}' in page
+    assert 'data-cover-fallback="../covers/101.webp?v=' in page
+    assert 'aria-label="缺少封面"' in page
+    (site / large["url"]).unlink()
+    repaired = builder.build()
+    assert repaired.patch.written == (large["url"],)
+    assert hashlib.sha256((site / large["url"]).read_bytes()).hexdigest() == (
+        large["content_hash"]
+    )
+    timestamps = {p.relative_to(site): p.stat().st_mtime_ns for p in site.rglob("*")
+                  if p.is_file()}
+    def forbidden(*args: object) -> bytes:
+        raise AssertionError("unchanged cover was regenerated")
+    monkeypatch.setattr(site_builder, "_cover_preview_bytes", forbidden)
+    original_open = Path.open
+    def checked_open(path: Path, *args: object, **kwargs: object):
+        if path.parent == tmp_path / "workspace/covers":
+            raise AssertionError("no-op read a canonical cover")
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", checked_open)
+    unchanged = builder.build()
+    assert unchanged.patch.written == unchanged.patch.deleted == ()
+    assert timestamps == {p.relative_to(site): p.stat().st_mtime_ns
+                          for p in site.rglob("*") if p.is_file()}
+
+
+def test_preview_rule_changes_package_not_data_and_keeps_retained_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder, database = _build_preview_fixture(tmp_path)
+    builder.build()
+    site = tmp_path / "dist/site"
+    old_package = json.loads((site / "data/offline/2026-07.json").read_text("utf-8"))
+    old_april = (site / "2026-04/index.html").read_bytes()
+    old_data = (site / "data/quarters/2026-07.json").read_bytes()
+    old_quarter = json.loads(old_data)
+    original_url = old_quarter["tv"]["continuing"][0]["cover_url"]
+    old_preview = site_builder._cover_preview_path(original_url)
+    repository = SubjectRepository(database)
+    now = datetime.now(UTC).isoformat()
+    with repository.transaction() as connection:
+        repository.write_sync_state(connection, QuarterSyncState(
+            Quarter(2026, 4), "incomplete", "complete", 1, 0, now, now,
+        ))
+    monkeypatch.setitem(site_builder._COVER_PREVIEW_RULE, "quality", 79)
+    run = builder.build()
+    package = json.loads((site / "data/offline/2026-07.json").read_text("utf-8"))
+    new_preview = site_builder._cover_preview_path(original_url)
+    assert package["data_revision"] == old_package["data_revision"]
+    assert package["revision"] != old_package["revision"]
+    assert new_preview != old_preview
+    assert (site / old_preview).is_file() and (site / new_preview).is_file()
+    assert (site / "2026-04/index.html").read_bytes() == old_april
+    assert (site / "data/quarters/2026-07.json").read_bytes() == old_data
+    assert json.loads(run.report_path.read_text("utf-8"))["retained_quarters"] == [
+        "2026-04"
+    ]
+    retained = json.loads((site / "data/offline/2026-04.json").read_text("utf-8"))
+    for resource in retained["resources"]:
+        body = (site / resource["url"]).read_bytes()
+        assert hashlib.sha256(body).hexdigest() == resource["content_hash"]
+        assert len(body) == resource["size_bytes"]
+
+
+@pytest.mark.parametrize("failure", ["omitted-resource", "bad-preview", "bad-source"])
+def test_preview_failure_never_replaces_last_good(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    builder, _ = _build_preview_fixture(tmp_path)
+    builder.build()
+    site = tmp_path / "dist/site"
+    previous = {p.relative_to(site): p.read_bytes() for p in site.rglob("*")
+                if p.is_file()}
+    state = builder.state_path.read_bytes()
+    monkeypatch.setitem(site_builder._COVER_PREVIEW_RULE, "quality", 79)
+    if failure == "omitted-resource":
+        original = site_builder._offline_manifest_bytes
+        def omitted(*args: object) -> bytes:
+            manifest = json.loads(original(*args))
+            manifest["resources"] = [r for r in manifest["resources"]
+                                     if "/previews/" not in r["url"]]
+            return site_builder.json_bytes(manifest)
+        monkeypatch.setattr(site_builder, "_offline_manifest_bytes", omitted)
+    elif failure == "bad-preview":
+        monkeypatch.setattr(site_builder, "_cover_preview_bytes", lambda *args: b"bad")
+    else:
+        cover = tmp_path / "workspace/covers/101.webp"
+        cover.write_bytes(b"X" * cover.stat().st_size)
+    with pytest.raises(BuildError):
+        builder.build()
+    assert previous == {p.relative_to(site): p.read_bytes()
+                        for p in site.rglob("*") if p.is_file()}
+    assert builder.state_path.read_bytes() == state
+
+
+def test_retained_cover_collision_fails_before_site_mutation(tmp_path: Path) -> None:
+    builder, database = _build_preview_fixture(tmp_path)
+    builder.build()
+    site = tmp_path / "dist/site"
+    previous = {p.relative_to(site): p.read_bytes() for p in site.rglob("*")
+                if p.is_file()}
+    state = builder.state_path.read_bytes()
+    cover = tmp_path / "workspace/covers/101.webp"
+    image = Image.new("RGB", (800, 1200), "green")
+    body = io.BytesIO()
+    image.save(body, format="WEBP", quality=82)
+    value = body.getvalue()
+    cover.write_bytes(value)
+    repository = SubjectRepository(database)
+    snapshot = repository.get_subject_facts(101)
+    assert snapshot is not None
+    now = datetime.now(UTC).isoformat()
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection, replace(snapshot, cover=CoverRecord(
+                "https://example.invalid/101", "large",
+                hashlib.sha256(value).hexdigest(), 800, 1200, len(value),
+            )),
+        )
+        repository.write_sync_state(connection, QuarterSyncState(
+            Quarter(2026, 4), "incomplete", "complete", 1, 0, now, now,
+        ))
+    with pytest.raises(BuildError, match="retained cover conflicts"):
+        builder.build()
+    assert builder.state_path.read_bytes() == state
+    assert previous == {p.relative_to(site): p.read_bytes()
+                        for p in site.rglob("*") if p.is_file()}
 
 
 def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
@@ -1089,14 +1327,16 @@ def test_cover_change_reads_and_copies_only_the_changed_cover(
     repository = SubjectRepository(database)
     current = repository.get_subject_facts(101)
     assert current is not None
-    cover_bytes = b"new-cover-101"
+    content = io.BytesIO()
+    Image.new("RGB", (9, 1), "green").save(content, format="WEBP", quality=82)
+    cover_bytes = content.getvalue()
     cover_path = tmp_path / "workspace" / "covers" / "101.webp"
     cover_path.write_bytes(cover_bytes)
     updated_cover = CoverRecord(
         "https://example.invalid/101-v2",
         "large",
         hashlib.sha256(cover_bytes).hexdigest(),
-        1,
+        9,
         1,
         len(cover_bytes),
     )

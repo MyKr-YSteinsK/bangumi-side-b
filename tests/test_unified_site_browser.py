@@ -13,10 +13,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
-from playwright.sync_api import BrowserContext, Page, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
 from bgm_side_b.repository import SubjectRepository
-from tests.test_site_builder import _build_fixture
+from tests.test_site_builder import _build_fixture, _build_preview_fixture
 
 pytestmark = [pytest.mark.browser, pytest.mark.deep_regression]
 
@@ -252,6 +252,124 @@ def unified_site_571784(tmp_path: Path) -> Iterator[Path]:
     builder, _ = _build_fixture(tmp_path, primary_subject_id=571784)
     builder.build()
     yield tmp_path / "dist" / "site"
+
+
+@pytest.fixture(params=("chromium", "webkit"))
+def preview_browser(request: pytest.FixtureRequest) -> Iterator[Browser]:
+    with sync_playwright() as runner:
+        browser = getattr(runner, request.param).launch()
+        try:
+            yield browser
+        finally:
+            browser.close()
+
+
+@pytest.fixture
+def preview_server(tmp_path: Path) -> Iterator[tuple[str, Path]]:
+    builder, _ = _build_preview_fixture(tmp_path)
+    builder.build()
+    site = tmp_path / "dist/site"
+    handler = functools.partial(
+        http.server.SimpleHTTPRequestHandler, directory=str(site)
+    )
+    server = _server(handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", site
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.mark.parametrize("page_kind", ["quarter", "archive"])
+def test_browse_previews_keep_original_detail_and_bounded_fallback(
+    preview_browser: Browser,
+    preview_server: tuple[str, Path],
+    page_kind: str,
+) -> None:
+    base, site = preview_server
+    quarter = json.loads((site / "data/quarters/2026-07.json").read_text("utf-8"))
+    original = quarter["tv"]["continuing"][0]["cover_url"]
+    markup = (site / "2026-07/index.html").read_text("utf-8")
+    from bgm_side_b.build.site_builder import _cover_preview_path
+    preview = _cover_preview_path(original)
+    assert preview is not None and preview in markup
+    context = preview_browser.new_context(
+        service_workers="block", viewport={"width": 390, "height": 844},
+    )
+    page = context.new_page()
+    page.set_default_timeout(20000)
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    path = "2026-07/index.html" if page_kind == "quarter" else "archive/index.html"
+    page.goto(f"{base}/{path}")
+    page.wait_for_function(
+        "document.querySelector('[data-results-summary]')?.textContent.includes(' / ')"
+    )
+    primary = page.locator('.subject-row[data-subject-id="101"]').first
+    image = primary.locator(".subject-row__cover img")
+    page.wait_for_function(
+        "[...document.querySelectorAll('.subject-row__cover img')]"
+        ".every(image => image.complete && image.naturalWidth > 0)"
+    )
+    assert image.evaluate("node => node.currentSrc") == f"{base}/{preview}"
+    assert page.locator('.subject-row[data-subject-id="303"] img').evaluate(
+        "node => node.naturalWidth"
+    ) == 200
+    assert page.locator(
+        '.subject-row[data-subject-id="304"] .subject-row__cover--missing'
+    ).is_visible()
+    assert not any("/covers/101.webp" in url for url in requests)
+    assert all(urlparse(url).netloc == urlparse(base).netloc for url in requests)
+    primary.evaluate("node => { window.__previewRow = node; }")
+    page.locator('[data-view-mode="list"]').click()
+    page.locator('[data-view-mode="grid"]').click()
+    page.locator("[data-search]").fill("303")
+    assert page.locator(".subject-row:visible").count() == 1
+    page.locator("[data-search]").fill("")
+    assert primary.evaluate("node => node === window.__previewRow")
+    primary.locator("[data-open-subject]").click()
+    detail = page.locator("[data-detail-panel]")
+    detail.wait_for(state="visible")
+    page.wait_for_function(
+        "document.querySelector('.detail-cover-button img')?.naturalWidth === 800"
+    )
+    assert detail.locator(".detail-cover-button img").evaluate(
+        "node => node.currentSrc"
+    ) == f"{base}/{original}"
+    detail.locator("[data-lightbox]").click()
+    assert page.locator(".cover-lightbox img").evaluate(
+        "node => node.currentSrc"
+    ) == f"{base}/{original}"
+    page.keyboard.press("Escape")
+    page.go_back()
+    detail.wait_for(state="hidden")
+    assert image.evaluate("node => node.currentSrc") == f"{base}/{preview}"
+    page.route(f"**/{preview}", lambda route: route.fulfill(status=404, body="missing"))
+    page.reload()
+    page.wait_for_function(
+        "document.querySelector('[data-subject-id=\"101\"] .subject-row__cover img')"
+        "?.naturalWidth === 800"
+    )
+    assert image.get_attribute("src") == f"../{original}"
+    requests.clear()
+    page.route(
+        "**/covers/101.webp*", lambda route: route.fulfill(status=404, body="missing")
+    )
+    page.reload()
+    primary.locator(".subject-row__cover--missing").wait_for(state="visible")
+    assert primary.locator("img").count() == 0
+    assert sum("/covers/101.webp" in url for url in requests) <= (
+        1 if page_kind == "quarter" else 2
+    )
+    assert page.evaluate("""async original => {
+      const root = document.querySelector('[data-archive-app]');
+      delete root.dataset.coverPreviewRule;
+      return await window.BsbArchive.browseCoverPath(root, original);
+    }""", original) == original
+    context.close()
 
 
 @pytest.fixture

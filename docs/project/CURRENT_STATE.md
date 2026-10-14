@@ -314,6 +314,34 @@ have already passed.
   private formal site, or release behavior changed. This does not complete or
   approve the broader B phase; the lifecycle remains Production.
 
+## Plan-52 bounded image-delivery evidence (2026-10-14)
+
+- Plan-52 Rev1 started from `50eaad37be1a8a1c334303f03a00008df00a3ccc`
+  on `main` / `origin/main`, with a clean tracked worktree. App version remains
+  `0.8.5`. Quarter/Archive browse covers now use the single deterministic 640px,
+  WebP quality-78 profile described by the static-build owner; original facts,
+  canonical covers, and detail/Lightbox originals are preserved.
+- In a same-input local Chromium 149 synthetic comparison, Quarter and Archive
+  at 390×844 (DPR 2) and 1440×900 (DPR 1) each requested 286,314 cover bytes
+  before and 55,240 after (80.71% less). Three distinct images included two
+  800×1200 posters and one 200×300 cover, alongside a missing-cover record.
+  Row keys/order and measured geometry matched. These are bounded laboratory
+  results, not real-cover, full-site, production-network or real-device savings.
+- Twelve targeted builder/image cases passed, including no-op, changed covers,
+  retained-quarter closure/conflicts, true manifest SHA/size, alpha/orientation,
+  bounded decoding and failure preservation. Four Quarter/Archive cases passed
+  across Chromium and Playwright WebKit for previews, originals, row reuse and
+  bounded fallback. One Chromium PWA scenario passed for missing-preview update
+  failure, old active offline preview/original Lightbox, resumed completion and
+  cross-quarter reference-safe GC. Facts `data_revision` stayed unchanged while
+  package `revision` changed. SW/PWA implementation and integrity semantics were
+  not changed. Ruff, JS syntax and diff checks passed.
+- Synthetic evidence remains ignored/private. No live Bangumi, real canonical
+  data/config/cover mutation, formal site build, release or Pages mutation was
+  performed. Safari devices, installed PWA, online production and CI outcomes
+  were not verified. Source delivery belongs in the TASK_RESULT. This bounded
+  result does not approve other B/A–F work or advance the Production lifecycle.
+
 ## 2026-10-13 experience-upgrade research status
 
 - The local report `BGMB-总体体验升级与架构优化研究报告.md` under
@@ -322,7 +350,7 @@ have already passed.
   D local snapshot data access, E personal workspace/exploration, and F
   maintainer update efficiency. These candidates have not become an approved
   overall implementation Plan; their ordering, targets, and product tradeoffs
-  remain proposals outside separately approved scopes. Plans 49–51 authorize
+  remain proposals outside separately approved scopes. Plans 49–52 authorize
   only their bounded changes and do not approve the broader program or move
   the Production lifecycle into a new phase.
 - The original research report and `measurements.json` were read; their JSON,

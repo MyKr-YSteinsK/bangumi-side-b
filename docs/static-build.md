@@ -20,6 +20,7 @@ dist/site/
 ├─ assets/app.css
 ├─ assets/app.js
 ├─ covers/<ID>.webp
+├─ covers/previews/<identity>.webp
 └─ data/{archive-index.json,catalog/,quarters/,offline/}
 ```
 
@@ -28,6 +29,25 @@ contains the deterministic subject display projection and detail payload; no
 Subject detail pages, episode files, role/person artifacts, remote URLs, or
 character images are generated. Missing or invalid covers produce a warning and
 `cover_url: null` instead of a fake image.
+
+Browse cards use one derived WebP profile: maximum edge 640px, quality 78,
+method 6, LANCZOS resampling, EXIF orientation applied, RGB/RGBA with alpha and
+ICC preserved. Generation checks the canonical source SHA256/size and the
+existing cover byte/dimension limits before decoding. Small (at most 640px),
+animated, or non-beneficial inputs retain their original bytes at the preview
+path. Canonical covers and JSON `cover_url` remain unchanged; detail and
+Lightbox use the original cover.
+
+The preview rule fingerprint includes the profile, fallback/colour/orientation
+rules, Pillow version, and libwebp version. Its physical filename identity is
+SHA256 of ASCII `<rule-fingerprint>\n<source-content-hash>` (one literal newline).
+The full 64-hex identity avoids long nested Windows paths and lets identical
+sources share a preview across subjects/quarters. It is a producer identity,
+not the preview content hash: artifact state and offline manifests record the
+actual output SHA256 and size. HTML carries the rule fingerprint; Archive derives
+the same path from the existing original URL without changing fact projections.
+Changing this rule changes shared/resource fingerprints and manifest `revision`,
+not the quarter JSON's facts `data_revision`.
 
 The site is updated incrementally. `workspace/build-state.json` stores only
 deterministic shared, quarter, year, archive, artifact hashes/sizes, and quarter
@@ -42,8 +62,15 @@ replacements/deletions, and commits build-state last. A failed replace, delete, 
 validation restores the touched files and leaves the previous state intact.
 
 An identical second build must leave generated artifact bytes and timestamps
-unchanged and report skipped quarters. Stale generated covers are removed only
-when no current quarter references them.
+unchanged and report skipped quarters. Unchanged preview artifacts reuse the
+recorded hash/size and existence/size checks without reading canonical covers.
+Missing or size-invalid previews are regenerated. Stale original and preview
+covers are removed only when no current or retained quarter references them.
+Retained quarter pages keep their own rule identity and both cover dependencies.
+A changed original that conflicts with a retained quarter's physical cover fails
+before mutation, preserving the previous site. Newly generated previews must
+decode safely, and each offline manifest must include all page preview dependencies
+plus all original covers with their actual hashes/sizes.
 
 `sync` invokes the same incremental builder only after a successful facts/covers
 commit. Incomplete facts or relevant unresolved REVIEW retain only that quarter's

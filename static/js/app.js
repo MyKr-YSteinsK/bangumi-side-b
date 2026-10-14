@@ -263,6 +263,35 @@
   const resultMotionGroups = new WeakMap();
   const activeResultAnimations = new WeakMap();
 
+  async function browseCoverPath(root, original) {
+    const rule = root?.dataset.coverPreviewRule || "";
+    const source = /^covers\/([1-9][0-9]*)\.webp\?v=([0-9a-f]{64})$/.exec(original);
+    if (!/^[0-9a-f]{64}$/.test(rule) || !source || !window.crypto?.subtle) return original;
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${rule}\n${source[2]}`));
+    const identity = [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+    return `covers/previews/${identity}.webp`;
+  }
+
+  function bindBrowseCover(image, cover) {
+    if (!image || !cover) return;
+    const fallback = image.dataset.coverFallback;
+    let usedFallback = false;
+    const failed = () => {
+      if (!image.complete || image.naturalWidth > 0) return;
+      if (fallback && !usedFallback) {
+        usedFallback = true;
+        image.src = fallback;
+        return;
+      }
+      image.removeEventListener("error", failed);
+      cover.classList.add("subject-row__cover--missing");
+      cover.setAttribute("aria-label", "缺少封面");
+      cover.innerHTML = "<span>ARCHIVE</span>";
+    };
+    image.addEventListener("error", failed);
+    if (image.complete && image.naturalWidth === 0) failed();
+  }
+
   function resultHost(root) {
     if (root?.matches?.("[data-archive-app]")) return root;
     return root?.closest?.("[data-archive-app]")
@@ -744,6 +773,8 @@
     compareRecords,
     applyPipeline,
     reconcileChildren,
+    browseCoverPath,
+    bindBrowseCover,
     positionPopover,
     clearPopoverPosition,
     releaseBrowsePrepaint,
@@ -2168,12 +2199,7 @@
     bindControls();
     rows.forEach((row) => {
       const image = row.querySelector(".subject-row__cover img");
-      image?.addEventListener("error", () => {
-        image.remove();
-        const cover = row.querySelector(".subject-row__cover");
-        cover?.classList.add("subject-row__cover--missing");
-        if (cover) cover.innerHTML = "<span>ARCHIVE</span>";
-      }, { once: true });
+      archive.bindBrowseCover(image, row.querySelector(".subject-row__cover"));
     });
     renderScope({ all: [], page: [], pageCount: 1, page: 1, total: 0 });
     try {
@@ -2511,13 +2537,13 @@
       image.width = 52;
       image.height = 74;
       image.loading = sequence <= 10 ? "eager" : "lazy";
-      image.src = `../${coverPath}`;
+      image.decoding = "async";
       image.alt = "";
-      image.addEventListener("error", () => {
-        image.remove();
-        cover.classList.add("subject-row__cover--missing");
-        cover.innerHTML = "<span>ARCHIVE</span>";
-      }, { once: true });
+      archive.browseCoverPath(root, coverPath).catch(() => coverPath).then((preview) => {
+        if (preview !== coverPath) image.dataset.coverFallback = `../${coverPath}`;
+        image.src = `../${preview}`;
+        archive.bindBrowseCover(image, cover);
+      });
       cover.append(image);
     } else {
       cover.classList.add("subject-row__cover--missing");

@@ -868,6 +868,29 @@ def test_quarter_output_uses_master_detail_shell_and_static_rows(
     assert 'id="subject-drawer"' not in page
 
 
+def test_archive_output_starts_with_a_noninteractive_pending_browser_shell(
+    tmp_path: Path,
+) -> None:
+    builder, _ = _build_fixture(tmp_path)
+    builder.build()
+    page = (tmp_path / "dist" / "site" / "archive" / "index.html").read_text(
+        "utf-8"
+    )
+    assert 'data-page="archive"' in page
+    assert 'aria-busy="true"' in page
+    assert 'data-scope-choice="year" aria-selected="true"' in page
+    assert 'data-scope-choice="quarter" aria-selected="false" tabindex="-1"' in page
+    assert 'data-archive-quarter-selector role="tabpanel" hidden' in page
+    assert 'data-archive-year-selector role="tabpanel"' in page
+    assert 'data-archive-browser aria-busy="true"' in page
+    assert 'aria-label="Archive results" aria-busy="true" inert' in page
+    assert 'data-archive-pending aria-hidden="true" inert' in page
+    pending = page.split('data-archive-pending', 1)[1].split("</div>", 1)[0]
+    assert "data-record-key" not in pending
+    assert "data-subject-id" not in pending
+    assert 'data-range-apply disabled' in page
+
+
 def test_quarter_static_rows_match_default_runtime_order() -> None:
     def record(
         subject_id: int,

@@ -1,4 +1,4 @@
-"""Chromium smoke coverage for the Plan 16 unified static site."""
+"""Targeted browser coverage for the unified static site."""
 
 from __future__ import annotations
 
@@ -61,7 +61,9 @@ def _archive_catalog_server(
             parts = urlparse(self.path).path.split("/")
             gate_key = None
             gate = None
-            if len(parts) == 4 and parts[1:3] == ["data", "catalog"]:
+            if len(parts) == 3 and parts[1:] == ["data", "archive-index.json"]:
+                gate_key = "archive-index"
+            elif len(parts) == 4 and parts[1:3] == ["data", "catalog"]:
                 filename = parts[3]
                 if filename.endswith(".json") and filename[:-5].isdigit():
                     year = int(filename[:-5])
@@ -230,7 +232,7 @@ def _choose_archive_year(page: Page, year: int) -> None:
 def _wait_archive_scope(page: Page, label: str) -> None:
     page.wait_for_function(
         "expected => {"
-        "const root = document.querySelector('[data-page=archive]');"
+        "const root = document.querySelector('[data-archive-app][data-page=archive]');"
         "const master = document.querySelector('.master-pane');"
         "const scope = document.querySelector('[data-archive-scope-label]');"
         "return root?.dataset.scopePending !== 'true' && !master?.inert "
@@ -1409,6 +1411,321 @@ def test_archive_year_listbox_updates_scope_without_native_select(
         "?.textContent.includes('YEAR / 2026')"
     )
     assert "year=2026" in page.url
+
+
+@pytest.mark.parametrize(
+    ("engine", "viewport"),
+    [
+        ("chromium", (390, 844)),
+        ("chromium", (360, 800)),
+        ("chromium", (1440, 900)),
+        ("webkit", (390, 844)),
+    ],
+)
+def test_archive_pending_shell_stays_stable_through_index_and_catalog_waits(
+    unified_site: Path,
+    engine: str,
+    viewport: tuple[int, int],
+) -> None:
+    index_gate = _catalog_gate()
+    catalog_gate = _catalog_gate()
+    with _archive_catalog_server(
+        unified_site,
+        {"archive-index": [index_gate], "catalog:2026": [catalog_gate]},
+    ) as server:
+        with sync_playwright() as runner:
+            browser = getattr(runner, engine).launch()
+            context = browser.new_context(
+                service_workers="block",
+                viewport={"width": viewport[0], "height": viewport[1]},
+            )
+            page = context.new_page()
+            page.emulate_media(reduced_motion="reduce")
+            page.set_default_timeout(10000)
+            try:
+                page.goto(f"{server}/archive/index.html", wait_until="domcontentloaded")
+                index_requested = index_gate["requested"]
+                assert isinstance(index_requested, threading.Event)
+                assert index_requested.wait(timeout=3)
+                initial = page.evaluate("""() => {
+                  const box = selector => {
+                    const node = document.querySelector(selector);
+                    if (!node || node.hidden) return null;
+                    const rect = node.getBoundingClientRect();
+                    return {y: rect.y, height: rect.height};
+                  };
+                  return {
+                    title: box('.archive-intro h1'),
+                    tabs: box('.scope-tabs'),
+                    selector: box('.archive-selector'),
+                    toolbar: box('.archive-browser__toolbar'),
+                    controls: box('.browser-controls'),
+                    summary: box('[data-results-summary]'),
+                    pending: box('[data-archive-pending]'),
+                    scrollWidth: document.documentElement.scrollWidth,
+                    viewportWidth: innerWidth,
+                  };
+                }""")
+                assert page.locator('[data-scope-choice="year"]').get_attribute(
+                    "aria-selected"
+                ) == "true"
+                assert page.locator("[data-archive-browser]").is_visible()
+                assert page.locator(".master-pane").evaluate("node => node.inert")
+                assert page.locator("[data-archive-browser]").get_attribute(
+                    "aria-busy"
+                ) == "true"
+                assert "正在读取档案索引" in page.locator(
+                    "[data-results-summary]"
+                ).inner_text()
+                assert page.locator(".subject-row").count() == 0
+                assert page.locator("[data-archive-pending]").evaluate(
+                    "node => node.querySelectorAll("
+                    "'article, button, a, [data-record-key]').length === 0"
+                )
+
+                release_index = index_gate["release"]
+                assert isinstance(release_index, threading.Event)
+                release_index.set()
+                catalog_requested = catalog_gate["requested"]
+                assert isinstance(catalog_requested, threading.Event)
+                assert catalog_requested.wait(timeout=5)
+                page.wait_for_function(
+                    "document.querySelector('[data-archive-app][data-page=archive]')"
+                    "?.dataset.scopePending === 'true'"
+                )
+                waiting = page.evaluate("""() => {
+                  const box = selector => {
+                    const rect = document.querySelector(selector)
+                      .getBoundingClientRect();
+                    return {y: rect.y, height: rect.height};
+                  };
+                  return {
+                    toolbar: box('.archive-browser__toolbar'),
+                    controls: box('.browser-controls'),
+                    pending: box('[data-archive-pending]'),
+                    scrollWidth: document.documentElement.scrollWidth,
+                  };
+                }""")
+                for selector in ("toolbar", "controls"):
+                    assert abs(waiting[selector]["y"] - initial[selector]["y"]) <= 1
+                    assert (
+                        abs(waiting[selector]["height"] - initial[selector]["height"])
+                        <= 1
+                    )
+                assert page.locator(".subject-row").count() == 0
+                assert "正在读取范围目录" in page.locator(
+                    "[data-results-summary]"
+                ).inner_text()
+
+                release_catalog = catalog_gate["release"]
+                assert isinstance(release_catalog, threading.Event)
+                release_catalog.set()
+                _wait_archive_scope(page, "YEAR / 2026")
+                final = page.evaluate("""() => {
+                  const box = selector => {
+                    const rect = document.querySelector(selector)
+                      .getBoundingClientRect();
+                    return {y: rect.y, height: rect.height};
+                  };
+                  return {
+                    toolbar: box('.archive-browser__toolbar'),
+                    controls: box('.browser-controls'),
+                    firstRow: box('.subject-row'),
+                    scrollWidth: document.documentElement.scrollWidth,
+                  };
+                }""")
+                for selector in ("toolbar", "controls"):
+                    assert abs(final[selector]["y"] - initial[selector]["y"]) <= 1
+                    assert (
+                        abs(final[selector]["height"] - initial[selector]["height"])
+                        <= 1
+                    )
+                assert final["scrollWidth"] <= viewport[0]
+                assert page.locator("[data-archive-pending]").is_hidden()
+                assert page.locator("[data-archive-browser]").get_attribute(
+                    "aria-busy"
+                ) == "false"
+                assert page.locator(".master-pane").evaluate("node => !node.inert")
+                assert page.locator(".subject-row").evaluate_all(
+                    "nodes => nodes.map(node => node.dataset.recordKey)"
+                ) == ["101@2026-04@premiere", "101@2026-07@continuing"]
+                assert "2 / 2" in page.locator("[data-results-summary]").inner_text()
+            finally:
+                context.close()
+                browser.close()
+
+
+@pytest.mark.parametrize("kind", ["quarter", "range"])
+def test_archive_scope_choice_before_index_preserves_latest_tab(
+    unified_site: Path,
+    kind: str,
+) -> None:
+    index_gate = _catalog_gate()
+    catalog_gate = _catalog_gate()
+    with _archive_catalog_server(
+        unified_site,
+        {"archive-index": [index_gate], "catalog:2026": [catalog_gate]},
+    ) as server:
+        with sync_playwright() as runner:
+            browser = runner.chromium.launch()
+            context = browser.new_context(
+                service_workers="block", viewport={"width": 390, "height": 844}
+            )
+            page = context.new_page()
+            page.set_default_timeout(10000)
+            try:
+                page.goto(f"{server}/archive/index.html", wait_until="domcontentloaded")
+                requested = index_gate["requested"]
+                assert isinstance(requested, threading.Event)
+                assert requested.wait(timeout=3)
+                page.locator(f'[data-scope-choice="{kind}"]').click()
+                assert page.locator(f'[data-scope-choice="{kind}"]').get_attribute(
+                    "aria-selected"
+                ) == "true"
+                if kind == "quarter":
+                    assert page.locator("[data-archive-browser]").is_hidden()
+                else:
+                    assert page.locator("[data-archive-browser]").is_visible()
+                    assert page.locator("[data-archive-range-selector]").is_visible()
+                release = index_gate["release"]
+                assert isinstance(release, threading.Event)
+                release.set()
+                finished = index_gate["finished"]
+                assert isinstance(finished, threading.Event)
+                assert finished.wait(timeout=3)
+                if kind == "quarter":
+                    page.wait_for_selector(".archive-quarter-grid")
+                else:
+                    page.wait_for_function(
+                        "document.querySelector('[data-archive-app][data-page=archive]')"
+                        "?.getAttribute('aria-busy') === 'false'"
+                    )
+                assert not catalog_gate["requested"].wait(timeout=0.35)
+                assert page.locator(f'[data-scope-choice="{kind}"]').get_attribute(
+                    "aria-selected"
+                ) == "true"
+                if kind == "quarter":
+                    assert page.locator("[data-archive-browser]").is_hidden()
+                else:
+                    assert page.locator("[data-archive-browser]").is_visible()
+                    assert page.locator("[data-archive-range-selector]").is_visible()
+                    assert page.locator("[data-archive-from]").input_value() == "2026"
+                    assert page.locator("[data-archive-to]").input_value() == "2026"
+                    assert page.locator("[data-archive-from]").is_enabled()
+                    assert page.locator(".master-pane").evaluate("node => node.inert")
+                assert page.locator(
+                    '[data-archive-app][data-page="archive"]'
+                ).get_attribute("aria-busy") == "false"
+            finally:
+                context.close()
+                browser.close()
+
+
+def test_archive_quarter_choice_cancels_a_late_initial_catalog(
+    unified_site: Path,
+) -> None:
+    catalog_gate = _catalog_gate()
+    with _archive_catalog_server(
+        unified_site, {"catalog:2026": [catalog_gate]}
+    ) as server:
+        with sync_playwright() as runner:
+            browser = runner.chromium.launch()
+            context = browser.new_context(
+                service_workers="block", viewport={"width": 390, "height": 844}
+            )
+            page = context.new_page()
+            page.set_default_timeout(10000)
+            try:
+                page.goto(f"{server}/archive/index.html", wait_until="domcontentloaded")
+                requested = catalog_gate["requested"]
+                assert isinstance(requested, threading.Event)
+                assert requested.wait(timeout=5)
+                page.wait_for_function(
+                    "document.querySelector('[data-archive-app][data-page=archive]')"
+                    "?.dataset.scopePending === 'true'"
+                )
+                page.locator('[data-scope-choice="quarter"]').click()
+                assert page.locator("[data-archive-browser]").is_hidden()
+                assert page.locator(
+                    '[data-archive-app][data-page="archive"]'
+                ).get_attribute("aria-busy") == "false"
+                release = catalog_gate["release"]
+                assert isinstance(release, threading.Event)
+                release.set()
+                finished = catalog_gate["finished"]
+                assert isinstance(finished, threading.Event)
+                assert finished.wait(timeout=3)
+                page.wait_for_timeout(100)
+                assert page.locator('[data-scope-choice="quarter"]').get_attribute(
+                    "aria-selected"
+                ) == "true"
+                assert page.locator("[data-archive-browser]").is_hidden()
+                assert page.locator(".subject-row").count() == 0
+            finally:
+                context.close()
+                browser.close()
+
+
+@pytest.mark.parametrize("outcome", ["index", "catalog", "empty"])
+def test_archive_initial_load_errors_and_empty_state_clear_busy(
+    unified_site: Path,
+    outcome: str,
+) -> None:
+    if outcome == "index":
+        gates = {"archive-index": [_catalog_gate(status=503)]}
+    elif outcome == "catalog":
+        gates = {"catalog:2026": [_catalog_gate(status=503)]}
+    else:
+        catalog_path = unified_site / "data" / "catalog" / "2026.json"
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        catalog["records"] = []
+        catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        gates = {}
+    for resources in gates.values():
+        release = resources[0]["release"]
+        assert isinstance(release, threading.Event)
+        release.set()
+    with _archive_catalog_server(unified_site, gates) as server:
+        with sync_playwright() as runner:
+            browser = runner.chromium.launch()
+            context = browser.new_context(
+                service_workers="block", viewport={"width": 390, "height": 844}
+            )
+            page = context.new_page()
+            page.set_default_timeout(10000)
+            try:
+                page.goto(f"{server}/archive/index.html", wait_until="domcontentloaded")
+                page.wait_for_function(
+                    "document.querySelector('[data-archive-app][data-page=archive]')"
+                    "?.getAttribute('aria-busy') === 'false'"
+                )
+                assert page.locator("[data-archive-pending]").is_hidden()
+                assert page.locator(".subject-row").count() == 0
+                if outcome == "index":
+                    assert "DATA UNAVAILABLE" in page.locator("body").inner_text()
+                    assert page.locator("[data-archive-browser]").is_hidden()
+                    assert page.locator("[data-archive-quarter-selector]").is_visible()
+                    page.locator('[data-scope-choice="year"]').click()
+                    assert page.locator("[data-archive-quarter-selector]").is_visible()
+                    assert "DATA UNAVAILABLE" in page.locator(
+                        "[data-archive-quarter-selector]"
+                    ).inner_text()
+                elif outcome == "catalog":
+                    assert "DATA UNAVAILABLE" in page.locator("body").inner_text()
+                    assert page.locator("[data-archive-browser]").is_visible()
+                    assert page.locator("[data-scope-panel]").inner_text().count(
+                        "DATA UNAVAILABLE"
+                    ) == 1
+                else:
+                    assert page.locator("[data-archive-browser]").is_visible()
+                    assert page.locator("[data-no-results]").is_visible()
+                    assert "0 / 0" in page.locator(
+                        "[data-results-summary]"
+                    ).inner_text()
+                    assert page.locator(".master-pane").evaluate("node => !node.inert")
+            finally:
+                context.close()
+                browser.close()
 
 
 @pytest.mark.parametrize("viewport", [(1440, 900), (390, 844)])

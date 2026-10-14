@@ -2241,6 +2241,7 @@
     range: root.querySelector("[data-archive-range-selector]"),
     browser: root.querySelector("[data-archive-browser]"),
     list: root.querySelector("[data-list-sections]"),
+    pending: root.querySelector("[data-archive-pending]"),
     scopeLabel: root.querySelector("[data-archive-scope-label]"),
     search: root.querySelector("[data-search]"),
     summary: root.querySelector("[data-results-summary]"),
@@ -2267,6 +2268,8 @@
   let scopeIntent = 0;
   let scopePending = false;
   let loadError = false;
+  let pendingScopeTab = null;
+  let closeSortPopover = () => {};
   let yearControl = null;
   let pageSizeControl = null;
   let detailHistoryEntry = false;
@@ -2336,15 +2339,22 @@
 
   function updateScopeAvailability() {
     const loaded = !scopePending && !loadError && sameScope(loadedScope, state.scope);
+    const busy = !loadError && (!index || scopePending);
     const masterPane = root.querySelector(".master-pane");
     if (masterPane) masterPane.inert = !loaded;
+    if (masterPane) masterPane.setAttribute("aria-busy", String(busy));
     if (selectors.detailPanel) selectors.detailPanel.inert = !loaded;
     if (selectors.filterPanel) selectors.filterPanel.inert = !loaded;
+    root.setAttribute("aria-busy", String(busy));
+    selectors.browser?.setAttribute("aria-busy", String(busy));
     if (selectors.scopeLabel) {
-      selectors.scopeLabel.setAttribute("aria-busy", String(scopePending));
+      selectors.scopeLabel.setAttribute("aria-busy", String(busy));
     }
     if (selectors.scopePanel) {
-      selectors.scopePanel.setAttribute("aria-busy", String(scopePending));
+      selectors.scopePanel.setAttribute("aria-busy", String(busy));
+    }
+    if (selectors.pending) {
+      selectors.pending.hidden = !busy || loadError || loadedScope !== null;
     }
     if (scopePending) root.dataset.scopePending = "true";
     else delete root.dataset.scopePending;
@@ -2401,6 +2411,76 @@
       if (name === "browser") node.hidden = kind === "quarter";
       else node.hidden = name !== kind;
     }
+  }
+
+  function chooseScopeTab(kind) {
+    closeSortPopover();
+    setTab(kind);
+    if (!index) {
+      if (loadError) {
+        pendingScopeTab = null;
+        setTab("quarter");
+        return;
+      }
+      pendingScopeTab = kind;
+      scopeIntent += 1;
+      if (kind === "quarter") state.scope = { kind: "quarter", value: "" };
+      return;
+    }
+    pendingScopeTab = null;
+    if (kind === "quarter") {
+      scopeIntent += 1;
+      scopePending = false;
+      loadError = false;
+      state.scope = { kind: "quarter", value: "" };
+      updateScopeAvailability();
+      return;
+    }
+    if (kind === "year") {
+      const location = scopeFromLocation();
+      const value = yearControl?.getValue()
+        || (location.kind === "year"
+          ? location.value
+          : String(index.latest_quarter || "").slice(0, 4));
+      void setScope("year", value);
+      return;
+    }
+
+    const abandonedCurrentLoad = scopePending || loadError;
+    if (abandonedCurrentLoad) {
+      scopeIntent += 1;
+      scopePending = false;
+      loadError = false;
+    }
+    const location = scopeFromLocation();
+    const currentYear = state.scope.kind === "year" && state.scope.value
+      ? state.scope.value
+      : location.kind === "year"
+        ? location.value
+        : String(index.latest_quarter || "").slice(0, 4);
+    const initialRange = location.kind === "range" ? location.value : null;
+    const from = root.querySelector("[data-archive-from]");
+    const to = root.querySelector("[data-archive-to]");
+    if (from && !from.value) from.value = String(initialRange?.from ?? currentYear);
+    if (to && !to.value) to.value = String(initialRange?.to ?? currentYear);
+    if (abandonedCurrentLoad && selectors.summary) {
+      selectors.summary.textContent = "选择起止年份并显示范围目录。";
+      if (selectors.scopePanel) {
+        selectors.scopePanel.hidden = false;
+        selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">YEAR RANGE</p><p>选择起止年份并显示范围目录。</p>';
+      }
+    }
+    updateScopeAvailability();
+  }
+
+  function bindScopeTabs() {
+    root.querySelectorAll("[data-scope-choice]").forEach((button) => {
+      button.addEventListener("click", () => chooseScopeTab(button.dataset.scopeChoice));
+    });
+    window.addEventListener("popstate", () => {
+      if (!index) pendingScopeTab = null;
+      else void restoreArchiveLocation();
+    });
   }
 
   function renderQuarterSelector() {
@@ -3261,7 +3341,6 @@
   }
 
   function bindControls() {
-    let closeSortPopover = () => {};
     const pageSize = root.querySelector("[data-page-size]");
     if (pageSize && window.BsbListbox) {
       pageSizeControl = window.BsbListbox.create(pageSize, {
@@ -3382,27 +3461,6 @@
     document.addEventListener("bsb-mobile-menu-open", () => closeSortPopover());
     window.addEventListener("scroll", () => closeSortPopover(), { passive: true });
     root.querySelector("[data-clear-all]")?.addEventListener("click", () => archive.withResultMotion("clear-filter", root, () => { state.query = ""; state.filterOptionQuery = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); }));
-    root.querySelectorAll("[data-scope-choice]").forEach((button) => button.addEventListener("click", () => {
-      closeSortPopover();
-      const kind = button.dataset.scopeChoice;
-      setTab(kind);
-      if (kind === "quarter") { state.scope = { kind: "quarter", value: "" }; selectors.browser.hidden = true; return; }
-      if (kind === "year") {
-        const value = yearControl?.getValue() || String(index?.latest_quarter || "").slice(0, 4);
-        setScope("year", value);
-      }
-      if (kind === "range") {
-        const fallback = Number(
-          state.scope.kind === "year"
-            ? state.scope.value
-            : String(index?.latest_quarter || "").slice(0, 4)
-        );
-        const from = root.querySelector("[data-archive-from]");
-        const to = root.querySelector("[data-archive-to]");
-        if (from && !from.value) from.value = String(fallback);
-        if (to && !to.value) to.value = String(fallback);
-      }
-    }));
     root.querySelector("[data-range-apply]")?.addEventListener("click", () => {
       const range = normalRange(root.querySelector("[data-archive-from]")?.value, root.querySelector("[data-archive-to]")?.value);
       if (range) setScope("range", range);
@@ -3415,7 +3473,6 @@
       root.querySelector("[data-archive-to]").value = String(value.to);
       setScope("range", value);
     }));
-    window.addEventListener("popstate", () => { void restoreArchiveLocation(); });
     window.addEventListener("hashchange", openHash);
     window.addEventListener("resize", () => render());
     bindDetailGesture();
@@ -3432,6 +3489,7 @@
     if (push) setScopeUrl(kind, normalized);
     updateScopeAvailability();
     if (kind === "quarter") return;
+    if (selectors.summary) selectors.summary.textContent = "正在读取范围目录…";
     if (selectors.scopePanel) {
       selectors.scopePanel.hidden = false;
       if (selectors.detailPanel) selectors.detailPanel.hidden = true;
@@ -3461,6 +3519,9 @@
       scopePending = false;
       loadError = true;
       updateScopeAvailability();
+      if (selectors.summary) {
+        selectors.summary.textContent = "DATA UNAVAILABLE · 页面资料未完整生成";
+      }
       if (selectors.scopePanel) {
         selectors.scopePanel.hidden = false;
         selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>页面资料未完整生成</h2><p>建议重新 build。</p>';
@@ -3469,18 +3530,64 @@
   }
 
   async function load() {
+    root.dataset.viewMode = state.viewMode;
+    bindScopeTabs();
+    updateScopeAvailability();
     try {
       const response = await fetch(root.dataset.archiveIndexUrl, { credentials: "same-origin" });
       if (!response.ok) throw new Error("archive index unavailable");
       index = await response.json();
       renderQuarterSelector();
       renderYearSelector();
+      root.querySelectorAll("[data-archive-range-selector] input, [data-archive-range-selector] button")
+        .forEach((control) => { control.disabled = false; });
       bindControls();
+      if (pendingScopeTab === "quarter") {
+        pendingScopeTab = null;
+        state.scope = { kind: "quarter", value: "" };
+        scopePending = false;
+        loadError = false;
+        updateScopeAvailability();
+        return;
+      }
+      if (pendingScopeTab === "range") {
+        pendingScopeTab = null;
+        setTab("range");
+        const location = scopeFromLocation();
+        const fallback = location.kind === "year"
+          ? location.value
+          : String(index.latest_quarter || "").slice(0, 4);
+        const range = location.kind === "range" ? location.value : null;
+        const from = root.querySelector("[data-archive-from]");
+        const to = root.querySelector("[data-archive-to]");
+        if (from && !from.value) from.value = String(range?.from ?? fallback);
+        if (to && !to.value) to.value = String(range?.to ?? fallback);
+        if (selectors.summary) selectors.summary.textContent = "选择起止年份并显示范围目录。";
+        if (selectors.scopePanel) {
+          selectors.scopePanel.hidden = false;
+          selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">YEAR RANGE</p><p>选择起止年份并显示范围目录。</p>';
+        }
+        updateScopeAvailability();
+        return;
+      }
+      if (pendingScopeTab === "year") {
+        pendingScopeTab = null;
+        const location = scopeFromLocation();
+        const value = location.kind === "year"
+          ? location.value
+          : String(index.latest_quarter || "").slice(0, 4);
+        await setScope("year", value);
+        return;
+      }
       await restoreArchiveLocation();
     } catch {
       loadError = true;
+      scopePending = false;
+      pendingScopeTab = null;
       setTab("quarter");
       if (selectors.quarter) selectors.quarter.innerHTML = '<p class="empty-state">DATA UNAVAILABLE · 页面资料未完整生成</p>';
+      if (selectors.summary) selectors.summary.textContent = "DATA UNAVAILABLE · 页面资料未完整生成";
+      updateScopeAvailability();
     }
   }
 

@@ -342,6 +342,36 @@ have already passed.
   were not verified. Source delivery belongs in the TASK_RESULT. This bounded
   result does not approve other B/A–F work or advance the Production lifecycle.
 
+## Plan-53 bounded Archive loading-layout evidence (2026-10-14)
+
+- Plan-53 Rev1 began from `main` / `origin/main` at
+  `89cc7567df12e6d5bbdee658b23b7a8a23c18086`, with a clean tracked worktree.
+  The generated Archive HTML now starts on YEAR without inventing a year before
+  the index arrives. Its toolbar is present while the first index/catalog load is
+  pending; result controls remain inert and a non-record placeholder reserves
+  the initial results area. Scope changes preserve latest-intent cancellation,
+  including QUARTER selection while an annual catalog is in flight.
+- Reusing the same synthetic SQLite, cover, generated-site fixture and Chromium
+  149 setup, a loopback gate delayed `archive-index.json` and `catalog/2026.json`
+  by 750ms each. Non-user-input CLS changed from 0.11245 to 0 at 390×844 and
+  from 0.07468 to 0.00038 at 1440×900. After the change, toolbar/control y
+  positions stayed at 211.9/273.3px on mobile and 481.0/550.4px on desktop
+  through both waits; the first result row appeared at 442.7/706.6px. Scroll
+  width matched the viewport at both sizes. These are local synthetic lab
+  results, not online, CrUX, Safari or real-device evidence.
+- Ten targeted pending/error/empty/latest-intent browser cases passed across
+  Chromium 360/390/1440px and Playwright WebKit 390px. Eight existing
+  scope-race, YEAR/RANGE, hash and history cases and two Archive mobile
+  first-screen cases passed. Two focused builder tests, Ruff, JavaScript syntax
+  and diff checks passed; the complete browser and test suites were not run.
+- Probe output and screenshots remain under the ignored local
+  `workspace/reports/plan53-20261014/` directory. No live Bangumi access,
+  canonical user data/config/cover mutation, formal site build, PWA/SW change,
+  release, Pages or `gh-pages` mutation occurred. Real Safari/standalone,
+  production-network behavior and post-push CI are separate evidence; this
+  bounded Plan does not approve broader A–F work or advance the Production
+  lifecycle.
+
 ## 2026-10-13 experience-upgrade research status
 
 - The local report `BGMB-总体体验升级与架构优化研究报告.md` under

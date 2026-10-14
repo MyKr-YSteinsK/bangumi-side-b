@@ -24,6 +24,17 @@ dist/site/
 └─ data/{archive-index.json,catalog/,quarters/,offline/}
 ```
 
+## Archive initial document
+
+`archive/index.html` initially selects the YEAR tab without inventing a year before
+`archive-index.json` arrives. Its same-origin browser shell is present and busy in
+the generated HTML; result controls remain inert until the applicable catalog loads.
+Scope tabs remain switchable while the index is pending, and range inputs remain
+disabled until its years are known. The reserved pending area contains no subject
+markup, record keys, media URLs, or focusable controls; runtime catalog data replaces
+it in place. Index or catalog errors remain visible as errors, while a successfully
+loaded empty catalog uses the existing empty-results state.
+
 Quarter JSON keeps TV premiere, TV continuing, and Movie premiere separate. It
 contains the deterministic subject display projection and detail payload; no
 Subject detail pages, episode files, role/person artifacts, remote URLs, or

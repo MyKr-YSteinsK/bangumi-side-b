@@ -429,6 +429,34 @@ have already passed.
   PWA runtime and product contract were not changed. Source delivery and CI on
   the resulting commit are reported in the TASK_RESULT.
 
+## Plan-56 bounded browsing-context evidence (2026-10-15)
+
+- Plan-56 Rev1 investigated the current `main` / `origin/main` source HEAD
+  `44b9ad82fbd021d455c8a758780f7839b80c2422`. Existing browser tests cover
+  Quarter detail hash/history and mobile scroll restoration, explicit mobile
+  filter draft cancellation/application, Archive YEAR/RANGE history and
+  pagination, Grid/List continuity, and stale-scope request ordering.
+- Two local synthetic-site Chromium `149.0.7827.55` probes at 390×844 covered
+  Quarter and Archive. After opening the mobile filter and changing an
+  unapplied draft, browser Back over a same-document history entry restored the
+  prior URL but left the filter workspace open and the draft selection checked
+  on both pages. Requests stayed on loopback. This is browser-history evidence;
+  native OS Back, Safari/WebKit, installed PWA, and real-device behavior were
+  not verified.
+- The observed behavior conflicts with the accepted D-007 decision and mobile
+  filter baseline in `docs/visual-system.md`, which require close/back to cancel
+  unapplied changes. It supports one `BOUNDED_FIX_CANDIDATE`: route mobile
+  filter Back through the existing close/cancel behavior while preserving
+  applied filters and detail/scope history. No implementation, C-phase
+  approval, or broader A–F approval follows. No `R-010` / `R-011` entry was
+  found in the tracked repository contracts; this candidate is grounded in
+  D-007 and the current visual-system contract.
+- Two targeted active-document / current-state guard tests passed; browser and
+  full test suites and CI were not rerun. The generated sites used synthetic
+  SQLite fixtures in temporary directories; no canonical data, covers, tracked
+  configuration, formal generated site, PWA cache, release, Pages, or
+  `gh-pages` state was changed. Production remains the current lifecycle.
+
 ## 2026-10-13 experience-upgrade research status
 
 - The local report `BGMB-总体体验升级与架构优化研究报告.md` under

@@ -428,6 +428,10 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     archive_html = (site / "archive" / "index.html").read_text("utf-8")
     assert 'data-archive-index-url="../data/archive-index.json"' in archive_html
     assert 'data-scope-choice="range"' in archive_html
+    assert 'data-scope-choice="local"' in archive_html
+    assert 'data-archive-local-selector role="tabpanel" hidden' in archive_html
+    assert 'data-local-status role="status" aria-live="polite"' in archive_html
+    assert 'href="../settings/index.html">管理离线季度 · Settings</a>' in archive_html
     catalog = json.loads((site / "data" / "catalog" / "2026.json").read_text("utf-8"))
     assert {"aliases", "quarter", "appearance", "cover"} <= set(
         catalog["records"][0]

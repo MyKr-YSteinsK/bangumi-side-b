@@ -401,6 +401,52 @@
     return values.sort((left, right) => right.quarter.localeCompare(left.quarter));
   }
 
+  async function readActiveQuarterData(quarter) {
+    if (!supported() || !QUARTER.test(quarter || "")) {
+      throw new Error("本机离线资料不可用");
+    }
+    return withContentReferenceLease(async () => {
+      const state = await getQuarterState(quarter);
+      if (
+        state.quarter !== quarter
+        || !["COMPLETE", "UPDATE_AVAILABLE", "UPDATE_INCOMPLETE"].includes(state.status)
+        || !state.active
+        || (state.status === "COMPLETE"
+          && state.staging !== null
+          && state.staging !== undefined)
+      ) throw new Error("季度没有可用的活动离线资料");
+
+      const manifest = validateQuarterManifest(state.active, quarter);
+      const resource = manifest.resources.find(
+        (item) => item.url === `data/quarters/${quarter}.json`,
+      );
+      if (!resource || manifest.data_revision !== resource.content_hash) {
+        throw new Error("季度数据与活动清单不一致");
+      }
+
+      const content = await caches.open(CONTENT_CACHE);
+      const stored = await content.match(contentRequest(resource.content_hash));
+      const verified = await verifiedResponse(stored, resource);
+      const payload = await verified.json();
+      if (
+        !payload
+        || typeof payload !== "object"
+        || payload.quarter !== quarter
+        || !Array.isArray(payload.tv?.premiere)
+        || !Array.isArray(payload.tv?.continuing)
+        || !Array.isArray(payload.movie?.premiere)
+      ) throw new Error("季度数据结构无效");
+
+      return {
+        quarter,
+        status: state.status,
+        revision: manifest.revision,
+        data_revision: manifest.data_revision,
+        payload,
+      };
+    });
+  }
+
   async function writeQuarterStateUnlocked(state) {
     await writeMeta(quarterMetaName(state.quarter), state);
   }
@@ -2344,6 +2390,7 @@
     validateQuarterManifest,
     fetchQuarterManifest,
     getQuarterState,
+    readActiveQuarterData,
     __quarterProgress: quarterProgress,
     __updateQuarterDownloadState: updateQuarterDownloadState,
     listQuarterStates,
@@ -2363,6 +2410,7 @@
     promptInstall,
     updateAvailable: () => Boolean(updateRegistration?.waiting),
   });
+  window.dispatchEvent(new Event("bsb-pwa-ready"));
 
   renderUpdateNotice();
   initializeSettings();

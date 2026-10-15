@@ -265,6 +265,10 @@ a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .16em
 .scope-tabs button[aria-selected="true"], .mode-switch button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
 .archive-selector__panel { padding: 1rem 0; }
 .archive-selector__panel[hidden], .archive-browser[hidden] { display: none; }
+.archive-local { color: var(--ink-muted); font-size: .82rem; line-height: 1.6; max-width: 56rem; }
+.archive-local p { margin: 0 0 .45rem; }
+.archive-local [data-local-status] { color: var(--ink); }
+.archive-local a { color: var(--accent-ink); display: inline-flex; align-items: center; min-height: 44px; }
 .archive-quarter-grid { display: grid; gap: .6rem 1rem; }
 .archive-year-row { align-items: center; display: grid; gap: .7rem; grid-template-columns: 4rem 1fr; }
 .archive-year-row__label { color: var(--ink-muted); font-family: var(--font-mono); font-size: .72rem; }

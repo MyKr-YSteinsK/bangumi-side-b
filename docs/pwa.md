@@ -86,6 +86,34 @@ Content GC is reference-safe across windows and the Service Worker. A quarter is
 verified in the content store. On browsers without cross-context locking,
 cleanup may be deferred rather than risking verified offline content.
 
+## Verified local Archive scope
+
+Archive offers an explicit `LOCAL / 仅本机可用` scope. It enumerates saved
+quarter-state records and accepts only `COMPLETE`, `UPDATE_AVAILABLE`, or
+`UPDATE_INCOMPLETE` states with an active manifest. A `COMPLETE` state must not
+have a staging package. For every accepted quarter, the active manifest is
+validated and its `data/quarters/YYYY-MM.json` content is read from the
+content-addressed store only after checking the actual bytes against the
+manifest hash and size and confirming that `data_revision` matches that hash.
+The payload quarter and its TV premiere, TV continuing, and Movie premiere
+collections are also checked before use.
+
+`UPDATE_AVAILABLE` and `UPDATE_INCOMPLETE` can use only their still-verified
+active version; staging content is never included. Missing or invalid active
+content skips that quarter while healthy quarters remain searchable. A
+runtime-only cache entry, an incomplete-only quarter, or a quarter absent from
+saved state does not establish local coverage. The scope does not fetch an
+annual catalog, an uncached quarter, or network detail data to fill gaps.
+
+The Archive rebuilds its query records in memory from the accepted quarter
+payloads. Each TV premiere or continuing appearance and each Movie premiere
+keeps its subject, quarter, and appearance identity. Counts distinguish
+appearance records from unique works. Details opened from this scope use the
+same in-memory verified snapshot as the result list. `?local=1` can restore the
+scope, but the saved quarter packages remain specific to that browser profile;
+the URL does not transfer offline data to another device. YEAR and RANGE keep
+their generated-catalog behavior, and the default online Archive is unchanged.
+
 ## Cover cache identity
 
 The offline manifest identifies an original physical cover as:

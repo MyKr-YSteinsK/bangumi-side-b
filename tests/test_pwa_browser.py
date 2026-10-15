@@ -65,16 +65,20 @@ def _wait_for_queue(page: Page, completed: int) -> None:
 
 def _wait_for_pwa_startup_queue_quiescent(page: Page) -> None:
     page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
-    assert page.evaluate("typeof navigator.locks?.request === 'function'")
-    page.evaluate(
-        """
-        async () => navigator.locks.request(
-          "bsb-offline-queue-mutation",
-          { mode: "exclusive" },
-          async () => {},
+    if page.evaluate("typeof navigator.locks?.request === 'function'"):
+        page.evaluate(
+            """
+            async () => navigator.locks.request(
+              "bsb-offline-queue-mutation",
+              { mode: "exclusive" },
+              async () => {},
+            )
+            """
         )
-        """
-    )
+    else:
+        page.wait_for_function(
+            "async () => (await window.BsbPwa.currentQueue()).state === 'idle'"
+        )
 
 
 @pytest.fixture
@@ -101,6 +105,195 @@ def pwa_server(pwa_site: Path) -> Iterator[str]:
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+def _rewrite_quarter_snapshot(
+    site: Path,
+    quarter: str,
+    edit_payload: object,
+) -> None:
+    data_path = site / "data" / "quarters" / f"{quarter}.json"
+    manifest_path = site / "data" / "offline" / f"{quarter}.json"
+    page_path = site / quarter / "index.html"
+    payload = json.loads(data_path.read_text("utf-8"))
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    old_data_revision = manifest["data_revision"]
+    edit_payload(payload)
+    data_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    data_revision = hashlib.sha256(data_bytes).hexdigest()
+    data_path.write_bytes(data_bytes)
+
+    page_bytes = page_path.read_bytes()
+    old_reference = f"data/quarters/{quarter}.json?v={old_data_revision}".encode()
+    new_reference = f"data/quarters/{quarter}.json?v={data_revision}".encode()
+    assert old_reference in page_bytes
+    page_bytes = page_bytes.replace(old_reference, new_reference)
+    page_path.write_bytes(page_bytes)
+
+    resource_hashes = {
+        f"data/quarters/{quarter}.json": (data_revision, len(data_bytes)),
+        f"{quarter}/index.html": (
+            hashlib.sha256(page_bytes).hexdigest(),
+            len(page_bytes),
+        ),
+    }
+    for resource in manifest["resources"]:
+        replacement = resource_hashes.get(resource["url"])
+        if replacement:
+            resource["content_hash"], resource["size_bytes"] = replacement
+    manifest["data_revision"] = data_revision
+    manifest["revision"] = hashlib.sha256(
+        (
+            f"{manifest['revision']}:{data_revision}:"
+            f"{resource_hashes[f'{quarter}/index.html'][0]}"
+        ).encode()
+    ).hexdigest()
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture
+def local_search_pwa_site(tmp_path: Path) -> Path:
+    builder, _ = _build_fixture(
+        tmp_path,
+        include_same_quarter_tv=True,
+        extra_same_quarter_tv=22,
+    )
+    builder.build()
+    served = tmp_path / "served" / "bangumi-side-b"
+    shutil.copytree(tmp_path / "dist" / "site", served)
+
+    def edit_april(payload: dict[str, object]) -> None:
+        records = payload["tv"]["premiere"]
+        records[0]["aliases"] = ["本机快照别名 101"]
+
+    def edit_july(payload: dict[str, object]) -> None:
+        payload["tv"]["continuing"][0]["preferred_title"] = "Active Snapshot 101"
+        payload["tv"]["continuing"][0]["rating_score"] = 6.0
+        payload["tv"]["premiere"][0]["preferred_title"] = "Local Filter Item"
+        payload["tv"]["premiere"][0]["source"] = "SYNTHETIC_SOURCE"
+        payload["tv"]["premiere"][0]["allowed_tags"] = ["本机测试标签"]
+        payload["tv"]["premiere"][0]["rating_score"] = 9.5
+
+    _rewrite_quarter_snapshot(served, "2026-04", edit_april)
+    _rewrite_quarter_snapshot(served, "2026-07", edit_july)
+    return served
+
+
+@pytest.fixture
+def local_search_pwa_server(local_search_pwa_site: Path) -> Iterator[str]:
+    handler = functools.partial(
+        http.server.SimpleHTTPRequestHandler,
+        directory=str(local_search_pwa_site.parent),
+    )
+    server = _server(handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/bangumi-side-b"
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def _download_quarters_for_local_archive(page: Page, server: str) -> None:
+    page.goto(f"{server}/settings/index.html", wait_until="domcontentloaded")
+    _wait_for_pwa_startup_queue_quiescent(page)
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07', '2026-04'])")
+    _wait_for_queue(page, 2)
+    states = page.evaluate("async () => window.BsbPwa.listQuarterStates()")
+    assert {item["quarter"] for item in states if item["status"] == "COMPLETE"} == {
+        "2026-04",
+        "2026-07",
+    }
+
+
+def _wait_for_element_text(page: Page, selector: str, expected: str) -> None:
+    page.wait_for_function(
+        "args => document.querySelector(args.selector)"
+        "?.textContent.includes(args.expected)",
+        arg={"selector": selector, "expected": expected},
+    )
+
+
+def _remove_archive_runtime_data(page: Page) -> None:
+    page.evaluate(
+        r"""async () => {
+          const runtime = await caches.open(window.BsbPwa.RUNTIME_CACHE);
+          for (const request of await runtime.keys()) {
+            const pathname = new URL(request.url).pathname;
+            if (/\/data\/(?:archive-index\.json|catalog\/)/.test(pathname)) {
+              await runtime.delete(request);
+            }
+          }
+        }"""
+    )
+
+
+def _alter_active_quarter_for_test(page: Page, case: str) -> None:
+    page.evaluate(
+        """async ({ scenario }) => {
+          const quarter = '2026-04';
+          const root = new URL('../', location.href);
+          const meta = await caches.open(window.BsbPwa.META_CACHE);
+          const metaKey = new Request(
+            new URL(`__bsb_meta__/quarters/${quarter}.json`, root),
+          );
+          const state = await window.BsbPwa.getQuarterState(quarter);
+          const active = state.active;
+          const dataResource = active.resources.find(
+            item => item.url === `data/quarters/${quarter}.json`,
+          );
+          const content = await caches.open(window.BsbPwa.CONTENT_CACHE);
+          const contentKey = new Request(
+            new URL(`__bsb_content__/${dataResource.content_hash}`, root),
+          );
+          if (scenario === 'missing') {
+            await content.delete(contentKey);
+          } else if (scenario === 'corrupt') {
+            await content.put(contentKey, new Response('corrupt synthetic bytes'));
+          } else if (scenario === 'invalid-manifest') {
+            state.active.data_revision = '0'.repeat(64);
+          } else if (scenario === 'runtime-only') {
+            const runtime = await caches.open(window.BsbPwa.RUNTIME_CACHE);
+            const dataResponse = await content.match(contentKey);
+            await runtime.put(
+              new Request(new URL(`data/quarters/${quarter}.json`, root)),
+              dataResponse,
+            );
+            await meta.delete(metaKey);
+            return;
+          } else if (scenario === 'staging-only') {
+            state.status = 'INCOMPLETE';
+            state.active = null;
+            state.staging = {
+              ...active,
+              revision: 'synthetic-incomplete-stage',
+              verified_hashes: [],
+            };
+          } else if (scenario === 'update-incomplete') {
+            state.status = 'UPDATE_INCOMPLETE';
+            state.staging = {
+              ...active,
+              revision: 'synthetic-incomplete-stage',
+              data_revision: 'a'.repeat(64),
+              verified_hashes: [],
+            };
+          } else if (scenario === 'update-available') {
+            state.status = 'UPDATE_AVAILABLE';
+            state.staging = null;
+          } else {
+            throw new Error(`unknown test case ${scenario}`);
+          }
+          await meta.put(metaKey, new Response(JSON.stringify(state), {
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        }""",
+        {"scenario": case},
+    )
 
 
 @pytest.fixture
@@ -4896,4 +5089,312 @@ def test_service_worker_controlled_online_archive_keeps_same_origin_behavior(
     assert "1 / 1" in page.locator("[data-results-summary]").inner_text()
     assert all(url.startswith(pwa_server) for url in requests)
     assert not any("api.bgm.tv" in url for url in requests)
+    context.close()
+
+
+@pytest.mark.release_smoke
+def test_archive_local_scope_searches_verified_quarters_offline_and_keeps_scope_history(
+    chromium: Browser,
+    local_search_pwa_server: str,
+    local_search_pwa_site: Path,
+) -> None:
+    context = chromium.new_context()
+    context.set_default_timeout(12000)
+    page = context.new_page()
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    _download_quarters_for_local_archive(page, local_search_pwa_server)
+    _alter_active_quarter_for_test(page, "update-incomplete")
+    expected_cover = page.evaluate(
+        """
+        async () => {
+          const snapshot = await window.BsbPwa.readActiveQuarterData('2026-07');
+          const state = await window.BsbPwa.getQuarterState('2026-07');
+          const record = snapshot.payload.tv.continuing.find(
+            item => item.subject_id === 101,
+          );
+          const cover = String(record.cover || record.cover_url || '');
+          const root = new URL('../', location.href);
+          const url = new URL(cover, root);
+          const path = cover.split('?', 1)[0];
+          const hash = url.searchParams.get('v');
+          const resource = state.active.resources.find(
+            item => item.url === path && item.content_hash === hash,
+          );
+          if (!resource) throw new Error('active cover identity is missing');
+          return { url: url.href, hash, path };
+        }
+        """
+    )
+    _remove_archive_runtime_data(page)
+    context.set_offline(True)
+    request_start = len(requests)
+    page.goto(f"{local_search_pwa_server}/archive/index.html?local=1")
+    page.locator("[data-local-status]").wait_for(state="visible")
+    _wait_for_element_text(page, "[data-local-status]", "本机覆盖 2 个季度")
+
+    status = page.locator("[data-local-status]").inner_text()
+    assert "2026-04" in status and "2026-07" in status
+    assert "UPDATE_INCOMPLETE" not in status
+    assert "更新未完成，使用仍可验证的旧版" in status
+    assert "播出记录 /" in status and "部作品" in status
+    assert "26 条播出记录 / 25 部作品" in status
+    local_ready_ms = round(page.evaluate("performance.now()"), 1)
+    assert page.locator('[data-subject-id="101"][data-quarter="2026-04"]').count() == 1
+    assert not page.locator("[data-no-results]").is_visible()
+    local_requests = requests[request_start:]
+    assert not any(
+        "/data/archive-index.json" in url
+        or "/data/catalog/" in url
+        or "/data/quarters/" in url
+        for url in local_requests
+    )
+
+    search = page.locator("[data-search]")
+    search.fill("本机快照别名 101")
+    assert page.locator('[data-subject-id="101"][data-quarter="2026-04"]').count() == 1
+    search.fill("Active Snapshot 101")
+    assert page.locator('[data-subject-id="101"][data-quarter="2026-07"]').count() == 1
+    query_start_ms = page.evaluate("performance.now()")
+    search.fill("101")
+    assert page.locator('[data-subject-id="101"]').count() == 2
+    query_result_ms = round(page.evaluate("performance.now()") - query_start_ms, 1)
+    assert page.locator('[data-subject-id="101"][data-quarter="2026-04"]').count() == 1
+    assert page.locator('[data-subject-id="101"][data-quarter="2026-07"]').count() == 1
+    print("PLAN65_LOCAL_SYNTHETIC_EVIDENCE", json.dumps({
+        "offline_entry_ready_ms_from_navigation_start": local_ready_ms,
+        "id_query_result_ms": query_result_ms,
+        "observed_requests_after_offline_navigation": len(local_requests),
+        "forbidden_catalog_or_quarter_fetches": 0,
+        "verified_quarters": 2,
+        "appearance_records": 26,
+        "unique_subjects": 25,
+    }, sort_keys=True))
+    page.locator(
+        '[data-subject-id="101"][data-quarter="2026-07"] [data-open-subject]'
+    ).click()
+    _wait_for_element_text(page, "[data-detail-panel]", "Active Snapshot 101")
+    assert "Active Snapshot 101" in page.locator("[data-detail-panel]").inner_text()
+    detail_cover = page.locator(".detail-cover-button img")
+    page.wait_for_function(
+        "document.querySelector('.detail-cover-button img')?.naturalWidth > 0"
+    )
+    assert detail_cover.evaluate("image => image.currentSrc") == expected_cover["url"]
+    assert expected_cover["hash"] in expected_cover["url"]
+    assert expected_cover["url"] in requests[request_start:]
+    page.reload()
+    _wait_for_element_text(page, "[data-detail-panel]", "Active Snapshot 101")
+    assert not any(
+        "/data/archive-index.json" in url
+        or "/data/catalog/" in url
+        or "/data/quarters/" in url
+        for url in requests[request_start:]
+    )
+    page.go_back()
+    page.wait_for_function("location.hash === ''")
+
+    search = page.locator("[data-search]")
+    search.fill("")
+    sort_toggle = page.locator("[data-sort-toggle]")
+    sort_toggle.evaluate(
+        "button => button.scrollIntoView({ block: 'center', behavior: 'instant' })"
+    )
+    page.evaluate(
+        "() => new Promise(resolve => requestAnimationFrame(() => "
+        "requestAnimationFrame(resolve)))"
+    )
+    sort_toggle.click()
+    page.get_by_role("menuitemradio", name="评分：低到高").click()
+    assert page.locator('[data-list-section="tv"] .subject-row').first.get_attribute(
+        "data-subject-id"
+    ) == "101"
+    page.locator('[data-view-mode="list"]').click()
+    assert page.locator("[data-archive-app]").get_attribute("data-view-mode") == "list"
+    page.locator('[data-pager] button[aria-label="第 2 页"]')\
+        .filter(has_text="02").click()
+    assert page.locator('[data-pager] [aria-current="page"]').inner_text() == "02"
+    page.locator('[data-media-mode="movie"]').click()
+    assert page.locator('[data-list-section="movie"] .subject-row').count() == 1
+    page.locator('[data-media-mode="tv"]').click()
+
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.locator('[data-pager] button[aria-label="第 1 页"]').click()
+    page.locator("[data-filter-toggle]").click()
+    panel = page.locator("[data-filter-panel]")
+    panel.wait_for(state="visible")
+    before_draft = page.locator("[data-results-summary]").inner_text()
+    source_filter = panel.locator(
+        'input[data-filter-group="sources"][data-filter-value="SYNTHETIC_SOURCE"]'
+    )
+    source_filter.check()
+    panel.locator('input[data-filter-group="tags"][data-filter-value="本机测试标签"]').check()
+    assert page.locator("[data-results-summary]").inner_text() == before_draft
+    panel.locator("[data-filter-close]").click()
+    assert page.locator("[data-results-summary]").inner_text() == before_draft
+
+    page.locator("[data-filter-toggle]").click()
+    panel = page.locator("[data-filter-panel]")
+    panel.locator(
+        'input[data-filter-group="sources"][data-filter-value="SYNTHETIC_SOURCE"]'
+    ).check()
+    panel.locator('input[data-filter-group="tags"][data-filter-value="本机测试标签"]').check()
+    panel.locator(".filter-apply-mobile").click()
+    _wait_for_element_text(page, "[data-results-summary]", "1 条播出记录")
+    assert page.locator('[data-subject-id="303"]').count() == 1
+
+    context.set_offline(False)
+    page.locator('[data-scope-choice="year"]').click()
+    _wait_for_element_text(page, "[data-archive-scope-label]", "YEAR / 2026")
+    assert "year=2026" in page.url
+    page.locator('[data-scope-choice="range"]').click()
+    page.locator("[data-archive-from]").fill("2026")
+    page.locator("[data-archive-to]").fill("2026")
+    page.locator("[data-range-apply]").click()
+    _wait_for_element_text(page, "[data-archive-scope-label]", "RANGE / 2026—2026")
+    page.locator('[data-scope-choice="local"]').click()
+    _wait_for_element_text(page, "[data-local-status]", "本机覆盖 2 个季度")
+    page.go_back()
+    _wait_for_element_text(page, "[data-archive-scope-label]", "RANGE / 2026—2026")
+    page.go_forward()
+    _wait_for_element_text(page, "[data-local-status]", "本机覆盖 2 个季度")
+    page.reload()
+    _wait_for_element_text(page, "[data-local-status]", "本机覆盖 2 个季度")
+    context.close()
+
+
+def test_archive_local_scope_uses_active_when_update_is_available(
+    chromium: Browser,
+    local_search_pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    context.set_default_timeout(12000)
+    page = context.new_page()
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    _download_quarters_for_local_archive(page, local_search_pwa_server)
+    _alter_active_quarter_for_test(page, "update-available")
+    _remove_archive_runtime_data(page)
+    context.set_offline(True)
+    request_start = len(requests)
+    page.goto(f"{local_search_pwa_server}/archive/index.html?local=1")
+    _wait_for_element_text(page, "[data-local-status]", "本机覆盖 2 个季度")
+    status = page.locator("[data-local-status]").inner_text()
+    assert "有新版本，使用已验证的本机版本" in status
+    assert "更新未完成" not in status
+    assert "26 条播出记录 / 25 部作品" in status
+    page.locator("[data-search]").fill("101")
+    assert page.locator('[data-subject-id="101"]').count() == 2
+    assert not any(
+        "/data/archive-index.json" in url
+        or "/data/catalog/" in url
+        or "/data/quarters/" in url
+        for url in requests[request_start:]
+    )
+    context.close()
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["missing", "corrupt", "invalid-manifest", "runtime-only", "staging-only"],
+)
+def test_archive_local_scope_skips_unverified_quarter_and_keeps_healthy_one(
+    chromium: Browser,
+    local_search_pwa_server: str,
+    case: str,
+) -> None:
+    context = chromium.new_context()
+    context.set_default_timeout(12000)
+    page = context.new_page()
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    _download_quarters_for_local_archive(page, local_search_pwa_server)
+    _alter_active_quarter_for_test(page, case)
+    _remove_archive_runtime_data(page)
+    context.set_offline(True)
+    request_start = len(requests)
+    page.goto(f"{local_search_pwa_server}/archive/index.html?local=1")
+    page.locator("[data-local-status]").wait_for(state="visible")
+    _wait_for_element_text(page, "[data-local-status]", "本机覆盖 1 个季度")
+    status = page.locator("[data-local-status]").inner_text()
+    assert "2026-07" in status
+    if case == "staging-only":
+        assert "未完成且未纳入：2026-04" in status
+    elif case == "runtime-only":
+        assert "2026-04" not in status
+    else:
+        assert "跳过未通过校验的 2026-04" in status
+    page.locator("[data-search]").fill("101")
+    assert page.locator('[data-subject-id="101"][data-quarter="2026-07"]').count() == 1
+    assert page.locator('[data-subject-id="101"][data-quarter="2026-04"]').count() == 0
+    assert not any(
+        "/data/archive-index.json" in url
+        or "/data/catalog/" in url
+        or "/data/quarters/" in url
+        for url in requests[request_start:]
+    )
+    context.close()
+
+
+def test_archive_local_scope_explains_empty_and_unsupported_states(
+    chromium: Browser,
+    pwa_server: str,
+) -> None:
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{pwa_server}/archive/index.html?local=1")
+    page.locator("[data-local-status]").wait_for(state="visible")
+    page.wait_for_function(
+        "document.querySelector('[data-local-status]')?.textContent.includes('尚无已下载')"
+    )
+    assert not page.locator("[data-no-results]").is_visible()
+    context.close()
+
+    unsupported = chromium.new_context()
+    unsupported.add_init_script(
+        """(() => {
+          Object.defineProperty(navigator, 'serviceWorker', {
+            configurable: true,
+            value: undefined,
+          });
+          Object.defineProperty(window, 'caches', {
+            configurable: true,
+            value: undefined,
+          });
+        })();"""
+    )
+    page = unsupported.new_page()
+    page.goto(f"{pwa_server}/archive/index.html?local=1")
+    page.locator("[data-local-status]").wait_for(state="visible")
+    _wait_for_element_text(page, "[data-local-status]", "此浏览器无法验证")
+    assert not page.locator("[data-no-results]").is_visible()
+    unsupported.close()
+
+
+def test_archive_local_scope_reads_active_content_offline_in_webkit(
+    webkit: Browser,
+    local_search_pwa_server: str,
+) -> None:
+    context = webkit.new_context()
+    context.set_default_timeout(12000)
+    page = context.new_page()
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
+    _download_quarters_for_local_archive(page, local_search_pwa_server)
+    _remove_archive_runtime_data(page)
+    page.goto(f"{local_search_pwa_server}/archive/index.html")
+    page.locator("[data-archive-app]").wait_for(state="visible")
+    context.set_offline(True)
+    request_start = len(requests)
+    page.locator('[data-scope-choice="local"]').click()
+    _wait_for_element_text(page, "[data-local-status]", "本机覆盖 2 个季度")
+    page.locator("[data-search]").fill("101")
+    assert page.locator('[data-subject-id="101"]').count() == 2
+    assert page.locator('[data-subject-id="101"][data-quarter="2026-04"]').count() == 1
+    assert page.locator('[data-subject-id="101"][data-quarter="2026-07"]').count() == 1
+    assert not any(
+        "/data/archive-index.json" in url
+        or "/data/catalog/" in url
+        or "/data/quarters/" in url
+        for url in requests[request_start:]
+    )
     context.close()

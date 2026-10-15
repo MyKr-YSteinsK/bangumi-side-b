@@ -2276,6 +2276,8 @@
     quarter: root.querySelector("[data-archive-quarter-selector]"),
     year: root.querySelector("[data-archive-year-selector]"),
     range: root.querySelector("[data-archive-range-selector]"),
+    local: root.querySelector("[data-archive-local-selector]"),
+    localStatus: root.querySelector("[data-local-status]"),
     browser: root.querySelector("[data-archive-browser]"),
     list: root.querySelector("[data-list-sections]"),
     pending: root.querySelector("[data-archive-pending]"),
@@ -2301,6 +2303,9 @@
   let recordByKey = new Map();
   let loadedScope = null;
   const detailByQuarter = new Map();
+  let localCoverage = null;
+  let localIssue = "";
+  let indexPromise = null;
   let detailRequest = 0;
   let scopeIntent = 0;
   let scopePending = false;
@@ -2341,6 +2346,7 @@
       url.searchParams.set("from", String(value.from));
       url.searchParams.set("to", String(value.to));
     }
+    if (kind === "local") url.searchParams.set("local", "1");
     url.hash = "";
     if (replace) window.history.replaceState({}, "", url);
     else window.history.pushState({}, "", url);
@@ -2348,6 +2354,7 @@
 
   function scopeFromLocation() {
     const params = new URLSearchParams(window.location.search);
+    if (params.get("local") === "1") return { kind: "local", value: "" };
     const year = params.get("year");
     if (year && (index?.years || []).map(String).includes(year)) {
       return { kind: "year", value: year };
@@ -2363,6 +2370,7 @@
 
   function sameScope(left, right) {
     if (!left || !right || left.kind !== right.kind) return false;
+    if (left.kind === "local") return true;
     if (left.kind === "range") {
       return left.value?.from === right.value.from && left.value?.to === right.value.to;
     }
@@ -2370,14 +2378,17 @@
   }
 
   function scopeLabel(kind, value) {
+    if (kind === "local") return "LOCAL / 仅本机可用";
     return kind === "range"
       ? `RANGE / ${value.from}—${value.to}`
       : `YEAR / ${value}`;
   }
 
   function updateScopeAvailability() {
-    const loaded = !scopePending && !loadError && sameScope(loadedScope, state.scope);
-    const busy = !loadError && (!index || scopePending);
+    const loaded = !scopePending && !loadError
+      && !(state.scope.kind === "local" && localIssue)
+      && sameScope(loadedScope, state.scope);
+    const busy = !loadError && (scopePending || (!index && state.scope.kind !== "local"));
     const masterPane = root.querySelector(".master-pane");
     if (masterPane) masterPane.inert = !loaded;
     if (masterPane) masterPane.setAttribute("aria-busy", String(busy));
@@ -2406,6 +2417,10 @@
     discardFilterDraft();
     if (selectors.search) selectors.search.value = "";
     clearSelection(false);
+    if (kind !== "local") {
+      localCoverage = null;
+      localIssue = "";
+    }
     setTab(kind);
     renderYearSelector();
     if (kind === "range") {
@@ -2418,8 +2433,27 @@
   }
 
   async function restoreArchiveLocation(routeOptions = {}) {
-    if (!index) return;
-    const location = scopeFromLocation();
+    let location = scopeFromLocation();
+    if (location.kind === "local") {
+      if (sameScope(loadedScope, location)) {
+        if (!scopePending && !loadError && sameScope(state.scope, location)) {
+          await openHash(routeOptions);
+          return;
+        }
+      }
+      if (state.scope.kind === "local" && scopePending) return;
+      await setScope(location.kind, location.value, false, routeOptions);
+      return;
+    }
+    if (!index) {
+      try {
+        await ensureArchiveIndex();
+      } catch {
+        showArchiveIndexUnavailable(location);
+        return;
+      }
+      location = scopeFromLocation();
+    }
     if (sameScope(loadedScope, location)) {
       if (!scopePending && !loadError && sameScope(state.scope, location)) {
         await openHash(routeOptions);
@@ -2445,7 +2479,7 @@
       button.tabIndex = selected ? 0 : -1;
     });
     for (const [name, node] of Object.entries(selectors)) {
-      if (!["quarter", "year", "range", "browser"].includes(name) || !node) continue;
+      if (!["quarter", "year", "range", "local", "browser"].includes(name) || !node) continue;
       if (name === "browser") node.hidden = kind === "quarter";
       else node.hidden = name !== kind;
     }
@@ -2454,15 +2488,46 @@
   function chooseScopeTab(kind) {
     closeSortPopover();
     setTab(kind);
+    if (kind === "local") {
+      pendingScopeTab = null;
+      void setScope("local", "");
+      return;
+    }
     if (!index) {
-      if (loadError) {
-        pendingScopeTab = null;
-        setTab("quarter");
-        return;
-      }
       pendingScopeTab = kind;
       scopeIntent += 1;
-      if (kind === "quarter") state.scope = { kind: "quarter", value: "" };
+      if (kind === "quarter") {
+        state.scope = { kind: "quarter", value: "" };
+        scopePending = false;
+        loadError = false;
+        updateScopeAvailability();
+        return;
+      }
+      scopePending = true;
+      updateScopeAvailability();
+      void ensureArchiveIndex().then(() => {
+        if (pendingScopeTab !== kind) return;
+        pendingScopeTab = null;
+        if (kind === "year") {
+          const location = scopeFromLocation();
+          const value = location.kind === "year"
+            ? location.value
+            : String(index.latest_quarter || "").slice(0, 4);
+          void setScope("year", value);
+          return;
+        }
+        showRangeSelector();
+      }).catch(() => {
+        if (pendingScopeTab !== kind) return;
+        pendingScopeTab = null;
+        if (state.scope.kind === "local" && sameScope(loadedScope, state.scope)) {
+          scopePending = false;
+          setTab("local");
+          updateScopeAvailability();
+        } else {
+          showArchiveIndexUnavailable();
+        }
+      });
       return;
     }
     pendingScopeTab = null;
@@ -2484,6 +2549,10 @@
       return;
     }
 
+    showRangeSelector();
+  }
+
+  function showRangeSelector() {
     const abandonedCurrentLoad = scopePending || loadError;
     if (abandonedCurrentLoad) {
       scopeIntent += 1;
@@ -2523,7 +2592,7 @@
         if (pendingPopstateHashchange === pending) pendingPopstateHashchange = null;
       }, 0);
       if (!index) pendingScopeTab = null;
-      else void restoreArchiveLocation({
+      void restoreArchiveLocation({
         suppressFocusAndScroll: filterClosed,
         preserveHistory: filterClosed,
       });
@@ -2603,7 +2672,156 @@
     return responses.flatMap((payload) => archive.recordsFromCatalog(payload));
   }
 
+  async function loadLocalSnapshotRecords() {
+    let pwa = window.BsbPwa;
+    if (!pwa) {
+      pwa = await new Promise((resolve) => {
+        const onReady = () => {
+          clearTimeout(timeout);
+          resolve(window.BsbPwa || null);
+        };
+        const timeout = setTimeout(() => {
+          window.removeEventListener("bsb-pwa-ready", onReady);
+          resolve(window.BsbPwa || null);
+        }, 2000);
+        window.addEventListener("bsb-pwa-ready", onReady, { once: true });
+      });
+    }
+    if (
+      !pwa
+      || typeof pwa.supported !== "function"
+      || !pwa.supported()
+      || typeof pwa.readActiveQuarterData !== "function"
+    ) return { records: [], issue: "此浏览器无法验证本机离线季度资料。", coverage: null };
+
+    const states = await pwa.listQuarterStates();
+    const incompleteQuarters = states
+      .filter((item) => item.quarter && (
+        item.status === "INCOMPLETE" || (!item.active && item.staging)
+      ))
+      .map((item) => item.quarter);
+    const candidates = states.filter((item) => (
+      ["COMPLETE", "UPDATE_AVAILABLE", "UPDATE_INCOMPLETE"].includes(item.status)
+      && item.active
+    ));
+    if (!candidates.length) {
+      const hasIncomplete = states.some((item) => item.staging || item.status === "INCOMPLETE");
+      return {
+        records: [],
+        issue: hasIncomplete
+          ? "本机只有未完成的下载，尚无可用于检索的完整活动版本。"
+          : "尚无已下载且可验证的季度资料。请先在 Settings 下载季度。",
+        coverage: null,
+      };
+    }
+
+    const loaded = new Array(candidates.length);
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(3, candidates.length) }, async () => {
+      while (cursor < candidates.length) {
+        const position = cursor;
+        cursor += 1;
+        const state = candidates[position];
+        try {
+          const snapshot = await pwa.readActiveQuarterData(state.quarter);
+          const quarterRecords = archive.recordsFromQuarter(snapshot.payload);
+          if (quarterRecords.some((record) => record.quarter !== snapshot.quarter)) {
+            throw new Error("quarter identity mismatch");
+          }
+          loaded[position] = {
+            quarter: snapshot.quarter,
+            status: snapshot.status,
+            records: quarterRecords,
+          };
+        } catch {
+          loaded[position] = { quarter: state.quarter, error: true };
+        }
+      }
+    }));
+
+    const verified = loaded.filter((item) => item && !item.error);
+    const skippedQuarters = loaded.filter((item) => item?.error).map((item) => item.quarter);
+    if (!verified.length) {
+      return {
+        records: [],
+        issue: "已下载的活动季度资料未能通过完整性校验，已全部跳过。",
+        coverage: {
+          verifiedQuarters: [],
+          skippedQuarters,
+          updateAvailableQuarters: [],
+          updateIncompleteQuarters: [],
+          incompleteQuarters,
+        },
+      };
+    }
+
+    const records = verified.flatMap((item) => item.records);
+    return {
+      records,
+      issue: "",
+      coverage: {
+        verifiedQuarters: verified.map((item) => item.quarter),
+        skippedQuarters,
+        updateAvailableQuarters: verified
+          .filter((item) => item.status === "UPDATE_AVAILABLE")
+          .map((item) => item.quarter),
+        updateIncompleteQuarters: verified
+          .filter((item) => item.status === "UPDATE_INCOMPLETE")
+          .map((item) => item.quarter),
+        incompleteQuarters,
+        appearanceCount: records.length,
+        subjectCount: new Set(records.map((record) => record.id)).size,
+      },
+    };
+  }
+
+  async function ensureArchiveIndex() {
+    if (index) return index;
+    if (indexPromise) return indexPromise;
+    const request = (async () => {
+      const response = await fetch(root.dataset.archiveIndexUrl, { credentials: "same-origin" });
+      if (!response.ok) throw new Error("archive index unavailable");
+      index = await response.json();
+      renderQuarterSelector();
+      renderYearSelector();
+      root.querySelectorAll("[data-archive-range-selector] input, [data-archive-range-selector] button")
+        .forEach((control) => { control.disabled = false; });
+      return index;
+    })();
+    indexPromise = request;
+    try {
+      return await request;
+    } finally {
+      if (indexPromise === request) indexPromise = null;
+    }
+  }
+
+  function showArchiveIndexUnavailable(location = null) {
+    if (location && location.kind !== "local") applyScope(location.kind, location.value);
+    else if (state.scope.kind !== "local") setTab("year");
+    scopeIntent += 1;
+    scopePending = false;
+    loadError = true;
+    records = [];
+    recordByKey = new Map();
+    loadedScope = null;
+    selectors.list?.replaceChildren();
+    listSignature = "";
+    signatureRecords = null;
+    if (selectors.summary) selectors.summary.textContent = "DATA UNAVAILABLE · 年度档案目录不可用";
+    if (selectors.scopePanel) {
+      selectors.scopePanel.hidden = false;
+      selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>无法读取年度档案目录</h2><p>可切换到“仅本机”检索已验证的离线季度资料。</p>';
+    }
+    updateScopeAvailability();
+  }
+
   async function loadDetailRecord(record) {
+    if (state.scope.kind === "local") {
+      const snapshotRecord = recordByKey.get(record.key);
+      if (!snapshotRecord) throw new Error("verified local record unavailable");
+      return snapshotRecord;
+    }
     let quarterRecords = detailByQuarter.get(record.quarter);
     if (!quarterRecords) {
       const response = await fetch(`../data/quarters/${record.quarter}.json`, {
@@ -2826,9 +3044,46 @@
     return archive.scopeCounts(records);
   }
 
+  function localCoverageText() {
+    if (localIssue) return localIssue;
+    if (!localCoverage) return "选择“仅本机”后读取此设备已下载的季度资料。";
+    const quarters = localCoverage.verifiedQuarters.join("、");
+    const updateAvailable = localCoverage.updateAvailableQuarters?.length
+      ? `；${localCoverage.updateAvailableQuarters.join("、")} 有新版本，使用已验证的本机版本`
+      : "";
+    const updateIncomplete = localCoverage.updateIncompleteQuarters?.length
+      ? `；${localCoverage.updateIncompleteQuarters.join("、")} 更新未完成，使用仍可验证的旧版`
+      : "";
+    const skipped = localCoverage.skippedQuarters.length
+      ? `；跳过未通过校验的 ${localCoverage.skippedQuarters.join("、")}`
+      : "";
+    const incomplete = localCoverage.incompleteQuarters?.length
+      ? `；未完成且未纳入：${localCoverage.incompleteQuarters.join("、")}`
+      : "";
+    return `本机覆盖 ${localCoverage.verifiedQuarters.length} 个季度（${quarters}），${localCoverage.appearanceCount} 条播出记录 / ${localCoverage.subjectCount} 部作品${updateAvailable}${updateIncomplete}${skipped}${incomplete}。仅查询本机已验证资料。`;
+  }
+
+  function renderLocalStatus() {
+    if (selectors.localStatus) selectors.localStatus.textContent = localCoverageText();
+  }
+
   function renderScope(result) {
     if (!selectors.scopePanel) return;
     const counts = scopeCounts();
+    if (state.scope.kind === "local") {
+      const currentSubjects = new Set(result.all.map((record) => record.id)).size;
+      const heading = localIssue ? "本机离线资料不可用" : "仅本机可用";
+      const summary = localIssue
+        ? localIssue
+        : `当前结果 ${result.total} 条播出记录（${currentSubjects} 部作品）；覆盖 ${localCoverage.verifiedQuarters.length} 个季度。`;
+      selectors.scopePanel.innerHTML = `<p class="workspace-panel__code">LOCAL SNAPSHOT</p><h2>${heading}</h2>
+        <p class="workspace-panel__lead">${esc(localCoverageText())}</p>
+        <dl class="scope-facts"><div><dt>TV</dt><dd>${counts.tv}</dd></div><div><dt>MOVIE</dt><dd>${counts.movie}</dd></div>
+        <div><dt>PREMIERE</dt><dd>${counts.premiere}</dd></div><div><dt>CONTINUING</dt><dd>${counts.continuing}</dd></div></dl>
+        <p class="workspace-panel__summary" data-scope-summary>${esc(summary)}</p>`;
+      renderLocalStatus();
+      return;
+    }
     const label = state.scope.kind === "range"
       ? `${state.scope.value.from}—${state.scope.value.to}`
       : state.scope.value;
@@ -2842,7 +3097,11 @@
   function renderScopeSummary(result) {
     const summaryNode = selectors.scopePanel?.querySelector("[data-scope-summary]");
     if (!summaryNode) return;
-    const text = `当前结果 ${result.total} / ${records.length} 部 appearance。`;
+    const text = state.scope.kind === "local"
+      ? localIssue
+        ? localIssue
+        : `当前结果 ${result.total} 条播出记录（${new Set(result.all.map((record) => record.id)).size} 部作品）；覆盖 ${localCoverage?.verifiedQuarters.length || 0} 个季度。`
+      : `当前结果 ${result.total} / ${records.length} 部 appearance。`;
     if (summaryNode.textContent !== text) summaryNode.textContent = text;
   }
 
@@ -2904,12 +3163,18 @@
       const total = records.filter(
         (record) => record.media === (state.media === "movie" ? "MOVIE" : "TV"),
       ).length;
-      const text = `${result.total} / ${total} 部 appearance · 第 ${result.page} / ${result.pageCount} 页`;
+      const text = state.scope.kind === "local"
+        ? localIssue
+          ? localIssue
+          : `当前结果 ${result.total} 条播出记录（${new Set(result.all.map((record) => record.id)).size} 部作品） · 本机覆盖 ${localCoverage?.verifiedQuarters.length || 0} 个季度`
+        : `${result.total} / ${total} 部 appearance · 第 ${result.page} / ${result.pageCount} 页`;
       if (selectors.summary.textContent !== text) selectors.summary.textContent = text;
     }
-    if (selectors.noResults && selectors.noResults.hidden !== (result.total !== 0)) {
-      selectors.noResults.hidden = result.total !== 0;
+    const hideNoResults = result.total !== 0 || Boolean(localIssue);
+    if (selectors.noResults && selectors.noResults.hidden !== hideNoResults) {
+      selectors.noResults.hidden = hideNoResults;
     }
+    renderLocalStatus();
   }
 
   function renderPager(result) {
@@ -3251,7 +3516,13 @@
       }
       return;
     }
-    const candidate = archive.selectedRecord(records, Number(match[1]));
+    const historyKey = state.scope.kind === "local"
+      ? window.history.state?.bsbDetailKey
+      : null;
+    const historyRecord = historyKey ? recordByKey.get(historyKey) : null;
+    const candidate = historyRecord?.id === Number(match[1])
+      ? historyRecord
+      : archive.selectedRecord(records, Number(match[1]));
     if (!candidate) {
       if (preserveHistory) {
         const previousKey = state.selectedOccurrence;
@@ -3554,16 +3825,73 @@
   }
 
   async function setScope(kind, value, push = true, routeOptions = {}) {
-    if (!index) return;
-    const normalized = kind === "range" ? normalRange(value.from, value.to) : String(value);
+    if (kind !== "local" && !index) return;
+    const normalized = kind === "local"
+      ? ""
+      : kind === "range"
+        ? normalRange(value.from, value.to)
+        : String(value);
     if (kind === "range" && !normalized) return;
     const intent = ++scopeIntent;
     scopePending = true;
     loadError = false;
+    if (kind === "local") {
+      localCoverage = null;
+      localIssue = "";
+      records = [];
+      recordByKey = new Map();
+      selectors.list?.replaceChildren();
+      rows = [];
+      rowByKey = new Map();
+      listSections = new Map();
+      listSignature = "";
+      signatureRecords = null;
+    }
     applyScope(kind, normalized);
     if (push) setScopeUrl(kind, normalized);
     updateScopeAvailability();
     if (kind === "quarter") return;
+    if (kind === "local") {
+      if (selectors.summary) selectors.summary.textContent = "正在校验本机已下载的季度资料…";
+      if (selectors.localStatus) selectors.localStatus.textContent = "正在校验本机已下载的季度资料…";
+      if (selectors.scopePanel) {
+        selectors.scopePanel.hidden = false;
+        selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">LOCAL SNAPSHOT</p><h2>正在检查本机资料</h2><p class="loading-state">正在验证活动季度的数据完整性…</p>';
+      }
+      try {
+        const snapshot = await loadLocalSnapshotRecords();
+        if (intent !== scopeIntent) return;
+        records = snapshot.records;
+        recordByKey = new Map(records.map((record) => [record.key, record]));
+        localCoverage = snapshot.coverage;
+        localIssue = snapshot.issue;
+        loadedScope = { kind, value: normalized };
+        scopePending = false;
+        loadError = false;
+        updateScopeAvailability();
+        renderFilterPanel();
+        render();
+        archive.releaseBrowsePrepaint(root, state.viewMode);
+        if (!entrancePlayed && records.length) {
+          entrancePlayed = true;
+          archive.playEntranceStagger(root);
+        }
+        await openHash(routeOptions);
+      } catch {
+        if (intent !== scopeIntent) return;
+        records = [];
+        recordByKey = new Map();
+        localCoverage = null;
+        localIssue = "无法读取本机离线季度状态，未显示未经验证的资料。";
+        loadedScope = { kind, value: normalized };
+        scopePending = false;
+        loadError = false;
+        updateScopeAvailability();
+        renderFilterPanel();
+        render();
+      }
+      return;
+    }
     if (selectors.summary) selectors.summary.textContent = "正在读取范围目录…";
     if (selectors.scopePanel) {
       selectors.scopePanel.hidden = false;
@@ -3607,16 +3935,15 @@
   async function load() {
     root.dataset.viewMode = state.viewMode;
     bindScopeTabs();
+    bindControls();
     updateScopeAvailability();
+    if (scopeFromLocation().kind === "local") {
+      await setScope("local", "", false);
+      return;
+    }
     try {
-      const response = await fetch(root.dataset.archiveIndexUrl, { credentials: "same-origin" });
-      if (!response.ok) throw new Error("archive index unavailable");
-      index = await response.json();
-      renderQuarterSelector();
-      renderYearSelector();
-      root.querySelectorAll("[data-archive-range-selector] input, [data-archive-range-selector] button")
-        .forEach((control) => { control.disabled = false; });
-      bindControls();
+      await ensureArchiveIndex();
+      if (scopeFromLocation().kind === "local") return;
       if (pendingScopeTab === "quarter") {
         pendingScopeTab = null;
         state.scope = { kind: "quarter", value: "" };
@@ -3627,22 +3954,7 @@
       }
       if (pendingScopeTab === "range") {
         pendingScopeTab = null;
-        setTab("range");
-        const location = scopeFromLocation();
-        const fallback = location.kind === "year"
-          ? location.value
-          : String(index.latest_quarter || "").slice(0, 4);
-        const range = location.kind === "range" ? location.value : null;
-        const from = root.querySelector("[data-archive-from]");
-        const to = root.querySelector("[data-archive-to]");
-        if (from && !from.value) from.value = String(range?.from ?? fallback);
-        if (to && !to.value) to.value = String(range?.to ?? fallback);
-        if (selectors.summary) selectors.summary.textContent = "选择起止年份并显示范围目录。";
-        if (selectors.scopePanel) {
-          selectors.scopePanel.hidden = false;
-          selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">YEAR RANGE</p><p>选择起止年份并显示范围目录。</p>';
-        }
-        updateScopeAvailability();
+        showRangeSelector();
         return;
       }
       if (pendingScopeTab === "year") {
@@ -3656,13 +3968,9 @@
       }
       await restoreArchiveLocation();
     } catch {
-      loadError = true;
-      scopePending = false;
+      if (scopeFromLocation().kind === "local" || state.scope.kind === "local") return;
       pendingScopeTab = null;
-      setTab("quarter");
-      if (selectors.quarter) selectors.quarter.innerHTML = '<p class="empty-state">DATA UNAVAILABLE · 页面资料未完整生成</p>';
-      if (selectors.summary) selectors.summary.textContent = "DATA UNAVAILABLE · 页面资料未完整生成";
-      updateScopeAvailability();
+      showArchiveIndexUnavailable(scopeFromLocation());
     }
   }
 

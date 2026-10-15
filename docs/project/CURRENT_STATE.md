@@ -775,4 +775,39 @@ have already passed.
   publication of newer source.
 - This documentation task does not authorize Bangumi access, data/config
   changes, build, release, or `gh-pages` mutation. Its final source delivery
-  SHA and ordinary-push/remote confirmation belong in its TASK_RESULT.
+SHA and ordinary-push/remote confirmation belong in its TASK_RESULT.
+
+## 2026-10-15 Plan-65 Rev1 local Archive cross-quarter evidence
+
+- Plan-65 adds an explicit Archive `LOCAL / 仅本机可用` scope, bounded to
+  browser-saved quarter states whose active manifest and quarter JSON bytes
+  validate. It reuses the existing Archive query pipeline and keeps each
+  subject-quarter-appearance record separate. The URL scope marker is
+  `?local=1`; it does not transfer local packages between devices. YEAR/RANGE,
+  the default online Archive, and the Production lifecycle remain unchanged.
+  This is a bounded D implementation with necessary C navigation state; it
+  does not approve the overall A–F program or E personal-workspace features.
+- The synthetic fixture contains verified packages for `2026-04` and
+  `2026-07`: 26 appearance records for 25 unique subjects, including TV
+  subject 101 in both quarters. Chromium 149 opened the local route offline
+  without a prior Archive-index/year-catalog visit. The latest run measured
+  127.9 ms from navigation start to local coverage, 38.5 ms from ID-query
+  input to matches, with four browser request events after offline navigation.
+  No request for the archive index, year catalog, or quarter JSON was observed.
+  These are local synthetic observations, not production performance or INP.
+- Chromium checks covered active old data during `UPDATE_INCOMPLETE` and
+  `UPDATE_AVAILABLE`, same-snapshot detail open/reload, missing/corrupt bytes,
+  invalid active manifest, runtime-only cache, `INCOMPLETE` staging-only data,
+  no-package and unsupported-browser states, search/sort/filter/pagination,
+  390×844 filter draft/apply/cancel, YEAR/RANGE history, refresh, and
+  Back/Forward. A healthy quarter remained available when the other was
+  excluded. The WebKit 26.5 check entered Archive online, then switched to the
+  local scope after going offline; it verifies offline active-cache reading,
+  but not cold offline document navigation. Real Safari, installed PWA,
+  production, and the full browser/PWA suite were not run.
+- Focused local-scope browser checks passed 9 cases; the Plan-64 selected-online
+  pin regression passed 1 case. The Archive builder test, active-documentation
+  guards, Markdown local-link targets, JavaScript syntax checks, Ruff, and
+  `git diff --check` passed. The default push CI result is reported only after
+  reading the actual remote workflow run; it is not inferred from these local
+  checks.

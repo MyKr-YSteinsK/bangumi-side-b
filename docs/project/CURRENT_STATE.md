@@ -598,6 +598,37 @@ have already passed.
   GC. Current source-delivery and remote confirmation evidence belongs in this
   task's TASK_RESULT.
 
+## 2026-10-15 Plan-62 PWA freshness decision evidence
+
+- Plan-62 Rev1 compared the current worker with one disposable isolated
+  candidate against source baseline `89d56173a1a64f5de2816ab7712461482067ac0e`.
+  In both synthetic loopback sites, the old quarter page was fetched into a
+  `COMPLETE` active package, `staging` was null, and its cached bytes matched
+  the manifest SHA-256 and size. The server then returned a distinct synthetic
+  `NEW` page at the same URL; both navigations were confirmed worker-controlled.
+- Current `networkFirst()` showed `NEW` after 122.5 ms for a quick `200`, and
+  after 1,751.1 / 1,792.2 ms for two delayed `200` responses. With a fast
+  `503`, it returned the verified `OLD` page in 72.8 ms; the no-active cold
+  control stayed `503`. A temporary worker copy used a 300 ms experimental
+  window only when quarter state was explicitly `COMPLETE`, staging was null,
+  and the active page passed content verification. It showed quick `NEW` in
+  112.0 ms, but returned `OLD` in 355.0 / 355.6 ms during delayed `200`s.
+  Each late `NEW` response reached runtime cache while the active manifest
+  stayed unchanged; the open page remained `OLD` without a visible update
+  notice or automatic refresh. The candidate also returned verified `OLD` on
+  `503` and retained `503` in the no-active cold control.
+- Result: `DECISION_REQUIRED`. The synthetic Chromium probe measures a local
+  latency/freshness tradeoff only; the window is not an approved product
+  threshold. Keep `networkFirst()` unless the user explicitly approves
+  displaying a verified older quarter page while a successful online response
+  is pending, and defines its visible update behavior in a separate Plan.
+  Runtime-only pages, versioned assets, real Safari/installed PWA, production
+  traffic, and user devices were not tested. Two directly related existing PWA
+  browser regressions passed. Raw evidence remains in the ignored local
+  workspace; production code, PWA contracts, data, generated site, release,
+  Pages, and `gh-pages` were not changed. Production remains the lifecycle
+  stage; A–F remains unapproved.
+
 ## 2026-10-13 experience-upgrade research status
 
 - The local report `BGMB-总体体验升级与架构优化研究报告.md` under

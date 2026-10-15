@@ -403,6 +403,32 @@ have already passed.
   localized fix does not approve Phase B/C or the wider A–F program and does
   not advance the Production lifecycle.
 
+## Plan-55 PWA update-detection CI diagnosis (2026-10-15)
+
+- CI Run `38590864009` attempt 1 failed only in Browser release smoke at
+  `test_update_detection_separates_data_and_package_revisions`; its observed
+  assertion was `dataUpdates=[]` instead of `['2026-07']`. Linux and Windows
+  fast jobs passed. The job used Playwright 1.64.0 / Chromium 156.0.8078.4.
+  One authorized same-SHA rerun (attempt 2) passed all three jobs; the parent
+  source SHA `958e1bb03598c7048e0f19df6d4255038cfe1610` also passed Run
+  `38578121897` with the same Playwright / Chromium versions. A prior local
+  Chromium 149 run of the focused test passed once.
+- Source inspection supports `TEST_ISOLATION` as the likely cause: Settings'
+  asynchronous `load` handler restores the queue and starts automatic update
+  detection, while the test previously waited only for Service Worker control
+  before manually editing the same CacheStorage metadata and calling detection.
+  The first failed CI log did not retain `hadError`, active/staging state, queue
+  state, or the manifest revision observed by that call, so those runtime
+  details were not directly captured and the cause is not claimed as a proven
+  production defect.
+- The focused test now waits for PWA readiness and startup auto-maintenance to
+  complete, confirms the fixture starts with an idle queue and no quarter
+  state, and includes classification, `hadError`, active/staging, queue,
+  manifest-revision, and manifest-request details in any data-update failure.
+  Its package-only, legacy-migration, and data-update assertions remain. The
+  PWA runtime and product contract were not changed. Source delivery and CI on
+  the resulting commit are reported in the TASK_RESULT.
+
 ## 2026-10-13 experience-upgrade research status
 
 - The local report `BGMB-总体体验升级与架构优化研究报告.md` under

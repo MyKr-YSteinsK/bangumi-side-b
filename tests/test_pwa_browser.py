@@ -2395,8 +2395,22 @@ def test_update_detection_separates_data_and_package_revisions(
 ) -> None:
     context = chromium.new_context()
     page = context.new_page()
+    requests: list[str] = []
+    page.on("request", lambda request: requests.append(request.url))
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("navigator.serviceWorker.controller !== null")
+    page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
+    page.wait_for_function(
+        "sessionStorage.getItem('bsb-offline-auto-maintenance') === 'complete'"
+    )
+    startup = page.evaluate("""async () => ({
+      queue: await window.BsbPwa.currentQueue(),
+      quarter: await window.BsbPwa.getQuarterState('2026-07'),
+    })""")
+    assert startup["queue"]["state"] == "idle", json.dumps(startup, ensure_ascii=False)
+    assert startup["quarter"]["status"] == "NONE", json.dumps(
+        startup, ensure_ascii=False
+    )
     manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
 
@@ -2459,12 +2473,72 @@ def test_update_detection_separates_data_and_package_revisions(
         json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
-    data_update = page.evaluate("async () => window.BsbPwa.detectUpdates()")
-    assert data_update["dataUpdates"] == ["2026-07"]
-    assert data_update["packageMaintenance"] == []
-    assert page.evaluate(
-        "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
-    ) == "UPDATE_AVAILABLE"
+    data_update = page.evaluate("""async () => {
+      const result = await window.BsbPwa.detectUpdates();
+      const state = await window.BsbPwa.getQuarterState('2026-07');
+      const queue = await window.BsbPwa.currentQueue();
+      const manifest = await window.BsbPwa.fetchQuarterManifest('2026-07');
+      return {
+        result: {
+          dataUpdates: result.dataUpdates,
+          packageMaintenance: result.packageMaintenance,
+          current: result.current,
+          hadError: result.hadError,
+        },
+        quarter: {
+          status: state.status,
+          active: state.active && {
+            revision: state.active.revision,
+            data_revision: state.active.data_revision,
+          },
+          staging: state.staging && {
+            revision: state.staging.revision,
+            verified_hashes: state.staging.verified_hashes,
+          },
+          error: state.error,
+        },
+        queue: {
+          state: queue.state,
+          current: queue.current,
+          labels: queue.labels,
+          succeeded: queue.succeeded,
+          failed: queue.failed,
+        },
+        autoMaintenance: sessionStorage.getItem('bsb-offline-auto-maintenance'),
+        manifest: {
+          revision: manifest.revision,
+          data_revision: manifest.data_revision,
+        },
+      };
+    }""")
+    failure_context = {
+        **data_update,
+        "offlineManifestRequests": [
+            request for request in requests if "/data/offline/" in request
+        ],
+    }
+    assert data_update["result"]["dataUpdates"] == ["2026-07"], json.dumps(
+        failure_context, ensure_ascii=False
+    )
+    assert data_update["result"]["packageMaintenance"] == [], json.dumps(
+        failure_context, ensure_ascii=False
+    )
+    assert data_update["result"]["hadError"] is False, json.dumps(
+        failure_context, ensure_ascii=False
+    )
+    assert data_update["quarter"]["status"] == "UPDATE_AVAILABLE", json.dumps(
+        failure_context, ensure_ascii=False
+    )
+    assert data_update["quarter"]["staging"] is None, json.dumps(
+        failure_context, ensure_ascii=False
+    )
+    assert data_update["queue"]["state"] == "idle", json.dumps(
+        failure_context, ensure_ascii=False
+    )
+    assert data_update["manifest"] == {
+        "revision": "data-update-revision",
+        "data_revision": "d" * 64,
+    }, json.dumps(failure_context, ensure_ascii=False)
     context.close()
 
 

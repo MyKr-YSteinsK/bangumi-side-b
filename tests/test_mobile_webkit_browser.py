@@ -221,6 +221,228 @@ def test_mobile_filter_popstate_discards_draft_and_preserves_applied_state(
     ) == applied_keys
 
 
+@pytest.mark.parametrize("page_kind", ["quarter", "archive"])
+def test_mobile_filter_forward_restores_ui_generated_detail_hash(
+    motion_page: Page,
+    site_server: str,
+    page_kind: str,
+) -> None:
+    page = motion_page
+    if page_kind == "quarter":
+        _open_quarter(page, site_server)
+        root = page.locator('[data-page="quarter"][data-archive-app]')
+    else:
+        page.goto(f"{site_server}/archive/index.html?year=2026")
+        root = page.locator('[data-page="archive"][data-archive-app]')
+        page.wait_for_function(
+            "document.querySelector('[data-results-summary]')"
+            "?.textContent.includes(' / ')"
+        )
+        page.wait_for_function("""() => {
+          const root = document.querySelector(
+            '[data-page="archive"][data-archive-app]'
+          );
+          const master = document.querySelector('.master-pane');
+          const label = document.querySelector('[data-archive-scope-label]');
+          return root?.dataset.scopePending !== 'true' && !master?.inert
+            && label?.textContent.includes('YEAR / 2026');
+        }""")
+        root.locator('[data-scope-choice="range"]').click()
+        page.wait_for_function("""() => {
+          const from = document.querySelector('[data-archive-from]');
+          const apply = document.querySelector('[data-range-apply]');
+          const root = document.querySelector('[data-page][data-archive-app]');
+          return from && apply && apply.getClientRects().length > 0
+            && [...root.getAnimations({ subtree: true })].every(animation =>
+              animation.playState !== 'running' && animation.playState !== 'pending'
+            );
+        }""")
+        page.locator("[data-archive-from]").fill("2026")
+        page.locator("[data-archive-to]").fill("2026")
+        page.locator("[data-range-apply]").click()
+        page.wait_for_function("""() => {
+          const root = document.querySelector(
+            '[data-page="archive"][data-archive-app]'
+          );
+          const master = document.querySelector('.master-pane');
+          const label = document.querySelector('[data-archive-scope-label]');
+          return root?.dataset.scopePending !== 'true' && !master?.inert
+            && label?.textContent.includes('RANGE / 2026—2026');
+        }""")
+
+    # Keep a real applied filter while exercising a separate, discarded draft.
+    root.locator("[data-filter-toggle]").click()
+    page.get_by_label("续播").check()
+    root.locator(".filter-apply-mobile").click()
+    page.wait_for_function(
+        "document.querySelector('[data-filter-panel]')?.hidden === true"
+    )
+    page.wait_for_function("""() => {
+      const rows = document.querySelectorAll(
+        '[data-page][data-archive-app] .subject-row:not([hidden])'
+      );
+      return [...rows].every(row =>
+        !row.classList.contains('is-entering')
+        && row.getAnimations({ subtree: true }).every(animation =>
+          animation.playState !== 'running' && animation.playState !== 'pending'
+        )
+      );
+    }""")
+    applied_keys = root.locator(".subject-row:visible").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.recordKey)"
+    )
+    assert len(applied_keys) == 1, applied_keys
+    row = root.locator(".subject-row:visible").first
+    assert row.get_attribute("data-subject-id") == "101"
+    list_url = page.url
+    list_state = page.evaluate("history.state")
+    list_history_length = page.evaluate("history.length")
+
+    # This click, rather than test-injected history, creates the detail hash.
+    row.locator("[data-open-subject]").click()
+    page.wait_for_function(
+        "location.hash === '#bgm-101'"
+        " && document.querySelector('[data-page][data-archive-app]')"
+        "?.dataset.workspaceMode === 'detail'"
+        " && !document.querySelector('[data-detail-panel]')?.hidden"
+    )
+    detail_url = page.url
+    detail_state = page.evaluate("history.state")
+    detail_history_length = page.evaluate("history.length")
+    detail_key = row.get_attribute("data-record-key")
+    assert detail_url == f"{list_url}#bgm-101"
+    assert detail_history_length == list_history_length + 1
+    assert detail_state == {
+        "bsbDetailEntry": True,
+        "bsbDetailKey": detail_key,
+    }
+    assert page.locator("[data-detail-panel] .detail-id").inner_text() == (
+        "SUBJECT / 101"
+    )
+
+    page.go_back()
+    page.wait_for_function(
+        "!location.hash"
+        " && document.querySelector('[data-page][data-archive-app]')"
+        "?.dataset.workspaceMode === 'scope'"
+        " && document.querySelector('[data-detail-panel]')?.hidden === true"
+    )
+    assert page.url == list_url
+    assert page.evaluate("history.state") == list_state
+    assert page.evaluate("history.length") == detail_history_length
+    if page_kind == "archive":
+        assert "RANGE / 2026—2026" in root.locator(
+            "[data-archive-scope-label]"
+        ).inner_text()
+
+    toggle = root.locator("[data-filter-toggle]")
+    toggle.click()
+    page.wait_for_function("""() => {
+      const root = document.querySelector('[data-page][data-archive-app]');
+      const panel = root?.querySelector('[data-filter-panel]');
+      return root?.dataset.workspaceMode === 'filter'
+        && panel && !panel.hidden
+        && root.getAnimations({ subtree: true }).every(animation =>
+          animation.playState !== 'running' && animation.playState !== 'pending'
+        );
+    }""")
+    draft_checkbox = page.get_by_label("续播")
+    assert draft_checkbox.is_checked()
+    draft_checkbox.uncheck()
+    assert root.get_attribute("data-workspace-mode") == "filter"
+    assert toggle.get_attribute("aria-expanded") == "true"
+    filter_list_scroll = page.evaluate("window.scrollY")
+
+    page.evaluate("""() => {
+      const audit = window.__plan60HistoryAudit = {
+        calls: { pushState: 0, replaceState: 0, back: 0, focus: 0, scrollTo: 0 },
+        events: { popstate: 0, hashchange: 0 },
+        originals: { focus: HTMLElement.prototype.focus, scrollTo: window.scrollTo },
+      };
+      for (const method of ['pushState', 'replaceState', 'back']) {
+        const original = History.prototype[method];
+        History.prototype[method] = function(...args) {
+          audit.calls[method] += 1;
+          return original.apply(this, args);
+        };
+      }
+      HTMLElement.prototype.focus = function(...args) {
+        audit.calls.focus += 1;
+        return audit.originals.focus.apply(this, args);
+      };
+      window.scrollTo = (...args) => {
+        audit.calls.scrollTo += 1;
+        return audit.originals.scrollTo.apply(window, args);
+      };
+      window.addEventListener('popstate', () => audit.events.popstate += 1);
+      window.addEventListener('hashchange', () => audit.events.hashchange += 1);
+    }""")
+    page.go_forward()
+    page.wait_for_function("""() => {
+      const root = document.querySelector('[data-page][data-archive-app]');
+      const detail = document.querySelector('[data-detail-panel]');
+      const filter = document.querySelector('[data-filter-panel]');
+      const events = window.__plan60HistoryAudit?.events;
+      return location.hash === '#bgm-101'
+        && root?.dataset.workspaceMode === 'detail'
+        && detail && !detail.hidden
+        && filter?.hidden === true
+        && events?.popstate === 1
+        && events?.hashchange === 1;
+    }""")
+    assert page.url == detail_url
+    assert page.evaluate("history.state") == detail_state
+    assert page.evaluate("history.length") == detail_history_length
+    assert page.evaluate("window.__plan60HistoryAudit.calls") == {
+        "pushState": 0,
+        "replaceState": 0,
+        "back": 0,
+        "focus": 0,
+        "scrollTo": 0,
+    }
+    assert page.locator("[data-detail-panel] .detail-id").inner_text() == (
+        "SUBJECT / 101"
+    )
+    assert root.locator("[data-filter-panel]").is_hidden()
+    assert toggle.get_attribute("aria-expanded") == "false"
+
+    page.go_back()
+    page.wait_for_function(
+        "!location.hash"
+        " && document.querySelector('[data-page][data-archive-app]')"
+        "?.dataset.workspaceMode === 'scope'"
+        " && document.querySelector('[data-detail-panel]')?.hidden === true"
+    )
+    assert page.url == list_url
+    assert page.evaluate("history.state") == list_state
+    page.wait_for_function("""() => {
+      const events = window.__plan60HistoryAudit?.events;
+      return events?.popstate === 2 && events?.hashchange === 2;
+    }""")
+    assert page.evaluate("history.length") == detail_history_length
+    page.wait_for_function(
+        "target => Math.abs(window.scrollY - target) <= 1",
+        arg=filter_list_scroll,
+    )
+    calls = page.evaluate("window.__plan60HistoryAudit.calls")
+    assert {name: calls[name] for name in ("pushState", "replaceState", "back")} == {
+        "pushState": 0,
+        "replaceState": 0,
+        "back": 0,
+    }
+    if page_kind == "archive":
+        assert "RANGE / 2026—2026" in root.locator(
+            "[data-archive-scope-label]"
+        ).inner_text()
+    assert root.locator(".subject-row:visible").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.recordKey)"
+    ) == applied_keys
+    toggle.click()
+    assert page.get_by_label("续播").is_checked()
+    assert root.get_attribute("data-workspace-mode") == "filter"
+    assert toggle.get_attribute("aria-expanded") == "true"
+
+
 def _assert_no_root_motion_or_black_overlay(page: Page) -> None:
     state = page.evaluate(
         """() => {

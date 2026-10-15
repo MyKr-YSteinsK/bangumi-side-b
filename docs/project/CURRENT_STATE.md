@@ -531,6 +531,32 @@ have already passed.
   Final verification and source delivery are recorded in this task's TASK_RESULT;
   the other Plan-58 candidates and broader A–F work remain unapproved.
 
+## 2026-10-15 Plan-60 Rev1 mobile filter/detail hash evidence
+
+- Plan-60 Rev1 started from `c51340d28e628747e57bd7f6d25478167f067cd5` on
+  `main` / `origin/main`, with a clean worktree and matching actual remote
+  source HEAD. Two parameterized synthetic browser cases now cover Quarter and
+  Archive: the user applies the `续播` filter, opens subject 101 through its real
+  result button, uses browser Back, opens the mobile filter and changes an
+  unapplied draft, then uses browser Forward to the UI-created `#bgm-101` entry.
+  Archive reaches its `RANGE / 2026—2026` scope through the scope controls.
+- The tests verify the detail URL and `history.state`, applied record identity,
+  Archive scope, closed filter/ARIA state, and exactly one `popstate` plus one
+  `hashchange` per traversal. During Forward with the filter draft open, no
+  `pushState`, `replaceState`, `back`, explicit focus, or `scrollTo` call was
+  observed. The following Back returns to the same list URL/state, applied rows,
+  and saved scroll position; reopening the filter shows the applied selection.
+- The three selected new paths passed in Playwright Chromium `149.0.7827.55`
+  (Quarter and Archive) and Playwright WebKit `26.5` (Archive); four adjacent
+  Chromium filter, Quarter detail/history, and Archive pending-range history
+  tests also passed. All sites and requests used synthetic fixtures and local
+  loopback only. No contract-violating product behavior was reproduced; only
+  regression coverage was added, with no runtime JavaScript or product-contract
+  change. The full browser/PWA suites, real Safari/iOS, production, and
+  installed-PWA behavior are not established by these results. Production
+  remains the lifecycle stage and the A–F program remains unapproved; source
+  delivery and post-push CI evidence are recorded in the TASK_RESULT.
+
 ## 2026-10-13 experience-upgrade research status
 
 - The local report `BGMB-总体体验升级与架构优化研究报告.md` under

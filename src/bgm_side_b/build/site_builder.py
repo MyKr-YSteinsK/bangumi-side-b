@@ -1654,6 +1654,7 @@ def _quarter_html(
     available_quarters: tuple[str, ...] = (),
 ) -> bytes:
     label = html.escape(quarter.quarter)
+    data_revision = hashlib.sha256(json_bytes(quarter.to_dict())).hexdigest()
     sections = (
         (
             "tv",
@@ -1690,7 +1691,7 @@ def _quarter_html(
         )
         + f'<main id="main-content" tabindex="-1" class="quarter-page season-{html.escape(quarter.quarter[-2:])}" '
         f'data-archive-app data-page="quarter" data-quarter="{label}" data-workspace-mode="scope" data-view-mode="grid" '
-        f'data-data-url="../data/quarters/{label}.json" data-site-root="../" data-cover-preview-rule="{_cover_preview_rule_id()}" '
+        f'data-data-url="../data/quarters/{label}.json?v={data_revision}" data-site-root="../" data-cover-preview-rule="{_cover_preview_rule_id()}" '
         f'data-count-tv="{counts["tv"]}" data-count-movie="{counts["movie"]}" '
         f'data-count-premiere="{counts["premiere"]}" data-count-continuing="{counts["continuing"]}">'
         '<section class="archive-intro archive-intro--quarter">'
@@ -1737,6 +1738,10 @@ def _quarter_html(
         body_class=f"season-{quarter.quarter[-2:]}",
         data_attrs={"data-page": "quarter"},
     )
+
+
+def _quarter_data_revision(quarter: QuarterProjection) -> str:
+    return hashlib.sha256(json_bytes(quarter.to_dict())).hexdigest()
 
 
 def _default_display_records(
@@ -2061,8 +2066,13 @@ def _page(
         f'<link rel="stylesheet" href="{_revision_href(css_href, revisions["assets/app.css"])}"></head>'
         f"<body{class_attr}{attributes}>"
         '<a class="skip-link" href="#main-content">跳到主要内容</a>'
-        '<aside class="pwa-update-notice" data-pwa-update-notice hidden>'
-        '<span>应用更新可用</span><button type="button" data-pwa-refresh>刷新</button></aside>'
+        '<aside class="pwa-update-notice" data-pwa-update-notice hidden aria-live="polite">'
+        '<div class="pwa-update-notice__item" data-pwa-app-update hidden>'
+        '<span>应用更新可用</span><button type="button" data-pwa-refresh>刷新</button></div>'
+        '<div class="pwa-update-notice__item" data-quarter-online-update hidden>'
+        '<span>该季度线上内容有更新</span><button type="button" data-quarter-refresh>查看更新</button>'
+        '<span class="pwa-update-notice__status" data-quarter-update-status role="status"></span></div>'
+        '</aside>'
         f"{body}"
         f'<script src="{_revision_href(js_href, revisions["assets/app.js"])}" defer></script>'
         f'<script src="{_revision_href(pwa_href, revisions["assets/pwa.js"])}" defer></script>'
@@ -2144,7 +2154,7 @@ def _offline_manifest_bytes(
     quarter: QuarterProjection, specs: Mapping[str, ArtifactSpec]
 ) -> bytes:
     label = quarter.quarter
-    data_revision = hashlib.sha256(json_bytes(quarter.to_dict())).hexdigest()
+    data_revision = _quarter_data_revision(quarter)
     required = [
         f"{label}/index.html",
         f"data/quarters/{label}.json",

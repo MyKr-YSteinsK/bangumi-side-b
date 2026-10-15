@@ -202,3 +202,19 @@ fresh canonical evaluation turns an old automatic exclusion into a hard
 non-Japanese or special-venue rejection, synchronization transactionally
 removes the stale automatic entry and reports it as `auto_reconciled` rather
 than retaining a misleading low-rating status.
+
+## D-022 — Verified quarter pages may lead with saved content
+
+An ordinary same-origin Quarter navigation first honors a per-client pin from a
+successful user-selected online update. Without that pin, it may immediately
+show the locally saved page only for a `COMPLETE` active package with no
+staging state, a physically verified page and JSON, and an HTML-pinned JSON
+hash matching the manifest `data_revision`. Other ineligible or older page
+formats retain their network-first behavior. The page checks same-origin
+quarter data in the background and offers a nonblocking notice only when
+`data_revision` changes; application/package revision remains a separate
+update signal under D-014. The user must choose to view the online generation.
+That view is verified and client-pinned in the bounded runtime cache, but it
+does not promote or replace the offline active package, mark it complete, or
+expand the selected offline quarters. Failed checks or loads keep the verified
+saved page usable.

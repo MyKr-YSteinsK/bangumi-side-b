@@ -216,6 +216,34 @@ requirement for a file to contain its own commit SHA.
 - A recoverable pre-live private snapshot was stored outside the repository;
   its private absolute path is intentionally not tracked. No Pages publication
   or `gh-pages` mutation was performed.
+## Plan-63 verified-quarter freshness evidence
+
+- The approved Plan-63 behavior is implemented for verified quarter pages:
+  generated quarter HTML pins JSON by SHA256; only an eligible `COMPLETE`
+  active quarter without staging can lead with saved content. A background
+  same-origin `data_revision` check can show a nonblocking quarter notice, and
+  only a user action loads a verified online page generation. That generation
+  remains in bounded runtime storage with a per-client pin transferred to the
+  resulting document; it does not promote, replace, or mark the offline active
+  package complete. Application/package updates remain separate under D-014.
+- On 2026-10-15, a 15-case focused batch passed across Chromium 149 and
+  Playwright WebKit 26.5. After the final pin-transfer adjustment, all seven
+  feature-specific delay, negative-control, and WebKit cases passed again.
+  Synthetic loopback tests covered immediate and approximately
+  1.7-second manifest responses, matching and changed quarter data, failed
+  checks and explicit loads, old JSON/preview retention until user action,
+  online page/data/preview consistency after action, coexisting app and quarter
+  notices, and preservation of offline `COMPLETE`/staging state. Negative
+  controls for staging, invalid cached-page hash, legacy unpinned quarter HTML,
+  and runtime-only cache all used the network-first path. Related PWA cache,
+  update, and GC regressions and the quarter builder test also passed.
+- `python -m ruff check .`, `node --check` for both changed JavaScript files,
+  and `git diff --check` passed. The full browser/PWA suite was not run. Evidence
+  uses synthetic local data and loopback only; no real Safari/iOS or installed
+  PWA, production Pages, production data build, Bangumi access, publication, or
+  `gh-pages` mutation was exercised. The lifecycle remains Production, and the
+  wider A–F experience-upgrade candidates remain unapproved.
+
 ## Known limitations / risks
 
 - Plan-39 was acceptance and documentation only; it did not change product

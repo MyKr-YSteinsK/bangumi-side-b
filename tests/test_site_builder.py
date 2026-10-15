@@ -860,6 +860,29 @@ def test_quarter_output_uses_master_detail_shell_and_static_rows(
     )
     assert 'data-page="quarter"' in page
     assert 'data-archive-app' in page
+    assert 'data-pwa-update-notice hidden aria-live="polite"' in page
+    assert 'data-quarter-update-status role="status"' in page
+    quarter_data = (
+        tmp_path / "dist" / "site" / "data" / "quarters" / "2026-07.json"
+    ).read_bytes()
+    data_revision = hashlib.sha256(quarter_data).hexdigest()
+    assert (
+        f'data-data-url="../data/quarters/2026-07.json?v={data_revision}"'
+        in page
+    )
+    offline_manifest = json.loads(
+        (tmp_path / "dist" / "site" / "data" / "offline" / "2026-07.json")
+        .read_text("utf-8")
+    )
+    manifest_data = next(
+        item for item in offline_manifest["resources"]
+        if item["url"] == "data/quarters/2026-07.json"
+    )
+    assert (
+        offline_manifest["data_revision"]
+        == manifest_data["content_hash"]
+        == data_revision
+    )
     assert 'class="subject-row"' in page
     assert 'class="workspace"' in page
     assert 'data-detail-panel' in page

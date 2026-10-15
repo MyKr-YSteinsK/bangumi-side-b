@@ -127,3 +127,44 @@ A new Service Worker or application shell produces a thin, nonblocking notice.
 The user explicitly refreshes when ready; the application never performs a
 surprise reload. Updates do not switch a complete archive snapshot or block
 ordinary online startup.
+
+### Verified quarter page freshness
+
+Generated quarter HTML pins its quarter JSON URL as
+`data/quarters/YYYY-MM.json?v=<SHA256>`. The hash is the JSON bytes' SHA256 and
+matches the quarter manifest's `data_revision`; the package `revision` may also
+change when shell or other offline resources change. This keeps an opened old
+quarter page bound to its matching JSON and distinguishes archive data changes
+from an application update.
+
+An ordinary same-origin quarter navigation first honors a matching per-client
+pin created by a successful user-selected online update. Without such a pin, it
+can use the immediately available saved page only when the quarter metadata is
+`COMPLETE`, has no staging package, its active manifest validates, its page and
+JSON bytes exist with the declared hashes and sizes, and the HTML's pinned JSON
+hash matches `data_revision`.
+Complete status continues to mean the entire manifest was verified when the
+download finished. Missing or damaged page/JSON content, staging state, a
+runtime-only visit, another route, or older HTML without the pinned JSON URL
+uses the existing network-first path.
+
+After the quarter page is available, the page asks its controlling Service
+Worker to check the same-origin quarter manifest and verify the current JSON
+bytes. A different `data_revision` produces a small page notice; matching data,
+an unavailable manifest, invalid identity, or a failed hash check does not
+claim that an update exists. CSS/JavaScript/package-only changes remain covered
+by the separate application update notice, even when both notices are visible.
+The check never replaces the open page's JSON, promotes online data into the
+offline active package, changes `COMPLETE` or staging state, or adds a quarter
+to the download selection.
+
+The `查看更新` action is explicit. The Service Worker rechecks the requested
+quarter manifest, page, JSON, and the page's versioned core CSS/JavaScript
+resources before serving that online generation. It stores only those needed
+resources and the page in the existing bounded runtime cache, then pins that
+generation to the resulting client. Cover resources keep their existing
+content-hash URLs and verification path. If verification or loading fails, the
+saved page remains available and the user receives an inline status; a
+successful online view still does not count as a complete offline download.
+Use Settings' explicit quarter download/update action when the offline package
+itself should be replaced.

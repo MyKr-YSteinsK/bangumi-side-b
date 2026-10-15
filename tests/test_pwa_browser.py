@@ -14,13 +14,18 @@ import time
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from playwright.sync_api import Browser, Page, sync_playwright
 
 from bgm_side_b.build import site_builder
 from bgm_side_b.repository import SubjectRepository
-from tests.test_site_builder import _build_fixture, _build_preview_fixture
+from tests.test_site_builder import (
+    _build_fixture,
+    _build_preview_fixture,
+    _set_preview_fixture_cover,
+)
 
 pytestmark = [pytest.mark.browser, pytest.mark.deep_regression]
 
@@ -514,9 +519,92 @@ def update_server(update_site: tuple[object, object, Path, Path]) -> Iterator[st
 
 
 @pytest.fixture
+def freshness_server(
+    update_site: tuple[object, object, Path, Path],
+) -> Iterator[tuple[str, dict[str, object]]]:
+    served = update_site[3]
+    lock = threading.Lock()
+    control: dict[str, object] = {
+        "requests": [],
+        "page_requests": [],
+        "next_delay": 0.0,
+        "next_status": 200,
+        "fail_manifest": False,
+        "started": threading.Event(),
+        "finished": threading.Event(),
+    }
+
+    class FreshnessHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self) -> None:
+            path = urlsplit(self.path).path
+            if path == "/bangumi-side-b/2026-07/index.html":
+                with lock:
+                    control["page_requests"].append(time.time())
+            if path == "/bangumi-side-b/data/offline/2026-07.json":
+                with lock:
+                    delay = float(control["next_delay"])
+                    status = (
+                        503
+                        if control["fail_manifest"]
+                        else int(control["next_status"])
+                    )
+                    control["next_delay"] = 0.0
+                    control["next_status"] = 200
+                    record = {
+                        "started_at": time.time(),
+                        "finished_at": None,
+                        "status": status,
+                    }
+                    control["requests"].append(record)
+                    event_started = control["started"]
+                    event_finished = control["finished"]
+                    event_started.set()
+                try:
+                    if delay:
+                        time.sleep(delay)
+                    if status != 200:
+                        self.send_response(status)
+                        self.end_headers()
+                        return
+                    super().do_GET()
+                finally:
+                    record["finished_at"] = time.time()
+                    event_finished.set()
+                return
+            super().do_GET()
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    handler = functools.partial(FreshnessHandler, directory=str(served.parent))
+    server = _server(handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/bangumi-side-b", control
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.fixture
 def chromium() -> Iterator[Browser]:
     with sync_playwright() as runner:
         browser = runner.chromium.launch()
+        try:
+            yield browser
+        finally:
+            browser.close()
+
+
+@pytest.fixture
+def webkit() -> Iterator[Browser]:
+    with sync_playwright() as runner:
+        try:
+            browser = runner.webkit.launch()
+        except Exception as error:
+            pytest.skip(f"Playwright WebKit cannot launch here: {error}")
         try:
             yield browser
         finally:
@@ -3797,6 +3885,526 @@ def test_network_error_prefers_guaranteed_active_content_without_faking_unknown_
         "fetch('../not-downloaded.html').then((response) => response.status)"
     )
     assert unknown == 404
+    context.close()
+
+
+@pytest.mark.parametrize("delay_seconds", [0.0, 1.7])
+def test_verified_quarter_shows_old_first_and_explicitly_loads_coherent_online_update(
+    chromium: Browser,
+    freshness_server: tuple[str, dict[str, object]],
+    update_site: tuple[object, object, Path, Path],
+    tmp_path: Path,
+    delay_seconds: float,
+) -> None:
+    builder, database, _isolated_root, served = update_site
+    server_url, control = freshness_server
+    context = chromium.new_context()
+    page = context.new_page()
+    page.add_init_script(
+        """
+        window.__quarterFirstVisibleAt = null;
+        const observeQuarter = () => {
+          if (window.__quarterFirstVisibleAt !== null) return;
+          if (!document.querySelector('[data-subject-id="101"]')) return;
+          window.__quarterFirstVisibleAt = Date.now();
+        };
+        new MutationObserver(observeQuarter).observe(document, {
+          childList: true, subtree: true,
+        });
+        document.addEventListener('DOMContentLoaded', observeQuarter, { once: true });
+        """
+    )
+    page.goto(f"{server_url}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    old_state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert old_state["status"] == "COMPLETE" and old_state["staging"] is None
+
+    old_payload = json.loads((served / "data/quarters/2026-07.json").read_text("utf-8"))
+    old_revision = old_state["active"]["data_revision"]
+    old_item = next(
+        item for item in old_payload["tv"]["continuing"]
+        if item["subject_id"] == 101
+    )
+    old_preview_path = site_builder._cover_preview_path(old_item["cover_url"])
+    assert old_preview_path is not None
+    old_preview_resource = next(
+        item for item in old_state["active"]["resources"]
+        if item["url"] == old_preview_path
+    )
+
+    context.set_offline(True)
+    page.goto(f"{server_url}/2026-07/index.html")
+    page.wait_for_function(
+        "document.querySelector('[data-subject-id=\"101\"] img')?.naturalWidth > 0"
+    )
+    assert "8.0" in page.locator('[data-subject-id="101"]').inner_text()
+    assert page.locator('[data-subject-id="101"] img').evaluate(
+        "node => node.currentSrc"
+    ) == f"{server_url}/{old_preview_path}"
+    old_page_result = page.evaluate(
+        "async () => { const root = document.querySelector('main[data-page=quarter]');"
+        "const response = await fetch(root.dataset.dataUrl);"
+        "return {status: response.status, body: await response.text()}; }"
+    )
+    assert old_page_result["status"] == 200, old_page_result
+    old_page_payload = json.loads(old_page_result["body"])
+    assert old_page_payload == old_payload
+    context.set_offline(False)
+
+    def wait_for_manifest(index: int) -> dict[str, object]:
+        requests = control["requests"]
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if len(requests) > index and requests[index]["finished_at"] is not None:
+                return requests[index]
+            time.sleep(0.01)
+        raise AssertionError(f"manifest request {index + 1} did not finish: {requests}")
+
+    def wait_for_manifest_quiet() -> None:
+        requests = control["requests"]
+        deadline = time.time() + 5
+        stable_since = None
+        previous_count = -1
+        while time.time() < deadline:
+            count = len(requests)
+            complete = all(item["finished_at"] is not None for item in requests)
+            if complete and count == previous_count:
+                stable_since = stable_since or time.monotonic()
+                if time.monotonic() - stable_since >= 0.2:
+                    return
+            else:
+                stable_since = None
+            previous_count = count
+            time.sleep(0.02)
+        raise AssertionError(f"manifest requests did not settle: {requests}")
+
+    page.reload()
+    wait_for_manifest(0)
+    wait_for_manifest_quiet()
+    assert page.locator("[data-quarter-online-update]").is_hidden()
+
+    repository = SubjectRepository(database)
+    subject = repository.get_subject_facts(101)
+    assert subject is not None
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection,
+            replace(subject, subject=replace(subject.subject, rating_score=9.4)),
+        )
+    _set_preview_fixture_cover(tmp_path, database, 101, large=True)
+    builder.build()
+    new_payload = json.loads((served / "data/quarters/2026-07.json").read_text("utf-8"))
+    new_manifest = json.loads((served / "data/offline/2026-07.json").read_text("utf-8"))
+    new_revision = new_manifest["data_revision"]
+    assert new_revision != old_revision
+    new_item = next(
+        item for item in new_payload["tv"]["continuing"]
+        if item["subject_id"] == 101
+    )
+    new_preview_path = site_builder._cover_preview_path(new_item["cover_url"])
+    assert new_preview_path is not None and new_preview_path != old_preview_path
+    new_preview_resource = next(
+        item for item in new_manifest["resources"]
+        if item["url"] == new_preview_path
+    )
+    new_preview_bytes = (served / new_preview_path).read_bytes()
+    assert len(new_preview_bytes) == new_preview_resource["size_bytes"]
+    assert (
+        hashlib.sha256(new_preview_bytes).hexdigest()
+        == new_preview_resource["content_hash"]
+    )
+
+    def arm_manifest(*, delay: float = 0.0, status: int = 200) -> None:
+        control["started"].clear()
+        control["finished"].clear()
+        control["next_delay"] = delay
+        control["next_status"] = status
+
+    failure_index = len(control["requests"])
+    arm_manifest(status=503)
+    page.reload()
+    failed = wait_for_manifest(failure_index)
+    assert failed["status"] == 503
+    assert "8.0" in page.locator('[data-subject-id="101"]').inner_text()
+    assert page.locator("[data-quarter-online-update]").is_hidden()
+    after_failure = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert after_failure["status"] == "COMPLETE"
+    assert after_failure["active"]["revision"] == old_state["active"]["revision"]
+    assert after_failure["staging"] is None
+    wait_for_manifest_quiet()
+
+    update_index = len(control["requests"])
+    arm_manifest(delay=delay_seconds)
+    prior_history_length = page.evaluate("history.length")
+    page.reload()
+    assert control["started"].wait(5), (
+        "freshness request did not reach the loopback server"
+    )
+    page.locator("[data-search]").focus()
+    page.evaluate("window.scrollTo(0, 320)")
+    prior_focus = page.evaluate(
+        "document.activeElement?.getAttribute('data-search') !== null"
+    )
+    main_top_before_notice = page.locator('main[data-page="quarter"]').evaluate(
+        "node => node.getBoundingClientRect().top"
+    )
+    request = control["requests"][update_index]
+    first_visible_at = page.evaluate("window.__quarterFirstVisibleAt")
+    assert first_visible_at is not None
+    assert first_visible_at / 1000 <= request["started_at"] + 0.1
+    assert "8.0" in page.locator('[data-subject-id="101"]').inner_text()
+    if delay_seconds:
+        assert request["finished_at"] is None
+        assert page.locator("[data-quarter-online-update]").is_hidden()
+        assert page.evaluate("document.activeElement?.matches('[data-search]')")
+        assert page.evaluate("Math.abs(window.scrollY - 320) < 2")
+        assert page.evaluate("history.length") == prior_history_length
+    assert page.evaluate("Boolean(document.activeElement)")
+    assert prior_focus
+
+    assert control["finished"].wait(5), "freshness request did not finish"
+    page.wait_for_function(
+        "document.querySelector('[data-quarter-online-update]')?.hidden === false"
+    )
+    assert "8.0" in page.locator('[data-subject-id="101"]').inner_text()
+    notice_accessibility = page.locator("[data-pwa-update-notice]").evaluate(
+        """node => ({
+          position: getComputedStyle(node).position,
+          live: node.getAttribute('aria-live'),
+          statusRole: node.querySelector('[data-quarter-update-status]')
+            .getAttribute('role'),
+        })"""
+    )
+    assert notice_accessibility == {
+        "position": "fixed",
+        "live": "polite",
+        "statusRole": "status",
+    }
+    assert page.evaluate("history.length") == prior_history_length
+    assert page.evaluate("document.activeElement?.matches('[data-search]')")
+    assert page.evaluate("Math.abs(window.scrollY - 320) < 2")
+    assert abs(
+        page.locator('main[data-page="quarter"]').evaluate(
+            "node => node.getBoundingClientRect().top"
+        ) - main_top_before_notice
+    ) < 1
+    old_payload_while_notice = page.evaluate(
+        "async () => fetch(document.querySelector('[data-page=quarter][data-quarter]')"
+        ".dataset.dataUrl)"
+        ".then(response => response.json())"
+    )
+    assert old_payload_while_notice == old_payload
+    before_click = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert before_click["status"] == "COMPLETE"
+    assert before_click["active"]["revision"] == old_state["active"]["revision"]
+    assert before_click["staging"] is None
+
+    failed_update_index = len(control["requests"])
+    control["fail_manifest"] = True
+    page.locator("[data-quarter-refresh]").click()
+    failed_update = wait_for_manifest(failed_update_index)
+    assert failed_update["status"] == 503
+    page.wait_for_function(
+        "document.querySelector('[data-quarter-update-status]')?.textContent.length > 0"
+    )
+    assert "8.0" in page.locator('[data-subject-id="101"]').inner_text()
+    after_update_failure = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert after_update_failure["status"] == "COMPLETE"
+    assert after_update_failure["active"]["revision"] == old_state["active"]["revision"]
+    assert after_update_failure["staging"] is None
+    control["fail_manifest"] = False
+    wait_for_manifest_quiet()
+
+    pwa_source = _isolated_root / "static" / "js" / "pwa.js"
+    pwa_source.write_text(
+        pwa_source.read_text("utf-8") + "\n/* app update fixture */\n",
+        encoding="utf-8",
+    )
+    builder.build()
+    package_after_app_change = json.loads(
+        (served / "data/offline/2026-07.json").read_text("utf-8")
+    )
+    assert package_after_app_change["data_revision"] == new_revision
+    assert package_after_app_change["revision"] != new_manifest["revision"]
+    page.evaluate(
+        "navigator.serviceWorker.ready.then(registration => registration.update())"
+    )
+    page.wait_for_function(
+        "async () => (await navigator.serviceWorker.ready).waiting !== null"
+    )
+    page.wait_for_function(
+        "document.querySelector('[data-pwa-app-update]')?.hidden === false"
+    )
+    app_update_state = page.evaluate(
+        "async () => ({api: window.BsbPwa.updateAvailable(),"
+        "waiting: Boolean((await navigator.serviceWorker.ready).waiting),"
+        "controller: Boolean(navigator.serviceWorker.controller),"
+        "markup: document.querySelector('[data-pwa-update-notice]')?.outerHTML})"
+    )
+    assert page.locator("[data-pwa-app-update]").is_visible(), app_update_state
+    assert page.locator("[data-quarter-online-update]").is_visible()
+
+    page.locator("[data-quarter-refresh]").click()
+    page.wait_for_function(
+        "document.querySelector('[data-subject-id=\"101\"]')?.dataset.score === '9.4'"
+    )
+    page.wait_for_function("!new URL(location.href).searchParams.has('__bsb_update')")
+    assert (
+        page.locator('main[data-page="quarter"]').get_attribute("data-quarter")
+        == "2026-07"
+    )
+    new_page_data_url = page.locator('main[data-page="quarter"]').get_attribute(
+        "data-data-url"
+    )
+    assert f"v={new_revision}" in new_page_data_url
+    online_payload = page.evaluate(
+        "async () => fetch(document.querySelector('[data-page=quarter][data-quarter]')"
+        ".dataset.dataUrl)"
+        ".then(response => response.json())"
+    )
+    assert online_payload == new_payload
+    page.wait_for_function(
+        "path => document.querySelector('[data-subject-id=\"101\"] img')"
+        "?.naturalWidth > 0 && document.querySelector('[data-subject-id=\"101\"] img')"
+        "?.currentSrc.includes(path)",
+        arg=new_preview_path,
+    )
+    assert page.locator('[data-subject-id="101"] img').evaluate(
+        "node => node.currentSrc"
+    ) == f"{server_url}/{new_preview_path}"
+    assert page.locator("[data-pwa-app-update]").is_visible()
+    assert page.locator("[data-quarter-online-update]").is_hidden()
+    page.reload()
+    page.wait_for_function(
+        "document.querySelector('[data-subject-id=\"101\"]')?.dataset.score === '9.4'"
+    )
+    assert f"v={new_revision}" in page.locator(
+        'main[data-page="quarter"]'
+    ).get_attribute("data-data-url")
+    assert page.evaluate(
+        """caches.open('bsb-meta-v1').then(cache => cache.keys())
+          .then(keys => keys.filter(
+            key => key.url.includes('/quarter-clients/'),
+          ).length)"""
+    ) == 1
+    assert page.locator("[data-quarter-online-update]").is_hidden()
+    after_click = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert after_click["status"] == "COMPLETE"
+    assert after_click["active"]["revision"] == old_state["active"]["revision"]
+    assert after_click["staging"] is None
+    page.locator("[data-pwa-refresh]").click()
+    page.wait_for_function(
+        "document.querySelector('[data-subject-id=\"101\"]')?.dataset.score === '9.4'"
+    )
+    page.wait_for_function(
+        "document.querySelector('[data-pwa-app-update]')?.hidden === true"
+    )
+    assert page.locator("[data-quarter-online-update]").is_hidden()
+    after_app_update = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert after_app_update["status"] == "COMPLETE"
+    assert after_app_update["active"]["revision"] == old_state["active"]["revision"]
+    assert after_app_update["staging"] is None
+    content_keeps_old = """async hash => {
+      const content = await caches.open('bsb-content-v1');
+      return Boolean(await content.match(new Request(new URL(
+        `../__bsb_content__/${hash}`, location.href
+      ))));
+    }"""
+    assert page.evaluate(content_keeps_old, old_preview_resource["content_hash"])
+    context.close()
+
+
+@pytest.mark.parametrize(
+    "eligibility_failure",
+    ["staging", "invalid-page-hash", "legacy-unpinned-data-url", "runtime-only"],
+)
+def test_quarter_old_first_requires_complete_verified_pinned_generation(
+    chromium: Browser,
+    freshness_server: tuple[str, dict[str, object]],
+    update_site: tuple[object, object, Path, Path],
+    eligibility_failure: str,
+) -> None:
+    builder, database, _isolated_root, _served = update_site
+    server_url, control = freshness_server
+    context = chromium.new_context()
+    page = context.new_page()
+    page.goto(f"{server_url}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    old_state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+    assert old_state["status"] == "COMPLETE" and old_state["staging"] is None
+
+    repository = SubjectRepository(database)
+    subject = repository.get_subject_facts(101)
+    assert subject is not None
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection,
+            replace(subject, subject=replace(subject.subject, rating_score=9.4)),
+        )
+    builder.build()
+    page_request_count = len(control["page_requests"])
+
+    changed = page.evaluate(
+        """
+        async (failure) => {
+          const meta = await caches.open("bsb-meta-v1");
+          const key = new Request(new URL(
+            "../__bsb_meta__/quarters/2026-07.json", location.href,
+          ));
+          const response = await meta.match(key);
+          const state = await response.json();
+          if (failure === "runtime-only") {
+            state.status = "NONE";
+            state.active = null;
+            state.staging = null;
+          } else if (failure === "staging") {
+            state.status = "UPDATE_INCOMPLETE";
+            state.staging = { ...state.active, verified_hashes: [] };
+          } else {
+            const resource = state.active.resources.find(
+              (item) => item.url === "2026-07/index.html",
+            );
+            if (failure === "invalid-page-hash") {
+              resource.content_hash = "f".repeat(64);
+            } else {
+              const content = await caches.open("bsb-content-v1");
+              const contentKey = new Request(new URL(
+                `../__bsb_content__/${resource.content_hash}`, location.href,
+              ));
+              const pageResponse = await content.match(contentKey);
+              let html = await pageResponse.text();
+              const oldUrl = `?v=${state.active.data_revision}`;
+              if (!html.includes(oldUrl)) throw new Error("pinned data URL missing");
+              html = html.replace(oldUrl, "");
+              const bytes = new TextEncoder().encode(html);
+              const digest = await crypto.subtle.digest("SHA-256", bytes);
+              resource.content_hash = [...new Uint8Array(digest)]
+                .map((value) => value.toString(16).padStart(2, "0")).join("");
+              resource.size_bytes = bytes.byteLength;
+              await content.put(contentKeyForHash(resource.content_hash),
+                new Response(bytes, { headers: { "Content-Type": "text/html" } }));
+            }
+          }
+          if (failure === "runtime-only") {
+            const active = await window.BsbPwa.getQuarterState("2026-07");
+            const pageResource = active.active.resources.find(
+              (item) => item.url === "2026-07/index.html",
+            );
+            const content = await caches.open("bsb-content-v1");
+            const storedPage = await content.match(new Request(new URL(
+              `../__bsb_content__/${pageResource.content_hash}`, location.href,
+            )));
+            const runtime = await caches.open("bsb-runtime-v1");
+            await runtime.put(
+              new Request(new URL("../2026-07/index.html", location.href)),
+              storedPage,
+            );
+          }
+          await meta.put(key, new Response(JSON.stringify(state), {
+            headers: { "Content-Type": "application/json" },
+          }));
+          for (const request of await meta.keys()) {
+            if (request.url.includes("/quarter-clients/")) await meta.delete(request);
+          }
+          return state;
+
+          function contentKeyForHash(hash) {
+            return new Request(new URL(`../__bsb_content__/${hash}`, location.href));
+          }
+        }
+        """,
+        eligibility_failure,
+    )
+    if eligibility_failure == "staging":
+        assert changed["staging"] is not None
+
+    page.goto(f"{server_url}/2026-07/index.html")
+    page.wait_for_function(
+        "document.querySelector('[data-subject-id=\"101\"]')?.dataset.score === '9.4'"
+    )
+    deadline = time.time() + 5
+    while (
+        time.time() < deadline
+        and len(control["page_requests"]) <= page_request_count
+    ):
+        time.sleep(0.01)
+    assert len(control["page_requests"]) > page_request_count
+    assert page.locator("[data-quarter-online-update]").is_hidden()
+    current_state = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    if eligibility_failure == "runtime-only":
+        assert current_state["status"] == "NONE" and current_state["active"] is None
+    else:
+        assert current_state["active"]["revision"] == old_state["active"]["revision"]
+    context.close()
+
+
+def test_webkit_verified_quarter_freshness_requires_explicit_update(
+    webkit: Browser,
+    freshness_server: tuple[str, dict[str, object]],
+    update_site: tuple[object, object, Path, Path],
+) -> None:
+    builder, database, _isolated_root, served = update_site
+    server_url, _control = freshness_server
+    context = webkit.new_context()
+    page = context.new_page()
+    page.goto(f"{server_url}/settings/index.html")
+    page.wait_for_function("navigator.serviceWorker.controller !== null")
+    page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(page, 1)
+    old_state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
+
+    repository = SubjectRepository(database)
+    subject = repository.get_subject_facts(101)
+    assert subject is not None
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection,
+            replace(subject, subject=replace(subject.subject, rating_score=9.4)),
+        )
+    builder.build()
+    new_manifest = json.loads(
+        (served / "data/offline/2026-07.json").read_text("utf-8")
+    )
+
+    page.goto(f"{server_url}/2026-07/index.html")
+    page.wait_for_function(
+        "document.querySelector('[data-subject-id=\"101\"]')?.dataset.score === '8.0'"
+    )
+    page.wait_for_function(
+        "document.querySelector('[data-quarter-online-update]')?.hidden === false"
+    )
+    assert page.locator('[data-subject-id="101"]').get_attribute("data-score") == "8.0"
+
+    page.locator("[data-quarter-refresh]").click()
+    page.wait_for_function(
+        "document.querySelector('[data-subject-id=\"101\"]')?.dataset.score === '9.4'"
+    )
+    page.wait_for_function("!new URL(location.href).searchParams.has('__bsb_update')")
+    assert f"v={new_manifest['data_revision']}" in page.locator(
+        'main[data-page="quarter"]'
+    ).get_attribute("data-data-url")
+    after_update = page.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert after_update["status"] == "COMPLETE"
+    assert after_update["active"]["revision"] == old_state["active"]["revision"]
+    assert after_update["staging"] is None
     context.close()
 
 

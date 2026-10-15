@@ -457,6 +457,32 @@ have already passed.
   configuration, formal generated site, PWA cache, release, Pages, or
   `gh-pages` state was changed. Production remains the current lifecycle.
 
+## Plan-57 bounded mobile filter history evidence (2026-10-15)
+
+- Plan-57 Rev1 implemented the existing D-007 contract on Quarter and Archive:
+  a same-document Back traversal closes an open mobile filter and discards its
+  unapplied draft before URL/scope restoration. Applied filters remain in
+  state. The Back path does not add or rewrite history entries or force the
+  explicit-close focus/list-scroll restoration. Archive route options flow
+  through asynchronous scope restoration; the existing latest-intent guard is
+  retained. Work began on `main` / `origin/main` at
+  `1584004adc5a1f3ac6fac5ec30728c92e0a62d02` with a clean tracked worktree.
+- Four targeted mobile cases passed at 390×844: Quarter and Archive in
+  Playwright Chromium `149.0.7827.55` and Playwright WebKit `26.5`. They used a
+  synthetic same-document history entry to exercise browser traversal and
+  checked URL/state, `aria-expanded`, discarded draft, applied results, and no
+  programmatic history/focus/scroll calls on filter Back. A separate Chromium
+  case passed for a real Archive YEAR/RANGE Back/Forward traversal while a
+  filter draft was open. Four related existing filter, detail-history, scope
+  race, and range-history cases also passed. Ruff, JavaScript syntax, and diff
+  checks passed; the full browser/PWA suites were not run.
+- `docs/project/DECISIONS.md` D-007, `docs/visual-system.md`, and
+  `docs/USER_GUIDE.md` already describe mobile draft/apply cancellation on
+  close/back, so those product owners required no contract edits. Real Safari,
+  installed PWA, OS Back gestures, online production, and CI were not verified.
+  This bounded fix does not approve broader A–F work or advance the Production
+  lifecycle; source delivery is recorded in the TASK_RESULT.
+
 ## 2026-10-13 experience-upgrade research status
 
 - The local report `BGMB-总体体验升级与架构优化研究报告.md` under

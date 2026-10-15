@@ -1943,6 +1943,89 @@ def test_archive_popstate_cancels_pending_range_and_preserves_history(
     page.close()
 
 
+def test_mobile_archive_filter_back_restores_real_scope_history_and_discards_draft(
+    chromium: BrowserContext,
+    site_server: str,
+) -> None:
+    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page.set_default_timeout(8000)
+    page.goto(f"{site_server}/archive/index.html?year=2026")
+    _wait_archive_scope(page, "YEAR / 2026")
+    root = page.locator('[data-page="archive"][data-archive-app]')
+    initial_history_length = page.evaluate("history.length")
+
+    root.locator('[data-scope-choice="range"]').click()
+    page.locator("[data-archive-from]").fill("2026")
+    page.locator("[data-archive-to]").fill("2026")
+    page.locator("[data-range-apply]").click()
+    _wait_archive_scope(page, "RANGE / 2026—2026")
+    range_url = page.url
+    assert "from=2026" in range_url and "to=2026" in range_url
+    assert page.evaluate("history.length") == initial_history_length + 1
+
+    toggle = root.locator("[data-filter-toggle]")
+    toggle.click()
+    draft_checkbox = page.get_by_label("续播")
+    assert not draft_checkbox.is_checked()
+    draft_checkbox.check()
+
+    page.evaluate("""() => {
+      const calls = window.__plan57ScopeCalls = {
+        pushState: 0, replaceState: 0, back: 0, focus: 0, scrollTo: 0,
+      };
+      const originals = window.__plan57ScopeOriginals = {
+        history: {}, focus: HTMLElement.prototype.focus, scrollTo: window.scrollTo,
+      };
+      for (const method of ['pushState', 'replaceState', 'back']) {
+        const original = History.prototype[method];
+        originals.history[method] = original;
+        History.prototype[method] = function(...args) {
+          calls[method] += 1;
+          return original.apply(this, args);
+        };
+      }
+      HTMLElement.prototype.focus = function(...args) {
+        calls.focus += 1;
+        return originals.focus.apply(this, args);
+      };
+      window.scrollTo = (...args) => {
+        calls.scrollTo += 1;
+        return originals.scrollTo.apply(window, args);
+      };
+    }""")
+    page.go_back()
+    _wait_archive_scope(page, "YEAR / 2026")
+    assert page.url.endswith("?year=2026")
+    assert page.evaluate("history.length") == initial_history_length + 1
+    assert root.locator("[data-filter-panel]").is_hidden()
+    assert toggle.get_attribute("aria-expanded") == "false"
+    assert page.evaluate("window.__plan57ScopeCalls") == {
+        "pushState": 0,
+        "replaceState": 0,
+        "back": 0,
+        "focus": 0,
+        "scrollTo": 0,
+    }
+    page.evaluate("""() => {
+      const originals = window.__plan57ScopeOriginals;
+      for (const [method, original] of Object.entries(originals.history)) {
+        History.prototype[method] = original;
+      }
+      HTMLElement.prototype.focus = originals.focus;
+      window.scrollTo = originals.scrollTo;
+    }""")
+
+    page.go_forward()
+    _wait_archive_scope(page, "RANGE / 2026—2026")
+    assert page.url == range_url
+    assert page.evaluate("history.length") == initial_history_length + 1
+    assert root.locator("[data-filter-panel]").is_hidden()
+    assert toggle.get_attribute("aria-expanded") == "false"
+    toggle.click()
+    assert not page.get_by_label("续播").is_checked()
+    page.get_by_role("button", name="关闭筛选").click()
+
+
 def test_archive_late_detail_cannot_replace_new_scope_selection(
     chromium: BrowserContext,
     unified_site: Path,

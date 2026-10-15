@@ -93,6 +93,134 @@ def _open_quarter(page: Page, site_server: str) -> None:
     )
 
 
+@pytest.mark.parametrize("page_kind", ["quarter", "archive"])
+def test_mobile_filter_popstate_discards_draft_and_preserves_applied_state(
+    motion_page: Page,
+    site_server: str,
+    page_kind: str,
+) -> None:
+    page = motion_page
+    if page_kind == "quarter":
+        _open_quarter(page, site_server)
+    else:
+        page.goto(f"{site_server}/archive/index.html?year=2026")
+        page.wait_for_function(
+            "document.querySelector('[data-results-summary]')"
+            "?.textContent.includes(' / ')"
+        )
+
+    root = page.locator(
+        '[data-page="quarter"][data-archive-app]'
+        if page_kind == "quarter"
+        else '[data-page="archive"][data-archive-app]'
+    )
+    toggle = root.locator("[data-filter-toggle]")
+    toggle.click()
+    page.get_by_label("续播").check()
+    root.locator(".filter-apply-mobile").click()
+    page.wait_for_function(
+        "document.querySelector('[data-filter-panel]')?.hidden === true"
+    )
+    applied_keys = root.locator(".subject-row:visible").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.recordKey)"
+    )
+    assert applied_keys
+    max_result_count = 2 if page_kind == "quarter" else 25
+    assert len(applied_keys) < max_result_count
+
+    # A same-document state entry is needed to exercise real browser Back while
+    # the filter sheet is open; the application does not create filter entries.
+    base_url = page.url
+    base_state = page.evaluate("history.state")
+    page.evaluate(
+        "history.pushState({plan57SyntheticEntry: true}, '', location.href)"
+    )
+    history_length = page.evaluate("history.length")
+    toggle.click()
+    draft_checkbox = page.get_by_label("续播")
+    assert draft_checkbox.is_checked()
+    draft_checkbox.uncheck()
+    assert root.get_attribute("data-workspace-mode") == "filter"
+    assert toggle.get_attribute("aria-expanded") == "true"
+
+    page.evaluate("""() => {
+      const calls = window.__plan57Calls = {
+        pushState: 0, replaceState: 0, back: 0, focus: 0, scrollTo: 0,
+      };
+      const originals = window.__plan57Originals = {
+        history: {}, focus: HTMLElement.prototype.focus, scrollTo: window.scrollTo,
+      };
+      for (const method of ['pushState', 'replaceState', 'back']) {
+        const original = History.prototype[method];
+        originals.history[method] = original;
+        History.prototype[method] = function(...args) {
+          calls[method] += 1;
+          return original.apply(this, args);
+        };
+      }
+      HTMLElement.prototype.focus = function(...args) {
+        calls.focus += 1;
+        return originals.focus.apply(this, args);
+      };
+      window.scrollTo = (...args) => {
+        calls.scrollTo += 1;
+        return originals.scrollTo.apply(window, args);
+      };
+    }""")
+    page.go_back()
+    page.wait_for_function(
+        "document.querySelector('[data-page][data-archive-app]')"
+        "?.dataset.workspaceMode === 'scope'"
+    )
+    assert page.url == base_url
+    assert page.evaluate("history.length") == history_length
+    assert page.evaluate("history.state") == base_state
+    assert root.locator("[data-filter-panel]").is_hidden()
+    assert toggle.get_attribute("aria-expanded") == "false"
+    assert root.locator(".subject-row:visible").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.recordKey)"
+    ) == applied_keys
+    assert page.evaluate("window.__plan57Calls") == {
+        "pushState": 0,
+        "replaceState": 0,
+        "back": 0,
+        "focus": 0,
+        "scrollTo": 0,
+    }
+    page.evaluate("""() => {
+      const originals = window.__plan57Originals;
+      for (const [method, original] of Object.entries(originals.history)) {
+        History.prototype[method] = original;
+      }
+      HTMLElement.prototype.focus = originals.focus;
+      window.scrollTo = originals.scrollTo;
+    }""")
+
+    toggle.click()
+    assert page.get_by_label("续播").is_checked()
+    page.get_by_role("button", name="关闭筛选").click()
+    page.go_forward()
+    assert page.url == base_url
+    assert page.evaluate("history.state.plan57SyntheticEntry") is True
+    assert root.get_attribute("data-workspace-mode") == "scope"
+    assert root.locator("[data-filter-panel]").is_hidden()
+
+    toggle.click()
+    draft_checkbox = page.get_by_label("续播")
+    assert draft_checkbox.is_checked()
+    draft_checkbox.uncheck()
+    page.go_back()
+    page.wait_for_function(
+        "document.querySelector('[data-page][data-archive-app]')"
+        "?.dataset.workspaceMode === 'scope'"
+    )
+    assert page.url == base_url
+    assert root.locator("[data-filter-panel]").is_hidden()
+    assert root.locator(".subject-row:visible").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.recordKey)"
+    ) == applied_keys
+
+
 def _assert_no_root_motion_or_black_overlay(page: Page) -> None:
     state = page.evaluate(
         """() => {

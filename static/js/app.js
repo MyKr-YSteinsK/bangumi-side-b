@@ -1349,6 +1349,7 @@
   let entrancePlayed = false;
   let pagerSignature = "";
   let searchComposing = false;
+  let pendingPopstateHashchange = null;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -1719,6 +1720,14 @@
     state.draftFilters = null;
   }
 
+  function cancelMobileFilterForHistoryTraversal() {
+    if (!isMobileFilter() || state.workspaceMode !== "filter") return false;
+    discardFilterDraft();
+    state.workspaceMode = "scope";
+    renderWorkspaceVisibility();
+    return true;
+  }
+
   function applyFilterDraft() {
     if (!state.draftFilters) return;
     state.filters = state.draftFilters;
@@ -1800,7 +1809,7 @@
       <p class="detail-footer"><a class="text-link" href="${esc(record.bangumi_url || ("https://" + "bgm.tv/subject/" + record.id))}" target="_blank" rel="noreferrer">在 Bangumi 查看 ↗</a></p>`;
   }
 
-  function selectRecord(record, replace = false) {
+  function selectRecord(record, replace = false, writeHistory = true) {
     if (!record) return;
     if (window.innerWidth < 768 && state.workspaceMode !== "detail") {
       state.listScrollTop = window.scrollY;
@@ -1818,8 +1827,10 @@
     state.workspaceMode = "detail";
     quarterRoot.dataset.detailGesture = "idle";
     detailPanel?.setAttribute("data-detail-gesture", "idle");
-    if (hadSelection) setHash(record, true, nextDetailHistoryEntry);
-    else setHash(record, replace, nextDetailHistoryEntry);
+    if (writeHistory) {
+      if (hadSelection) setHash(record, true, nextDetailHistoryEntry);
+      else setHash(record, replace, nextDetailHistoryEntry);
+    }
     detailHistoryEntry = nextDetailHistoryEntry;
     if (detailPanel) {
       detailPanel.innerHTML = detailHtml(record);
@@ -1883,7 +1894,7 @@
     dialog.showModal();
   }
 
-  function openHash() {
+  function openHash({ suppressFocusAndScroll = false, preserveHistory = false } = {}) {
     const match = window.location.hash.match(/^#bgm-(\d+)$/);
     if (!match || !records.length) {
       if (!match && state.selectedOccurrence !== null) {
@@ -1891,15 +1902,26 @@
         clearSelection(false);
         updateRowSelection(previousKey, false);
         renderWorkspaceVisibility();
-        focusRecordTrigger(previousKey);
+        if (!suppressFocusAndScroll) {
+          focusRecordTrigger(previousKey);
+          restoreListScroll();
+        }
+      }
+      if (!match && state.selectedOccurrence === null && !suppressFocusAndScroll) {
         restoreListScroll();
       }
-      if (!match && state.selectedOccurrence === null) restoreListScroll();
       return;
     }
     const candidate = archive.selectedRecord(records, Number(match[1]));
     if (!candidate) {
-      setHash(null, true);
+      if (preserveHistory) {
+        const previousKey = state.selectedOccurrence;
+        clearSelection(false);
+        if (previousKey) updateRowSelection(previousKey, false);
+        renderWorkspaceVisibility();
+      } else {
+        setHash(null, true);
+      }
       return;
     }
     state.media = candidate.media === "MOVIE" ? "movie" : "tv";
@@ -1907,7 +1929,7 @@
     const result = archive.applyPipeline(records, state);
     const index = result.all.findIndex((record) => record.key === candidate.key);
     if (index >= 0) state.page = Math.floor(index / state.pageSize) + 1;
-    selectRecord(candidate, true);
+    selectRecord(candidate, true, !preserveHistory);
   }
 
   function bindControls() {
@@ -2049,8 +2071,26 @@
       selectRecord(recordByKey.get(row.dataset.recordKey));
     }));
     window.addEventListener("resize", () => render());
-    window.addEventListener("popstate", openHash);
-    window.addEventListener("hashchange", openHash);
+    window.addEventListener("popstate", () => {
+      const filterClosed = cancelMobileFilterForHistoryTraversal();
+      const pending = { url: window.location.href };
+      pendingPopstateHashchange = pending;
+      window.setTimeout(() => {
+        if (pendingPopstateHashchange === pending) pendingPopstateHashchange = null;
+      }, 0);
+      openHash({
+        suppressFocusAndScroll: filterClosed,
+        preserveHistory: filterClosed,
+      });
+    });
+    window.addEventListener("hashchange", (event) => {
+      if (pendingPopstateHashchange?.url === event.newURL) {
+        pendingPopstateHashchange = null;
+        return;
+      }
+      pendingPopstateHashchange = null;
+      openHash();
+    });
     bindDetailGesture();
   }
 
@@ -2274,6 +2314,7 @@
   let entrancePlayed = false;
   let pagerSignature = "";
   let searchComposing = false;
+  let pendingPopstateHashchange = null;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -2376,12 +2417,12 @@
     if (selectors.scopeLabel) selectors.scopeLabel.textContent = scopeLabel(kind, value);
   }
 
-  async function restoreArchiveLocation() {
+  async function restoreArchiveLocation(routeOptions = {}) {
     if (!index) return;
     const location = scopeFromLocation();
     if (sameScope(loadedScope, location)) {
       if (!scopePending && !loadError && sameScope(state.scope, location)) {
-        await openHash();
+        await openHash(routeOptions);
         return;
       }
       scopeIntent += 1;
@@ -2391,10 +2432,10 @@
       updateScopeAvailability();
       renderFilterPanel();
       render();
-      await openHash();
+      await openHash(routeOptions);
       return;
     }
-    await setScope(location.kind, location.value, false);
+    await setScope(location.kind, location.value, false, routeOptions);
   }
 
   function setTab(kind) {
@@ -2475,8 +2516,17 @@
       button.addEventListener("click", () => chooseScopeTab(button.dataset.scopeChoice));
     });
     window.addEventListener("popstate", () => {
+      const filterClosed = cancelMobileFilterForHistoryTraversal();
+      const pending = { url: window.location.href };
+      pendingPopstateHashchange = pending;
+      window.setTimeout(() => {
+        if (pendingPopstateHashchange === pending) pendingPopstateHashchange = null;
+      }, 0);
       if (!index) pendingScopeTab = null;
-      else void restoreArchiveLocation();
+      else void restoreArchiveLocation({
+        suppressFocusAndScroll: filterClosed,
+        preserveHistory: filterClosed,
+      });
     });
   }
 
@@ -3024,6 +3074,14 @@
     state.draftFilters = null;
   }
 
+  function cancelMobileFilterForHistoryTraversal() {
+    if (window.innerWidth >= 768 || state.workspaceMode !== "filter") return false;
+    discardFilterDraft();
+    state.workspaceMode = "scope";
+    renderWorkspaceVisibility();
+    return true;
+  }
+
   function applyFilterDraft() {
     if (!state.draftFilters) return;
     state.filters = state.draftFilters;
@@ -3086,7 +3144,7 @@
     dialog.showModal();
   }
 
-  async function selectRecord(record, replace = false) {
+  async function selectRecord(record, replace = false, writeHistory = true) {
     if (
       !record
       || scopePending
@@ -3111,8 +3169,10 @@
     state.workspaceMode = "detail";
     root.dataset.detailGesture = "idle";
     selectors.detailPanel?.setAttribute("data-detail-gesture", "idle");
-    if (hadSelection) setDetailHash(record, true, nextDetailHistoryEntry);
-    else setDetailHash(record, replace, nextDetailHistoryEntry);
+    if (writeHistory) {
+      if (hadSelection) setDetailHash(record, true, nextDetailHistoryEntry);
+      else setDetailHash(record, replace, nextDetailHistoryEntry);
+    }
     detailHistoryEntry = nextDetailHistoryEntry;
     if (selectors.detailPanel) {
       selectors.detailPanel.innerHTML = '<p class="workspace-panel__code">DETAIL</p><p class="loading-state">正在读取季度详情…</p>';
@@ -3172,7 +3232,7 @@
     }) || null;
   }
 
-  async function openHash() {
+  async function openHash({ suppressFocusAndScroll = false, preserveHistory = false } = {}) {
     if (scopePending || loadError || !sameScope(loadedScope, state.scope)) return;
     const match = window.location.hash.match(/^#bgm-(\d+)$/);
     if (!match || !records.length) {
@@ -3181,17 +3241,28 @@
         clearSelection(false);
         updateRowSelection(previousKey, false);
         renderWorkspaceVisibility();
-        focusRecordTrigger(previousKey);
+        if (!suppressFocusAndScroll) {
+          focusRecordTrigger(previousKey);
+          restoreListScroll();
+        }
+      }
+      if (!match && state.selectedOccurrence === null && !suppressFocusAndScroll) {
         restoreListScroll();
       }
-      if (!match && state.selectedOccurrence === null) restoreListScroll();
       return;
     }
     const candidate = archive.selectedRecord(records, Number(match[1]));
     if (!candidate) {
-      const url = new URL(window.location.href);
-      url.hash = "";
-      window.history.replaceState({}, "", url);
+      if (preserveHistory) {
+        const previousKey = state.selectedOccurrence;
+        clearSelection(false);
+        if (previousKey) updateRowSelection(previousKey, false);
+        renderWorkspaceVisibility();
+      } else {
+        const url = new URL(window.location.href);
+        url.hash = "";
+        window.history.replaceState({}, "", url);
+      }
       return;
     }
     state.media = candidate.media === "MOVIE" ? "movie" : "tv";
@@ -3199,7 +3270,7 @@
     const result = archive.applyPipeline(records, state);
     const position = result.all.findIndex((record) => record.key === candidate.key);
     if (position >= 0) state.page = Math.floor(position / state.pageSize) + 1;
-    await selectRecord(candidate, true);
+    await selectRecord(candidate, true, !preserveHistory);
   }
 
   function renderFilterPanel() {
@@ -3470,12 +3541,19 @@
       root.querySelector("[data-archive-to]").value = String(value.to);
       setScope("range", value);
     }));
-    window.addEventListener("hashchange", openHash);
+    window.addEventListener("hashchange", (event) => {
+      if (pendingPopstateHashchange?.url === event.newURL) {
+        pendingPopstateHashchange = null;
+        return;
+      }
+      pendingPopstateHashchange = null;
+      void openHash();
+    });
     window.addEventListener("resize", () => render());
     bindDetailGesture();
   }
 
-  async function setScope(kind, value, push = true) {
+  async function setScope(kind, value, push = true, routeOptions = {}) {
     if (!index) return;
     const normalized = kind === "range" ? normalRange(value.from, value.to) : String(value);
     if (kind === "range" && !normalized) return;
@@ -3510,7 +3588,7 @@
         entrancePlayed = true;
         archive.playEntranceStagger(root);
       }
-      await openHash();
+      await openHash(routeOptions);
     } catch {
       if (intent !== scopeIntent) return;
       scopePending = false;

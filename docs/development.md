@@ -64,9 +64,12 @@ Git author／committer 也不代替任务授权、验收或发布归因；沿用
 - `bgmb sync` 是唯一的常规 Bangumi 网络入口；事实和封面成功提交后才
   触发受影响范围的增量 build。未获计划或用户明确授权时不得执行 live
   sync；未知 Subject 的远程 `assign` 导入同样受此边界约束。
-- `bgmb release prepare` 只做离线候选收敛和验证，不 sync、不 push；
-  `bgmb release publish` 只发布已验证的 prepared `dist/site`，不调用
-  sync/build。
+- `bgmb release prepare` 执行本地资料审计和离线 build，可更新正式 `dist/site`
+  与 build state、报告等派生状态；随后在临时 staging 验证候选并做 dry-run，
+  写入 prepared state。它会只读访问 Git 远端 `gh-pages`，整个 prepare 并非
+  完全离线；它不访问 Bangumi、不修改源码分支、不 sync、不 push、不发布
+  Pages。`bgmb release publish` 只发布仍与 source/content/remote identity
+  绑定一致的 prepared `dist/site`，不调用 sync/build。阶段边界见[发布说明](publish.md)。
 
 日常状态检查使用 `bgmb status` 或 `bgmb doctor --local`。不带 `--local`
 的 `doctor` 只用于明确需要的远端 Git 状态检查，不代表 Bangumi 访问授权。

@@ -219,8 +219,12 @@ bgmb release publish
 ```
 
 `release prepare` 要求 main、干净工作树和当前 SQLite；它会执行资料审计、离线收敛 build、校验
-`dist/site` 并做发布 dry-run，但不 sync、不 push。准备结果绑定 source commit、候选文件树和
-准备时的远端 `gh-pages`。
+`dist/site` 并将候选复制到临时 staging 做发布 dry-run。构建阶段可能更新正式 `dist/site`、
+build state 和构建报告；dry-run report 与 prepared state 也属于本地派生状态，不提交 Git。
+prepare 会只读访问 Git 远端，读取 `gh-pages` 身份和提交消息，因此整个命令并非完全离线；
+其中的 build 步骤仍完全离线。prepare 不访问 Bangumi、不修改源码分支、不 sync、不 push，
+也不发布 Pages。准备结果绑定 source commit、候选文件树和准备时的远端 `gh-pages`；
+具体阶段与副作用见[发布说明](publish.md)。
 
 先把同一 source commit 普通 push 到 `origin/main`，再运行 `release publish`。publish 不 build、
 不 sync，只接受官方项目 origin；prepared state、HEAD、候选树、`origin/main` 或远端
@@ -238,7 +242,16 @@ bgmb release publish
 
 先人工查证，再用 `bgmb assign` 明确季度，或用 `bgmb classify` 明确日本范围。不要用标题、简介
 或 AI 猜测。跨季度 Movie 搜索回看属于自动忽略，不应手工 assign。
-自动黑名单不通过 REVIEW 处理；如需重新评估，先人工删除对应自动 ID，再重新执行目标季度同步。
+
+### 自动排除如何重新评估？
+
+`auto_excluded_subject_ids` 是可重评估的自动缓存，无需先人工删除对应 ID。只有在明确授权的
+真实同步中主动刷新相关季度，且该 ID 再次出现在目标季度候选中，系统才会读取新的 canonical
+evidence 并按现行确定性准入规则重评估；已完成季度的主动刷新使用 `--refresh-existing`。
+候选没有再次出现，或日本性、媒体、季度及 REVIEW 等约束仍不满足时，不保证恢复收录。
+
+人工 `excluded_subject_ids` 是持久的显式排除，不会因同步自动恢复，也不能通过删除自动缓存
+绕过。不要把手动清空自动排除列表作为正常重评估步骤。
 
 ### 为什么 build 不联网？
 

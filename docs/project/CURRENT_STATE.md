@@ -513,6 +513,24 @@ have already passed.
   approve candidate implementation, A–F as a whole, or a lifecycle advance;
   final documentation delivery belongs in this task's TASK_RESULT.
 
+## 2026-10-15 Plan-59 Rev1 operator-document corrections
+
+- Starting from `4650d4c2b4ab589701202d29a91339db86c79309`, the publish
+  runbook, user guide, and development summary now distinguish prepare's
+  local build/state/report writes, temporary dry-run staging, and read-only
+  Git remote access. The build step remains offline; prepare does not access
+  Bangumi, change the source branch, push, or publish Pages. The user-guide
+  FAQ now follows D-019: an authorized active refresh must rediscover the ID
+  and evaluate fresh canonical evidence, without requiring manual automatic-ID
+  removal or promising restored admission. Durable manual exclusions remain.
+- These are documentation corrections only. Release metadata documentation,
+  AGENTS, product decisions, implementation, tests, CI, configuration, version,
+  and the Production lifecycle are unchanged. Validation uses static source
+  comparison, document guards, links, and diff checks; no real sync, build,
+  prepare/publish, data/cover mutation, or Pages operation was performed.
+  Final verification and source delivery are recorded in this task's TASK_RESULT;
+  the other Plan-58 candidates and broader A–F work remain unapproved.
+
 ## 2026-10-13 experience-upgrade research status
 
 - The local report `BGMB-总体体验升级与架构优化研究报告.md` under

@@ -13,8 +13,10 @@ git push origin main
 bgmb release publish
 ```
 
-`release prepare` 要求 `main`、干净工作树、可确认的 HEAD、可读配置和当前 SQLite。它使用
-当前统一资料审计与 `UnifiedSiteBuilder`，不 sync，也不要求此时 `HEAD == origin/main`。
+`release prepare` 要求 `main`、干净工作树、可确认的 HEAD、可读配置和当前 SQLite。它先执行
+本地统一资料审计，再调用 `UnifiedSiteBuilder` 离线收敛正式 `dist/site`，可能更新站点、
+`workspace/build-state.json` 和构建报告等本地派生状态。独立的 `bgmb build` 完全离线；
+prepare 不执行 Bangumi sync，也不要求此时 `HEAD == origin/main`。
 随后会验证实际 `dist/site`：核心 HTML/CSS/JS/PWA 文件、archive
 索引、至少一个完整公开季度，以及数据库、workspace、报告、敏感文件、绝对本机路径和旧
 角色媒体安全规则。
@@ -25,7 +27,15 @@ bgmb release publish
 替代真实文件树。prepared state 的 source/content/remote identity 必须是严格的小写 Git
 hex，公开季度必须是排序唯一的合法季度列表，报告路径必须是项目内相对路径。
 
-`release prepare` 会在临时 staging 上执行 dry-run，不修改 `main`、`dist/site` 或远端。
+构建和正式候选验证完成后，`release prepare` 将 `dist/site` 复制到临时 staging，再验证复制的
+候选并执行发布 dry-run。这个 dry-run 阶段不修改正式 `dist/site` 或远端，但会写入本地
+dry-run report。
+
+dry-run 会读取远端 `gh-pages` 的 commit 和提交消息，以确认远端身份并推导候选批次；实现使用
+`git ls-remote`，并在远端分支存在时向临时 bare repository 做 shallow fetch。因此整个
+prepare 需要 Git 远端可读，不能作为完全无网络操作。它不访问 Bangumi、不修改源码分支、
+不执行任何 Git push，也不发布 Pages。
+
 `release publish` 不 sync、不 build；它重新检查 prepared state、干净工作树、`HEAD`、
 `HEAD == origin/main`、`dist/site` 精确哈希和远端 `gh-pages` commit。任何变化都会拒绝，
 要求重新 prepare。
@@ -53,4 +63,5 @@ bgmb doctor
 ```
 
 `status` 不访问网络；`doctor --local` 也只读本地，普通 `doctor` 才刷新 `origin/main` 和
-`gh-pages`。报告与 build state 位于 workspace，均为派生状态，不提交 Git。
+`gh-pages`。build state、dry-run report 和 prepared state 均为 workspace 内的本地派生状态，
+不提交 Git。

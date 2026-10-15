@@ -2631,7 +2631,7 @@ def test_update_detection_separates_data_and_package_revisions(
 
 
 @pytest.mark.release_smoke
-def test_auto_maintenance_is_nonblocking_and_active_only(
+def test_auto_maintenance_is_active_only(
     chromium: Browser,
     pwa_server: str,
 ) -> None:
@@ -2657,19 +2657,21 @@ def test_auto_maintenance_is_nonblocking_and_active_only(
         "staging": {"revision": "incomplete"},
         "error": "test",
     })
-    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    page.wait_for_function(
+        "sessionStorage.getItem('bsb-offline-auto-maintenance') === 'complete'"
+    )
     requests: list[str] = []
     page.on("request", lambda request: requests.append(request.url))
-
-    def delay_manifest(route) -> None:
-        time.sleep(0.5)
-        route.continue_()
-
-    page.route("**/data/offline/2026-07.json", delay_manifest)
-    page.goto(f"{pwa_server}/2026-07/index.html", wait_until="domcontentloaded")
-    page.wait_for_selector(".subject-row", timeout=1000)
-    assert page.locator("main[data-page=quarter]").is_visible()
-    page.unroute("**/data/offline/2026-07.json")
+    in_flight = page.evaluate("""() => {
+      sessionStorage.removeItem('bsb-offline-auto-maintenance');
+      const pending = window.BsbPwa.autoMaintainDownloadedQuarters();
+      return {
+        isPromise: pending instanceof Promise,
+        marker: sessionStorage.getItem('bsb-offline-auto-maintenance'),
+      };
+    }""")
+    assert in_flight == {"isPromise": True, "marker": None}
+    assert page.locator("[data-pwa-settings]").is_visible()
     page.wait_for_function(
         "sessionStorage.getItem('bsb-offline-auto-maintenance') === 'complete'"
     )

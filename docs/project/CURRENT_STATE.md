@@ -243,6 +243,21 @@ requirement for a file to contain its own commit SHA.
   PWA, production Pages, production data build, Bangumi access, publication, or
   `gh-pages` mutation was exercised. The lifecycle remains Production, and the
   wider A–F experience-upgrade candidates remain unapproved.
+- GitHub Actions Run `38735938780` on source SHA
+  `1457d6d1641ab7b5aca8adbd89d6c7c51b548735` passed Linux and Windows fast
+  jobs but failed Browser release smoke after two tests at the legacy
+  `test_auto_maintenance_is_nonblocking_and_active_only` assertion. That test
+  expected global offline auto-maintenance to start on a Quarter page, while
+  Plan-63 deliberately routes that page through its scoped freshness check.
+  Its attempted Playwright route delay also did not intercept the worker-owned
+  manifest request. The regression test now checks asynchronous, active-only
+  maintenance from Settings; local Chromium 149 passed the focused test and
+  all 16 `release_smoke` cases (619 deselected). No runtime code changed in
+  this follow-up.
+- The Plan-authorized single ordinary source push was used for SHA
+  `1457d6d1641ab7b5aca8adbd89d6c7c51b548735`; the local test correction has not
+  been pushed, so that remote CI result remains failed pending a separately
+  authorized delivery. This does not authorize or imply a Pages publication.
 
 ## Known limitations / risks
 

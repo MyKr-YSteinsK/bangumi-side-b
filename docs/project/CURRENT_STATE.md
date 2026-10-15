@@ -557,6 +557,47 @@ have already passed.
   remains the lifecycle stage and the A–F program remains unapproved; source
   delivery and post-push CI evidence are recorded in the TASK_RESULT.
 
+## 2026-10-15 Plan-61 bounded PWA weak-network cache evidence
+
+- Plan-61 Rev1 used source baseline `d2eec79ee290556c2af5dd1cb00ece740813e2d5`
+  on `main` / `origin/main`; the tracked worktree was clean and actual remote
+  `main` matched. Baseline CI Run `38703306790` completed successfully in its
+  three default jobs. Local and remote `gh-pages` remained at their previously
+  observed, differing SHAs; neither was changed.
+- A synthetic fixture, loopback server, and controlled Chromium Service Worker
+  tested the `2026-07/index.html` navigation path. The worker controlled the
+  page under `/bangumi-side-b/`. The quarter state was `COMPLETE`, staging was
+  absent, and the content-store page bytes matched the active manifest SHA-256
+  and size. With no active quarter metadata or runtime copy, a fast server 503
+  remained a 503. With the verified active page present, normal HTTP 200 took
+  84.6 ms to visible subject content; two server-side 1.7-second delays took
+  1,752.3 ms and 1,769.2 ms; a fast server 503 returned the exact active bytes
+  as HTTP 200 in 50.5 ms. Server-side request and response observations
+  confirmed each tested navigation reached the controlled loopback handler.
+- Outcome: `MEASURABLE_CACHE_WAIT` for this verified active quarter navigation
+  through `networkFirst()`. The observed wait is consistent with the existing
+  choice to wait for an online response before falling back; the experiment
+  used unchanged content and did not measure a freshness benefit or production
+  impact. A later valid-hash asset request, visited-only runtime fallback,
+  thrown network/offline failure, true timeout, Safari/installed PWA, and
+  production conditions were not tested. Do not generalize this result to
+  those paths or treat it as authorization to change the PWA contract.
+- The existing complete-quarter/offline-navigation and guaranteed-active
+  missing-resource/unknown-404 browser tests both passed. The earlier Plan-58
+  active/staging and reference-safe-GC protection evidence remains reusable:
+  the Service Worker and PWA browser test file are unchanged from that source
+  baseline. The synthetic probe and raw measurements remain in the ignored
+  local Plan-61 workspace; only this bounded summary is tracked. No runtime,
+  PWA contract, cache policy,
+  CI, product decision, data, generated site, release, or Pages state changed.
+  Production remains the lifecycle stage; no A–F direction is approved.
+- Any follow-up that trades online freshness against response latency needs a
+  separate scoped Plan and an explicit decision on when verified active content
+  may replace a pending network response. Its tests must preserve manifest
+  integrity, active/staging and app/data revision boundaries, and reference-safe
+  GC. Current source-delivery and remote confirmation evidence belongs in this
+  task's TASK_RESULT.
+
 ## 2026-10-13 experience-upgrade research status
 
 - The local report `BGMB-总体体验升级与架构优化研究报告.md` under

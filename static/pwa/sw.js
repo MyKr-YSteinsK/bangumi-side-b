@@ -472,6 +472,21 @@ async function writeQuarterClientPin(clientId, quarter, pageResource, dataRevisi
   return true;
 }
 
+async function transferQuarterClientPinRecord(sourceClientId, resultingClientId, pin) {
+  if (
+    !sourceClientId
+    || !resultingClientId
+    || sourceClientId === resultingClientId
+    || !quarterLabel(pin?.quarter)
+    || !HEX_64.test(pin?.data_revision || "")
+    || !HEX_64.test(pin?.page_hash || "")
+    || !Number.isInteger(pin?.page_size)
+  ) return false;
+  await writeMeta(clientPinMetaName(resultingClientId), pin);
+  await deleteMeta(clientPinMetaName(sourceClientId));
+  return true;
+}
+
 async function transferQuarterClientPin(
   sourceClientId,
   resultingClientId,
@@ -759,7 +774,21 @@ self.addEventListener("fetch", (event) => {
 
       if (event.clientId) {
         const previousPin = await readMeta(clientPinMetaName(event.clientId));
-        if (previousPin && previousPin.quarter !== quarter) {
+        if (previousPin && !quarter) {
+          const previousQuarter = quarterLabel(previousPin.quarter);
+          const validPin = previousQuarter
+            ? await readQuarterClientPin(event.clientId, previousQuarter)
+            : null;
+          if (validPin) {
+            await transferQuarterClientPinRecord(
+              event.clientId,
+              event.resultingClientId,
+              validPin,
+            );
+          } else {
+            await deleteMeta(clientPinMetaName(event.clientId));
+          }
+        } else if (previousPin && previousPin.quarter !== quarter) {
           await deleteMeta(clientPinMetaName(event.clientId));
         }
       }

@@ -11,9 +11,9 @@
   This is historical context, not the current adopted baseline.
 - Migration Checkpoint adopted baseline: `7e7c7671dd9620a38c61a5d1f1aed29fd94331dc`
   (`test: guard canonical requirement owners`).
-- Last runtime/data verification recorded here: 2026-08-29 bounded Plan-47
-  live validation; real-device acceptance remains the earlier user-reported
-  Plan-39 evidence below.
+- Last live data verification recorded here: 2026-08-29 bounded Plan-47 live
+  validation. The later local synthetic PWA runtime evidence is recorded below;
+  real-device acceptance remains the earlier user-reported Plan-39 evidence.
 - Plan-50 Rev2 began from source baseline
   `806cf96541db29142804a363a3d8b27e79e19b20` (`main` / `origin/main`); the
   remote source HEAD matched, and the tracked worktree changes were limited to
@@ -671,6 +671,37 @@ have already passed.
   workspace; production code, PWA contracts, data, generated site, release,
   Pages, and `gh-pages` were not changed. Production remains the lifecycle
   stage; A–F remains unapproved.
+
+## 2026-10-15 Plan-64 PWA cross-version milestone evidence
+
+- Plan-64 Rev1 started from `7281bf455e91520ab96db2c352e1d62aecfd539a` on
+  `main` / `origin/main`, with a clean tracked worktree and matching actual
+  remote source HEAD. The local `gh-pages` ref was
+  `ddec0cfdfff490dec4175ed0dbcf44aca1ba02d2`; remote `gh-pages` was
+  `b35e51ece216e3d8cba8cb3f2a32ec64c887513c`. Neither ref was changed.
+- A controlled synthetic Chromium Service Worker with two independent clients
+  reproduced a per-client pin lifecycle defect: after client A selected the
+  new online quarter generation, returning to that quarter after a same-origin
+  Settings navigation displayed the older offline generation. The focused
+  regression now verifies that A retains a coherent new HTML/JSON generation
+  after reload and return, client B remains on its old generation without a
+  reload, and the verified offline active package and staging state remain
+  unchanged. The scoped fix transfers a valid client pin across same-origin
+  non-quarter navigation; a different-quarter navigation still clears it.
+- Seven targeted browser scenarios passed with Python 3.14.6, Playwright
+  1.61.0, Chromium 149.0.7827.55, and WebKit 26.5: the new two-client/revisit
+  regression, two explicit online-update delay cases, staged and legacy
+  unpinned-page fallbacks, WebKit explicit freshness update, and package
+  failure/reference-safe-GC coverage. The GC fixture now waits for startup
+  automatic maintenance to settle before changing its synthetic package.
+  Thirteen active-document requirement checks, full Ruff, `node --check` for
+  the Service Worker, and `git diff --check` also passed.
+- These are local synthetic and browser-engine results, not real Safari,
+  installed-PWA, production-data, or deployed-site evidence. No live Bangumi
+  access, real-data build, release operation, Pages mutation, or
+  `gh-pages` change occurred. The detailed source delivery and CI result belong
+  in this task's TASK_RESULT. Production remains the lifecycle stage and the
+  A–F experience candidates remain unapproved.
 
 ## 2026-10-13 experience-upgrade research status
 

@@ -168,3 +168,8 @@ saved page remains available and the user receives an inline status; a
 successful online view still does not count as a complete offline download.
 Use Settings' explicit quarter download/update action when the offline package
 itself should be replaced.
+
+The selected online quarter pin follows the same tab across same-origin
+non-quarter pages, so returning to that quarter can keep the selected
+generation. Navigating to a different quarter clears the previous quarter pin;
+each tab keeps its own pin, and online pins never replace offline active data.

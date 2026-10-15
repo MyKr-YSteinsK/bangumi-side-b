@@ -150,6 +150,7 @@ def test_preview_package_failure_preserves_active_offline_and_reference_safe_gc(
     page.set_default_timeout(20000)
     page.goto(f"{preview_pwa_server}/settings/index.html")
     _wait_for_pwa_startup_queue_quiescent(page)
+    page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07', '2026-04'])")
     _wait_for_queue(page, 2)
     old = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
@@ -4225,6 +4226,112 @@ def test_verified_quarter_shows_old_first_and_explicitly_loads_coherent_online_u
       ))));
     }"""
     assert page.evaluate(content_keeps_old, old_preview_resource["content_hash"])
+    context.close()
+
+
+def test_online_quarter_pin_isolated_per_client_and_kept_across_revisit(
+    chromium: Browser,
+    freshness_server: tuple[str, dict[str, object]],
+    update_site: tuple[object, object, Path, Path],
+) -> None:
+    builder, database, _isolated_root, _served = update_site
+    server_url, _control = freshness_server
+    context = chromium.new_context()
+    context.add_init_script(
+        """
+        window.__documentBoots = Number(
+          sessionStorage.getItem("document-boots") || "0"
+        ) + 1;
+        sessionStorage.setItem("document-boots", String(window.__documentBoots));
+        window.addEventListener("unload", () => {});
+        """
+    )
+    client_a = context.new_page()
+    client_b = context.new_page()
+    for page in (client_a, client_b):
+        page.goto(f"{server_url}/settings/index.html")
+        page.wait_for_function("navigator.serviceWorker.controller !== null")
+
+    client_a.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
+    _wait_for_queue(client_a, 1)
+    old_state = client_a.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert old_state["status"] == "COMPLETE" and old_state["staging"] is None
+
+    for page in (client_a, client_b):
+        page.goto(f"{server_url}/2026-07/index.html")
+        page.wait_for_function(
+            "document.querySelector('[data-subject-id=\"101\"]')"
+            "?.dataset.score === '8.0'"
+        )
+    old_data_url = client_b.locator('main[data-page="quarter"]').get_attribute(
+        "data-data-url"
+    )
+    client_b_boots = client_b.evaluate("window.__documentBoots")
+
+    repository = SubjectRepository(database)
+    subject = repository.get_subject_facts(101)
+    assert subject is not None
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection,
+            replace(subject, subject=replace(subject.subject, rating_score=9.4)),
+        )
+    builder.build()
+    new_manifest = json.loads(
+        (_served / "data/offline/2026-07.json").read_text("utf-8")
+    )
+
+    client_a.reload()
+    client_a.wait_for_function(
+        "document.querySelector('[data-quarter-online-update]')?.hidden === false"
+    )
+    client_a.locator("[data-quarter-refresh]").click()
+    client_a.wait_for_function(
+        "document.querySelector('[data-subject-id=\"101\"]')?.dataset.score === '9.4'"
+    )
+    new_data_url = client_a.locator('main[data-page="quarter"]').get_attribute(
+        "data-data-url"
+    )
+    assert new_data_url != old_data_url
+    assert f"v={new_manifest['data_revision']}" in new_data_url
+
+    assert client_b.locator('[data-subject-id="101"]').get_attribute(
+        "data-score"
+    ) == "8.0"
+    assert client_b.locator('main[data-page="quarter"]').get_attribute(
+        "data-data-url"
+    ) == old_data_url
+    assert client_b.evaluate("window.__documentBoots") == client_b_boots
+    after_update = client_a.evaluate(
+        "async () => window.BsbPwa.getQuarterState('2026-07')"
+    )
+    assert after_update["active"]["revision"] == old_state["active"]["revision"]
+    assert after_update["staging"] is None
+
+    client_a.reload()
+    client_a.wait_for_function(
+        "document.querySelector('[data-subject-id=\"101\"]')?.dataset.score === '9.4'"
+    )
+    assert f"v={new_manifest['data_revision']}" in client_a.locator(
+        'main[data-page="quarter"]'
+    ).get_attribute("data-data-url")
+
+    client_a.goto(f"{server_url}/settings/index.html")
+    client_a.go_back()
+    client_a.wait_for_function(
+        "document.querySelector('[data-page=quarter]') !== null"
+    )
+    assert client_a.locator('[data-subject-id="101"]').get_attribute(
+        "data-score"
+    ) == "9.4"
+    assert f"v={new_manifest['data_revision']}" in client_a.locator(
+        'main[data-page="quarter"]'
+    ).get_attribute("data-data-url")
+    assert client_b.locator('[data-subject-id="101"]').get_attribute(
+        "data-score"
+    ) == "8.0"
     context.close()
 
 

@@ -483,6 +483,36 @@ have already passed.
   This bounded fix does not approve broader A–F work or advance the Production
   lifecycle; source delivery is recorded in the TASK_RESULT.
 
+## 2026-10-15 Plan-58 Rev2 integration and opportunity audit
+
+- The audit used source baseline
+  `7847babfb62cd77f5655abf40370504a5f7c9f52` on `main` / `origin/main`,
+  with a clean worktree and matching actual remote HEAD. Baseline CI run
+  `38685617421` completed successfully in all three default jobs. This adds
+  a later CI observation to the Plan-57 pre-delivery evidence above.
+- Six synthetic targeted checks passed locally: Quarter and Archive mobile
+  filter Back/Forward in Chromium, Archive pending-range history traversal,
+  repeated mobile-menu activation in WebKit, builder preview/original closure
+  and reuse, and PWA preview-update failure with active/staging and GC
+  protection. The environment was Python 3.14.6, Playwright 1.61.0, Chromium
+  149.0.7827.55, and WebKit 26.5. No actionable integration regression was
+  reproduced in those paths; this is not full-suite or real-device acceptance.
+- The eight-dimension review identified operator-document discrepancies:
+  `release prepare` builds `dist/site` and reads Git remotes, while some
+  descriptions call the whole command offline or imply it leaves `dist/site`
+  unchanged; the user-guide FAQ still requests manual automatic-exclusion
+  removal despite the current re-evaluation lifecycle. These are observations
+  for a separately authorized documentation task, not changes to release or
+  data semantics. Cross-hash history coverage and cached-content waiting on
+  a slow network remain test/research opportunities, not reproduced bugs.
+- The detailed report remains untracked under
+  `workspace/reports/plan58-20261015/`. No runtime, test, CI, configuration,
+  product, or specialist-contract changes were made. No live Bangumi access,
+  real-data build/audit, release, Pages mutation, production measurement, or
+  real Safari/installed-PWA validation was performed. The review does not
+  approve candidate implementation, A–F as a whole, or a lifecycle advance;
+  final documentation delivery belongs in this task's TASK_RESULT.
+
 ## 2026-10-13 experience-upgrade research status
 
 - The local report `BGMB-总体体验升级与架构优化研究报告.md` under

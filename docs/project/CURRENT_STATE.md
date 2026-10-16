@@ -811,3 +811,33 @@ SHA and ordinary-push/remote confirmation belong in its TASK_RESULT.
   `git diff --check` passed. The default push CI result is reported only after
   reading the actual remote workflow run; it is not inferred from these local
   checks.
+
+## 2026-10-16 Plan-66 Rev1 Archive URL state and occurrence recovery
+
+- Archive URLs now preserve applied search, media, sort, source/tag/section
+  filters, page and page size alongside the existing YEAR, RANGE, and LOCAL
+  scope forms. Search typing replaces the current history entry; explicit
+  applied changes and scope navigation create navigable entries. Mobile filter
+  drafts stay out of the URL until Apply, and Grid/List remains a local
+  preference. Valid state survives scope changes; the existing result pipeline
+  clamps the page when the target result set is smaller.
+- New detail links include an exact quarter/appearance token with `#bgm-ID`,
+  while legacy `#bgm-ID` links remain supported. The URL carries browsing
+  intent only: a LOCAL link does not transfer offline data, and a missing
+  quarter is reported without fetching it or substituting another appearance.
+  The verified-active PWA storage and update protocol did not change, so
+  `docs/pwa.md` and the product decision documents remain unchanged.
+- Focused synthetic loopback checks covered independent URL loads and refresh,
+  YEAR/RANGE history, exact and legacy appearance links, bounded malformed
+  input, query typing and IME composition, mobile draft Back/Forward in
+  Chromium and WebKit, latest-scope and late-detail races, LOCAL offline
+  recovery with missing-quarter no-fetch behavior, and the Plan-64 online pin
+  regression. Targeted syntax, Ruff, active-documentation, link-target and diff
+  checks are recorded in this task's TASK_RESULT. These results are not real
+  Safari/installed-PWA, production-network, or full-suite evidence.
+- No Bangumi access, real-data build, SQLite/configuration change, release,
+  Pages operation, or `gh-pages` mutation occurred. Production remains the
+  lifecycle stage, and the overall A–F candidates remain unapproved; this
+  bounded Archive work does not approve E or create personal saved queries.
+  The source commit, ordinary push, remote SHA and CI status are recorded only
+  after direct verification in this task's TASK_RESULT.

@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
@@ -1390,6 +1390,358 @@ def test_archive_year_range_hash_and_same_origin_network(
     assert "2026-04" in detail
     assert "TV / PREMIERE" in detail
     assert all(url.startswith(site_server) for url in requests)
+
+
+def _install_archive_url_state_catalog(site: Path) -> None:
+    catalog_path = site / "data" / "catalog" / "2026.json"
+    payload = json.loads(catalog_path.read_text("utf-8"))
+    originals = payload["records"]
+    tv_base = next(record for record in originals if record["media"] == "TV")
+    movie_base = next(record for record in originals if record["media"] == "MOVIE")
+    records = []
+    for media, base, appearance, start_id in (
+        ("TV", tv_base, "continuing", 9000),
+        ("MOVIE", movie_base, "premiere", 9100),
+    ):
+        for offset in range(60):
+            record = dict(base)
+            record.update({
+                "id": start_id + offset,
+                "subject_id": start_id + offset,
+                "preferred_title": f"Share State Item {offset + 1:02}",
+                "original_title": f"Share State Original {offset + 1:02}",
+                "media": media,
+                "appearance": appearance,
+                "quarter": "2026-07",
+                "air_date": f"2026-07-{offset % 28 + 1:02}",
+                "source": "URL_SOURCE",
+                "allowed_tags": ["URL_TAG"],
+                "score": float(offset % 10 + 1),
+                "rating_score": float(offset % 10 + 1),
+                "rating_count": offset + 1,
+            })
+            records.append(record)
+    records.extend(
+        record for record in originals
+        if int(record.get("id", record.get("subject_id", 0))) == 101
+    )
+    payload["records"] = records
+    catalog_path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_archive_shared_url_restores_applied_state_scope_history_and_occurrence(
+    chromium: BrowserHarness,
+    preview_server: tuple[str, Path],
+) -> None:
+    base, site = preview_server
+    _install_archive_url_state_catalog(site)
+    browser = chromium.context.browser
+    assert browser is not None
+    context = browser.new_context(
+        service_workers="block", viewport={"width": 1440, "height": 900},
+    )
+    page = context.new_page()
+    page.emulate_media(reduced_motion="reduce")
+    page.set_default_timeout(12000)
+    try:
+        page.goto(f"{base}/archive/index.html?year=2026")
+        page.wait_for_function(
+            "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+        )
+        history_length = page.evaluate("history.length")
+        search = page.locator("[data-search]")
+        search.press_sequentially("Share State")
+        assert page.evaluate("history.length") == history_length
+        assert parse_qs(urlparse(page.url).query)["q"] == ["Share State"]
+        composition_state = page.evaluate("""() => {
+          const input = document.querySelector('[data-search]');
+          input.dispatchEvent(new CompositionEvent('compositionstart', {
+            bubbles: true,
+          }));
+          input.value = 'Share State Item';
+          input.dispatchEvent(new InputEvent('input', {
+            bubbles: true, inputType: 'insertCompositionText',
+            data: ' Item', isComposing: true,
+          }));
+          return {
+            query: new URLSearchParams(location.search).get('q'),
+            chip: document.querySelector('[data-active-filter-type="query"]')
+              ?.textContent || '',
+          };
+        }""")
+        assert composition_state == {
+            "query": "Share State",
+            "chip": "搜索：Share State ×",
+        }
+        page.evaluate("""() => {
+          const input = document.querySelector('[data-search]');
+          input.dispatchEvent(new CompositionEvent('compositionend', {
+            bubbles: true, data: ' Item',
+          }));
+          input.dispatchEvent(new InputEvent('input', {
+            bubbles: true, inputType: 'insertText', data: ' Item',
+            isComposing: false,
+          }));
+        }""")
+        assert page.evaluate("history.length") == history_length
+        assert parse_qs(urlparse(page.url).query)["q"] == ["Share State Item"]
+
+        def choose_page_size(size: str) -> None:
+            page.locator("[data-page-size] .select-trigger").click()
+            page.locator('[data-page-size] [role="option"]', has_text=size).click()
+
+        choose_page_size("10")
+        assert parse_qs(urlparse(page.url).query)["size"] == ["10"]
+        assert page.evaluate("history.length") == history_length + 1
+        page.go_back()
+        page.wait_for_function(
+            "document.querySelector('[data-page-size] .select-trigger')"
+            "?.textContent.trim() === '20'"
+        )
+        assert "size" not in parse_qs(urlparse(page.url).query)
+        page.go_forward()
+        page.wait_for_function(
+            "document.querySelector('[data-page-size] .select-trigger')"
+            "?.textContent.trim() === '10'"
+        )
+        assert parse_qs(urlparse(page.url).query)["size"] == ["10"]
+        choose_page_size("20")
+        assert parse_qs(urlparse(page.url).query)["size"] == ["20"]
+        choose_page_size("10")
+
+        page.locator("[data-sort-toggle]").click()
+        page.get_by_role("menuitemradio", name="评分人数：少到多").click()
+        page.locator("[data-filter-toggle]").click()
+        page.locator(
+            '[data-filter-group="sources"][data-filter-value="URL_SOURCE"]'
+        ).check()
+        page.locator(
+            '[data-filter-group="tags"][data-filter-value="URL_TAG"]'
+        ).check()
+        page.get_by_label("续播").check()
+        page.locator("[data-filter-close]").click()
+        page.locator('[data-pager] button[aria-label="第 2 页"]') \
+            .filter(has_text="02").click()
+
+        year_url = page.url
+        year_params = parse_qs(urlparse(year_url).query)
+        assert year_params["year"] == ["2026"]
+        assert year_params["q"] == ["Share State Item"]
+        assert year_params["sort"] == ["rating-count-asc"]
+        assert year_params["source"] == ["URL_SOURCE"]
+        assert year_params["tag"] == ["URL_TAG"]
+        assert year_params["section"] == ["continuing"]
+        assert year_params["page"] == ["2"]
+        assert year_params["size"] == ["10"]
+        assert page.locator('[data-pager] [aria-current="page"]').inner_text() == "02"
+
+        def assert_shared_state(target: Page, expected_scope: str) -> None:
+            target.wait_for_function(
+                "document.querySelectorAll('.subject-row').length === 10"
+                " && document.querySelector('[data-pager] [aria-current=page]')"
+                "?.textContent === '02'"
+            )
+            scope_text = target.locator("[data-archive-scope-label]").inner_text()
+            assert expected_scope in scope_text
+            assert target.locator("[data-search]").input_value() == "Share State Item"
+            selected_media = target.locator('[data-media-mode="tv"]')
+            assert selected_media.get_attribute("aria-selected") == "true"
+            assert target.locator("[data-sort-toggle]").inner_text() == (
+                "评分人数：少到多"
+            )
+            assert target.locator('[data-active-filter-type="sources"]').count() == 1
+            assert target.locator('[data-active-filter-type="tags"]').count() == 1
+            assert target.locator('[data-active-filter-type="sections"]').count() == 1
+            page_size = target.locator("[data-page-size] .select-trigger")
+            assert page_size.inner_text() == "10"
+            current_page = target.locator('[data-pager] [aria-current="page"]')
+            assert current_page.inner_text() == "02"
+            assert target.locator(".subject-row").count() == 10
+
+        fresh_context = browser.new_context(
+            service_workers="block", viewport={"width": 1440, "height": 900},
+        )
+        fresh_page = fresh_context.new_page()
+        fresh_page.emulate_media(reduced_motion="reduce")
+        fresh_page.set_default_timeout(12000)
+        fresh_page.goto(year_url)
+        assert_shared_state(fresh_page, "YEAR / 2026")
+        fresh_context.close()
+
+        page.locator('[data-scope-choice="range"]').click()
+        page.locator("[data-archive-from]").fill("2026")
+        page.locator("[data-archive-to]").fill("2026")
+        page.locator("[data-range-apply]").click()
+        page.wait_for_function(
+            "document.querySelector('[data-archive-scope-label]')"
+            "?.textContent.includes('RANGE / 2026—2026')"
+        )
+        range_url = page.url
+        assert_shared_state(page, "RANGE / 2026—2026")
+        page.reload()
+        assert_shared_state(page, "RANGE / 2026—2026")
+        page.go_back()
+        assert_shared_state(page, "YEAR / 2026")
+        page.go_forward()
+        assert_shared_state(page, "RANGE / 2026—2026")
+
+        fresh_context = browser.new_context(
+            service_workers="block", viewport={"width": 1440, "height": 900},
+        )
+        fresh_page = fresh_context.new_page()
+        fresh_page.emulate_media(reduced_motion="reduce")
+        fresh_page.set_default_timeout(12000)
+        fresh_page.goto(range_url)
+        assert_shared_state(fresh_page, "RANGE / 2026—2026")
+        fresh_context.close()
+
+        page.goto(f"{base}/archive/index.html?year=2026#bgm-101")
+        page.wait_for_selector('[data-detail-panel]:not([hidden])')
+        assert "2026-04" in page.locator("[data-detail-panel]").inner_text()
+        page.goto(
+            f"{base}/archive/index.html?year=2026&occ=2026-07.continuing#bgm-101"
+        )
+        page.wait_for_selector('[data-detail-panel]:not([hidden])')
+        detail = page.locator("[data-detail-panel]").inner_text()
+        assert "2026-07" in detail and "续播" in detail
+        assert parse_qs(urlparse(page.url).query)["occ"] == ["2026-07.continuing"]
+
+        page.goto(f"{base}/archive/index.html?year=2026&media=movie")
+        page.wait_for_function(
+            "document.querySelector('[data-results-summary]')"
+            "?.textContent.includes('appearance')"
+        )
+        selected_movie = page.locator('[data-media-mode="movie"]')
+        assert selected_movie.get_attribute("aria-selected") == "true"
+        assert "60 / 60" in page.locator("[data-results-summary]").inner_text()
+        assert page.locator(".subject-row").count() == 10
+
+        too_long_query = "x" * 161
+        page.goto(
+            f"{base}/archive/index.html?year=2026&year=2026&q={too_long_query}"
+            "&media=movie&media=movie&sort=%3Cscript%3E&page=99999999&size=999"
+            "&source=%3Cscript%3E&source=URL_SOURCE&source=URL_SOURCE"
+            "&tag=URL_TAG&tag=URL_TAG"
+        )
+        page.wait_for_function(
+            "document.querySelector('[data-no-results]')?.hidden === false"
+        )
+        bounded_params = parse_qs(urlparse(page.url).query)
+        assert len(bounded_params["q"][0]) == 160
+        assert bounded_params["source"] == ["URL_SOURCE"]
+        assert bounded_params["tag"] == ["URL_TAG"]
+        assert "media" not in bounded_params
+        assert "sort" not in bounded_params
+        assert "page" not in bounded_params
+        assert "size" not in bounded_params
+        selected_tv = page.locator('[data-media-mode="tv"]')
+        assert selected_tv.get_attribute("aria-selected") == "true"
+        assert page.locator("#url-injected").count() == 0
+
+        too_many_sources = "&".join(["source=URL_SOURCE"] * 65)
+        page.goto(f"{base}/archive/index.html?year=2026&{too_many_sources}&tag=URL_TAG")
+        page.wait_for_function(
+            "document.querySelector('[data-results-summary]')"
+            "?.textContent.includes('appearance')"
+        )
+        bounded_filter_params = parse_qs(urlparse(page.url).query)
+        assert "source" not in bounded_filter_params
+        assert "tag" not in bounded_filter_params
+
+        page.goto(
+            f"{base}/archive/index.html?year=2026&q=Share%20State%20Item"
+            "&page=99&size=10"
+        )
+        page.wait_for_function(
+            "document.querySelector('[data-pager] [aria-current=page]')"
+            "?.textContent === '06'"
+        )
+        assert page.locator(".subject-row").count() == 10
+        clamped_params = parse_qs(urlparse(page.url).query)
+        assert clamped_params["q"] == ["Share State Item"]
+        assert clamped_params["page"] == ["6"]
+    finally:
+        context.close()
+
+
+def test_archive_mobile_filter_draft_back_keeps_shared_url_applied_state(
+    preview_browser: Browser,
+    preview_server: tuple[str, Path],
+) -> None:
+    base, site = preview_server
+    _install_archive_url_state_catalog(site)
+    context = preview_browser.new_context(
+        service_workers="block", viewport={"width": 390, "height": 844},
+    )
+    page = context.new_page()
+    page.emulate_media(reduced_motion="reduce")
+    page.set_default_timeout(12000)
+    try:
+        page.goto(f"{base}/archive/index.html?year=2026")
+        page.wait_for_function(
+            "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
+        )
+        page.locator("[data-search]").fill("Share State Item")
+        page.locator('[data-scope-choice="range"]').click()
+        page.locator("[data-archive-from]").fill("2026")
+        page.locator("[data-archive-to]").fill("2026")
+        page.locator("[data-range-apply]").click()
+        page.wait_for_function(
+            "document.querySelector('[data-archive-scope-label]')"
+            "?.textContent.includes('RANGE / 2026—2026')"
+        )
+        range_url = page.url
+
+        page.locator("[data-filter-toggle]").click()
+        panel = page.locator("[data-filter-panel]")
+        panel.locator(
+            '[data-filter-group="sources"][data-filter-value="URL_SOURCE"]'
+        ).check()
+        panel.locator(
+            '[data-filter-group="tags"][data-filter-value="URL_TAG"]'
+        ).check()
+        assert page.url == range_url
+        assert "source=" not in page.url and "tag=" not in page.url
+
+        page.go_back()
+        page.wait_for_function(
+            "document.querySelector('[data-archive-scope-label]')"
+            "?.textContent.includes('YEAR / 2026')"
+        )
+        assert page.locator("[data-filter-panel]").is_hidden()
+        assert page.locator("[data-search]").input_value() == "Share State Item"
+        assert "source=" not in page.url and "tag=" not in page.url
+        assert parse_qs(urlparse(page.url).query)["q"] == ["Share State Item"]
+
+        page.go_forward()
+        page.wait_for_function(
+            "document.querySelector('[data-archive-scope-label]')"
+            "?.textContent.includes('RANGE / 2026—2026')"
+        )
+        assert page.locator("[data-filter-panel]").is_hidden()
+        assert page.locator("[data-search]").input_value() == "Share State Item"
+        page.locator("[data-filter-toggle]").click()
+        panel = page.locator("[data-filter-panel]")
+        panel.locator(
+            '[data-filter-group="sources"][data-filter-value="URL_SOURCE"]'
+        ).check()
+        panel.locator(
+            '[data-filter-group="tags"][data-filter-value="URL_TAG"]'
+        ).check()
+        panel.locator('[data-filter-group="sections"][data-filter-value="continuing"]').check()
+        panel.locator(".filter-apply-mobile").click()
+        page.wait_for_function("new URLSearchParams(location.search).has('source')")
+        params = parse_qs(urlparse(page.url).query)
+        assert params["from"] == ["2026"] and params["to"] == ["2026"]
+        assert params["q"] == ["Share State Item"]
+        assert params["source"] == ["URL_SOURCE"]
+        assert params["tag"] == ["URL_TAG"]
+        assert params["section"] == ["continuing"]
+    finally:
+        context.close()
 
 
 def test_archive_year_listbox_updates_scope_without_native_select(

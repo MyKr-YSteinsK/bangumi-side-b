@@ -14,7 +14,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from playwright.sync_api import Browser, Page, sync_playwright
@@ -5184,6 +5184,7 @@ def test_archive_local_scope_searches_verified_quarters_offline_and_keeps_scope_
     assert expected_cover["url"] in requests[request_start:]
     page.reload()
     _wait_for_element_text(page, "[data-detail-panel]", "Active Snapshot 101")
+    assert parse_qs(urlsplit(page.url).query)["occ"] == ["2026-07.continuing"]
     assert not any(
         "/data/archive-index.json" in url
         or "/data/catalog/" in url
@@ -5219,6 +5220,9 @@ def test_archive_local_scope_searches_verified_quarters_offline_and_keeps_scope_
 
     page.set_viewport_size({"width": 390, "height": 844})
     page.locator('[data-pager] button[aria-label="第 1 页"]').click()
+    page.locator("[data-search]").fill("Local Filter Item")
+    page.locator("[data-page-size] .select-trigger").click()
+    page.locator('[data-page-size] [role="option"]', has_text="10").click()
     page.locator("[data-filter-toggle]").click()
     panel = page.locator("[data-filter-panel]")
     panel.wait_for(state="visible")
@@ -5238,9 +5242,53 @@ def test_archive_local_scope_searches_verified_quarters_offline_and_keeps_scope_
         'input[data-filter-group="sources"][data-filter-value="SYNTHETIC_SOURCE"]'
     ).check()
     panel.locator('input[data-filter-group="tags"][data-filter-value="本机测试标签"]').check()
+    panel.locator(
+        'input[data-filter-group="sections"][data-filter-value="premiere"]'
+    ).check()
     panel.locator(".filter-apply-mobile").click()
     _wait_for_element_text(page, "[data-results-summary]", "1 条播出记录")
     assert page.locator('[data-subject-id="303"]').count() == 1
+    shared_local_url = page.url
+    local_params = parse_qs(urlsplit(shared_local_url).query)
+    assert local_params["local"] == ["1"]
+    assert local_params["q"] == ["Local Filter Item"]
+    assert local_params["sort"] == ["score-asc"]
+    assert local_params["source"] == ["SYNTHETIC_SOURCE"]
+    assert local_params["tag"] == ["本机测试标签"]
+    assert local_params["section"] == ["premiere"]
+    assert local_params["size"] == ["10"]
+
+    page.reload()
+    _wait_for_element_text(page, "[data-results-summary]", "1 条播出记录")
+    assert page.locator("[data-search]").input_value() == "Local Filter Item"
+    selected_tv = page.locator('[data-media-mode="tv"]')
+    assert selected_tv.get_attribute("aria-selected") == "true"
+    assert page.locator("[data-sort-toggle]").inner_text() == "评分：低到高"
+    assert page.locator('[data-active-filter-type="sources"]').count() == 1
+    assert page.locator('[data-active-filter-type="tags"]').count() == 1
+    assert page.locator('[data-active-filter-type="sections"]').count() == 1
+    assert page.locator("[data-page-size] .select-trigger").inner_text() == "10"
+
+    shared_page = context.new_page()
+    shared_page.goto(shared_local_url)
+    _wait_for_element_text(shared_page, "[data-results-summary]", "1 条播出记录")
+    assert shared_page.locator("[data-search]").input_value() == "Local Filter Item"
+    assert shared_page.locator('[data-subject-id="303"]').count() == 1
+    assert shared_page.locator('[data-active-filter-type="sources"]').count() == 1
+    shared_page.close()
+
+    request_start = len(requests)
+    page.goto(
+        f"{local_search_pwa_server}/archive/index.html?local=1&occ=2025-01.premiere#bgm-101"
+    )
+    _wait_for_element_text(
+        page, "[data-detail-panel]", "本机当前未覆盖 2025-01",
+    )
+    assert not any(
+        "/data/quarters/2025-01.json" in url for url in requests[request_start:]
+    )
+    page.locator("[data-detail-close]").click()
+    page.locator("[data-detail-panel]").wait_for(state="hidden")
 
     context.set_offline(False)
     page.locator('[data-scope-choice="year"]').click()

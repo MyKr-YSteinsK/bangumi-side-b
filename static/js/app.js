@@ -2271,6 +2271,14 @@
   if (!archive) return;
   const root = document.querySelector('[data-page="archive"][data-archive-app]');
   if (!root) return;
+  const DEFAULT_ARCHIVE_PAGE_SIZE = 20;
+  const MAX_ARCHIVE_QUERY_LENGTH = 160;
+  const MAX_ARCHIVE_FILTER_VALUE_LENGTH = 80;
+  const MAX_ARCHIVE_FILTER_VALUES = 64;
+  const MAX_ARCHIVE_SEARCH_LENGTH = 20000;
+  const MAX_ARCHIVE_PAGE = 1000000;
+  const ARCHIVE_HASH_PATTERN = /^#bgm-([1-9]\d{0,15})$/;
+  const ARCHIVE_OCCURRENCE_PATTERN = /^\d{4}-(?:01|04|07|10)\.(?:premiere|continuing)$/;
 
   const selectors = {
     quarter: root.querySelector("[data-archive-quarter-selector]"),
@@ -2293,6 +2301,7 @@
     sortPopover: root.querySelector("[data-sort-popover]"),
   };
   const state = archive.createState({ scope: { kind: "year", value: "" } });
+  const initialArchivePageSize = state.pageSize;
   let index = null;
   let records = [];
   let rows = [];
@@ -2314,12 +2323,14 @@
   let closeSortPopover = () => {};
   let yearControl = null;
   let pageSizeControl = null;
+  let pageSizeUrlExplicit = false;
   let detailHistoryEntry = false;
   let detailGesture = null;
   let entrancePlayed = false;
   let pagerSignature = "";
   let searchComposing = false;
   let pendingPopstateHashchange = null;
+  let locationStateReady = false;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -2328,39 +2339,209 @@
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
-  function setDetailHash(record, replace, detailEntry = false) {
+  function boundedArchiveText(value, limit) {
+    return Array.from(String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, ""))
+      .slice(0, limit)
+      .join("");
+  }
+
+  function singleUrlParameter(params, name) {
+    const values = params.getAll(name);
+    return values.length === 1 ? values[0] : null;
+  }
+
+  function occurrenceToken(record) {
+    const quarter = String(record?.quarter || "");
+    const appearance = String(record?.appearance || "");
+    const token = `${quarter}.${appearance}`;
+    return ARCHIVE_OCCURRENCE_PATTERN.test(token) ? token : "";
+  }
+
+  function archiveUrlForState({ record = null, hashId = null, occurrence = "" } = {}) {
     const url = new URL(window.location.href);
-    url.hash = record ? `#bgm-${record.id}` : "";
+    const params = new URLSearchParams();
+    if (state.scope.kind === "year" && /^\d{4}$/.test(String(state.scope.value))) {
+      params.set("year", String(state.scope.value));
+    } else if (state.scope.kind === "range") {
+      const range = state.scope.value;
+      if (/^\d{4}$/.test(String(range?.from)) && /^\d{4}$/.test(String(range?.to))) {
+        params.set("from", String(range.from));
+        params.set("to", String(range.to));
+      }
+    } else if (state.scope.kind === "local") {
+      params.set("local", "1");
+    }
+
+    const query = boundedArchiveText(state.query, MAX_ARCHIVE_QUERY_LENGTH);
+    if (query) params.set("q", query);
+    if (state.media === "movie") params.set("media", "movie");
+    if (archive.SORTS[state.sort] && state.sort !== "score-desc") {
+      params.set("sort", state.sort);
+    }
+    let remainingFilterValues = MAX_ARCHIVE_FILTER_VALUES;
+    for (const [group, parameter] of [
+      ["sources", "source"],
+      ["tags", "tag"],
+      ["sections", "section"],
+    ]) {
+      const values = [...new Set(state.filters[group] || [])]
+        .filter((value) => {
+          const text = String(value);
+          return text && Array.from(text).length <= MAX_ARCHIVE_FILTER_VALUE_LENGTH
+            && !/[\u0000-\u001f\u007f]/.test(text);
+        })
+        .sort()
+        .slice(0, remainingFilterValues);
+      values.forEach((value) => params.append(parameter, String(value)));
+      remainingFilterValues -= values.length;
+    }
+    const page = Math.floor(Number(state.page));
+    if (Number.isFinite(page) && page > 1 && page <= MAX_ARCHIVE_PAGE) {
+      params.set("page", String(page));
+    }
+    const pageSize = Number(state.pageSize);
+    if (archive.PAGE_SIZES.includes(pageSize)
+      && (pageSize !== DEFAULT_ARCHIVE_PAGE_SIZE || pageSizeUrlExplicit)) {
+      params.set("size", String(pageSize));
+    }
+
+    const selectedOccurrence = record ? occurrenceToken(record) : occurrence;
+    if (selectedOccurrence && ARCHIVE_OCCURRENCE_PATTERN.test(selectedOccurrence)) {
+      params.set("occ", selectedOccurrence);
+    }
+    url.search = params.toString();
+    const selectedId = record ? Number(record.id) : Number(hashId);
+    url.hash = Number.isSafeInteger(selectedId) && selectedId > 0
+      ? `#bgm-${selectedId}`
+      : "";
+    return url;
+  }
+
+  function writeArchiveUrl({
+    replace = false,
+    record = null,
+    hashId = null,
+    occurrence = "",
+    detailEntry = false,
+  } = {}) {
+    if (!locationStateReady) return false;
+    const url = archiveUrlForState({ record, hashId, occurrence });
+    if (url.search.length > MAX_ARCHIVE_SEARCH_LENGTH) return false;
+    if (!replace && url.href === window.location.href) return false;
     const historyState = record && detailEntry
       ? { bsbDetailEntry: true, bsbDetailKey: record.key }
       : {};
+    if (replace && url.href === window.location.href) {
+      let sameHistoryState = false;
+      try {
+        sameHistoryState = JSON.stringify(window.history.state) === JSON.stringify(historyState);
+      } catch {
+        sameHistoryState = false;
+      }
+      if (sameHistoryState) return false;
+    }
     if (replace) window.history.replaceState(historyState, "", url);
     else window.history.pushState(historyState, "", url);
+    return true;
+  }
+
+  function setDetailHash(record, replace, detailEntry = false) {
+    writeArchiveUrl({ replace, record, detailEntry });
+  }
+
+  function writeCurrentArchiveUrl({ replace = false } = {}) {
+    const selected = state.selectedOccurrence
+      ? recordByKey.get(state.selectedOccurrence)
+      : null;
+    const visible = selected
+      && archive.applyPipeline(records, state).all.some((record) => record.key === selected.key);
+    if (selected && !visible) {
+      const workspaceMode = state.workspaceMode;
+      clearSelection(false);
+      state.workspaceMode = workspaceMode;
+    }
+    writeArchiveUrl({
+      replace,
+      record: visible ? selected : null,
+      detailEntry: Boolean(visible && detailHistoryEntry),
+    });
   }
 
   function setScopeUrl(kind, value, replace = false) {
-    const url = new URL(window.location.href);
-    url.search = "";
-    if (kind === "year") url.searchParams.set("year", value);
-    if (kind === "range") {
-      url.searchParams.set("from", String(value.from));
-      url.searchParams.set("to", String(value.to));
+    state.scope = { kind, value };
+    writeArchiveUrl({ replace });
+  }
+
+  function readOccurrenceParameter() {
+    if (window.location.search.length > MAX_ARCHIVE_SEARCH_LENGTH) return "";
+    const params = new URLSearchParams(window.location.search);
+    const value = singleUrlParameter(params, "occ");
+    return value && ARCHIVE_OCCURRENCE_PATTERN.test(value) ? value : "";
+  }
+
+  function restoreAppliedStateFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const searchWithinLimit = window.location.search.length <= MAX_ARCHIVE_SEARCH_LENGTH;
+    const only = (name) => searchWithinLimit ? singleUrlParameter(params, name) : null;
+    const query = only("q");
+    const media = only("media");
+    const sort = only("sort");
+    const page = only("page");
+    const pageSize = only("size");
+
+    clearSelection(false);
+    state.query = query === null ? "" : boundedArchiveText(query, MAX_ARCHIVE_QUERY_LENGTH);
+    state.media = media === "movie" ? "movie" : "tv";
+    state.sort = archive.SORTS[sort] ? sort : "score-desc";
+    state.page = page && /^\d{1,7}$/.test(page) && Number(page) <= MAX_ARCHIVE_PAGE
+      ? Number(page)
+      : 1;
+    const validPageSize = pageSize !== null
+      && archive.PAGE_SIZES.includes(Number(pageSize));
+    pageSizeUrlExplicit = validPageSize;
+    state.pageSize = pageSize === null
+      ? (searchWithinLimit && params.has("size")
+        ? DEFAULT_ARCHIVE_PAGE_SIZE
+        : initialArchivePageSize)
+      : validPageSize
+        ? Number(pageSize)
+        : DEFAULT_ARCHIVE_PAGE_SIZE;
+
+    const available = archive.availableFilterValues(records, state.media);
+    const filterParameters = { sources: "source", tags: "tag", sections: "section" };
+    const filterCount = Object.values(filterParameters)
+      .reduce((count, name) => count + (searchWithinLimit ? params.getAll(name).length : 0), 0);
+    state.filters = { sources: [], tags: [], sections: [] };
+    if (filterCount <= MAX_ARCHIVE_FILTER_VALUES) {
+      for (const [group, parameter] of Object.entries(filterParameters)) {
+        const values = searchWithinLimit ? params.getAll(parameter) : [];
+        state.filters[group] = [...new Set(values.filter((value) => (
+          Array.from(value).length <= MAX_ARCHIVE_FILTER_VALUE_LENGTH
+          && !/[\u0000-\u001f\u007f]/.test(value)
+          && available[group].includes(value)
+        )))].sort();
+      }
     }
-    if (kind === "local") url.searchParams.set("local", "1");
-    url.hash = "";
-    if (replace) window.history.replaceState({}, "", url);
-    else window.history.pushState({}, "", url);
+    state.draftFilters = null;
+    if (selectors.search) selectors.search.value = state.query;
+    pageSizeControl?.setValue(String(state.pageSize));
+    locationStateReady = true;
   }
 
   function scopeFromLocation() {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("local") === "1") return { kind: "local", value: "" };
-    const year = params.get("year");
+    if (window.location.search.length <= MAX_ARCHIVE_SEARCH_LENGTH
+      && singleUrlParameter(params, "local") === "1") return { kind: "local", value: "" };
+    const year = singleUrlParameter(params, "year");
     if (year && (index?.years || []).map(String).includes(year)) {
       return { kind: "year", value: year };
     }
-    const range = normalRange(params.get("from"), params.get("to"));
-    if (params.has("from") && params.has("to") && range) {
+    const from = singleUrlParameter(params, "from");
+    const to = singleUrlParameter(params, "to");
+    const range = /^\d{4}$/.test(from || "") && /^\d{4}$/.test(to || "")
+      ? normalRange(from, to)
+      : null;
+    if (from !== null && to !== null && range) {
       return { kind: "range", value: range };
     }
     const latest = String(index?.latest_quarter || "").slice(0, 4)
@@ -2411,11 +2592,7 @@
 
   function applyScope(kind, value) {
     state.scope = { kind, value };
-    state.page = 1;
-    state.query = "";
-    state.filters = { sources: [], tags: [], sections: [] };
     discardFilterDraft();
-    if (selectors.search) selectors.search.value = "";
     clearSelection(false);
     if (kind !== "local") {
       localCoverage = null;
@@ -2437,7 +2614,7 @@
     if (location.kind === "local") {
       if (sameScope(loadedScope, location)) {
         if (!scopePending && !loadError && sameScope(state.scope, location)) {
-          await openHash(routeOptions);
+          await restoreLoadedArchiveLocation(routeOptions);
           return;
         }
       }
@@ -2455,21 +2632,45 @@
       location = scopeFromLocation();
     }
     if (sameScope(loadedScope, location)) {
-      if (!scopePending && !loadError && sameScope(state.scope, location)) {
-        await openHash(routeOptions);
+      if (!sameScope(state.scope, location)) {
+        scopeIntent += 1;
+        scopePending = false;
+        loadError = false;
+        applyScope(location.kind, location.value);
+        updateScopeAvailability();
+      }
+      if (scopePending || loadError) return;
+      if (sameScope(state.scope, location)) {
+        await restoreLoadedArchiveLocation(routeOptions);
         return;
       }
-      scopeIntent += 1;
-      scopePending = false;
-      loadError = false;
-      applyScope(location.kind, location.value);
-      updateScopeAvailability();
-      renderFilterPanel();
-      render();
-      await openHash(routeOptions);
-      return;
     }
     await setScope(location.kind, location.value, false, routeOptions);
+  }
+
+  async function restoreLoadedArchiveLocation(routeOptions = {}) {
+    restoreAppliedStateFromUrl();
+    renderFilterPanel();
+    render();
+    archive.releaseBrowsePrepaint(root, state.viewMode);
+    if (!entrancePlayed && records.length) {
+      entrancePlayed = true;
+      archive.playEntranceStagger(root);
+    }
+    await openHash(routeOptions);
+    const hash = window.location.hash.match(ARCHIVE_HASH_PATTERN);
+    const selected = state.selectedOccurrence
+      ? recordByKey.get(state.selectedOccurrence)
+      : null;
+    if (!routeOptions.preserveHistory) {
+      writeArchiveUrl({
+        replace: true,
+        record: selected,
+        hashId: selected ? null : (hash ? Number(hash[1]) : null),
+        occurrence: selected ? "" : readOccurrenceParameter(),
+        detailEntry: Boolean(selected && window.history.state?.bsbDetailEntry),
+      });
+    }
   }
 
   function setTab(kind) {
@@ -3197,8 +3398,9 @@
       if (current) button.setAttribute("aria-current", "page");
       button.addEventListener("click", () => {
         state.page = page;
-        clearSelection(true);
+        clearSelection(false);
         render();
+        writeArchiveUrl();
         root.querySelector(".master-pane")?.scrollIntoView({ block: "start" });
       });
       selectors.pager.append(button);
@@ -3240,8 +3442,9 @@
           if (selectors.search) selectors.search.value = "";
         } else state.filters[item.type] = state.filters[item.type].filter((value) => value !== item.value);
         state.page = 1;
-        clearSelection(true);
+        clearSelection(false);
         render();
+        writeArchiveUrl();
       });
       selectors.activeFilters.append(button);
     });
@@ -3261,8 +3464,9 @@
           state.query = "";
           if (selectors.search) selectors.search.value = "";
           state.page = 1;
-          clearSelection(true);
+          clearSelection(false);
           render();
+          writeArchiveUrl();
         });
         selectors.activeFilters.prepend(button);
       }
@@ -3305,9 +3509,10 @@
   function renderSearchResults() {
     if (!selectors.search || state.query === selectors.search.value) return;
     const previousSelection = state.selectedOccurrence;
-    state.query = selectors.search.value;
+    state.query = boundedArchiveText(selectors.search.value, MAX_ARCHIVE_QUERY_LENGTH);
+    if (selectors.search.value !== state.query) selectors.search.value = state.query;
     state.page = 1;
-    clearSelection(true);
+    clearSelection(false);
     if (previousSelection) updateRowSelection(previousSelection, false);
     if (scopePending || loadError) return;
     const result = archive.applyPipeline(records, state);
@@ -3317,6 +3522,7 @@
     updateQueryFilterChip();
     renderPager(result);
     renderWorkspaceVisibility();
+    writeArchiveUrl({ replace: true });
   }
 
   function filterCount() {
@@ -3352,7 +3558,7 @@
     state.filters = state.draftFilters;
     state.draftFilters = null;
     state.page = 1;
-    clearSelection(true);
+    clearSelection(false);
   }
 
   function closeFilterAndRestoreFocus(applyDraft = false) {
@@ -3362,6 +3568,7 @@
       closeFilter();
       render();
     });
+    if (applyDraft) writeArchiveUrl();
     root.querySelector("[data-filter-toggle]")?.focus();
     restoreListScroll();
   }
@@ -3476,7 +3683,7 @@
       clearSelection(false);
       if (previousSelection) updateRowSelection(previousSelection, false);
       renderWorkspaceVisibility();
-      focusRecordTrigger(recordKey);
+      if (recordKey) focusRecordTrigger(recordKey);
       restoreListScroll();
       window.history.back();
       return;
@@ -3484,7 +3691,7 @@
     clearSelection(true);
     if (previousSelection) updateRowSelection(previousSelection, false);
     renderWorkspaceVisibility();
-    focusRecordTrigger(recordKey);
+    if (recordKey) focusRecordTrigger(recordKey);
     restoreListScroll();
   }
 
@@ -3499,8 +3706,8 @@
 
   async function openHash({ suppressFocusAndScroll = false, preserveHistory = false } = {}) {
     if (scopePending || loadError || !sameScope(loadedScope, state.scope)) return;
-    const match = window.location.hash.match(/^#bgm-(\d+)$/);
-    if (!match || !records.length) {
+    const match = window.location.hash.match(ARCHIVE_HASH_PATTERN);
+    if (!match) {
       if (!match && state.selectedOccurrence !== null) {
         const previousKey = state.selectedOccurrence;
         clearSelection(false);
@@ -3516,13 +3723,29 @@
       }
       return;
     }
+    const requestedOccurrence = readOccurrenceParameter();
+    if (!records.length && !requestedOccurrence) return;
+    if (!records.length && requestedOccurrence) {
+      showUnavailableArchiveOccurrence(Number(match[1]), requestedOccurrence);
+      return;
+    }
+    const [requestedQuarter, requestedAppearance] = requestedOccurrence.split(".");
+    const exactRecord = requestedOccurrence
+      ? records.find((record) => Number(record.id) === Number(match[1])
+        && record.quarter === requestedQuarter
+        && record.appearance === requestedAppearance)
+      : null;
+    if (requestedOccurrence && !exactRecord) {
+      showUnavailableArchiveOccurrence(Number(match[1]), requestedOccurrence);
+      return;
+    }
     const historyKey = state.scope.kind === "local"
       ? window.history.state?.bsbDetailKey
       : null;
     const historyRecord = historyKey ? recordByKey.get(historyKey) : null;
-    const candidate = historyRecord?.id === Number(match[1])
+    const candidate = exactRecord || (historyRecord?.id === Number(match[1])
       ? historyRecord
-      : archive.selectedRecord(records, Number(match[1]));
+      : archive.selectedRecord(records, Number(match[1])));
     if (!candidate) {
       if (preserveHistory) {
         const previousKey = state.selectedOccurrence;
@@ -3530,9 +3753,7 @@
         if (previousKey) updateRowSelection(previousKey, false);
         renderWorkspaceVisibility();
       } else {
-        const url = new URL(window.location.href);
-        url.hash = "";
-        window.history.replaceState({}, "", url);
+        writeArchiveUrl({ replace: true });
       }
       return;
     }
@@ -3542,6 +3763,39 @@
     const position = result.all.findIndex((record) => record.key === candidate.key);
     if (position >= 0) state.page = Math.floor(position / state.pageSize) + 1;
     await selectRecord(candidate, true, !preserveHistory);
+  }
+
+  function showUnavailableArchiveOccurrence(subjectId, occurrence) {
+    const quarter = occurrence.slice(0, 7);
+    const previousSelection = state.selectedOccurrence;
+    clearSelection(false);
+    if (previousSelection) updateRowSelection(previousSelection, false);
+    state.selectedSubjectId = subjectId;
+    state.workspaceMode = "detail";
+    detailHistoryEntry = window.history.state?.bsbDetailEntry === true;
+    detailGesture?.lockBackground?.();
+    const localMessage = state.scope.kind === "local"
+      ? localIssue
+        ? `${localIssue} 本机未能提供 ${quarter} 的已验证记录。`
+        : `本机当前未覆盖 ${quarter}，此链接不会下载或补读该季度资料。`
+      : `当前范围未包含 ${quarter} 的这条播出记录。`;
+    if (state.scope.kind === "local" && localIssue) {
+      const summary = selectors.scopePanel?.querySelector("[data-scope-summary]");
+      if (summary) summary.textContent = `URL 请求 ${quarter} / ${occurrence.slice(8)}；${localMessage}`;
+      state.selectedSubjectId = null;
+      detailHistoryEntry = false;
+      state.workspaceMode = "scope";
+      renderWorkspaceVisibility();
+      return;
+    }
+    if (selectors.detailPanel) {
+      selectors.detailPanel.innerHTML = `<div class="detail-head"><div class="detail-topbar" role="navigation" aria-label="详情导航"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span class="detail-close__icon" aria-hidden="true">←</span><span class="detail-close__back">返回结果</span></button><p class="workspace-panel__code detail-topbar__context">APPEARANCE / ${esc(occurrence)}</p></div></div><h2>播出记录当前不可用</h2><p class="detail-summary">${esc(localMessage)} 查询条件只恢复浏览意图，不会补造或从其他季度替代。</p>`;
+      selectors.detailPanel.querySelector("[data-detail-close]")?.addEventListener(
+        "click",
+        () => closeDetail(null),
+      );
+    }
+    renderWorkspaceVisibility();
   }
 
   function renderFilterPanel() {
@@ -3578,6 +3832,7 @@
             state.page = 1;
             state.workspaceMode = "filter";
             render();
+            writeCurrentArchiveUrl();
           }
           renderFilterPanel();
         });
@@ -3600,8 +3855,11 @@
         renderFilterPanel();
         if (!state.draftFilters) {
           state.page = 1;
-          clearSelection(true);
+          clearSelection(false);
           render();
+          writeArchiveUrl();
+        } else {
+          writeArchiveUrl({ replace: true });
         }
       });
     }
@@ -3650,6 +3908,7 @@
             state.page = 1;
             state.workspaceMode = "filter";
             render();
+            writeCurrentArchiveUrl();
           }
           renderFilterPanel();
           const replacement = [...selectors.filterPanel.querySelectorAll("[data-filter-group]")]
@@ -3688,10 +3947,12 @@
         value: String(state.pageSize),
         onChange: (value) => {
           state.pageSize = archive.writePageSize(value);
+          pageSizeUrlExplicit = true;
           state.page = 1;
-          clearSelection(true);
+          clearSelection(false);
           render();
           pageSizeControl?.setValue(String(state.pageSize));
+          writeArchiveUrl();
         },
       });
     }
@@ -3704,7 +3965,19 @@
       if (searchComposing || event.isComposing) return;
       renderSearchResults();
     });
-    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withResultMotion("media", root, () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }); }));
+    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => {
+      closeSortPopover();
+      archive.withResultMotion("media", root, () => {
+        state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv";
+        discardFilterDraft();
+        archive.normalizeFiltersForMedia(state, records);
+        state.page = 1;
+        clearSelection(false);
+        renderFilterPanel();
+        render();
+        writeArchiveUrl();
+      });
+    }));
     root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => {
       closeSortPopover();
       archive.withResultMotion("view-mode", root, () => {
@@ -3752,8 +4025,9 @@
             state.sort = value;
             state.page = 1;
             closeSortPopover(true);
-            clearSelection(true);
+            clearSelection(false);
             render();
+            writeArchiveUrl();
           });
         });
         return button;
@@ -3799,7 +4073,16 @@
     document.addEventListener("bsb-quarter-sheet-open", () => closeSortPopover());
     document.addEventListener("bsb-mobile-menu-open", () => closeSortPopover());
     window.addEventListener("scroll", () => closeSortPopover(), { passive: true });
-    root.querySelector("[data-clear-all]")?.addEventListener("click", () => archive.withResultMotion("clear-filter", root, () => { state.query = ""; state.filterOptionQuery = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); }));
+    root.querySelector("[data-clear-all]")?.addEventListener("click", () => archive.withResultMotion("clear-filter", root, () => {
+      state.query = "";
+      state.filterOptionQuery = "";
+      state.filters = { sources: [], tags: [], sections: [] };
+      if (selectors.search) selectors.search.value = "";
+      state.page = 1;
+      clearSelection(false);
+      render();
+      writeArchiveUrl();
+    }));
     root.querySelector("[data-range-apply]")?.addEventListener("click", () => {
       const range = normalRange(root.querySelector("[data-archive-from]")?.value, root.querySelector("[data-archive-to]")?.value);
       if (range) setScope("range", range);
@@ -3869,14 +4152,7 @@
         scopePending = false;
         loadError = false;
         updateScopeAvailability();
-        renderFilterPanel();
-        render();
-        archive.releaseBrowsePrepaint(root, state.viewMode);
-        if (!entrancePlayed && records.length) {
-          entrancePlayed = true;
-          archive.playEntranceStagger(root);
-        }
-        await openHash(routeOptions);
+        await restoreLoadedArchiveLocation(routeOptions);
       } catch {
         if (intent !== scopeIntent) return;
         records = [];
@@ -3887,8 +4163,7 @@
         scopePending = false;
         loadError = false;
         updateScopeAvailability();
-        renderFilterPanel();
-        render();
+        await restoreLoadedArchiveLocation(routeOptions);
       }
       return;
     }
@@ -3909,14 +4184,7 @@
       scopePending = false;
       loadError = false;
       updateScopeAvailability();
-      renderFilterPanel();
-      render();
-      archive.releaseBrowsePrepaint(root, state.viewMode);
-      if (!entrancePlayed) {
-        entrancePlayed = true;
-        archive.playEntranceStagger(root);
-      }
-      await openHash(routeOptions);
+      await restoreLoadedArchiveLocation(routeOptions);
     } catch {
       if (intent !== scopeIntent) return;
       scopePending = false;

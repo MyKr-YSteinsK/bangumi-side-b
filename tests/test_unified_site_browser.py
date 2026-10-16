@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
+from bgm_side_b import __version__
 from bgm_side_b.repository import SubjectRepository
 from tests.test_site_builder import _build_fixture, _build_preview_fixture
 
@@ -1174,7 +1175,11 @@ def test_settings_changelog_is_static_accessible_and_narrow_safe(
     page.goto(f"{site_server}/settings/index.html")
     page.wait_for_selector('[data-changelog-release="0.8.0"]', state="attached")
     assert page.get_by_text("当前程序版本", exact=True).is_visible()
-    assert page.locator(".settings-about").get_by_text("0.8.5", exact=True).is_visible()
+    assert (
+        page.locator(".settings-about")
+        .get_by_text(__version__, exact=True)
+        .is_visible()
+    )
     assert page.get_by_text("Bangumi Side B｜MyKr", exact=True).is_visible()
     assert page.get_by_text("作者", exact=True).is_visible()
     assert page.get_by_text("MyKr", exact=True).is_visible()

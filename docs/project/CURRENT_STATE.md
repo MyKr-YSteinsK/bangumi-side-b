@@ -2,7 +2,7 @@
 
 ## Current
 
-- App/product version: `0.8.5`.
+- App/product version: `0.9.0`.
 - Branch: `main`; upstream: `origin/main`.
 - Lifecycle stage: Production.
 - Current milestone: Production maintenance checkpoint (Plan-47).

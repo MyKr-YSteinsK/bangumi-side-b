@@ -201,9 +201,15 @@ def test_mobile_filter_popstate_discards_draft_and_preserves_applied_state(
     page.get_by_role("button", name="关闭筛选").click()
     page.go_forward()
     assert page.url == base_url
-    assert page.evaluate("history.state.plan57SyntheticEntry") is True
+    # The Archive normalizes its own history.state during restoration. Verify
+    # browser-visible traversal and applied results rather than this test-only
+    # marker on the synthetic entry.
+    assert page.evaluate("history.length") == history_length
     assert root.get_attribute("data-workspace-mode") == "scope"
     assert root.locator("[data-filter-panel]").is_hidden()
+    assert root.locator(".subject-row:visible").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.recordKey)"
+    ) == applied_keys
 
     toggle.click()
     draft_checkbox = page.get_by_label("续播")
@@ -215,6 +221,7 @@ def test_mobile_filter_popstate_discards_draft_and_preserves_applied_state(
         "?.dataset.workspaceMode === 'scope'"
     )
     assert page.url == base_url
+    assert page.evaluate("history.length") == history_length
     assert root.locator("[data-filter-panel]").is_hidden()
     assert root.locator(".subject-row:visible").evaluate_all(
         "nodes => nodes.map(node => node.dataset.recordKey)"
@@ -310,7 +317,11 @@ def test_mobile_filter_forward_restores_ui_generated_detail_hash(
     detail_state = page.evaluate("history.state")
     detail_history_length = page.evaluate("history.length")
     detail_key = row.get_attribute("data-record-key")
-    assert detail_url == f"{list_url}#bgm-101"
+    expected_detail_url = f"{list_url}#bgm-101"
+    if page_kind == "archive":
+        # Archive detail links encode the selected airing separately from ID.
+        expected_detail_url = f"{list_url}&occ=2026-07.continuing#bgm-101"
+    assert detail_url == expected_detail_url
     assert detail_history_length == list_history_length + 1
     assert detail_state == {
         "bsbDetailEntry": True,
@@ -356,7 +367,7 @@ def test_mobile_filter_forward_restores_ui_generated_detail_hash(
     page.evaluate("""() => {
       const audit = window.__plan60HistoryAudit = {
         calls: { pushState: 0, replaceState: 0, back: 0, focus: 0, scrollTo: 0 },
-        events: { popstate: 0, hashchange: 0 },
+        events: { popstate: 0 },
         originals: { focus: HTMLElement.prototype.focus, scrollTo: window.scrollTo },
       };
       for (const method of ['pushState', 'replaceState', 'back']) {
@@ -375,21 +386,21 @@ def test_mobile_filter_forward_restores_ui_generated_detail_hash(
         return audit.originals.scrollTo.apply(window, args);
       };
       window.addEventListener('popstate', () => audit.events.popstate += 1);
-      window.addEventListener('hashchange', () => audit.events.hashchange += 1);
     }""")
     page.go_forward()
     page.wait_for_function("""() => {
       const root = document.querySelector('[data-page][data-archive-app]');
       const detail = document.querySelector('[data-detail-panel]');
       const filter = document.querySelector('[data-filter-panel]');
-      const events = window.__plan60HistoryAudit?.events;
       return location.hash === '#bgm-101'
         && root?.dataset.workspaceMode === 'detail'
         && detail && !detail.hidden
-        && filter?.hidden === true
-        && events?.popstate === 1
-        && events?.hashchange === 1;
+        && filter?.hidden === true;
     }""")
+    forward_events = page.evaluate("window.__plan60HistoryAudit.events")
+    # Archive detail traversal changes both query (occ) and fragment. Its
+    # restored UI is driven by popstate; hashchange is not a product contract.
+    assert forward_events == {"popstate": 1}, forward_events
     assert page.url == detail_url
     assert page.evaluate("history.state") == detail_state
     assert page.evaluate("history.length") == detail_history_length
@@ -417,7 +428,7 @@ def test_mobile_filter_forward_restores_ui_generated_detail_hash(
     assert page.evaluate("history.state") == list_state
     page.wait_for_function("""() => {
       const events = window.__plan60HistoryAudit?.events;
-      return events?.popstate === 2 && events?.hashchange === 2;
+      return events?.popstate === 2;
     }""")
     assert page.evaluate("history.length") == detail_history_length
     page.wait_for_function(

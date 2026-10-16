@@ -206,6 +206,19 @@
     };
   }
 
+  function reconcileChildren(parent, desiredNodes) {
+    if (!parent) return;
+    let index = 0;
+    for (const node of desiredNodes) {
+      const current = parent.children[index] || null;
+      if (current !== node) parent.insertBefore(node, current);
+      index += 1;
+    }
+    while (parent.children.length > desiredNodes.length) {
+      parent.lastElementChild.remove();
+    }
+  }
+
   function positionPopover(popover, anchor) {
     if (!popover || !anchor) return;
     const anchorBox = anchor.getBoundingClientRect();
@@ -247,6 +260,37 @@
 
   const MAX_RESULT_MOTION_NODES = 32;
   const MAX_RESULT_ENTRANCES = 12;
+  const resultMotionGroups = new WeakMap();
+  const activeResultAnimations = new WeakMap();
+
+  async function browseCoverPath(root, original) {
+    const rule = root?.dataset.coverPreviewRule || "";
+    const source = /^covers\/([1-9][0-9]*)\.webp\?v=([0-9a-f]{64})$/.exec(original);
+    if (!/^[0-9a-f]{64}$/.test(rule) || !source || !window.crypto?.subtle) return original;
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${rule}\n${source[2]}`));
+    const identity = [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+    return `covers/previews/${identity}.webp`;
+  }
+
+  function bindBrowseCover(image, cover) {
+    if (!image || !cover) return;
+    const fallback = image.dataset.coverFallback;
+    let usedFallback = false;
+    const failed = () => {
+      if (!image.complete || image.naturalWidth > 0) return;
+      if (fallback && !usedFallback) {
+        usedFallback = true;
+        image.src = fallback;
+        return;
+      }
+      image.removeEventListener("error", failed);
+      cover.classList.add("subject-row__cover--missing");
+      cover.setAttribute("aria-label", "缺少封面");
+      cover.innerHTML = "<span>ARCHIVE</span>";
+    };
+    image.addEventListener("error", failed);
+    if (image.complete && image.naturalWidth === 0) failed();
+  }
 
   function resultHost(root) {
     if (root?.matches?.("[data-archive-app]")) return root;
@@ -254,25 +298,58 @@
       || document.querySelector("[data-archive-app]");
   }
 
+  function setResultMotionGroups(root, groups) {
+    const host = resultHost(root);
+    if (!host) return;
+    const normalized = (Array.isArray(groups) ? groups : [])
+      .map((group) => (Array.isArray(group) ? group : [])
+        .filter((node) => node?.matches?.("[data-record-key]")))
+      .filter((group) => group.length > 0);
+    resultMotionGroups.set(host, normalized);
+  }
+
   function visibleResultNodes(root) {
     if (!root) return [];
     const viewportTop = -window.innerHeight;
     const viewportBottom = window.innerHeight * 2;
-    return [...root.querySelectorAll("[data-record-key]")]
-      .filter((node) => {
-        if (node.hidden) return false;
+    const candidates = [];
+    for (const group of resultMotionGroups.get(root) || []) {
+      if (candidates.length >= MAX_RESULT_MOTION_NODES) break;
+      if (group[0].closest("[data-list-section]")?.hidden) continue;
+
+      let low = 0;
+      let high = group.length;
+      while (low < high) {
+        const middle = low + Math.floor((high - low) / 2);
+        if (group[middle].getBoundingClientRect().bottom < viewportTop) {
+          low = middle + 1;
+        } else {
+          high = middle;
+        }
+      }
+
+      for (let index = low; index < group.length; index += 1) {
+        const node = group[index];
         const rect = node.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0
-          && rect.bottom >= viewportTop && rect.top <= viewportBottom;
-      })
-      .slice(0, MAX_RESULT_MOTION_NODES);
+        if (rect.top > viewportBottom) break;
+        if (node.hidden || rect.width <= 0 || rect.height <= 0
+          || rect.bottom < viewportTop) continue;
+        candidates.push(node);
+        if (candidates.length >= MAX_RESULT_MOTION_NODES) break;
+      }
+    }
+    return candidates;
   }
 
   function cancelResultMotion(root) {
     if (!root) return;
-    root.querySelectorAll("[data-record-key], [data-record-key] *").forEach((node) => {
-      node.getAnimations?.().forEach((animation) => animation.cancel());
-    });
+    const active = activeResultAnimations.get(root);
+    if (!active) return;
+    activeResultAnimations.delete(root);
+    for (const animation of [...active]) {
+      active.delete(animation);
+      animation.cancel();
+    }
   }
 
   function cancelActiveResultAnimations(root) {
@@ -308,7 +385,7 @@
             }];
           }),
       );
-      return [row.dataset.recordKey, geometry];
+      return [row.dataset.recordKey, { elements, geometry }];
     }));
   }
 
@@ -319,10 +396,33 @@
       easing: "cubic-bezier(.2, .7, .2, 1)",
       fill: "both",
     });
-    animation.finished?.then(
-      () => animation.cancel(),
-      () => {},
-    );
+    const host = resultHost(node);
+    if (host) {
+      let active = activeResultAnimations.get(host);
+      if (!active) {
+        active = new Set();
+        activeResultAnimations.set(host, active);
+      }
+      active.add(animation);
+      const cleanup = () => {
+        active.delete(animation);
+        if (!active.size && activeResultAnimations.get(host) === active) {
+          activeResultAnimations.delete(host);
+        }
+      };
+      const finished = animation.finished;
+      if (finished?.then) {
+        finished.then(
+          () => {
+            cleanup();
+            animation.cancel();
+          },
+          cleanup,
+        );
+      } else {
+        cleanup();
+      }
+    }
     return animation;
   }
 
@@ -354,41 +454,39 @@
       ],
       duration,
     );
-    animation?.finished?.then(
-      () => element.style.removeProperty("transform-origin"),
-      () => element.style.removeProperty("transform-origin"),
-    );
+    const clearTransformOrigin = () => element.style.removeProperty("transform-origin");
+    animation?.finished?.then(clearTransformOrigin, clearTransformOrigin);
     return animation;
   }
 
   function animateViewModeMorph(root, before) {
     if (!root || prefersReducedMotion()) return;
     const after = captureResultGeometry(root);
-    for (const [key, geometry] of after) {
-      const previous = before.get(key);
+    for (const [key, next] of after) {
+      const previous = before.get(key)?.geometry;
       if (!previous) continue;
       animateGeometry(
-        root.querySelector(`[data-record-key="${CSS.escape(key)}"]`),
+        next.elements.outer,
         previous.outer,
-        geometry.outer,
+        next.geometry.outer,
         { duration: 230, force: true },
       );
       animateGeometry(
-        root.querySelector(`[data-record-key="${CSS.escape(key)}"] .subject-row__cover`),
+        next.elements.cover,
         previous.cover,
-        geometry.cover,
+        next.geometry.cover,
         { scale: true, duration: 240, force: true },
       );
       animateGeometry(
-        root.querySelector(`[data-record-key="${CSS.escape(key)}"] .subject-row__content`),
+        next.elements.content,
         previous.content,
-        geometry.content,
+        next.geometry.content,
         { duration: 220, force: true },
       );
       animateGeometry(
-        root.querySelector(`[data-record-key="${CSS.escape(key)}"] .subject-row__score`),
+        next.elements.score,
         previous.score,
-        geometry.score,
+        next.geometry.score,
         { duration: 220, force: true },
       );
     }
@@ -411,20 +509,29 @@
   const QUARTER_MOTION_KEY = "bsb-quarter-motion";
 
   function quarterFromHref(link) {
-    const match = new URL(link.href, window.location.href).pathname.match(
-      /\/(\d{4}-\d{2})\/index\.html$/,
-    );
-    return match?.[1] || null;
+    try {
+      const url = new URL(link.href, window.location.href);
+      if (url.origin !== window.location.origin) return null;
+      const match = url.pathname.match(/\/(\d{4}-\d{2})\/index\.html$/);
+      return match?.[1] || null;
+    } catch {
+      return null;
+    }
   }
 
   function prepareQuarterDeparture(event) {
-    if (event.defaultPrevented || event.button !== 0
+    const keyboardActivation = event.detail === 0 && event.button === -1;
+    if (event.defaultPrevented || (event.button !== 0 && !keyboardActivation)
       || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const link = event.target.closest?.(
       'a[data-quarter-prev], a[data-quarter-next], a[data-quarter-option]',
     );
     const root = document.querySelector('[data-page="quarter"][data-archive-app]');
-    if (!link || !root || link.target === "_blank") return;
+    if (!link || !root || link.hasAttribute("download")) return;
+    const declaredTarget = link.getAttribute("target");
+    const baseTarget = document.querySelector("base[target]")?.getAttribute("target");
+    const target = (declaredTarget?.trim() || baseTarget?.trim() || "_self").toLowerCase();
+    if (target !== "_self") return;
     const from = root.dataset.quarter;
     const to = quarterFromHref(link);
     if (!from || !to || from === to || prefersReducedMotion()) return;
@@ -440,20 +547,8 @@
       }));
     } catch {
       // Navigation remains available when sessionStorage is unavailable.
+      return;
     }
-    event.preventDefault();
-    const sign = direction === "next" ? -1 : 1;
-    visibleResultNodes(root).slice(0, MAX_RESULT_ENTRANCES).forEach((row) => {
-      animateResultNode(
-        row,
-        [
-          { opacity: 1, transform: "translateX(0)" },
-          { opacity: 0.65, transform: `translateX(${sign * 12}px)` },
-        ],
-        110,
-      );
-    });
-    window.setTimeout(() => window.location.assign(link.href), 110);
   }
 
   function playQuarterArrival(root) {
@@ -464,8 +559,9 @@
     } catch {
       return false;
     }
+    const tokenAge = Date.now() - Number(token?.timestamp);
     if (!token || token.to !== root?.dataset.quarter
-      || Date.now() - Number(token.timestamp) > 2000) return false;
+      || !Number.isFinite(tokenAge) || tokenAge < 0 || tokenAge > 10000) return false;
     if (prefersReducedMotion()) return true;
     const sign = token.direction === "next" ? 1 : -1;
     visibleResultNodes(root).slice(0, MAX_RESULT_ENTRANCES).forEach((row, index) => {
@@ -523,6 +619,7 @@
     if (typeof mutate !== "function") return undefined;
     const host = resultHost(root);
     cancelResultMotion(host);
+    if (prefersReducedMotion()) return mutate();
     const before = reason === "view-mode"
       ? captureResultGeometry(host)
       : captureResultPositions(host);
@@ -675,12 +772,16 @@
     matchesFilters,
     compareRecords,
     applyPipeline,
+    reconcileChildren,
+    browseCoverPath,
+    bindBrowseCover,
     positionPopover,
     clearPopoverPosition,
     releaseBrowsePrepaint,
     prefersReducedMotion,
     withResultMotion,
     withBrowseTransition,
+    setResultMotionGroups,
     captureResultGeometry,
     animateViewModeMorph,
     animateCollectionChange,
@@ -899,7 +1000,7 @@
   if (menu && menuToggle) {
     let useNativePopover = typeof menu.showPopover === "function"
       && typeof menu.hidePopover === "function";
-    let restoreFocusOnClose = false;
+    let pointerToggleShouldClose = false;
     menu.dataset.menuMode = useNativePopover ? "popover" : "fallback";
 
     const isOpen = () => useNativePopover
@@ -961,25 +1062,17 @@
         .forEach((button) => button.click());
     };
     const closeMenu = (restoreFocus = false) => {
-      restoreFocusOnClose = restoreFocus;
       if (useNativePopover && isOpen()) {
         try {
           menu.hidePopover();
-          setOpenState(false);
-          clearMenuPosition();
-          if (restoreFocus) menuToggle.focus();
         } catch {
           useNativePopover = false;
           menu.dataset.menuMode = "fallback";
-          setOpenState(false);
-          clearMenuPosition();
-          if (restoreFocus) menuToggle.focus();
         }
-      } else {
-        setOpenState(false);
-        clearMenuPosition();
-        if (restoreFocus) menuToggle.focus();
       }
+      setOpenState(false);
+      clearMenuPosition();
+      if (restoreFocus && document.activeElement !== menuToggle) menuToggle.focus();
     };
     const openMenu = () => {
       closeCompetingSurfaces();
@@ -997,23 +1090,28 @@
       setOpenState(true);
       positionMenu();
       requestAnimationFrame(positionMenu);
-      menu.querySelector("a, button")?.focus();
     };
     menu.addEventListener("toggle", (event) => {
-      const open = event.newState === "open";
+      const open = useNativePopover ? isOpen() : event.newState === "open";
       setOpenState(open);
       if (open) {
         positionMenu();
         requestAnimationFrame(positionMenu);
       } else {
         clearMenuPosition();
-        if (restoreFocusOnClose) menuToggle.focus();
-        restoreFocusOnClose = false;
       }
     });
+    document.addEventListener("pointerdown", (event) => {
+      pointerToggleShouldClose = event.isPrimary
+        && event.button === 0
+        && event.composedPath().includes(menuToggle)
+        && isOpen();
+    }, true);
     menuToggle.addEventListener("pointerdown", (event) => event.stopPropagation());
-    menuToggle.addEventListener("click", () => {
-      if (isOpen()) closeMenu();
+    menuToggle.addEventListener("click", (event) => {
+      const pointerToggleClosed = event.detail > 0 && pointerToggleShouldClose;
+      pointerToggleShouldClose = false;
+      if (pointerToggleClosed || isOpen()) closeMenu(true);
       else openMenu();
     });
     menu.addEventListener("click", (event) => {
@@ -1249,6 +1347,9 @@
   let detailHistoryEntry = false;
   let detailGesture = null;
   let entrancePlayed = false;
+  let pagerSignature = "";
+  let searchComposing = false;
+  let pendingPopstateHashchange = null;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -1313,10 +1414,83 @@
       <div><dt>MOVIE</dt><dd>${info.counts.movie}</dd></div>
       <div><dt>PREMIERE</dt><dd>${info.counts.premiere}</dd></div>
       <div><dt>CONTINUING</dt><dd>${info.counts.continuing}</dd></div></dl>
-      <p class="workspace-panel__summary">${info.filters.length ? esc(info.filters.join(" · ")) : "当前没有额外筛选"}</p>`;
+      <p class="workspace-panel__summary" data-scope-summary>${info.filters.length ? esc(info.filters.join(" · ")) : "当前没有额外筛选"}</p>`;
   }
 
-  function renderRows(result) {
+  function renderScopeSummary(result) {
+    const summaryNode = scopePanel?.querySelector("[data-scope-summary]");
+    if (!summaryNode) return;
+    const filters = [];
+    if (state.query) filters.push(`搜索“${state.query}”`);
+    if (state.filters.sources.length) filters.push(`来源 ${state.filters.sources.length}`);
+    if (state.filters.tags.length) filters.push(`标签 ${state.filters.tags.length}`);
+    if (state.filters.sections.length) filters.push(`分区 ${state.filters.sections.length}`);
+    const text = filters.length ? filters.join(" · ") : "当前没有额外筛选";
+    if (summaryNode.textContent !== text) summaryNode.textContent = text;
+  }
+
+  function updateRowSelection(recordKey, selected) {
+    const row = rowByKey.get(recordKey);
+    if (!row) return;
+    if (row.classList.contains("is-selected") !== selected) {
+      row.classList.toggle("is-selected", selected);
+    }
+    const button = row.querySelector("[data-open-subject]");
+    const expanded = String(selected && !row.hidden);
+    if (button?.getAttribute("aria-expanded") !== expanded) {
+      button?.setAttribute("aria-expanded", expanded);
+    }
+  }
+
+  function renderWorkspaceVisibility() {
+    for (const [panel, visible] of [
+      [detailPanel, state.workspaceMode === "detail"],
+      [scopePanel, state.workspaceMode === "scope"],
+      [filterPanel, state.workspaceMode === "filter"],
+    ]) {
+      if (panel && panel.hidden === visible) panel.hidden = !visible;
+    }
+    if (quarterRoot.dataset.workspaceMode !== state.workspaceMode) {
+      quarterRoot.dataset.workspaceMode = state.workspaceMode;
+    }
+    const filterButton = quarterRoot.querySelector("[data-filter-toggle]");
+    const expanded = String(state.workspaceMode === "filter");
+    if (filterButton?.getAttribute("aria-expanded") !== expanded) {
+      filterButton?.setAttribute("aria-expanded", expanded);
+    }
+  }
+
+  function updateQueryFilterChip() {
+    if (!activeFilters) return;
+    let button = activeFilters.querySelector('[data-active-filter-type="query"]');
+    if (state.query) {
+      const label = `搜索：${state.query} ×`;
+      if (!button) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "active-filter";
+        button.dataset.activeFilterType = "query";
+        button.addEventListener("click", () => {
+          state.query = "";
+          if (search) search.value = "";
+          state.page = 1;
+          clearSelection(true);
+          render();
+        });
+        activeFilters.prepend(button);
+      }
+      if (button.firstChild?.nodeType === Node.TEXT_NODE) {
+        if (button.firstChild.nodeValue !== label) button.firstChild.nodeValue = label;
+      } else {
+        button.textContent = label;
+      }
+    } else {
+      button?.remove();
+    }
+    activeFilters.hidden = activeFilters.childElementCount === 0;
+  }
+
+  function renderRows(result, { preserveUnmatchedOrder = false } = {}) {
     const visibleRecords = window.innerWidth < 768 ? result.all : result.pageRecords;
     const visible = new Set(visibleRecords.map((record) => record.key));
     const position = new Map(result.all.map((record, index) => [record.key, index + 1]));
@@ -1331,28 +1505,40 @@
         record.media === media
         && (appearance === "all" || record.appearance === appearance)
       )).map((record) => record.key));
+      const list = section.querySelector("[data-list]");
+      const remainder = preserveUnmatchedOrder
+        ? [...(list?.children || [])]
+          .map((row) => recordByKey.get(row.dataset.recordKey))
+          .filter((record) => record && !orderedKeys.has(record.key))
+        : sectionRecords.filter((record) => !orderedKeys.has(record.key));
       const orderedRecords = [
         ...result.all.filter((record) => (
           record.media === media
           && (appearance === "all" || record.appearance === appearance)
         )),
-        ...sectionRecords.filter((record) => !orderedKeys.has(record.key)),
+        ...remainder,
       ];
-      const list = section.querySelector("[data-list]");
-      orderedRecords.forEach((record) => {
-        const row = rowByKey.get(record.key);
-        if (row) list?.append(row);
-      });
+      archive.reconcileChildren(
+        list,
+        orderedRecords.map((record) => rowByKey.get(record.key)).filter(Boolean),
+      );
     }
     for (const row of rows) {
       const record = recordByKey.get(row.dataset.recordKey);
       const show = record && visible.has(record.key);
-      row.hidden = !show;
-      row.classList.toggle("is-selected", Boolean(record && state.selectedOccurrence === record.key));
+      if (row.hidden === Boolean(show)) row.hidden = !show;
+      const selected = Boolean(record && state.selectedOccurrence === record.key);
+      if (row.classList.contains("is-selected") !== selected) {
+        row.classList.toggle("is-selected", selected);
+      }
       const button = row.querySelector("[data-open-subject]");
-      if (button) button.setAttribute("aria-expanded", String(show && state.selectedOccurrence === record.key));
+      const expanded = String(Boolean(show && selected));
+      if (button?.getAttribute("aria-expanded") !== expanded) {
+        button?.setAttribute("aria-expanded", expanded);
+      }
       const sequence = row.querySelector(".subject-row__sequence");
-      if (sequence && record) sequence.textContent = String(position.get(record.key) || 0).padStart(3, "0");
+      const number = String(position.get(record?.key) || 0).padStart(3, "0");
+      if (sequence && sequence.textContent !== number) sequence.textContent = number;
     }
     for (const section of sections) {
       const media = section.dataset.listSection;
@@ -1360,25 +1546,46 @@
       const count = result.all.filter((record) =>
         (record.media === (media === "movie" ? "MOVIE" : "TV"))
         && (appearance === "all" || record.appearance === appearance)).length;
-      section.hidden = state.media !== media || count === 0;
+      const hidden = state.media !== media || count === 0;
+      if (section.hidden !== hidden) section.hidden = hidden;
       const counter = section.querySelector("[data-section-count]");
-      if (counter) counter.textContent = String(count).padStart(2, "0");
+      const countText = String(count).padStart(2, "0");
+      if (counter && counter.textContent !== countText) counter.textContent = countText;
     }
     if (summary) {
       const total = records.filter(
         (record) => record.media === (state.media === "movie" ? "MOVIE" : "TV"),
       ).length;
-      summary.textContent = window.innerWidth < 768
+      const text = window.innerWidth < 768
         ? `${result.total} / ${total} 部`
         : `${result.total} / ${total} 部 · 第 ${result.page} / ${result.pageCount} 页`;
+      if (summary.textContent !== text) summary.textContent = text;
     }
-    if (noResults) noResults.hidden = result.total !== 0;
+    if (noResults && noResults.hidden !== (result.total !== 0)) {
+      noResults.hidden = result.total !== 0;
+    }
+    archive.setResultMotionGroups(quarterRoot, sections.map((section) => {
+      const media = section.dataset.listSection === "movie" ? "MOVIE" : "TV";
+      const appearance = section.dataset.appearanceSection;
+      return visibleRecords
+        .filter((record) => record.media === media
+          && (appearance === "all" || record.appearance === appearance))
+        .map((record) => rowByKey.get(record.key))
+        .filter(Boolean);
+    }));
   }
 
   function renderPager(result) {
     if (!pager) return;
+    const mobile = window.innerWidth < 768;
+    const tokens = result.pageCount <= 1
+      ? []
+      : archive.paginationTokens(result.page, result.pageCount);
+    const signature = `${mobile}:${result.page}:${result.pageCount}:${tokens.join(",")}`;
+    if (signature === pagerSignature) return;
+    pagerSignature = signature;
     pager.replaceChildren();
-    if (window.innerWidth < 768) {
+    if (mobile) {
       pager.hidden = true;
       return;
     }
@@ -1403,7 +1610,7 @@
       pager.append(button);
     };
     add("上一页", result.page - 1, result.page <= 1);
-    for (const token of archive.paginationTokens(result.page, result.pageCount)) {
+    for (const token of tokens) {
       if (token === "ellipsis") {
         const ellipsis = document.createElement("span");
         ellipsis.textContent = "…";
@@ -1431,6 +1638,7 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "active-filter";
+      button.dataset.activeFilterType = item.type;
       button.textContent = `${item.label} ×`;
       button.addEventListener("click", () => {
         if (item.type === "query") {
@@ -1456,10 +1664,7 @@
     renderScope(result);
     renderActiveFilters();
     renderPager(result);
-    if (detailPanel) detailPanel.hidden = state.workspaceMode !== "detail";
-    if (scopePanel) scopePanel.hidden = state.workspaceMode !== "scope";
-    if (filterPanel) filterPanel.hidden = state.workspaceMode !== "filter";
-    quarterRoot.dataset.workspaceMode = state.workspaceMode;
+    renderWorkspaceVisibility();
     const sortButton = quarterRoot.querySelector("[data-sort-toggle]");
     if (sortButton) sortButton.textContent = archive.SORTS[state.sort];
     quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
@@ -1471,9 +1676,24 @@
     const filterButton = quarterRoot.querySelector("[data-filter-toggle]");
     if (filterButton) {
       filterButton.querySelector("[data-filter-count]").textContent = filterCount() ? `(${filterCount()})` : "";
-      filterButton.setAttribute("aria-expanded", String(state.workspaceMode === "filter"));
     }
     if (sortButton) sortButton.setAttribute("aria-expanded", String(quarterRoot.querySelector("[data-sort-popover]")?.hidden === false));
+  }
+
+  function renderSearchResults() {
+    if (loadError || !search || state.query === search.value) return;
+    const previousSelection = state.selectedOccurrence;
+    state.query = search.value;
+    state.page = 1;
+    clearSelection(true);
+    if (previousSelection) updateRowSelection(previousSelection, false);
+    const result = archive.applyPipeline(records, state);
+    state.page = result.page;
+    renderRows(result, { preserveUnmatchedOrder: true });
+    renderScopeSummary(result);
+    updateQueryFilterChip();
+    renderPager(result);
+    renderWorkspaceVisibility();
   }
 
   function filterCount() {
@@ -1498,6 +1718,14 @@
 
   function discardFilterDraft() {
     state.draftFilters = null;
+  }
+
+  function cancelMobileFilterForHistoryTraversal() {
+    if (!isMobileFilter() || state.workspaceMode !== "filter") return false;
+    discardFilterDraft();
+    state.workspaceMode = "scope";
+    renderWorkspaceVisibility();
+    return true;
   }
 
   function applyFilterDraft() {
@@ -1581,13 +1809,14 @@
       <p class="detail-footer"><a class="text-link" href="${esc(record.bangumi_url || ("https://" + "bgm.tv/subject/" + record.id))}" target="_blank" rel="noreferrer">在 Bangumi 查看 ↗</a></p>`;
   }
 
-  function selectRecord(record, replace = false) {
+  function selectRecord(record, replace = false, writeHistory = true) {
     if (!record) return;
     if (window.innerWidth < 768 && state.workspaceMode !== "detail") {
       state.listScrollTop = window.scrollY;
       detailGesture?.lockBackground?.();
     }
     const hadSelection = state.selectedOccurrence !== null;
+    const previousSelection = state.selectedOccurrence;
     const nextDetailHistoryEntry = hadSelection
       ? detailHistoryEntry
       : replace
@@ -1598,8 +1827,10 @@
     state.workspaceMode = "detail";
     quarterRoot.dataset.detailGesture = "idle";
     detailPanel?.setAttribute("data-detail-gesture", "idle");
-    if (hadSelection) setHash(record, true, nextDetailHistoryEntry);
-    else setHash(record, replace, nextDetailHistoryEntry);
+    if (writeHistory) {
+      if (hadSelection) setHash(record, true, nextDetailHistoryEntry);
+      else setHash(record, replace, nextDetailHistoryEntry);
+    }
     detailHistoryEntry = nextDetailHistoryEntry;
     if (detailPanel) {
       detailPanel.innerHTML = detailHtml(record);
@@ -1608,22 +1839,33 @@
       detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(record));
       detailPanel.scrollTop = 0;
     }
-    render();
+    if (replace) {
+      render();
+    } else {
+      if (previousSelection && previousSelection !== record.key) {
+        updateRowSelection(previousSelection, false);
+      }
+      updateRowSelection(record.key, true);
+      renderWorkspaceVisibility();
+    }
   }
 
   function closeDetail(recordKey) {
     const currentHash = window.location.hash === hashFor({ id: state.selectedSubjectId });
+    const previousSelection = state.selectedOccurrence;
     if (detailHistoryEntry && currentHash) {
       detailHistoryEntry = false;
       clearSelection(false);
-      render();
+      if (previousSelection) updateRowSelection(previousSelection, false);
+      renderWorkspaceVisibility();
       focusRecordTrigger(recordKey);
       restoreListScroll();
       window.history.back();
       return;
     }
     clearSelection(true);
-    render();
+    if (previousSelection) updateRowSelection(previousSelection, false);
+    renderWorkspaceVisibility();
     focusRecordTrigger(recordKey);
     restoreListScroll();
   }
@@ -1652,22 +1894,34 @@
     dialog.showModal();
   }
 
-  function openHash() {
+  function openHash({ suppressFocusAndScroll = false, preserveHistory = false } = {}) {
     const match = window.location.hash.match(/^#bgm-(\d+)$/);
     if (!match || !records.length) {
       if (!match && state.selectedOccurrence !== null) {
         const previousKey = state.selectedOccurrence;
         clearSelection(false);
-        render();
-        focusRecordTrigger(previousKey);
+        updateRowSelection(previousKey, false);
+        renderWorkspaceVisibility();
+        if (!suppressFocusAndScroll) {
+          focusRecordTrigger(previousKey);
+          restoreListScroll();
+        }
+      }
+      if (!match && state.selectedOccurrence === null && !suppressFocusAndScroll) {
         restoreListScroll();
       }
-      if (!match && state.selectedOccurrence === null) restoreListScroll();
       return;
     }
     const candidate = archive.selectedRecord(records, Number(match[1]));
     if (!candidate) {
-      setHash(null, true);
+      if (preserveHistory) {
+        const previousKey = state.selectedOccurrence;
+        clearSelection(false);
+        if (previousKey) updateRowSelection(previousKey, false);
+        renderWorkspaceVisibility();
+      } else {
+        setHash(null, true);
+      }
       return;
     }
     state.media = candidate.media === "MOVIE" ? "movie" : "tv";
@@ -1675,19 +1929,20 @@
     const result = archive.applyPipeline(records, state);
     const index = result.all.findIndex((record) => record.key === candidate.key);
     if (index >= 0) state.page = Math.floor(index / state.pageSize) + 1;
-    selectRecord(candidate, true);
+    selectRecord(candidate, true, !preserveHistory);
   }
 
   function bindControls() {
     pageSizeSelect();
     let closeSortPopover = () => {};
-    search?.addEventListener("input", () => {
-      archive.withResultMotion("search", quarterRoot, () => {
-        state.query = search.value;
-        state.page = 1;
-        clearSelection(true);
-        render();
-      });
+    search?.addEventListener("compositionstart", () => { searchComposing = true; });
+    search?.addEventListener("compositionend", () => {
+      searchComposing = false;
+      renderSearchResults();
+    });
+    search?.addEventListener("input", (event) => {
+      if (searchComposing || event.isComposing) return;
+      renderSearchResults();
     });
     quarterRoot.querySelectorAll("[data-media-mode]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -1708,9 +1963,14 @@
         closeSortPopover();
         archive.withResultMotion("view-mode", quarterRoot, () => {
           state.viewMode = archive.writeViewMode(button.dataset.viewMode);
-          render();
+          quarterRoot.dataset.viewMode = state.viewMode;
+          quarterRoot.querySelectorAll("[data-view-mode]").forEach((viewButton) => {
+            viewButton.setAttribute(
+              "aria-pressed",
+              String(viewButton.dataset.viewMode === state.viewMode),
+            );
+          });
         });
-        button.focus();
       });
     });
     const sortButton = quarterRoot.querySelector("[data-sort-toggle]");
@@ -1811,8 +2071,26 @@
       selectRecord(recordByKey.get(row.dataset.recordKey));
     }));
     window.addEventListener("resize", () => render());
-    window.addEventListener("popstate", openHash);
-    window.addEventListener("hashchange", openHash);
+    window.addEventListener("popstate", () => {
+      const filterClosed = cancelMobileFilterForHistoryTraversal();
+      const pending = { url: window.location.href };
+      pendingPopstateHashchange = pending;
+      window.setTimeout(() => {
+        if (pendingPopstateHashchange === pending) pendingPopstateHashchange = null;
+      }, 0);
+      openHash({
+        suppressFocusAndScroll: filterClosed,
+        preserveHistory: filterClosed,
+      });
+    });
+    window.addEventListener("hashchange", (event) => {
+      if (pendingPopstateHashchange?.url === event.newURL) {
+        pendingPopstateHashchange = null;
+        return;
+      }
+      pendingPopstateHashchange = null;
+      openHash();
+    });
     bindDetailGesture();
   }
 
@@ -1958,12 +2236,7 @@
     bindControls();
     rows.forEach((row) => {
       const image = row.querySelector(".subject-row__cover img");
-      image?.addEventListener("error", () => {
-        image.remove();
-        const cover = row.querySelector(".subject-row__cover");
-        cover?.classList.add("subject-row__cover--missing");
-        if (cover) cover.innerHTML = "<span>ARCHIVE</span>";
-      }, { once: true });
+      archive.bindBrowseCover(image, row.querySelector(".subject-row__cover"));
     });
     renderScope({ all: [], page: [], pageCount: 1, page: 1, total: 0 });
     try {
@@ -1998,13 +2271,24 @@
   if (!archive) return;
   const root = document.querySelector('[data-page="archive"][data-archive-app]');
   if (!root) return;
+  const DEFAULT_ARCHIVE_PAGE_SIZE = 20;
+  const MAX_ARCHIVE_QUERY_LENGTH = 160;
+  const MAX_ARCHIVE_FILTER_VALUE_LENGTH = 80;
+  const MAX_ARCHIVE_FILTER_VALUES = 64;
+  const MAX_ARCHIVE_SEARCH_LENGTH = 20000;
+  const MAX_ARCHIVE_PAGE = 1000000;
+  const ARCHIVE_HASH_PATTERN = /^#bgm-([1-9]\d{0,15})$/;
+  const ARCHIVE_OCCURRENCE_PATTERN = /^\d{4}-(?:01|04|07|10)\.(?:premiere|continuing)$/;
 
   const selectors = {
     quarter: root.querySelector("[data-archive-quarter-selector]"),
     year: root.querySelector("[data-archive-year-selector]"),
     range: root.querySelector("[data-archive-range-selector]"),
+    local: root.querySelector("[data-archive-local-selector]"),
+    localStatus: root.querySelector("[data-local-status]"),
     browser: root.querySelector("[data-archive-browser]"),
     list: root.querySelector("[data-list-sections]"),
+    pending: root.querySelector("[data-archive-pending]"),
     scopeLabel: root.querySelector("[data-archive-scope-label]"),
     search: root.querySelector("[data-search]"),
     summary: root.querySelector("[data-results-summary]"),
@@ -2017,21 +2301,36 @@
     sortPopover: root.querySelector("[data-sort-popover]"),
   };
   const state = archive.createState({ scope: { kind: "year", value: "" } });
+  const initialArchivePageSize = state.pageSize;
   let index = null;
   let records = [];
   let rows = [];
   let listSignature = "";
+  let signatureRecords = null;
   let listSections = new Map();
   let rowByKey = new Map();
   let recordByKey = new Map();
+  let loadedScope = null;
   const detailByQuarter = new Map();
+  let localCoverage = null;
+  let localIssue = "";
+  let indexPromise = null;
   let detailRequest = 0;
+  let scopeIntent = 0;
+  let scopePending = false;
   let loadError = false;
+  let pendingScopeTab = null;
+  let closeSortPopover = () => {};
   let yearControl = null;
   let pageSizeControl = null;
+  let pageSizeUrlExplicit = false;
   let detailHistoryEntry = false;
   let detailGesture = null;
   let entrancePlayed = false;
+  let pagerSignature = "";
+  let searchComposing = false;
+  let pendingPopstateHashchange = null;
+  let locationStateReady = false;
 
   const esc = (value) => String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -2040,37 +2339,209 @@
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
-  function setDetailHash(record, replace, detailEntry = false) {
+  function boundedArchiveText(value, limit) {
+    return Array.from(String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, ""))
+      .slice(0, limit)
+      .join("");
+  }
+
+  function singleUrlParameter(params, name) {
+    const values = params.getAll(name);
+    return values.length === 1 ? values[0] : null;
+  }
+
+  function occurrenceToken(record) {
+    const quarter = String(record?.quarter || "");
+    const appearance = String(record?.appearance || "");
+    const token = `${quarter}.${appearance}`;
+    return ARCHIVE_OCCURRENCE_PATTERN.test(token) ? token : "";
+  }
+
+  function archiveUrlForState({ record = null, hashId = null, occurrence = "" } = {}) {
     const url = new URL(window.location.href);
-    url.hash = record ? `#bgm-${record.id}` : "";
+    const params = new URLSearchParams();
+    if (state.scope.kind === "year" && /^\d{4}$/.test(String(state.scope.value))) {
+      params.set("year", String(state.scope.value));
+    } else if (state.scope.kind === "range") {
+      const range = state.scope.value;
+      if (/^\d{4}$/.test(String(range?.from)) && /^\d{4}$/.test(String(range?.to))) {
+        params.set("from", String(range.from));
+        params.set("to", String(range.to));
+      }
+    } else if (state.scope.kind === "local") {
+      params.set("local", "1");
+    }
+
+    const query = boundedArchiveText(state.query, MAX_ARCHIVE_QUERY_LENGTH);
+    if (query) params.set("q", query);
+    if (state.media === "movie") params.set("media", "movie");
+    if (archive.SORTS[state.sort] && state.sort !== "score-desc") {
+      params.set("sort", state.sort);
+    }
+    let remainingFilterValues = MAX_ARCHIVE_FILTER_VALUES;
+    for (const [group, parameter] of [
+      ["sources", "source"],
+      ["tags", "tag"],
+      ["sections", "section"],
+    ]) {
+      const values = [...new Set(state.filters[group] || [])]
+        .filter((value) => {
+          const text = String(value);
+          return text && Array.from(text).length <= MAX_ARCHIVE_FILTER_VALUE_LENGTH
+            && !/[\u0000-\u001f\u007f]/.test(text);
+        })
+        .sort()
+        .slice(0, remainingFilterValues);
+      values.forEach((value) => params.append(parameter, String(value)));
+      remainingFilterValues -= values.length;
+    }
+    const page = Math.floor(Number(state.page));
+    if (Number.isFinite(page) && page > 1 && page <= MAX_ARCHIVE_PAGE) {
+      params.set("page", String(page));
+    }
+    const pageSize = Number(state.pageSize);
+    if (archive.PAGE_SIZES.includes(pageSize)
+      && (pageSize !== DEFAULT_ARCHIVE_PAGE_SIZE || pageSizeUrlExplicit)) {
+      params.set("size", String(pageSize));
+    }
+
+    const selectedOccurrence = record ? occurrenceToken(record) : occurrence;
+    if (selectedOccurrence && ARCHIVE_OCCURRENCE_PATTERN.test(selectedOccurrence)) {
+      params.set("occ", selectedOccurrence);
+    }
+    url.search = params.toString();
+    const selectedId = record ? Number(record.id) : Number(hashId);
+    url.hash = Number.isSafeInteger(selectedId) && selectedId > 0
+      ? `#bgm-${selectedId}`
+      : "";
+    return url;
+  }
+
+  function writeArchiveUrl({
+    replace = false,
+    record = null,
+    hashId = null,
+    occurrence = "",
+    detailEntry = false,
+  } = {}) {
+    if (!locationStateReady) return false;
+    const url = archiveUrlForState({ record, hashId, occurrence });
+    if (url.search.length > MAX_ARCHIVE_SEARCH_LENGTH) return false;
+    if (!replace && url.href === window.location.href) return false;
     const historyState = record && detailEntry
       ? { bsbDetailEntry: true, bsbDetailKey: record.key }
       : {};
+    if (replace && url.href === window.location.href) {
+      let sameHistoryState = false;
+      try {
+        sameHistoryState = JSON.stringify(window.history.state) === JSON.stringify(historyState);
+      } catch {
+        sameHistoryState = false;
+      }
+      if (sameHistoryState) return false;
+    }
     if (replace) window.history.replaceState(historyState, "", url);
     else window.history.pushState(historyState, "", url);
+    return true;
+  }
+
+  function setDetailHash(record, replace, detailEntry = false) {
+    writeArchiveUrl({ replace, record, detailEntry });
+  }
+
+  function writeCurrentArchiveUrl({ replace = false } = {}) {
+    const selected = state.selectedOccurrence
+      ? recordByKey.get(state.selectedOccurrence)
+      : null;
+    const visible = selected
+      && archive.applyPipeline(records, state).all.some((record) => record.key === selected.key);
+    if (selected && !visible) {
+      const workspaceMode = state.workspaceMode;
+      clearSelection(false);
+      state.workspaceMode = workspaceMode;
+    }
+    writeArchiveUrl({
+      replace,
+      record: visible ? selected : null,
+      detailEntry: Boolean(visible && detailHistoryEntry),
+    });
   }
 
   function setScopeUrl(kind, value, replace = false) {
-    const url = new URL(window.location.href);
-    url.search = "";
-    if (kind === "year") url.searchParams.set("year", value);
-    if (kind === "range") {
-      url.searchParams.set("from", String(value.from));
-      url.searchParams.set("to", String(value.to));
+    state.scope = { kind, value };
+    writeArchiveUrl({ replace });
+  }
+
+  function readOccurrenceParameter() {
+    if (window.location.search.length > MAX_ARCHIVE_SEARCH_LENGTH) return "";
+    const params = new URLSearchParams(window.location.search);
+    const value = singleUrlParameter(params, "occ");
+    return value && ARCHIVE_OCCURRENCE_PATTERN.test(value) ? value : "";
+  }
+
+  function restoreAppliedStateFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const searchWithinLimit = window.location.search.length <= MAX_ARCHIVE_SEARCH_LENGTH;
+    const only = (name) => searchWithinLimit ? singleUrlParameter(params, name) : null;
+    const query = only("q");
+    const media = only("media");
+    const sort = only("sort");
+    const page = only("page");
+    const pageSize = only("size");
+
+    clearSelection(false);
+    state.query = query === null ? "" : boundedArchiveText(query, MAX_ARCHIVE_QUERY_LENGTH);
+    state.media = media === "movie" ? "movie" : "tv";
+    state.sort = archive.SORTS[sort] ? sort : "score-desc";
+    state.page = page && /^\d{1,7}$/.test(page) && Number(page) <= MAX_ARCHIVE_PAGE
+      ? Number(page)
+      : 1;
+    const validPageSize = pageSize !== null
+      && archive.PAGE_SIZES.includes(Number(pageSize));
+    pageSizeUrlExplicit = validPageSize;
+    state.pageSize = pageSize === null
+      ? (searchWithinLimit && params.has("size")
+        ? DEFAULT_ARCHIVE_PAGE_SIZE
+        : initialArchivePageSize)
+      : validPageSize
+        ? Number(pageSize)
+        : DEFAULT_ARCHIVE_PAGE_SIZE;
+
+    const available = archive.availableFilterValues(records, state.media);
+    const filterParameters = { sources: "source", tags: "tag", sections: "section" };
+    const filterCount = Object.values(filterParameters)
+      .reduce((count, name) => count + (searchWithinLimit ? params.getAll(name).length : 0), 0);
+    state.filters = { sources: [], tags: [], sections: [] };
+    if (filterCount <= MAX_ARCHIVE_FILTER_VALUES) {
+      for (const [group, parameter] of Object.entries(filterParameters)) {
+        const values = searchWithinLimit ? params.getAll(parameter) : [];
+        state.filters[group] = [...new Set(values.filter((value) => (
+          Array.from(value).length <= MAX_ARCHIVE_FILTER_VALUE_LENGTH
+          && !/[\u0000-\u001f\u007f]/.test(value)
+          && available[group].includes(value)
+        )))].sort();
+      }
     }
-    url.hash = "";
-    if (replace) window.history.replaceState({}, "", url);
-    else window.history.pushState({}, "", url);
+    state.draftFilters = null;
+    if (selectors.search) selectors.search.value = state.query;
+    pageSizeControl?.setValue(String(state.pageSize));
+    locationStateReady = true;
   }
 
   function scopeFromLocation() {
     const params = new URLSearchParams(window.location.search);
-    const year = params.get("year");
+    if (window.location.search.length <= MAX_ARCHIVE_SEARCH_LENGTH
+      && singleUrlParameter(params, "local") === "1") return { kind: "local", value: "" };
+    const year = singleUrlParameter(params, "year");
     if (year && (index?.years || []).map(String).includes(year)) {
       return { kind: "year", value: year };
     }
-    const range = normalRange(params.get("from"), params.get("to"));
-    if (params.has("from") && params.has("to") && range) {
+    const from = singleUrlParameter(params, "from");
+    const to = singleUrlParameter(params, "to");
+    const range = /^\d{4}$/.test(from || "") && /^\d{4}$/.test(to || "")
+      ? normalRange(from, to)
+      : null;
+    if (from !== null && to !== null && range) {
       return { kind: "range", value: range };
     }
     const latest = String(index?.latest_quarter || "").slice(0, 4)
@@ -2079,21 +2550,127 @@
   }
 
   function sameScope(left, right) {
-    if (left.kind !== right.kind) return false;
+    if (!left || !right || left.kind !== right.kind) return false;
+    if (left.kind === "local") return true;
     if (left.kind === "range") {
       return left.value?.from === right.value.from && left.value?.to === right.value.to;
     }
     return String(left.value) === String(right.value);
   }
 
-  async function restoreArchiveLocation() {
-    if (!index) return;
-    const location = scopeFromLocation();
-    if (sameScope(state.scope, location) && records.length) {
-      await openHash();
+  function scopeLabel(kind, value) {
+    if (kind === "local") return "LOCAL / 仅本机可用";
+    return kind === "range"
+      ? `RANGE / ${value.from}—${value.to}`
+      : `YEAR / ${value}`;
+  }
+
+  function updateScopeAvailability() {
+    const loaded = !scopePending && !loadError
+      && !(state.scope.kind === "local" && localIssue)
+      && sameScope(loadedScope, state.scope);
+    const busy = !loadError && (scopePending || (!index && state.scope.kind !== "local"));
+    const masterPane = root.querySelector(".master-pane");
+    if (masterPane) masterPane.inert = !loaded;
+    if (masterPane) masterPane.setAttribute("aria-busy", String(busy));
+    if (selectors.detailPanel) selectors.detailPanel.inert = !loaded;
+    if (selectors.filterPanel) selectors.filterPanel.inert = !loaded;
+    root.setAttribute("aria-busy", String(busy));
+    selectors.browser?.setAttribute("aria-busy", String(busy));
+    if (selectors.scopeLabel) {
+      selectors.scopeLabel.setAttribute("aria-busy", String(busy));
+    }
+    if (selectors.scopePanel) {
+      selectors.scopePanel.setAttribute("aria-busy", String(busy));
+    }
+    if (selectors.pending) {
+      selectors.pending.hidden = !busy || loadError || loadedScope !== null;
+    }
+    if (scopePending) root.dataset.scopePending = "true";
+    else delete root.dataset.scopePending;
+  }
+
+  function applyScope(kind, value) {
+    state.scope = { kind, value };
+    discardFilterDraft();
+    clearSelection(false);
+    if (kind !== "local") {
+      localCoverage = null;
+      localIssue = "";
+    }
+    setTab(kind);
+    renderYearSelector();
+    if (kind === "range") {
+      const from = root.querySelector("[data-archive-from]");
+      const to = root.querySelector("[data-archive-to]");
+      if (from) from.value = String(value.from);
+      if (to) to.value = String(value.to);
+    }
+    if (selectors.scopeLabel) selectors.scopeLabel.textContent = scopeLabel(kind, value);
+  }
+
+  async function restoreArchiveLocation(routeOptions = {}) {
+    let location = scopeFromLocation();
+    if (location.kind === "local") {
+      if (sameScope(loadedScope, location)) {
+        if (!scopePending && !loadError && sameScope(state.scope, location)) {
+          await restoreLoadedArchiveLocation(routeOptions);
+          return;
+        }
+      }
+      if (state.scope.kind === "local" && scopePending) return;
+      await setScope(location.kind, location.value, false, routeOptions);
       return;
     }
-    await setScope(location.kind, location.value, false);
+    if (!index) {
+      try {
+        await ensureArchiveIndex();
+      } catch {
+        showArchiveIndexUnavailable(location);
+        return;
+      }
+      location = scopeFromLocation();
+    }
+    if (sameScope(loadedScope, location)) {
+      if (!sameScope(state.scope, location)) {
+        scopeIntent += 1;
+        scopePending = false;
+        loadError = false;
+        applyScope(location.kind, location.value);
+        updateScopeAvailability();
+      }
+      if (scopePending || loadError) return;
+      if (sameScope(state.scope, location)) {
+        await restoreLoadedArchiveLocation(routeOptions);
+        return;
+      }
+    }
+    await setScope(location.kind, location.value, false, routeOptions);
+  }
+
+  async function restoreLoadedArchiveLocation(routeOptions = {}) {
+    restoreAppliedStateFromUrl();
+    renderFilterPanel();
+    render();
+    archive.releaseBrowsePrepaint(root, state.viewMode);
+    if (!entrancePlayed && records.length) {
+      entrancePlayed = true;
+      archive.playEntranceStagger(root);
+    }
+    await openHash(routeOptions);
+    const hash = window.location.hash.match(ARCHIVE_HASH_PATTERN);
+    const selected = state.selectedOccurrence
+      ? recordByKey.get(state.selectedOccurrence)
+      : null;
+    if (!routeOptions.preserveHistory) {
+      writeArchiveUrl({
+        replace: true,
+        record: selected,
+        hashId: selected ? null : (hash ? Number(hash[1]) : null),
+        occurrence: selected ? "" : readOccurrenceParameter(),
+        detailEntry: Boolean(selected && window.history.state?.bsbDetailEntry),
+      });
+    }
   }
 
   function setTab(kind) {
@@ -2103,10 +2680,124 @@
       button.tabIndex = selected ? 0 : -1;
     });
     for (const [name, node] of Object.entries(selectors)) {
-      if (!["quarter", "year", "range", "browser"].includes(name) || !node) continue;
+      if (!["quarter", "year", "range", "local", "browser"].includes(name) || !node) continue;
       if (name === "browser") node.hidden = kind === "quarter";
       else node.hidden = name !== kind;
     }
+  }
+
+  function chooseScopeTab(kind) {
+    closeSortPopover();
+    setTab(kind);
+    if (kind === "local") {
+      pendingScopeTab = null;
+      void setScope("local", "");
+      return;
+    }
+    if (!index) {
+      pendingScopeTab = kind;
+      scopeIntent += 1;
+      if (kind === "quarter") {
+        state.scope = { kind: "quarter", value: "" };
+        scopePending = false;
+        loadError = false;
+        updateScopeAvailability();
+        return;
+      }
+      scopePending = true;
+      updateScopeAvailability();
+      void ensureArchiveIndex().then(() => {
+        if (pendingScopeTab !== kind) return;
+        pendingScopeTab = null;
+        if (kind === "year") {
+          const location = scopeFromLocation();
+          const value = location.kind === "year"
+            ? location.value
+            : String(index.latest_quarter || "").slice(0, 4);
+          void setScope("year", value);
+          return;
+        }
+        showRangeSelector();
+      }).catch(() => {
+        if (pendingScopeTab !== kind) return;
+        pendingScopeTab = null;
+        if (state.scope.kind === "local" && sameScope(loadedScope, state.scope)) {
+          scopePending = false;
+          setTab("local");
+          updateScopeAvailability();
+        } else {
+          showArchiveIndexUnavailable();
+        }
+      });
+      return;
+    }
+    pendingScopeTab = null;
+    if (kind === "quarter") {
+      scopeIntent += 1;
+      scopePending = false;
+      loadError = false;
+      state.scope = { kind: "quarter", value: "" };
+      updateScopeAvailability();
+      return;
+    }
+    if (kind === "year") {
+      const location = scopeFromLocation();
+      const value = yearControl?.getValue()
+        || (location.kind === "year"
+          ? location.value
+          : String(index.latest_quarter || "").slice(0, 4));
+      void setScope("year", value);
+      return;
+    }
+
+    showRangeSelector();
+  }
+
+  function showRangeSelector() {
+    const abandonedCurrentLoad = scopePending || loadError;
+    if (abandonedCurrentLoad) {
+      scopeIntent += 1;
+      scopePending = false;
+      loadError = false;
+    }
+    const location = scopeFromLocation();
+    const currentYear = state.scope.kind === "year" && state.scope.value
+      ? state.scope.value
+      : location.kind === "year"
+        ? location.value
+        : String(index.latest_quarter || "").slice(0, 4);
+    const initialRange = location.kind === "range" ? location.value : null;
+    const from = root.querySelector("[data-archive-from]");
+    const to = root.querySelector("[data-archive-to]");
+    if (from && !from.value) from.value = String(initialRange?.from ?? currentYear);
+    if (to && !to.value) to.value = String(initialRange?.to ?? currentYear);
+    if (abandonedCurrentLoad && selectors.summary) {
+      selectors.summary.textContent = "选择起止年份并显示范围目录。";
+      if (selectors.scopePanel) {
+        selectors.scopePanel.hidden = false;
+        selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">YEAR RANGE</p><p>选择起止年份并显示范围目录。</p>';
+      }
+    }
+    updateScopeAvailability();
+  }
+
+  function bindScopeTabs() {
+    root.querySelectorAll("[data-scope-choice]").forEach((button) => {
+      button.addEventListener("click", () => chooseScopeTab(button.dataset.scopeChoice));
+    });
+    window.addEventListener("popstate", () => {
+      const filterClosed = cancelMobileFilterForHistoryTraversal();
+      const pending = { url: window.location.href };
+      pendingPopstateHashchange = pending;
+      window.setTimeout(() => {
+        if (pendingPopstateHashchange === pending) pendingPopstateHashchange = null;
+      }, 0);
+      if (!index) pendingScopeTab = null;
+      void restoreArchiveLocation({
+        suppressFocusAndScroll: filterClosed,
+        preserveHistory: filterClosed,
+      });
+    });
   }
 
   function renderQuarterSelector() {
@@ -2182,7 +2873,156 @@
     return responses.flatMap((payload) => archive.recordsFromCatalog(payload));
   }
 
+  async function loadLocalSnapshotRecords() {
+    let pwa = window.BsbPwa;
+    if (!pwa) {
+      pwa = await new Promise((resolve) => {
+        const onReady = () => {
+          clearTimeout(timeout);
+          resolve(window.BsbPwa || null);
+        };
+        const timeout = setTimeout(() => {
+          window.removeEventListener("bsb-pwa-ready", onReady);
+          resolve(window.BsbPwa || null);
+        }, 2000);
+        window.addEventListener("bsb-pwa-ready", onReady, { once: true });
+      });
+    }
+    if (
+      !pwa
+      || typeof pwa.supported !== "function"
+      || !pwa.supported()
+      || typeof pwa.readActiveQuarterData !== "function"
+    ) return { records: [], issue: "此浏览器无法验证本机离线季度资料。", coverage: null };
+
+    const states = await pwa.listQuarterStates();
+    const incompleteQuarters = states
+      .filter((item) => item.quarter && (
+        item.status === "INCOMPLETE" || (!item.active && item.staging)
+      ))
+      .map((item) => item.quarter);
+    const candidates = states.filter((item) => (
+      ["COMPLETE", "UPDATE_AVAILABLE", "UPDATE_INCOMPLETE"].includes(item.status)
+      && item.active
+    ));
+    if (!candidates.length) {
+      const hasIncomplete = states.some((item) => item.staging || item.status === "INCOMPLETE");
+      return {
+        records: [],
+        issue: hasIncomplete
+          ? "本机只有未完成的下载，尚无可用于检索的完整活动版本。"
+          : "尚无已下载且可验证的季度资料。请先在 Settings 下载季度。",
+        coverage: null,
+      };
+    }
+
+    const loaded = new Array(candidates.length);
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(3, candidates.length) }, async () => {
+      while (cursor < candidates.length) {
+        const position = cursor;
+        cursor += 1;
+        const state = candidates[position];
+        try {
+          const snapshot = await pwa.readActiveQuarterData(state.quarter);
+          const quarterRecords = archive.recordsFromQuarter(snapshot.payload);
+          if (quarterRecords.some((record) => record.quarter !== snapshot.quarter)) {
+            throw new Error("quarter identity mismatch");
+          }
+          loaded[position] = {
+            quarter: snapshot.quarter,
+            status: snapshot.status,
+            records: quarterRecords,
+          };
+        } catch {
+          loaded[position] = { quarter: state.quarter, error: true };
+        }
+      }
+    }));
+
+    const verified = loaded.filter((item) => item && !item.error);
+    const skippedQuarters = loaded.filter((item) => item?.error).map((item) => item.quarter);
+    if (!verified.length) {
+      return {
+        records: [],
+        issue: "已下载的活动季度资料未能通过完整性校验，已全部跳过。",
+        coverage: {
+          verifiedQuarters: [],
+          skippedQuarters,
+          updateAvailableQuarters: [],
+          updateIncompleteQuarters: [],
+          incompleteQuarters,
+        },
+      };
+    }
+
+    const records = verified.flatMap((item) => item.records);
+    return {
+      records,
+      issue: "",
+      coverage: {
+        verifiedQuarters: verified.map((item) => item.quarter),
+        skippedQuarters,
+        updateAvailableQuarters: verified
+          .filter((item) => item.status === "UPDATE_AVAILABLE")
+          .map((item) => item.quarter),
+        updateIncompleteQuarters: verified
+          .filter((item) => item.status === "UPDATE_INCOMPLETE")
+          .map((item) => item.quarter),
+        incompleteQuarters,
+        appearanceCount: records.length,
+        subjectCount: new Set(records.map((record) => record.id)).size,
+      },
+    };
+  }
+
+  async function ensureArchiveIndex() {
+    if (index) return index;
+    if (indexPromise) return indexPromise;
+    const request = (async () => {
+      const response = await fetch(root.dataset.archiveIndexUrl, { credentials: "same-origin" });
+      if (!response.ok) throw new Error("archive index unavailable");
+      index = await response.json();
+      renderQuarterSelector();
+      renderYearSelector();
+      root.querySelectorAll("[data-archive-range-selector] input, [data-archive-range-selector] button")
+        .forEach((control) => { control.disabled = false; });
+      return index;
+    })();
+    indexPromise = request;
+    try {
+      return await request;
+    } finally {
+      if (indexPromise === request) indexPromise = null;
+    }
+  }
+
+  function showArchiveIndexUnavailable(location = null) {
+    if (location && location.kind !== "local") applyScope(location.kind, location.value);
+    else if (state.scope.kind !== "local") setTab("year");
+    scopeIntent += 1;
+    scopePending = false;
+    loadError = true;
+    records = [];
+    recordByKey = new Map();
+    loadedScope = null;
+    selectors.list?.replaceChildren();
+    listSignature = "";
+    signatureRecords = null;
+    if (selectors.summary) selectors.summary.textContent = "DATA UNAVAILABLE · 年度档案目录不可用";
+    if (selectors.scopePanel) {
+      selectors.scopePanel.hidden = false;
+      selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>无法读取年度档案目录</h2><p>可切换到“仅本机”检索已验证的离线季度资料。</p>';
+    }
+    updateScopeAvailability();
+  }
+
   async function loadDetailRecord(record) {
+    if (state.scope.kind === "local") {
+      const snapshotRecord = recordByKey.get(record.key);
+      if (!snapshotRecord) throw new Error("verified local record unavailable");
+      return snapshotRecord;
+    }
     let quarterRecords = detailByQuarter.get(record.quarter);
     if (!quarterRecords) {
       const response = await fetch(`../data/quarters/${record.quarter}.json`, {
@@ -2243,13 +3083,13 @@
       image.width = 52;
       image.height = 74;
       image.loading = sequence <= 10 ? "eager" : "lazy";
-      image.src = `../${coverPath}`;
+      image.decoding = "async";
       image.alt = "";
-      image.addEventListener("error", () => {
-        image.remove();
-        cover.classList.add("subject-row__cover--missing");
-        cover.innerHTML = "<span>ARCHIVE</span>";
-      }, { once: true });
+      archive.browseCoverPath(root, coverPath).catch(() => coverPath).then((preview) => {
+        if (preview !== coverPath) image.dataset.coverFallback = `../${coverPath}`;
+        image.src = `../${preview}`;
+        archive.bindBrowseCover(image, cover);
+      });
       cover.append(image);
     } else {
       cover.classList.add("subject-row__cover--missing");
@@ -2311,89 +3151,140 @@
 
   function buildLists(result) {
     if (!selectors.list) return;
-    const signature = records.map((record) => record.key).join("\u0000");
-    if (signature !== listSignature) {
-      selectors.list.replaceChildren();
-      listSections = new Map();
-      rowByKey = new Map();
-      const groups = [
-        ["tv", "all", "电视节目"],
-        ["movie", "premiere", "剧场版"],
-      ];
-      groups.forEach(([media, appearance, title]) => {
-        const sectionRecords = records.filter((record) => (
-          record.media === (media === "movie" ? "MOVIE" : "TV")
-          && (appearance === "all" || record.appearance === appearance)
-        ));
-        const section = document.createElement("section");
-        section.className = "result-section";
-        section.dataset.listSection = media;
-        section.dataset.appearanceSection = appearance;
-        const header = document.createElement("header");
-        header.className = "result-section__header";
-        const code = document.createElement("p");
-        code.className = "result-section__code";
-        code.textContent = `${media.toUpperCase()} / ${appearance.toUpperCase()}`;
-        const heading = document.createElement("h2");
-        heading.textContent = title;
-        const counter = document.createElement("span");
-        counter.dataset.sectionCount = "true";
-        header.append(code, heading, counter);
-        const list = document.createElement("div");
-        list.className = "result-list";
-        sectionRecords.forEach((record, index) => {
-          const row = createRow(record, index + 1);
-          rowByKey.set(record.key, row);
-          list.append(row);
+    if (records !== signatureRecords) {
+      const signature = records.map((record) => record.key).join("\u0000");
+      if (signature !== listSignature) {
+        selectors.list.replaceChildren();
+        listSections = new Map();
+        rowByKey = new Map();
+        const groups = [
+          ["tv", "all", "电视节目"],
+          ["movie", "premiere", "剧场版"],
+        ];
+        groups.forEach(([media, appearance, title]) => {
+          const sectionRecords = records.filter((record) => (
+            record.media === (media === "movie" ? "MOVIE" : "TV")
+            && (appearance === "all" || record.appearance === appearance)
+          ));
+          const section = document.createElement("section");
+          section.className = "result-section";
+          section.dataset.listSection = media;
+          section.dataset.appearanceSection = appearance;
+          const header = document.createElement("header");
+          header.className = "result-section__header";
+          const code = document.createElement("p");
+          code.className = "result-section__code";
+          code.textContent = `${media.toUpperCase()} / ${appearance.toUpperCase()}`;
+          const heading = document.createElement("h2");
+          heading.textContent = title;
+          const counter = document.createElement("span");
+          counter.dataset.sectionCount = "true";
+          header.append(code, heading, counter);
+          const list = document.createElement("div");
+          list.className = "result-list";
+          sectionRecords.forEach((record, index) => {
+            const row = createRow(record, index + 1);
+            rowByKey.set(record.key, row);
+            list.append(row);
+          });
+          section.append(header, list);
+          selectors.list.append(section);
+          listSections.set(media, { section, list });
         });
-        section.append(header, list);
-        selectors.list.append(section);
-        listSections.set(media, { section, list, records: sectionRecords });
-      });
-      rows = [...selectors.list.querySelectorAll(".subject-row")];
-      listSignature = signature;
+        rows = [...rowByKey.values()];
+        listSignature = signature;
+      }
+      signatureRecords = records;
     }
     const positions = new Map(result.all.map((record, index) => [record.key, index + 1]));
     const visibleRecords = result.pageRecords;
-    const visible = new Set(visibleRecords.map((record) => record.key));
+    const motionGroups = [];
     for (const [media, group] of listSections) {
       const sectionMedia = media === "movie" ? "MOVIE" : "TV";
       const matching = result.all.filter((record) => record.media === sectionMedia);
-      const matchingKeys = new Set(matching.map((record) => record.key));
-      const ordered = [
-        ...matching,
-        ...group.records.filter((record) => !matchingKeys.has(record.key)),
-      ];
-      group.list.replaceChildren(
-        ...ordered
-          .filter((record) => visible.has(record.key))
-          .map((record) => rowByKey.get(record.key)),
-      );
+      const pageRows = visibleRecords
+        .filter((record) => record.media === sectionMedia)
+        .map((record) => rowByKey.get(record.key))
+        .filter(Boolean);
+      motionGroups.push(pageRows);
+      archive.reconcileChildren(group.list, pageRows);
       const count = matching.length;
-      group.section.hidden = state.media !== media || count === 0;
+      const hidden = state.media !== media || count === 0;
+      if (group.section.hidden !== hidden) group.section.hidden = hidden;
       const counter = group.section.querySelector("[data-section-count]");
-      if (counter) counter.textContent = String(count).padStart(2, "0");
-      group.records.forEach((record) => {
+      const countText = String(count).padStart(2, "0");
+      if (counter && counter.textContent !== countText) counter.textContent = countText;
+      for (const record of visibleRecords) {
+        if (record.media !== sectionMedia) continue;
         const row = rowByKey.get(record.key);
-        if (!row) return;
-        row.hidden = false;
-        row.classList.toggle("is-selected", record.key === state.selectedOccurrence);
-        const button = row.querySelector("[data-open-subject]");
-        if (button) button.setAttribute("aria-expanded", String(record.key === state.selectedOccurrence));
+        if (!row) continue;
+        if (row.hidden) row.hidden = false;
+        updateRowSelection(record.key, record.key === state.selectedOccurrence);
         const sequence = row.querySelector(".subject-row__sequence");
-        if (sequence) sequence.textContent = String(positions.get(record.key) || 0).padStart(3, "0");
-      });
+        const number = String(positions.get(record.key) || 0).padStart(3, "0");
+        if (sequence && sequence.textContent !== number) sequence.textContent = number;
+      }
     }
-    rows = [...rowByKey.values()];
+    archive.setResultMotionGroups(root, motionGroups);
+  }
+
+  function updateRowSelection(recordKey, selected) {
+    const row = rowByKey.get(recordKey);
+    if (!row) return;
+    if (row.classList.contains("is-selected") !== selected) {
+      row.classList.toggle("is-selected", selected);
+    }
+    const button = row.querySelector("[data-open-subject]");
+    const expanded = String(selected);
+    if (button?.getAttribute("aria-expanded") !== expanded) {
+      button?.setAttribute("aria-expanded", expanded);
+    }
   }
 
   function scopeCounts() {
     return archive.scopeCounts(records);
   }
 
+  function localCoverageText() {
+    if (localIssue) return localIssue;
+    if (!localCoverage) return "选择“仅本机”后读取此设备已下载的季度资料。";
+    const quarters = localCoverage.verifiedQuarters.join("、");
+    const updateAvailable = localCoverage.updateAvailableQuarters?.length
+      ? `；${localCoverage.updateAvailableQuarters.join("、")} 有新版本，使用已验证的本机版本`
+      : "";
+    const updateIncomplete = localCoverage.updateIncompleteQuarters?.length
+      ? `；${localCoverage.updateIncompleteQuarters.join("、")} 更新未完成，使用仍可验证的旧版`
+      : "";
+    const skipped = localCoverage.skippedQuarters.length
+      ? `；跳过未通过校验的 ${localCoverage.skippedQuarters.join("、")}`
+      : "";
+    const incomplete = localCoverage.incompleteQuarters?.length
+      ? `；未完成且未纳入：${localCoverage.incompleteQuarters.join("、")}`
+      : "";
+    return `本机覆盖 ${localCoverage.verifiedQuarters.length} 个季度（${quarters}），${localCoverage.appearanceCount} 条播出记录 / ${localCoverage.subjectCount} 部作品${updateAvailable}${updateIncomplete}${skipped}${incomplete}。仅查询本机已验证资料。`;
+  }
+
+  function renderLocalStatus() {
+    if (selectors.localStatus) selectors.localStatus.textContent = localCoverageText();
+  }
+
   function renderScope(result) {
     if (!selectors.scopePanel) return;
     const counts = scopeCounts();
+    if (state.scope.kind === "local") {
+      const currentSubjects = new Set(result.all.map((record) => record.id)).size;
+      const heading = localIssue ? "本机离线资料不可用" : "仅本机可用";
+      const summary = localIssue
+        ? localIssue
+        : `当前结果 ${result.total} 条播出记录（${currentSubjects} 部作品）；覆盖 ${localCoverage.verifiedQuarters.length} 个季度。`;
+      selectors.scopePanel.innerHTML = `<p class="workspace-panel__code">LOCAL SNAPSHOT</p><h2>${heading}</h2>
+        <p class="workspace-panel__lead">${esc(localCoverageText())}</p>
+        <dl class="scope-facts"><div><dt>TV</dt><dd>${counts.tv}</dd></div><div><dt>MOVIE</dt><dd>${counts.movie}</dd></div>
+        <div><dt>PREMIERE</dt><dd>${counts.premiere}</dd></div><div><dt>CONTINUING</dt><dd>${counts.continuing}</dd></div></dl>
+        <p class="workspace-panel__summary" data-scope-summary>${esc(summary)}</p>`;
+      renderLocalStatus();
+      return;
+    }
     const label = state.scope.kind === "range"
       ? `${state.scope.value.from}—${state.scope.value.to}`
       : state.scope.value;
@@ -2401,7 +3292,36 @@
       <p class="workspace-panel__lead">范围内每个 quarter appearance 都保留其原始坐标。</p>
       <dl class="scope-facts"><div><dt>TV</dt><dd>${counts.tv}</dd></div><div><dt>MOVIE</dt><dd>${counts.movie}</dd></div>
       <div><dt>PREMIERE</dt><dd>${counts.premiere}</dd></div><div><dt>CONTINUING</dt><dd>${counts.continuing}</dd></div></dl>
-      <p class="workspace-panel__summary">当前结果 ${result.total} / ${records.length} 部 appearance。</p>`;
+      <p class="workspace-panel__summary" data-scope-summary>当前结果 ${result.total} / ${records.length} 部 appearance。</p>`;
+  }
+
+  function renderScopeSummary(result) {
+    const summaryNode = selectors.scopePanel?.querySelector("[data-scope-summary]");
+    if (!summaryNode) return;
+    const text = state.scope.kind === "local"
+      ? localIssue
+        ? localIssue
+        : `当前结果 ${result.total} 条播出记录（${new Set(result.all.map((record) => record.id)).size} 部作品）；覆盖 ${localCoverage?.verifiedQuarters.length || 0} 个季度。`
+      : `当前结果 ${result.total} / ${records.length} 部 appearance。`;
+    if (summaryNode.textContent !== text) summaryNode.textContent = text;
+  }
+
+  function renderWorkspaceVisibility() {
+    for (const [panel, visible] of [
+      [selectors.detailPanel, state.workspaceMode === "detail"],
+      [selectors.scopePanel, state.workspaceMode === "scope"],
+      [selectors.filterPanel, state.workspaceMode === "filter"],
+    ]) {
+      if (panel && panel.hidden === visible) panel.hidden = !visible;
+    }
+    if (root.dataset.workspaceMode !== state.workspaceMode) {
+      root.dataset.workspaceMode = state.workspaceMode;
+    }
+    const filterButton = root.querySelector("[data-filter-toggle]");
+    const expanded = String(state.workspaceMode === "filter");
+    if (filterButton?.getAttribute("aria-expanded") !== expanded) {
+      filterButton?.setAttribute("aria-expanded", expanded);
+    }
   }
 
   function clearSelection(removeHash = false) {
@@ -2440,18 +3360,32 @@
 
   function renderRows(result) {
     buildLists(result);
-    rows.forEach((row) => {
-      const record = recordByKey.get(row.dataset.recordKey);
-      row.classList.toggle("is-selected", Boolean(record && record.key === state.selectedOccurrence));
-      const button = row.querySelector("[data-open-subject]");
-      if (button) button.setAttribute("aria-expanded", String(record && record.key === state.selectedOccurrence));
-    });
-    if (selectors.summary) selectors.summary.textContent = `${result.total} / ${records.filter((record) => record.media === (state.media === "movie" ? "MOVIE" : "TV")).length} 部 appearance · 第 ${result.page} / ${result.pageCount} 页`;
-    if (selectors.noResults) selectors.noResults.hidden = result.total !== 0;
+    if (selectors.summary) {
+      const total = records.filter(
+        (record) => record.media === (state.media === "movie" ? "MOVIE" : "TV"),
+      ).length;
+      const text = state.scope.kind === "local"
+        ? localIssue
+          ? localIssue
+          : `当前结果 ${result.total} 条播出记录（${new Set(result.all.map((record) => record.id)).size} 部作品） · 本机覆盖 ${localCoverage?.verifiedQuarters.length || 0} 个季度`
+        : `${result.total} / ${total} 部 appearance · 第 ${result.page} / ${result.pageCount} 页`;
+      if (selectors.summary.textContent !== text) selectors.summary.textContent = text;
+    }
+    const hideNoResults = result.total !== 0 || Boolean(localIssue);
+    if (selectors.noResults && selectors.noResults.hidden !== hideNoResults) {
+      selectors.noResults.hidden = hideNoResults;
+    }
+    renderLocalStatus();
   }
 
   function renderPager(result) {
     if (!selectors.pager) return;
+    const tokens = result.pageCount <= 1
+      ? []
+      : archive.paginationTokens(result.page, result.pageCount);
+    const signature = `${result.page}:${result.pageCount}:${tokens.join(",")}`;
+    if (signature === pagerSignature) return;
+    pagerSignature = signature;
     selectors.pager.replaceChildren();
     selectors.pager.hidden = result.pageCount <= 1;
     if (result.pageCount <= 1) return;
@@ -2464,14 +3398,15 @@
       if (current) button.setAttribute("aria-current", "page");
       button.addEventListener("click", () => {
         state.page = page;
-        clearSelection(true);
+        clearSelection(false);
         render();
+        writeArchiveUrl();
         root.querySelector(".master-pane")?.scrollIntoView({ block: "start" });
       });
       selectors.pager.append(button);
     };
     add("上一页", result.page - 1, result.page <= 1);
-    for (const token of archive.paginationTokens(result.page, result.pageCount)) {
+    for (const token of tokens) {
       if (token === "ellipsis") {
         const ellipsis = document.createElement("span");
         ellipsis.textContent = "…";
@@ -2499,6 +3434,7 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "active-filter";
+      button.dataset.activeFilterType = item.type;
       button.textContent = `${item.label} ×`;
       button.addEventListener("click", () => {
         if (item.type === "query") {
@@ -2506,15 +3442,47 @@
           if (selectors.search) selectors.search.value = "";
         } else state.filters[item.type] = state.filters[item.type].filter((value) => value !== item.value);
         state.page = 1;
-        clearSelection(true);
+        clearSelection(false);
         render();
+        writeArchiveUrl();
       });
       selectors.activeFilters.append(button);
     });
   }
 
+  function updateQueryFilterChip() {
+    if (!selectors.activeFilters) return;
+    let button = selectors.activeFilters.querySelector('[data-active-filter-type="query"]');
+    if (state.query) {
+      const label = `搜索：${state.query} ×`;
+      if (!button) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "active-filter";
+        button.dataset.activeFilterType = "query";
+        button.addEventListener("click", () => {
+          state.query = "";
+          if (selectors.search) selectors.search.value = "";
+          state.page = 1;
+          clearSelection(false);
+          render();
+          writeArchiveUrl();
+        });
+        selectors.activeFilters.prepend(button);
+      }
+      if (button.firstChild?.nodeType === Node.TEXT_NODE) {
+        if (button.firstChild.nodeValue !== label) button.firstChild.nodeValue = label;
+      } else {
+        button.textContent = label;
+      }
+    } else {
+      button?.remove();
+    }
+    selectors.activeFilters.hidden = selectors.activeFilters.childElementCount === 0;
+  }
+
   function render() {
-    if (loadError) return;
+    if (scopePending || loadError) return;
     root.dataset.viewMode = state.viewMode;
     const result = archive.applyPipeline(records, state);
     state.page = result.page;
@@ -2522,10 +3490,7 @@
     renderScope(result);
     renderActiveFilters();
     renderPager(result);
-    if (selectors.scopePanel) selectors.scopePanel.hidden = state.workspaceMode !== "scope";
-    if (selectors.detailPanel) selectors.detailPanel.hidden = state.workspaceMode !== "detail";
-    if (selectors.filterPanel) selectors.filterPanel.hidden = state.workspaceMode !== "filter";
-    root.dataset.workspaceMode = state.workspaceMode;
+    renderWorkspaceVisibility();
     const sortButton = root.querySelector("[data-sort-toggle]");
     if (sortButton) sortButton.textContent = archive.SORTS[state.sort];
     root.querySelectorAll("[data-media-mode]").forEach((button) => {
@@ -2537,9 +3502,27 @@
     const filterButton = root.querySelector("[data-filter-toggle]");
     if (filterButton) {
       filterButton.querySelector("[data-filter-count]").textContent = filterCount() ? `(${filterCount()})` : "";
-      filterButton.setAttribute("aria-expanded", String(state.workspaceMode === "filter"));
     }
     if (sortButton) sortButton.setAttribute("aria-expanded", String(selectors.sortPopover?.hidden === false));
+  }
+
+  function renderSearchResults() {
+    if (!selectors.search || state.query === selectors.search.value) return;
+    const previousSelection = state.selectedOccurrence;
+    state.query = boundedArchiveText(selectors.search.value, MAX_ARCHIVE_QUERY_LENGTH);
+    if (selectors.search.value !== state.query) selectors.search.value = state.query;
+    state.page = 1;
+    clearSelection(false);
+    if (previousSelection) updateRowSelection(previousSelection, false);
+    if (scopePending || loadError) return;
+    const result = archive.applyPipeline(records, state);
+    state.page = result.page;
+    renderRows(result);
+    renderScopeSummary(result);
+    updateQueryFilterChip();
+    renderPager(result);
+    renderWorkspaceVisibility();
+    writeArchiveUrl({ replace: true });
   }
 
   function filterCount() {
@@ -2562,12 +3545,20 @@
     state.draftFilters = null;
   }
 
+  function cancelMobileFilterForHistoryTraversal() {
+    if (window.innerWidth >= 768 || state.workspaceMode !== "filter") return false;
+    discardFilterDraft();
+    state.workspaceMode = "scope";
+    renderWorkspaceVisibility();
+    return true;
+  }
+
   function applyFilterDraft() {
     if (!state.draftFilters) return;
     state.filters = state.draftFilters;
     state.draftFilters = null;
     state.page = 1;
-    clearSelection(true);
+    clearSelection(false);
   }
 
   function closeFilterAndRestoreFocus(applyDraft = false) {
@@ -2577,6 +3568,7 @@
       closeFilter();
       render();
     });
+    if (applyDraft) writeArchiveUrl();
     root.querySelector("[data-filter-toggle]")?.focus();
     restoreListScroll();
   }
@@ -2624,14 +3616,21 @@
     dialog.showModal();
   }
 
-  async function selectRecord(record, replace = false) {
-    if (!record) return;
+  async function selectRecord(record, replace = false, writeHistory = true) {
+    if (
+      !record
+      || scopePending
+      || loadError
+      || !sameScope(loadedScope, state.scope)
+      || !recordByKey.has(record.key)
+    ) return;
     if (window.innerWidth < 768 && state.workspaceMode !== "detail") {
       state.listScrollTop = window.scrollY;
       detailGesture?.lockBackground?.();
     }
     const request = ++detailRequest;
     const hadSelection = state.selectedOccurrence !== null;
+    const previousSelection = state.selectedOccurrence;
     const nextDetailHistoryEntry = hadSelection
       ? detailHistoryEntry
       : replace
@@ -2642,14 +3641,24 @@
     state.workspaceMode = "detail";
     root.dataset.detailGesture = "idle";
     selectors.detailPanel?.setAttribute("data-detail-gesture", "idle");
-    if (hadSelection) setDetailHash(record, true, nextDetailHistoryEntry);
-    else setDetailHash(record, replace, nextDetailHistoryEntry);
+    if (writeHistory) {
+      if (hadSelection) setDetailHash(record, true, nextDetailHistoryEntry);
+      else setDetailHash(record, replace, nextDetailHistoryEntry);
+    }
     detailHistoryEntry = nextDetailHistoryEntry;
     if (selectors.detailPanel) {
       selectors.detailPanel.innerHTML = '<p class="workspace-panel__code">DETAIL</p><p class="loading-state">正在读取季度详情…</p>';
       selectors.detailPanel.scrollTop = 0;
     }
-    render();
+    if (replace) {
+      render();
+    } else {
+      if (previousSelection && previousSelection !== record.key) {
+        updateRowSelection(previousSelection, false);
+      }
+      updateRowSelection(record.key, true);
+      renderWorkspaceVisibility();
+    }
     try {
       const detail = await loadDetailRecord(record);
       if (request !== detailRequest || state.selectedOccurrence !== record.key) return;
@@ -2668,18 +3677,21 @@
 
   function closeDetail(recordKey) {
     const currentHash = window.location.hash === `#bgm-${state.selectedSubjectId}`;
+    const previousSelection = state.selectedOccurrence;
     if (detailHistoryEntry && currentHash) {
       detailHistoryEntry = false;
       clearSelection(false);
-      render();
-      focusRecordTrigger(recordKey);
+      if (previousSelection) updateRowSelection(previousSelection, false);
+      renderWorkspaceVisibility();
+      if (recordKey) focusRecordTrigger(recordKey);
       restoreListScroll();
       window.history.back();
       return;
     }
     clearSelection(true);
-    render();
-    focusRecordTrigger(recordKey);
+    if (previousSelection) updateRowSelection(previousSelection, false);
+    renderWorkspaceVisibility();
+    if (recordKey) focusRecordTrigger(recordKey);
     restoreListScroll();
   }
 
@@ -2692,24 +3704,57 @@
     }) || null;
   }
 
-  async function openHash() {
-    const match = window.location.hash.match(/^#bgm-(\d+)$/);
-    if (!match || !records.length) {
+  async function openHash({ suppressFocusAndScroll = false, preserveHistory = false } = {}) {
+    if (scopePending || loadError || !sameScope(loadedScope, state.scope)) return;
+    const match = window.location.hash.match(ARCHIVE_HASH_PATTERN);
+    if (!match) {
       if (!match && state.selectedOccurrence !== null) {
         const previousKey = state.selectedOccurrence;
         clearSelection(false);
-        render();
-        focusRecordTrigger(previousKey);
+        updateRowSelection(previousKey, false);
+        renderWorkspaceVisibility();
+        if (!suppressFocusAndScroll) {
+          focusRecordTrigger(previousKey);
+          restoreListScroll();
+        }
+      }
+      if (!match && state.selectedOccurrence === null && !suppressFocusAndScroll) {
         restoreListScroll();
       }
-      if (!match && state.selectedOccurrence === null) restoreListScroll();
       return;
     }
-    const candidate = archive.selectedRecord(records, Number(match[1]));
+    const requestedOccurrence = readOccurrenceParameter();
+    if (!records.length && !requestedOccurrence) return;
+    if (!records.length && requestedOccurrence) {
+      showUnavailableArchiveOccurrence(Number(match[1]), requestedOccurrence);
+      return;
+    }
+    const [requestedQuarter, requestedAppearance] = requestedOccurrence.split(".");
+    const exactRecord = requestedOccurrence
+      ? records.find((record) => Number(record.id) === Number(match[1])
+        && record.quarter === requestedQuarter
+        && record.appearance === requestedAppearance)
+      : null;
+    if (requestedOccurrence && !exactRecord) {
+      showUnavailableArchiveOccurrence(Number(match[1]), requestedOccurrence);
+      return;
+    }
+    const historyKey = state.scope.kind === "local"
+      ? window.history.state?.bsbDetailKey
+      : null;
+    const historyRecord = historyKey ? recordByKey.get(historyKey) : null;
+    const candidate = exactRecord || (historyRecord?.id === Number(match[1])
+      ? historyRecord
+      : archive.selectedRecord(records, Number(match[1])));
     if (!candidate) {
-      const url = new URL(window.location.href);
-      url.hash = "";
-      window.history.replaceState({}, "", url);
+      if (preserveHistory) {
+        const previousKey = state.selectedOccurrence;
+        clearSelection(false);
+        if (previousKey) updateRowSelection(previousKey, false);
+        renderWorkspaceVisibility();
+      } else {
+        writeArchiveUrl({ replace: true });
+      }
       return;
     }
     state.media = candidate.media === "MOVIE" ? "movie" : "tv";
@@ -2717,7 +3762,40 @@
     const result = archive.applyPipeline(records, state);
     const position = result.all.findIndex((record) => record.key === candidate.key);
     if (position >= 0) state.page = Math.floor(position / state.pageSize) + 1;
-    await selectRecord(candidate, true);
+    await selectRecord(candidate, true, !preserveHistory);
+  }
+
+  function showUnavailableArchiveOccurrence(subjectId, occurrence) {
+    const quarter = occurrence.slice(0, 7);
+    const previousSelection = state.selectedOccurrence;
+    clearSelection(false);
+    if (previousSelection) updateRowSelection(previousSelection, false);
+    state.selectedSubjectId = subjectId;
+    state.workspaceMode = "detail";
+    detailHistoryEntry = window.history.state?.bsbDetailEntry === true;
+    detailGesture?.lockBackground?.();
+    const localMessage = state.scope.kind === "local"
+      ? localIssue
+        ? `${localIssue} 本机未能提供 ${quarter} 的已验证记录。`
+        : `本机当前未覆盖 ${quarter}，此链接不会下载或补读该季度资料。`
+      : `当前范围未包含 ${quarter} 的这条播出记录。`;
+    if (state.scope.kind === "local" && localIssue) {
+      const summary = selectors.scopePanel?.querySelector("[data-scope-summary]");
+      if (summary) summary.textContent = `URL 请求 ${quarter} / ${occurrence.slice(8)}；${localMessage}`;
+      state.selectedSubjectId = null;
+      detailHistoryEntry = false;
+      state.workspaceMode = "scope";
+      renderWorkspaceVisibility();
+      return;
+    }
+    if (selectors.detailPanel) {
+      selectors.detailPanel.innerHTML = `<div class="detail-head"><div class="detail-topbar" role="navigation" aria-label="详情导航"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span class="detail-close__icon" aria-hidden="true">←</span><span class="detail-close__back">返回结果</span></button><p class="workspace-panel__code detail-topbar__context">APPEARANCE / ${esc(occurrence)}</p></div></div><h2>播出记录当前不可用</h2><p class="detail-summary">${esc(localMessage)} 查询条件只恢复浏览意图，不会补造或从其他季度替代。</p>`;
+      selectors.detailPanel.querySelector("[data-detail-close]")?.addEventListener(
+        "click",
+        () => closeDetail(null),
+      );
+    }
+    renderWorkspaceVisibility();
   }
 
   function renderFilterPanel() {
@@ -2754,6 +3832,7 @@
             state.page = 1;
             state.workspaceMode = "filter";
             render();
+            writeCurrentArchiveUrl();
           }
           renderFilterPanel();
         });
@@ -2776,8 +3855,11 @@
         renderFilterPanel();
         if (!state.draftFilters) {
           state.page = 1;
-          clearSelection(true);
+          clearSelection(false);
           render();
+          writeArchiveUrl();
+        } else {
+          writeArchiveUrl({ replace: true });
         }
       });
     }
@@ -2826,6 +3908,7 @@
             state.page = 1;
             state.workspaceMode = "filter";
             render();
+            writeCurrentArchiveUrl();
           }
           renderFilterPanel();
           const replacement = [...selectors.filterPanel.querySelectorAll("[data-filter-group]")]
@@ -2856,7 +3939,6 @@
   }
 
   function bindControls() {
-    let closeSortPopover = () => {};
     const pageSize = root.querySelector("[data-page-size]");
     if (pageSize && window.BsbListbox) {
       pageSizeControl = window.BsbListbox.create(pageSize, {
@@ -2865,16 +3947,50 @@
         value: String(state.pageSize),
         onChange: (value) => {
           state.pageSize = archive.writePageSize(value);
+          pageSizeUrlExplicit = true;
           state.page = 1;
-          clearSelection(true);
+          clearSelection(false);
           render();
           pageSizeControl?.setValue(String(state.pageSize));
+          writeArchiveUrl();
         },
       });
     }
-    selectors.search?.addEventListener("input", () => archive.withResultMotion("search", root, () => { state.query = selectors.search.value; state.page = 1; clearSelection(true); render(); }));
-    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withResultMotion("media", root, () => { state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv"; discardFilterDraft(); archive.normalizeFiltersForMedia(state, records); state.page = 1; clearSelection(true); renderFilterPanel(); render(); }); }));
-    root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => { closeSortPopover(); archive.withResultMotion("view-mode", root, () => { state.viewMode = archive.writeViewMode(button.dataset.viewMode); render(); }); button.focus(); }));
+    selectors.search?.addEventListener("compositionstart", () => { searchComposing = true; });
+    selectors.search?.addEventListener("compositionend", () => {
+      searchComposing = false;
+      renderSearchResults();
+    });
+    selectors.search?.addEventListener("input", (event) => {
+      if (searchComposing || event.isComposing) return;
+      renderSearchResults();
+    });
+    root.querySelectorAll("[data-media-mode]").forEach((button) => button.addEventListener("click", () => {
+      closeSortPopover();
+      archive.withResultMotion("media", root, () => {
+        state.media = button.dataset.mediaMode === "movie" ? "movie" : "tv";
+        discardFilterDraft();
+        archive.normalizeFiltersForMedia(state, records);
+        state.page = 1;
+        clearSelection(false);
+        renderFilterPanel();
+        render();
+        writeArchiveUrl();
+      });
+    }));
+    root.querySelectorAll("[data-view-mode]").forEach((button) => button.addEventListener("click", () => {
+      closeSortPopover();
+      archive.withResultMotion("view-mode", root, () => {
+        state.viewMode = archive.writeViewMode(button.dataset.viewMode);
+        root.dataset.viewMode = state.viewMode;
+        root.querySelectorAll("[data-view-mode]").forEach((viewButton) => {
+          viewButton.setAttribute(
+            "aria-pressed",
+            String(viewButton.dataset.viewMode === state.viewMode),
+          );
+        });
+      });
+    }));
     root.querySelector("[data-filter-toggle]")?.addEventListener("click", () => {
       closeSortPopover();
       if (state.workspaceMode === "filter") closeFilterAndRestoreFocus(false);
@@ -2909,8 +4025,9 @@
             state.sort = value;
             state.page = 1;
             closeSortPopover(true);
-            clearSelection(true);
+            clearSelection(false);
             render();
+            writeArchiveUrl();
           });
         });
         return button;
@@ -2956,27 +4073,15 @@
     document.addEventListener("bsb-quarter-sheet-open", () => closeSortPopover());
     document.addEventListener("bsb-mobile-menu-open", () => closeSortPopover());
     window.addEventListener("scroll", () => closeSortPopover(), { passive: true });
-    root.querySelector("[data-clear-all]")?.addEventListener("click", () => archive.withResultMotion("clear-filter", root, () => { state.query = ""; state.filterOptionQuery = ""; state.filters = { sources: [], tags: [], sections: [] }; if (selectors.search) selectors.search.value = ""; state.page = 1; clearSelection(true); render(); }));
-    root.querySelectorAll("[data-scope-choice]").forEach((button) => button.addEventListener("click", () => {
-      closeSortPopover();
-      const kind = button.dataset.scopeChoice;
-      setTab(kind);
-      if (kind === "quarter") { state.scope = { kind: "quarter", value: "" }; selectors.browser.hidden = true; return; }
-      if (kind === "year") {
-        const value = yearControl?.getValue() || String(index?.latest_quarter || "").slice(0, 4);
-        setScope("year", value);
-      }
-      if (kind === "range") {
-        const fallback = Number(
-          state.scope.kind === "year"
-            ? state.scope.value
-            : String(index?.latest_quarter || "").slice(0, 4)
-        );
-        const from = root.querySelector("[data-archive-from]");
-        const to = root.querySelector("[data-archive-to]");
-        if (from && !from.value) from.value = String(fallback);
-        if (to && !to.value) to.value = String(fallback);
-      }
+    root.querySelector("[data-clear-all]")?.addEventListener("click", () => archive.withResultMotion("clear-filter", root, () => {
+      state.query = "";
+      state.filterOptionQuery = "";
+      state.filters = { sources: [], tags: [], sections: [] };
+      if (selectors.search) selectors.search.value = "";
+      state.page = 1;
+      clearSelection(false);
+      render();
+      writeArchiveUrl();
     }));
     root.querySelector("[data-range-apply]")?.addEventListener("click", () => {
       const range = normalRange(root.querySelector("[data-archive-from]")?.value, root.querySelector("[data-archive-to]")?.value);
@@ -2990,65 +4095,150 @@
       root.querySelector("[data-archive-to]").value = String(value.to);
       setScope("range", value);
     }));
-    window.addEventListener("popstate", () => { void restoreArchiveLocation(); });
-    window.addEventListener("hashchange", openHash);
+    window.addEventListener("hashchange", (event) => {
+      if (pendingPopstateHashchange?.url === event.newURL) {
+        pendingPopstateHashchange = null;
+        return;
+      }
+      pendingPopstateHashchange = null;
+      void openHash();
+    });
     window.addEventListener("resize", () => render());
     bindDetailGesture();
   }
 
-  async function setScope(kind, value, push = true) {
-    if (!index) return;
-    const normalized = kind === "range" ? normalRange(value.from, value.to) : String(value);
+  async function setScope(kind, value, push = true, routeOptions = {}) {
+    if (kind !== "local" && !index) return;
+    const normalized = kind === "local"
+      ? ""
+      : kind === "range"
+        ? normalRange(value.from, value.to)
+        : String(value);
     if (kind === "range" && !normalized) return;
-    state.scope = { kind, value: normalized };
-    state.page = 1;
-    state.query = "";
-    state.filters = { sources: [], tags: [], sections: [] };
-    discardFilterDraft();
-    if (selectors.search) selectors.search.value = "";
-    clearSelection(false);
-    if (push) setScopeUrl(kind, normalized);
-    setTab(kind);
-    renderYearSelector();
-    if (kind === "range") {
-      const from = root.querySelector("[data-archive-from]");
-      const to = root.querySelector("[data-archive-to]");
-      if (from) from.value = String(normalized.from);
-      if (to) to.value = String(normalized.to);
-    }
-    if (kind === "quarter") return;
+    const intent = ++scopeIntent;
+    scopePending = true;
     loadError = false;
-    try {
-      records = await loadCatalogs(yearsForScope(kind, normalized));
-      recordByKey = new Map(records.map((record) => [record.key, record]));
-      renderFilterPanel();
-      if (selectors.scopeLabel) selectors.scopeLabel.textContent = kind === "range" ? `RANGE / ${normalized.from}—${normalized.to}` : `YEAR / ${normalized}`;
-      render();
-      archive.releaseBrowsePrepaint(root, state.viewMode);
-      if (!entrancePlayed) {
-        entrancePlayed = true;
-        archive.playEntranceStagger(root);
+    if (kind === "local") {
+      localCoverage = null;
+      localIssue = "";
+      records = [];
+      recordByKey = new Map();
+      selectors.list?.replaceChildren();
+      rows = [];
+      rowByKey = new Map();
+      listSections = new Map();
+      listSignature = "";
+      signatureRecords = null;
+    }
+    applyScope(kind, normalized);
+    if (push) setScopeUrl(kind, normalized);
+    updateScopeAvailability();
+    if (kind === "quarter") return;
+    if (kind === "local") {
+      if (selectors.summary) selectors.summary.textContent = "正在校验本机已下载的季度资料…";
+      if (selectors.localStatus) selectors.localStatus.textContent = "正在校验本机已下载的季度资料…";
+      if (selectors.scopePanel) {
+        selectors.scopePanel.hidden = false;
+        selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">LOCAL SNAPSHOT</p><h2>正在检查本机资料</h2><p class="loading-state">正在验证活动季度的数据完整性…</p>';
       }
-      await openHash();
+      try {
+        const snapshot = await loadLocalSnapshotRecords();
+        if (intent !== scopeIntent) return;
+        records = snapshot.records;
+        recordByKey = new Map(records.map((record) => [record.key, record]));
+        localCoverage = snapshot.coverage;
+        localIssue = snapshot.issue;
+        loadedScope = { kind, value: normalized };
+        scopePending = false;
+        loadError = false;
+        updateScopeAvailability();
+        await restoreLoadedArchiveLocation(routeOptions);
+      } catch {
+        if (intent !== scopeIntent) return;
+        records = [];
+        recordByKey = new Map();
+        localCoverage = null;
+        localIssue = "无法读取本机离线季度状态，未显示未经验证的资料。";
+        loadedScope = { kind, value: normalized };
+        scopePending = false;
+        loadError = false;
+        updateScopeAvailability();
+        await restoreLoadedArchiveLocation(routeOptions);
+      }
+      return;
+    }
+    if (selectors.summary) selectors.summary.textContent = "正在读取范围目录…";
+    if (selectors.scopePanel) {
+      selectors.scopePanel.hidden = false;
+      if (selectors.detailPanel) selectors.detailPanel.hidden = true;
+      if (selectors.filterPanel) selectors.filterPanel.hidden = true;
+      const label = kind === "range" ? `${normalized.from}—${normalized.to}` : normalized;
+      selectors.scopePanel.innerHTML = `<p class="workspace-panel__code">ARCHIVE SCOPE</p><h2>${esc(label)}</h2><p class="loading-state">正在读取范围目录…</p>`;
+    }
+    try {
+      const nextRecords = await loadCatalogs(yearsForScope(kind, normalized));
+      if (intent !== scopeIntent) return;
+      records = nextRecords;
+      recordByKey = new Map(records.map((record) => [record.key, record]));
+      loadedScope = { kind, value: kind === "range" ? { ...normalized } : normalized };
+      scopePending = false;
+      loadError = false;
+      updateScopeAvailability();
+      await restoreLoadedArchiveLocation(routeOptions);
     } catch {
+      if (intent !== scopeIntent) return;
+      scopePending = false;
       loadError = true;
-      if (selectors.scopePanel) selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>页面资料未完整生成</h2><p>建议重新 build。</p>';
+      updateScopeAvailability();
+      if (selectors.summary) {
+        selectors.summary.textContent = "DATA UNAVAILABLE · 页面资料未完整生成";
+      }
+      if (selectors.scopePanel) {
+        selectors.scopePanel.hidden = false;
+        selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>页面资料未完整生成</h2><p>建议重新 build。</p>';
+      }
     }
   }
 
   async function load() {
+    root.dataset.viewMode = state.viewMode;
+    bindScopeTabs();
+    bindControls();
+    updateScopeAvailability();
+    if (scopeFromLocation().kind === "local") {
+      await setScope("local", "", false);
+      return;
+    }
     try {
-      const response = await fetch(root.dataset.archiveIndexUrl, { credentials: "same-origin" });
-      if (!response.ok) throw new Error("archive index unavailable");
-      index = await response.json();
-      renderQuarterSelector();
-      renderYearSelector();
-      bindControls();
+      await ensureArchiveIndex();
+      if (scopeFromLocation().kind === "local") return;
+      if (pendingScopeTab === "quarter") {
+        pendingScopeTab = null;
+        state.scope = { kind: "quarter", value: "" };
+        scopePending = false;
+        loadError = false;
+        updateScopeAvailability();
+        return;
+      }
+      if (pendingScopeTab === "range") {
+        pendingScopeTab = null;
+        showRangeSelector();
+        return;
+      }
+      if (pendingScopeTab === "year") {
+        pendingScopeTab = null;
+        const location = scopeFromLocation();
+        const value = location.kind === "year"
+          ? location.value
+          : String(index.latest_quarter || "").slice(0, 4);
+        await setScope("year", value);
+        return;
+      }
       await restoreArchiveLocation();
     } catch {
-      loadError = true;
-      setTab("quarter");
-      if (selectors.quarter) selectors.quarter.innerHTML = '<p class="empty-state">DATA UNAVAILABLE · 页面资料未完整生成</p>';
+      if (scopeFromLocation().kind === "local" || state.scope.kind === "local") return;
+      pendingScopeTab = null;
+      showArchiveIndexUnavailable(scopeFromLocation());
     }
   }
 

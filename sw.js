@@ -1,7 +1,7 @@
 /* Unified Bangumi Side B service worker. */
 "use strict";
 
-const BSB_SHELL_REVISION = "20f8de7c39f3672426e5bb748c319aa5c6514e57ae2de38bb4ce9605d0ed12fd";
+const BSB_SHELL_REVISION = "bdb28570d1a9259cc6f923ee1ecef3c0a1ceda2ca1eeb8e1a156d0bb305409c0";
 const CONTENT_CACHE = "bsb-content-v1";
 const RUNTIME_CACHE = "bsb-runtime-v1";
 const META_CACHE = "bsb-meta-v1";
@@ -10,6 +10,8 @@ const META_PATH = "__bsb_meta__/";
 const SHELL_META = "shell.json";
 const PENDING_SHELL_META = `shell-pending-${BSB_SHELL_REVISION}.json`;
 const CONTENT_MAINTENANCE_LOCK_NAME = "bsb-pwa-content-maintenance";
+const QUARTER_UPDATE_PARAM = "__bsb_update";
+const QUARTER_APP_UPDATE_PARAM = "__bsb_app_update";
 const HEX_64 = /^[a-f0-9]{64}$/;
 
 function scopeUrl(relative = "") {
@@ -149,10 +151,18 @@ async function sha256(buffer) {
 
 async function verifiedResponse(response, resource) {
   if (!response || !response.ok) throw new Error(`resource unavailable: ${resource.url}`);
-  const body = response.clone();
-  const buffer = await body.arrayBuffer();
+  const buffer = await response.clone().arrayBuffer();
   if (buffer.byteLength !== resource.size_bytes || await sha256(buffer) !== resource.content_hash) {
     throw new Error(`resource verification failed: ${resource.url}`);
+  }
+  return response.clone();
+}
+
+async function verifiedHashResponse(response, hash, size = null) {
+  if (!response || !response.ok) throw new Error("versioned resource unavailable");
+  const buffer = await response.clone().arrayBuffer();
+  if ((size !== null && buffer.byteLength !== size) || await sha256(buffer) !== hash) {
+    throw new Error("versioned resource verification failed");
   }
   return response.clone();
 }
@@ -304,6 +314,288 @@ async function authorizedResource(path, hash) {
   return null;
 }
 
+function quarterLabel(value) {
+  return /^\d{4}-(?:01|04|07|10)$/.test(value || "") ? value : null;
+}
+
+function quarterLabelFromPageUrl(value) {
+  const match = /^(\d{4}-(?:01|04|07|10))\/index\.html$/.exec(physicalPath(value));
+  return match ? match[1] : null;
+}
+
+function quarterDataRevisionInHtml(value, quarter) {
+  const main = value.match(/<main\b[^>]*>/i)?.[0] || "";
+  if (!main.includes('data-page="quarter"') || !main.includes(`data-quarter="${quarter}"`)) {
+    return null;
+  }
+  const dataUrl = /\bdata-data-url="([^"]+)"/.exec(main)?.[1];
+  if (!dataUrl) return null;
+  const parsed = new URL(dataUrl, scopeUrl(`${quarter}/index.html`));
+  if (physicalPath(parsed.href) !== `data/quarters/${quarter}.json`) return null;
+  if (!HEX_64.test(parsed.searchParams.get("v") || "")) return null;
+  return parsed.searchParams.get("v");
+}
+
+function onlinePageRequest(quarter, revision) {
+  return new Request(scopeUrl(`${quarter}/index.html?__bsb_online=${revision}`));
+}
+
+function clientPinMetaName(clientId) {
+  return `quarter-clients/${clientId}.json`;
+}
+
+async function deleteMeta(name) {
+  const cache = await caches.open(META_CACHE);
+  await cache.delete(metaRequest(name));
+}
+
+async function quarterSnapshot(quarter) {
+  const state = (await activeQuarterMetadata()).find((item) => item?.quarter === quarter);
+  if (
+    !state
+    || state.status !== "COMPLETE"
+    || state.staging !== null
+    || !state.active
+  ) return null;
+  let manifest;
+  try {
+    manifest = validateManifest(state.active, quarter);
+  } catch {
+    return null;
+  }
+  const pageResource = resourceForPath(manifest, `${quarter}/index.html`);
+  const dataResource = resourceForPath(manifest, `data/quarters/${quarter}.json`);
+  if (
+    !pageResource
+    || !dataResource
+    || manifest.data_revision !== dataResource.content_hash
+  ) return null;
+  const [page, data] = await Promise.all([
+    contentFor(pageResource),
+    contentFor(dataResource),
+  ]);
+  if (!page || !data) return null;
+  const pageText = await page.clone().text();
+  if (quarterDataRevisionInHtml(pageText, quarter) !== manifest.data_revision) return null;
+  return {
+    manifest,
+    page,
+    pageResource,
+    dataResource,
+    dataRevision: manifest.data_revision,
+  };
+}
+
+async function fetchVerifiedResource(resource) {
+  const response = await fetch(scopeUrl(resource.url), {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
+  return verifiedResponse(response, resource);
+}
+
+function pageReferencesResource(html, path, hash) {
+  return html.includes(`${path}?v=${hash}`);
+}
+
+async function prepareOnlineQuarterPage(quarter, expectedRevision = null) {
+  if (!quarterLabel(quarter)) return null;
+  const manifest = validateManifest(
+    await fetchJson(`data/offline/${quarter}.json`),
+    quarter,
+  );
+  if (expectedRevision && manifest.data_revision !== expectedRevision) return null;
+  const pageResource = resourceForPath(manifest, `${quarter}/index.html`);
+  const dataResource = resourceForPath(manifest, `data/quarters/${quarter}.json`);
+  if (
+    !pageResource
+    || !dataResource
+    || manifest.data_revision !== dataResource.content_hash
+  ) return null;
+  const criticalPaths = ["assets/app.css", "assets/app.js", "assets/pwa.js"];
+  const criticalResources = criticalPaths.map((path) => resourceForPath(manifest, path));
+  if (criticalResources.some((resource) => !resource)) return null;
+
+  const [page, data, ...critical] = await Promise.all([
+    fetchVerifiedResource(pageResource),
+    fetchVerifiedResource(dataResource),
+    ...criticalResources.map(fetchVerifiedResource),
+  ]);
+  const pageText = await page.clone().text();
+  if (quarterDataRevisionInHtml(pageText, quarter) !== manifest.data_revision) return null;
+  if (criticalResources.some((resource) => !pageReferencesResource(
+    pageText,
+    resource.url,
+    resource.content_hash,
+  ))) return null;
+
+  const runtime = await caches.open(RUNTIME_CACHE);
+  const cacheable = [
+    [new Request(scopeUrl(`${dataResource.url}?v=${dataResource.content_hash}`)), data],
+    ...criticalResources.map((resource, index) => [
+      new Request(scopeUrl(`${resource.url}?v=${resource.content_hash}`)),
+      critical[index],
+    ]),
+    [onlinePageRequest(quarter, manifest.data_revision), page],
+  ];
+  for (const [request, response] of cacheable) {
+    await runtime.put(request, response.clone());
+    await trimRuntime(runtimeCategory(request)[0], runtimeCategory(request)[1]);
+  }
+  return {
+    page,
+    pageResource,
+    dataRevision: manifest.data_revision,
+  };
+}
+
+async function readQuarterClientPin(clientId, quarter) {
+  if (!clientId) return null;
+  const pin = await readMeta(clientPinMetaName(clientId));
+  if (
+    pin?.quarter !== quarter
+    || !HEX_64.test(pin.data_revision || "")
+    || !HEX_64.test(pin.page_hash || "")
+    || !Number.isInteger(pin.page_size)
+  ) return null;
+  return pin;
+}
+
+async function writeQuarterClientPin(clientId, quarter, pageResource, dataRevision) {
+  if (!clientId || !HEX_64.test(dataRevision || "")) return false;
+  await writeMeta(clientPinMetaName(clientId), {
+    quarter,
+    data_revision: dataRevision,
+    page_hash: pageResource.content_hash,
+    page_size: pageResource.size_bytes,
+  });
+  return true;
+}
+
+async function transferQuarterClientPinRecord(sourceClientId, resultingClientId, pin) {
+  if (
+    !sourceClientId
+    || !resultingClientId
+    || sourceClientId === resultingClientId
+    || !quarterLabel(pin?.quarter)
+    || !HEX_64.test(pin?.data_revision || "")
+    || !HEX_64.test(pin?.page_hash || "")
+    || !Number.isInteger(pin?.page_size)
+  ) return false;
+  await writeMeta(clientPinMetaName(resultingClientId), pin);
+  await deleteMeta(clientPinMetaName(sourceClientId));
+  return true;
+}
+
+async function transferQuarterClientPin(
+  sourceClientId,
+  resultingClientId,
+  quarter,
+  pageResource,
+  dataRevision,
+) {
+  const written = await writeQuarterClientPin(
+    resultingClientId,
+    quarter,
+    pageResource,
+    dataRevision,
+  );
+  if (written && sourceClientId && sourceClientId !== resultingClientId) {
+    await deleteMeta(clientPinMetaName(sourceClientId));
+  }
+}
+
+async function pinnedQuarterPage(clientId, resultingClientId, quarter) {
+  const pin = await readQuarterClientPin(clientId, quarter);
+  if (!pin) return null;
+  const key = onlinePageRequest(quarter, pin.data_revision);
+  const runtime = await caches.open(RUNTIME_CACHE);
+  let response = await runtime.match(key);
+  if (response) {
+    try {
+      response = await verifiedResponse(response, {
+        url: `${quarter}/index.html`,
+        content_hash: pin.page_hash,
+        size_bytes: pin.page_size,
+      });
+      if (quarterDataRevisionInHtml(await response.clone().text(), quarter) !== pin.data_revision) {
+        throw new Error("pinned page data revision mismatch");
+      }
+      await transferQuarterClientPin(clientId, resultingClientId, quarter, {
+        content_hash: pin.page_hash,
+        size_bytes: pin.page_size,
+      }, pin.data_revision);
+      return response;
+    } catch {
+      await runtime.delete(key);
+    }
+  }
+  try {
+    const candidate = await prepareOnlineQuarterPage(quarter, pin.data_revision);
+    if (!candidate) throw new Error("pinned online page is no longer available");
+    await transferQuarterClientPin(
+      clientId,
+      resultingClientId,
+      quarter,
+      candidate.pageResource,
+      candidate.dataRevision,
+    );
+    return candidate.page;
+  } catch {
+    return null;
+  }
+}
+
+async function explicitQuarterUpdate(request, event, quarter, expectedRevision, appUpdate = false) {
+  const snapshot = await quarterSnapshot(quarter);
+  try {
+    if (!appUpdate) {
+      if (!snapshot || snapshot.dataRevision === expectedRevision) {
+        throw new Error("quarter is no longer eligible for an online update");
+      }
+    }
+    const candidate = await prepareOnlineQuarterPage(
+      quarter,
+      appUpdate ? null : expectedRevision,
+    );
+    if (!candidate) throw new Error("online quarter package changed");
+    await transferQuarterClientPin(
+      event.clientId,
+      event.resultingClientId,
+      quarter,
+      candidate.pageResource,
+      candidate.dataRevision,
+    );
+    return candidate.page;
+  } catch {
+    const pinned = await pinnedQuarterPage(
+      event.clientId,
+      event.resultingClientId,
+      quarter,
+    );
+    if (pinned) return pinned;
+    if (snapshot?.page) return snapshot.page;
+    const canonical = new URL(`${quarter}/index.html`, self.registration.scope);
+    return networkFirst(new Request(canonical.href));
+  }
+}
+
+async function quarterFreshnessMessage(quarter, pageRevision) {
+  if (!quarterLabel(quarter) || !HEX_64.test(pageRevision || "")) return null;
+  const snapshot = await quarterSnapshot(quarter);
+  if (!snapshot) return null;
+  const manifest = validateManifest(
+    await fetchJson(`data/offline/${quarter}.json`),
+    quarter,
+  );
+  const dataResource = resourceForPath(manifest, `data/quarters/${quarter}.json`);
+  if (!dataResource || manifest.data_revision !== dataResource.content_hash) return null;
+  await fetchVerifiedResource(dataResource);
+  return manifest.data_revision === pageRevision
+    ? { updated: false }
+    : { updated: true, data_revision: manifest.data_revision };
+}
+
 async function putAuthorizedContent(path, resource, response) {
   return withContentReferenceLease(async () => {
     const current = await authorizedResource(path, resource.content_hash);
@@ -357,37 +649,41 @@ async function versionedResponse(request) {
   const url = new URL(request.url);
   const expected = url.searchParams.get("v");
   const path = physicalPath(url.href);
-  if (!HEX_64.test(expected || "") || !path.match(/^(assets\/|covers\/)/)) return null;
+  if (
+    !HEX_64.test(expected || "")
+    || !path.match(/^(assets\/|covers\/|data\/quarters\/\d{4}-(?:01|04|07|10)\.json$)/)
+  ) return null;
   const authorized = await authorizedResource(path, expected);
-  if (!authorized) {
+  if (authorized) {
+    const cached = await contentFor(authorized);
+    if (cached) return cached;
+  }
+  const runtime = await caches.open(RUNTIME_CACHE);
+  const runtimeCandidate = await runtime.match(request);
+  if (runtimeCandidate) {
     try {
-      const response = await fetch(request);
-      if (response.ok) await rememberRuntime(request, response);
-      return response;
+      const verified = await verifiedHashResponse(
+        runtimeCandidate,
+        expected,
+        authorized?.size_bytes ?? null,
+      );
+      if (authorized) await putAuthorizedContent(path, authorized, verified);
+      return verified;
     } catch {
-      return (await caches.open(RUNTIME_CACHE)).match(request) || null;
+      await runtime.delete(request);
     }
   }
-  const cached = await contentFor(authorized);
-  if (cached) return cached;
   try {
     const response = await fetch(request);
-    const verified = await verifiedResponse(response, authorized);
-    await putAuthorizedContent(path, authorized, verified);
+    const verified = await verifiedHashResponse(
+      response,
+      expected,
+      authorized?.size_bytes ?? null,
+    );
+    if (authorized) await putAuthorizedContent(path, authorized, verified);
+    else await rememberRuntime(request, verified);
     return verified;
   } catch {
-    const runtime = await caches.open(RUNTIME_CACHE);
-    const candidate = await runtime.match(request);
-    if (candidate) {
-      try {
-        const verified = await verifiedResponse(candidate, authorized);
-        await putAuthorizedContent(path, authorized, verified);
-        await runtime.delete(request);
-        return verified;
-      } catch {
-        await runtime.delete(request);
-      }
-    }
     return new Response("Versioned resource unavailable", {
       status: 503,
       headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -436,7 +732,24 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING" || event.data === "SKIP_WAITING") {
     self.skipWaiting();
+    return;
   }
+  if (event.data?.type !== "CHECK_QUARTER_FRESHNESS") return;
+  const quarter = quarterLabel(event.data.quarter);
+  const pageRevision = event.data.page_revision;
+  const sourceQuarter = event.source?.url
+    ? quarterLabelFromPageUrl(event.source.url)
+    : null;
+  const port = event.ports?.[0];
+  if (!port || !quarter || sourceQuarter !== quarter) return;
+  event.waitUntil((async () => {
+    try {
+      const result = await quarterFreshnessMessage(quarter, pageRevision);
+      port.postMessage({ ok: Boolean(result), result });
+    } catch {
+      port.postMessage({ ok: false });
+    }
+  })());
 });
 
 self.addEventListener("fetch", (event) => {
@@ -447,6 +760,55 @@ self.addEventListener("fetch", (event) => {
     || url.origin !== self.location.origin
     || !url.href.startsWith(self.registration.scope)
   ) return;
+  if (request.mode === "navigate") {
+    event.respondWith((async () => {
+      const quarter = quarterLabelFromPageUrl(request.url);
+      const updateRevision = url.searchParams.get(QUARTER_UPDATE_PARAM);
+      const appUpdate = url.searchParams.get(QUARTER_APP_UPDATE_PARAM);
+      if (quarter && updateRevision && !appUpdate && HEX_64.test(updateRevision)) {
+        return explicitQuarterUpdate(request, event, quarter, updateRevision);
+      }
+      if (quarter && appUpdate === "1" && !updateRevision) {
+        return explicitQuarterUpdate(request, event, quarter, null, true);
+      }
+
+      if (event.clientId) {
+        const previousPin = await readMeta(clientPinMetaName(event.clientId));
+        if (previousPin && !quarter) {
+          const previousQuarter = quarterLabel(previousPin.quarter);
+          const validPin = previousQuarter
+            ? await readQuarterClientPin(event.clientId, previousQuarter)
+            : null;
+          if (validPin) {
+            await transferQuarterClientPinRecord(
+              event.clientId,
+              event.resultingClientId,
+              validPin,
+            );
+          } else {
+            await deleteMeta(clientPinMetaName(event.clientId));
+          }
+        } else if (previousPin && previousPin.quarter !== quarter) {
+          await deleteMeta(clientPinMetaName(event.clientId));
+        }
+      }
+      if (quarter && url.search === "") {
+        const pinned = await pinnedQuarterPage(
+          event.clientId,
+          event.resultingClientId,
+          quarter,
+        );
+        if (pinned) return pinned;
+        const snapshot = await quarterSnapshot(quarter);
+        if (snapshot) {
+          await deleteMeta(clientPinMetaName(event.clientId));
+          return snapshot.page;
+        }
+      }
+      return networkFirst(request);
+    })());
+    return;
+  }
   const versioned = versionedResponse(request);
   event.respondWith(versioned.then((response) => response || networkFirst(request)));
 });

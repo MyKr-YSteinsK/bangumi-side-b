@@ -29,6 +29,10 @@
   let installPrompt = null;
   let updateRegistration = null;
   let refreshRequested = false;
+  let quarterOnlineUpdate = null;
+  let quarterUpdateBusy = false;
+  let quarterUpdateStatus = "";
+  let quarterFreshnessPromise = null;
   let queueMutation = Promise.resolve();
   let queueRetryTimer = null;
   let stateChannel = null;
@@ -395,6 +399,52 @@
       }
     }
     return values.sort((left, right) => right.quarter.localeCompare(left.quarter));
+  }
+
+  async function readActiveQuarterData(quarter) {
+    if (!supported() || !QUARTER.test(quarter || "")) {
+      throw new Error("本机离线资料不可用");
+    }
+    return withContentReferenceLease(async () => {
+      const state = await getQuarterState(quarter);
+      if (
+        state.quarter !== quarter
+        || !["COMPLETE", "UPDATE_AVAILABLE", "UPDATE_INCOMPLETE"].includes(state.status)
+        || !state.active
+        || (state.status === "COMPLETE"
+          && state.staging !== null
+          && state.staging !== undefined)
+      ) throw new Error("季度没有可用的活动离线资料");
+
+      const manifest = validateQuarterManifest(state.active, quarter);
+      const resource = manifest.resources.find(
+        (item) => item.url === `data/quarters/${quarter}.json`,
+      );
+      if (!resource || manifest.data_revision !== resource.content_hash) {
+        throw new Error("季度数据与活动清单不一致");
+      }
+
+      const content = await caches.open(CONTENT_CACHE);
+      const stored = await content.match(contentRequest(resource.content_hash));
+      const verified = await verifiedResponse(stored, resource);
+      const payload = await verified.json();
+      if (
+        !payload
+        || typeof payload !== "object"
+        || payload.quarter !== quarter
+        || !Array.isArray(payload.tv?.premiere)
+        || !Array.isArray(payload.tv?.continuing)
+        || !Array.isArray(payload.movie?.premiere)
+      ) throw new Error("季度数据结构无效");
+
+      return {
+        quarter,
+        status: state.status,
+        revision: manifest.revision,
+        data_revision: manifest.data_revision,
+        payload,
+      };
+    });
   }
 
   async function writeQuarterStateUnlocked(state) {
@@ -1591,6 +1641,121 @@
     return true;
   }
 
+  function quarterPageRoot() {
+    const root = document.querySelector('[data-page="quarter"][data-quarter]');
+    return root && QUARTER.test(root.dataset.quarter || "") ? root : null;
+  }
+
+  function quarterPageInfo() {
+    const root = quarterPageRoot();
+    if (!root?.dataset.dataUrl) return null;
+    const pageUrl = new URL(location.href);
+    const expectedPath = new URL(`${root.dataset.quarter}/index.html`, siteRoot).pathname;
+    if (pageUrl.pathname !== expectedPath) return null;
+    const dataUrl = new URL(root.dataset.dataUrl, pageUrl);
+    const revision = dataUrl.searchParams.get("v");
+    if (dataUrl.pathname !== new URL(`data/quarters/${root.dataset.quarter}.json`, siteRoot).pathname
+      || !HEX_64.test(revision || "")) return null;
+    return { quarter: root.dataset.quarter, revision, root };
+  }
+
+  function sendQuarterWorkerMessage(type, data = {}) {
+    const controller = navigator.serviceWorker?.controller;
+    if (!controller || typeof MessageChannel !== "function") return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const channel = new MessageChannel();
+      const timer = window.setTimeout(() => {
+        channel.port1.close();
+        resolve(null);
+      }, 15000);
+      channel.port1.onmessage = (event) => {
+        window.clearTimeout(timer);
+        channel.port1.close();
+        resolve(event.data || null);
+      };
+      try {
+        controller.postMessage({ type, ...data }, [channel.port2]);
+      } catch {
+        window.clearTimeout(timer);
+        channel.port1.close();
+        resolve(null);
+      }
+    });
+  }
+
+  async function checkQuarterFreshness() {
+    if (quarterFreshnessPromise) return quarterFreshnessPromise;
+    const page = quarterPageInfo();
+    if (!page || !navigator.onLine) return null;
+    quarterFreshnessPromise = (async () => {
+      const response = await sendQuarterWorkerMessage("CHECK_QUARTER_FRESHNESS", {
+        quarter: page.quarter,
+        page_revision: page.revision,
+      });
+      if (!response?.ok || !response.result) return null;
+      if (response.result.updated) {
+        quarterOnlineUpdate = {
+          quarter: page.quarter,
+          revision: response.result.data_revision,
+        };
+      } else {
+        quarterOnlineUpdate = null;
+      }
+      quarterUpdateStatus = "";
+      renderUpdateNotice();
+      return response.result;
+    })().catch(() => null).finally(() => {
+      quarterFreshnessPromise = null;
+    });
+    return quarterFreshnessPromise;
+  }
+
+  async function refreshQuarterOnline() {
+    if (!quarterOnlineUpdate || quarterUpdateBusy) return false;
+    const page = quarterPageInfo();
+    if (!page || page.quarter !== quarterOnlineUpdate.quarter) return false;
+    quarterUpdateBusy = true;
+    quarterUpdateStatus = "正在验证线上季度内容…";
+    renderUpdateNotice();
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    const url = new URL(location.href);
+    url.searchParams.delete("__bsb_app_update");
+    url.searchParams.set("__bsb_update", quarterOnlineUpdate.revision);
+    window.location.assign(url.href);
+    return true;
+  }
+
+  function handleQuarterUpdateMarker() {
+    const url = new URL(location.href);
+    const requestedRevision = url.searchParams.get("__bsb_update");
+    const appUpdateRequested = url.searchParams.get("__bsb_app_update") === "1";
+    if (!requestedRevision && !appUpdateRequested) return;
+    const page = quarterPageInfo();
+    if (requestedRevision) {
+      if (page?.revision === requestedRevision) {
+        quarterOnlineUpdate = null;
+        quarterUpdateStatus = "";
+      } else if (HEX_64.test(requestedRevision)) {
+        quarterOnlineUpdate = {
+          quarter: page?.quarter || quarterPageRoot()?.dataset.quarter,
+          revision: requestedRevision,
+        };
+        quarterUpdateStatus = "线上更新暂不可用，仍在显示已验证的季度内容。";
+      }
+    }
+    url.searchParams.delete("__bsb_update");
+    url.searchParams.delete("__bsb_app_update");
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+  }
+
+  function quarterPageLabel() {
+    return quarterPageRoot()?.dataset.quarter || null;
+  }
+
   async function promptInstall() {
     if (!installPrompt) return null;
     const prompt = installPrompt;
@@ -2049,9 +2214,22 @@
   function renderUpdateNotice() {
     const notice = document.querySelector("[data-pwa-update-notice]");
     if (!notice) return;
-    notice.hidden = !updateRegistration?.waiting;
+    const appUpdate = notice.querySelector("[data-pwa-app-update]");
+    const quarterUpdate = notice.querySelector("[data-quarter-online-update]");
+    const appAvailable = Boolean(updateRegistration?.waiting);
+    const quarterAvailable = Boolean(quarterOnlineUpdate || quarterUpdateStatus);
+    if (appUpdate) appUpdate.hidden = !appAvailable;
+    if (quarterUpdate) quarterUpdate.hidden = !quarterAvailable;
+    notice.hidden = !appAvailable && !quarterAvailable;
     const refresh = notice.querySelector("[data-pwa-refresh]");
     if (refresh) refresh.onclick = refreshApp;
+    const quarterRefresh = notice.querySelector("[data-quarter-refresh]");
+    if (quarterRefresh) {
+      quarterRefresh.disabled = quarterUpdateBusy || !quarterOnlineUpdate;
+      quarterRefresh.onclick = refreshQuarterOnline;
+    }
+    const status = notice.querySelector("[data-quarter-update-status]");
+    if (status) status.textContent = quarterUpdateStatus;
   }
 
   async function renderQuarterOfflineControl() {
@@ -2157,7 +2335,8 @@
     await loadArchiveIndex(settings?.dataset.archiveIndexUrl);
     const forceMaintenance = autoMaintenanceNeedsOnlineRecovery;
     autoMaintenanceNeedsOnlineRecovery = false;
-    void autoMaintainDownloadedQuarters({ force: forceMaintenance });
+    if (quarterPageLabel()) void checkQuarterFreshness();
+    else void autoMaintainDownloadedQuarters({ force: forceMaintenance });
     const queue = await currentQueue();
     if (queue.state === "waiting-network") await resumeQueue();
     notify({ areas: ["app", "quarter", "queue", "selector"], reason: "online" });
@@ -2174,13 +2353,27 @@
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.addEventListener("controllerchange", () => {
-      if (refreshRequested) window.location.reload();
-      else notify({ areas: ["app"], reason: "controller-change" });
+      if (refreshRequested) {
+        const quarter = quarterPageLabel();
+        if (quarter) {
+          const url = new URL(location.href);
+          url.searchParams.delete("__bsb_update");
+          url.searchParams.set("__bsb_app_update", "1");
+          window.location.replace(url.href);
+        } else {
+          window.location.reload();
+        }
+      } else {
+        notify({ areas: ["app"], reason: "controller-change" });
+        void checkQuarterFreshness();
+      }
     });
     window.addEventListener("load", async () => {
+      handleQuarterUpdateMarker();
       await getOrStartServiceWorkerRegistration().catch(() => null);
       await restoreQueue();
-      void autoMaintainDownloadedQuarters();
+      if (quarterPageLabel()) void checkQuarterFreshness();
+      else void autoMaintainDownloadedQuarters();
     });
   }
 
@@ -2197,6 +2390,7 @@
     validateQuarterManifest,
     fetchQuarterManifest,
     getQuarterState,
+    readActiveQuarterData,
     __quarterProgress: quarterProgress,
     __updateQuarterDownloadState: updateQuarterDownloadState,
     listQuarterStates,
@@ -2216,6 +2410,7 @@
     promptInstall,
     updateAvailable: () => Boolean(updateRegistration?.waiting),
   });
+  window.dispatchEvent(new Event("bsb-pwa-ready"));
 
   renderUpdateNotice();
   initializeSettings();

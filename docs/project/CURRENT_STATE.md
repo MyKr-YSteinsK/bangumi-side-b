@@ -996,3 +996,108 @@ SHA and ordinary-push/remote confirmation belong in its TASK_RESULT.
   and WebKit result remain in ignored `workspace/reports/plan69-20261016/`;
   none is committed. The bounded change does not approve additional A–F work,
   a broader animation redesign, or follow-up list virtualization.
+
+## 2026-10-16 Plan-70 Rev1 Root weak-network and offline-generation evidence
+
+- The experiment started from `061cb115564bd25d66836e76c9fc698347d6e54d` on
+  `main` / `origin/main`, with a clean tracked worktree. Direct remote `main`
+  matched. Local `gh-pages` remained
+  `ddec0cfdfff490dec4175ed0dbcf44aca1ba02d2`; remote `gh-pages` remained
+  `b35e51ece216e3d8cba8cb3f2a32ec64c887513c`. The PWA shell, root route,
+  archive index, active quarter packages, and release state were not changed.
+- Plan-68's ten-sample-per-cell Chromium 149 / loopback performance matrix is
+  reused: `site_builder.py`, `static/js/{app,pwa}.js`, and `static/pwa/sw.js`
+  are unchanged from its `16c70f283442c23b76af66ba857ac5428654ca6b` source;
+  the later source delta in this path is the two-line Plan-69 reduced-motion
+  row rule in CSS. Each cell used a 44-row or 503-row synthetic quarter,
+  service workers blocked, normal local network or CDP 150 ms RTT / 204800 B/s,
+  and ten observed samples. Root-minus-direct medians to a populated,
+  searchable list were:
+
+  | Fixture | Network / context | Root ms | Direct-quarter ms | Delta ms |
+  | --- | --- | ---: | ---: | ---: |
+  | 44 rows | normal / cold | 258.38 | 246.39 | +11.99 |
+  | 44 rows | normal / warm | 243.54 | 234.17 | +9.37 |
+  | 44 rows | weak / cold | 3220.42 | 2589.52 | +630.90 |
+  | 44 rows | weak / warm | 3112.74 | 2583.14 | +529.60 |
+  | 503 rows | normal / cold | 375.72 | 346.53 | +29.19 |
+  | 503 rows | normal / warm | 340.61 | 357.48 | -16.87 |
+  | 503 rows | weak / cold | 6898.49 | 6438.61 | +459.88 |
+  | 503 rows | weak / warm | 6797.51 | 6447.90 | +349.61 |
+
+  Root requested `data/archive-index.json` before the selected quarter page and
+  JSON; direct navigation skipped the index request. The weak-profile gap is
+  repeatable synthetic lab evidence, not production latency. The prior server
+  supplied no `Cache-Control`; its same-context “warm” cells did not establish
+  an HTTP-cache hit. A current-HEAD single confirmation opened Root to the
+  fixture's `2026-07` page through the server's `2026-07` index with 200
+  responses. Its single root-to-quarter sample was 280.42 ms; that is route
+  confirmation, not a new performance comparison.
+- A new Chromium matrix used copied static sources, synthetic SQLite fixtures,
+  loopback-only HTTP with explicit `Cache-Control: no-store`, and direct
+  inspection of Service Worker `RUNTIME_CACHE`, `META_CACHE`, quarter state,
+  request/response origin, and active shell identity. A valid cached old index
+  (`2026-04`, revision
+  `1a70b6c687285793a20764111bbd6b49d23250f9f5bc6efe8dd2037da0a9fde5`) was
+  seeded before the server index was changed to `2026-07`, revision
+  `84076e48e5d53aa8f6aa2a611227561674038df443b0b88f8e5cda739ada389f`.
+  Online Root used the server's 200 response and selected `2026-07` in both the
+  no-added-delay sample (about 111 ms root-to-quarter) and a 1200 ms delayed
+  index sample (about 1315 ms). The runtime cache then held revision
+  `84076e…`; the old cache did not override a successful online response.
+  These two individual correctness samples are not timing distributions.
+- The cross-generation case used a test-controlled activation of a distinct
+  new shell revision
+  `25d55e96e21406c68acc495150b5e95354f710026d10a7fb66bdbde463574e25` while
+  retaining the valid runtime-cached `2026-04` index revision above. The
+  active shell metadata matched the new revision, Root's CSS hash matched that
+  shell manifest, and the online server index still identified `2026-07`.
+  Offline Root used the cached index and opened only the hash-verified,
+  `COMPLETE` `2026-04` package. No request reached the server; the quarter's
+  active revision and one-row content stayed unchanged. Root's transient text
+  still says “正在打开最新季度…”, while the destination visibly identifies
+  `2026-04` and says the data comes from the verified local Archive; it does
+  not explicitly disclose that the cached index predates online `2026-07`.
+  The global archive-index revision fingerprints its quarter list but is not
+  bound to the PWA shell revision, and Root currently reads only
+  `latest_quarter`.
+- When the valid current index named `2026-07` but only `2026-04` was downloaded,
+  offline Root attempted `2026-07` and the Service Worker redirected to the
+  Settings shell. The old quarter remained `COMPLETE` at the same active
+  revision, `2026-07` remained `NONE`, and there were no server requests. Root
+  did not silently substitute old content, alter the saved package, or expand
+  the offline selection. With no runtime index, a 503 and a controlled-offline
+  fetch both showed the existing Root fallback, hid the loading shell, and
+  kept Archive and Settings shell routes reachable. A brand-new context started
+  offline had no shell or document and Chromium returned
+  `net::ERR_INTERNET_DISCONNECTED`; this is an unavailable cold network entry,
+  not an application-rendered Root failure.
+- The three candidate mechanisms were assessed as follows. Keeping the
+  network-first index decision preserves online freshness and the verified
+  offline boundaries. Feedback-only work could clarify a wait or fallback but
+  would not remove the sequential index request; accurately labelling a stale
+  runtime response also needs a source signal the page does not currently see.
+  A fast path based on the runtime index or a hard-coded shell quarter risks
+  selecting a stale “latest” and lacks an index-to-shell freshness handshake.
+  The decision is `KEEP_CURRENT`: the weak-network delay is measurable, but
+  this study found no sufficiently valuable low-risk shortcut that keeps the
+  current latest-quarter and offline-package semantics. The stale-index
+  disclosure gap is recorded as an observation, not a production defect or an
+  approved UI/protocol change.
+- Gate A passed using the reusable Plan-68 ten-sample comparison plus the
+  current-HEAD route and request-identity evidence above; HTTP-cache identity
+  for Plan-68's warm cells remains unproven. Gate B passed the six synthetic
+  state categories, including cross-generation shell/index state, unavailable
+  latest offline data, index failure, and no-cache cold entry. Gate C passed
+  with four selected existing PWA browser regressions, 13 active-document
+  guards, Ruff, JavaScript syntax checks, and `git diff --check`. Gate D's
+  commit, upstream, and CI result is reported after delivery in the task result.
+- The final valid matrix and synthetic harness remain under ignored
+  `workspace/reports/plan70-20261016/`; the reused Plan-68 matrix remains under
+  `workspace/reports/plan68-20261016/`. These are local synthetic artifacts,
+  not source inputs or production acceptance. Only Chromium 149 / Playwright
+  1.61.0 loopback evidence was used; real Safari, installed-PWA, production
+  network, deployed Pages, and real-device checks were not run. No Bangumi
+  access, formal `dist/site` build, release, Pages operation, or `gh-pages`
+  mutation occurred. The Production lifecycle remains unchanged; this result
+  does not approve the overall A–F direction or E.

@@ -1134,6 +1134,8 @@ html { line-height: 1.65; }
     scroll-behavior: auto !important;
     transition-duration: .01ms !important;
   }
+  .subject-row,
+  .subject-row * { transition-property: none !important; }
 }
 
 /* Restore a saved List layout before the deferred app bundle can run.  The

@@ -868,6 +868,101 @@ def test_grid_list_view_switch_persists_and_preserves_detail(
     ) == 2
 
 
+@pytest.mark.release_smoke
+@pytest.mark.parametrize(
+    ("page_path", "page_kind"),
+    [
+        ("/2026-07/index.html", "quarter"),
+        ("/archive/index.html?year=2026", "archive"),
+    ],
+)
+@pytest.mark.parametrize(
+    "viewport",
+    [
+        {"width": 390, "height": 844},
+        {"width": 1440, "height": 900},
+    ],
+)
+def test_grid_list_reduced_motion_disables_row_transitions_only(
+    chromium: BrowserHarness,
+    site_server: str,
+    page_path: str,
+    page_kind: str,
+    viewport: dict[str, int],
+) -> None:
+    page = chromium.new_page(viewport=viewport)
+    page.set_default_timeout(15000)
+    page.goto(f"{site_server}{page_path}", wait_until="domcontentloaded")
+    page.wait_for_function(
+        """needle => document.querySelector('[data-results-summary]')
+          ?.textContent.includes(needle)""",
+        arg=" / " if page_kind == "quarter" else "appearance",
+    )
+    root = page.locator(
+        f'.{page_kind}-page[data-page="{page_kind}"]'
+    )
+    row = page.locator('[data-list-section="tv"] .subject-row').first
+    page.evaluate(
+        """() => {
+          window.__reducedMotionRow = document.querySelector(
+            '[data-list-section="tv"] .subject-row'
+          );
+        }"""
+    )
+
+    list_button = page.locator('[data-view-mode="list"]')
+    list_button.scroll_into_view_if_needed()
+    scroll_before = page.evaluate("window.scrollY")
+    list_button.click()
+    assert root.get_attribute("data-view-mode") == "list"
+    assert page.evaluate("window.scrollY") == scroll_before
+    assert page.evaluate(
+        """() => window.__reducedMotionRow === document.querySelector(
+          '[data-list-section="tv"] .subject-row'
+        )"""
+    )
+    assert page.evaluate("document.activeElement.dataset.viewMode") == "list"
+    reduced_properties = row.evaluate(
+        """node => ({
+          row: getComputedStyle(node).transitionProperty,
+          content: getComputedStyle(
+            node.querySelector('.subject-row__content')
+          ).transitionProperty,
+          openButton: getComputedStyle(
+            node.querySelector('.subject-row__open')
+          ).transitionProperty
+        })"""
+    )
+    assert reduced_properties == {
+        "row": "none",
+        "content": "none",
+        "openButton": "none",
+    }
+
+    grid_button = page.locator('[data-view-mode="grid"]')
+    grid_button.scroll_into_view_if_needed()
+    scroll_before = page.evaluate("window.scrollY")
+    grid_button.click()
+    assert root.get_attribute("data-view-mode") == "grid"
+    assert page.evaluate("window.scrollY") == scroll_before
+    assert page.evaluate(
+        """() => window.__reducedMotionRow === document.querySelector(
+          '[data-list-section="tv"] .subject-row'
+        )"""
+    )
+    assert page.evaluate("document.activeElement.dataset.viewMode") == "grid"
+
+    page.emulate_media(reduced_motion="no-preference")
+    normal_motion = row.evaluate(
+        """node => ({
+          properties: getComputedStyle(node).transitionProperty,
+          duration: getComputedStyle(node).transitionDuration
+        })"""
+    )
+    assert normal_motion["properties"] == "opacity, transform"
+    assert normal_motion["duration"].split(", ") == ["0.18s", "0.18s"]
+
+
 @pytest.mark.parametrize("mode", ["list", "grid"])
 def test_browse_continuity_keeps_mode_across_sort_filter_quarter_and_back(
     chromium: BrowserContext,

@@ -946,3 +946,53 @@ SHA and ordinary-push/remote confirmation belong in its TASK_RESULT.
   acceptance, real-user performance, or approval of a routing, motion, or PWA
   strategy. The original ignored Rev1 evidence remains local; no full browser
   suite, real-data build, Bangumi access, release, or Pages operation was run.
+
+## 2026-10-16 Plan-69 Rev1 reduced-motion Grid/List frame evidence
+
+- From source baseline `bfb2bffd881a46117682b02e846709e86f393a04`, the original
+  Plan-68 synthetic fixture assets were byte-checked against the source before
+  the experiment. Chromium 149.0.7827.55 / Playwright 1.61.0 used 4× CPU
+  throttling, `prefers-reduced-motion: reduce`, service workers blocked, and
+  loopback-only requests. Eight combinations covered Quarter/Archive,
+  390×844/1440×900, and the 44-appearance/504-appearance fixtures. Each A1
+  baseline, B test-only row-transition suppression, and A2 restored baseline
+  phase recorded 20 alternating Grid/List clicks (480 measured interactions).
+- Next-frame medians in milliseconds are shown as A1 / B / A2 / final source;
+  `B` is the injected test rule, and final source was a separate 20-click run
+  against newly generated fixtures whose `app.css` and `app.js` bytes matched
+  the edited CSS and unchanged JS sources.
+
+  | Fixture and view | A1 / B / A2 / final-source next-frame median (ms) |
+  | --- | ---: |
+  | 44 appearances, Quarter, 390×844 (42 visible rows) | 228.30 / 45.95 / 210.00 / 57.55 |
+  | 44 appearances, Quarter, 1440×900 (20 visible rows) | 136.25 / 48.10 / 181.05 / 30.30 |
+  | 44 appearances, Archive, 390×844 (20 visible rows) | 122.80 / 56.70 / 211.15 / 26.40 |
+  | 44 appearances, Archive, 1440×900 (20 visible rows) | 164.65 / 29.75 / 204.05 / 30.05 |
+  | 504 appearances, Quarter, 390×844 (502 visible rows) | 4628.75 / 858.50 / 4671.80 / 693.85 |
+  | 504 appearances, Quarter, 1440×900 (20 visible rows) | 194.00 / 39.00 / 168.25 / 29.30 |
+  | 504 appearances, Archive, 390×844 (20 visible rows) | 214.95 / 46.65 / 159.30 / 25.90 |
+  | 504 appearances, Archive, 1440×900 (20 visible rows) | 168.05 / 46.00 / 152.45 / 27.20 |
+
+- In all 160 paired comparisons, B's next-frame delay was below the mean of
+  its A1/A2 samples. The row-transition count returned to its A1 value in A2:
+  1,061–26,607 in baseline phases, zero in B and final source; the remaining
+  six to nine first-frame transitions were outside result rows. Idle frames
+  measured about 16.7 ms in every final-source condition. Row identity/order,
+  activated view, focus, scroll position, and horizontal-overflow checks passed
+  in all eight final-source conditions. The 502-row mobile Quarter median
+  remains about 694 ms under this 4× synthetic load, so the row-transition
+  removal is a verified bounded improvement, not evidence that all remaining
+  layout cost is solved.
+- The only runtime edit is under the existing Reduced Motion media query:
+  `.subject-row` and its descendants now have `transition-property: none`.
+  `no-preference` retains the existing 180 ms row opacity/transform transition.
+  A focused Chromium release-smoke regression covers both page types and both
+  viewports; Playwright WebKit 26.5 separately passed the same four page/viewport
+  combinations for reduced and normal motion, focus, row identity, scroll, and
+  overflow. These are synthetic browser results, not INP, real Safari/device,
+  production-data, or user-experience acceptance. No formal data build, live
+  Bangumi access, release, Pages operation, or `gh-pages` mutation was run.
+- The A/B/A and final-source raw records, generated fixture databases/sites,
+  and WebKit result remain in ignored `workspace/reports/plan69-20261016/`;
+  none is committed. The bounded change does not approve additional A–F work,
+  a broader animation redesign, or follow-up list virtualization.

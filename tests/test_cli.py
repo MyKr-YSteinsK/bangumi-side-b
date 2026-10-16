@@ -21,6 +21,7 @@ from bgm_side_b.cli import (
     _auto_blacklist_line,
     _relative_output_path,
     _sync_review_lines,
+    _sync_scope_summary_lines,
     _sync_summary_lines,
     build_parser,
     find_project_root,
@@ -421,11 +422,70 @@ def test_sync_summary_is_compact_and_lists_early_premiere_evidence() -> None:
     )
 
     assert _sync_summary_lines(result) == (
-        "NEW TV 2 | CONTINUING TV 3 | MOVIE 1",
+        "status: facts=complete, covers=complete",
+        "TV ACCEPTED 2 | CONTINUING TV 3 | MOVIE ACCEPTED 1",
         "continuing evidence: end_date=1, main_episode=2, unresolved=0",
+        "candidate observations=3, canonical detail requests=0, "
+        "persisted REVIEW=0, covers downloaded/reused/missing=0/0/0",
         "AUTO PREMIERE 101: 2026-03-28 -> 2026-04 (2026年4月:448)",
         "exceptions: warnings=1, errors=0",
     )
+
+
+def test_multi_quarter_summary_labels_per_quarter_counts_and_skips() -> None:
+    completed = QuarterSyncResult(
+        Quarter(2026, 4),
+        "complete",
+        "complete",
+        4,
+        2,
+        1,
+        0,
+        0,
+        (),
+        (),
+        (),
+        (),
+        cover_downloaded=2,
+        cover_reused=1,
+        canonical_detail_requests=3,
+    )
+    skipped = replace(
+        completed,
+        quarter=Quarter(2026, 7),
+        skipped=True,
+        discovered=0,
+        accepted_tv=0,
+        accepted_movie=0,
+        cover_downloaded=0,
+        cover_reused=0,
+        canonical_detail_requests=0,
+    )
+
+    quarter_timings = (
+        {
+            "main_sync_status": "completed",
+            "facts_status": "complete",
+            "covers_status": "complete",
+        },
+        {
+            "main_sync_status": "skipped",
+            "facts_status": "incomplete",
+            "covers_status": "complete",
+            "backfill_status": "failed",
+        },
+    )
+    lines = _sync_scope_summary_lines((completed, skipped), quarter_timings)
+
+    assert lines[0] == (
+        "scope quarters=2, result rows=2, attempted=1, skipped=1, "
+        "facts complete/incomplete/unknown=1/1/0, "
+        "covers complete/incomplete/unknown=2/0/0"
+    )
+    assert "candidate observations=4" in lines[1]
+    assert "TV accepted=2, Movie accepted=1" in lines[1]
+    assert "not unique/new works" in lines[1]
+    assert "auto exclusions re-evaluated/restored/reconciled=0/0/0" in lines[2]
 
 
 def test_sync_summary_separates_hard_rejection_reconciliation() -> None:
@@ -446,7 +506,11 @@ def test_sync_summary_separates_hard_rejection_reconciliation() -> None:
         auto_reconciled=(537745, 611704),
     )
 
-    assert "AUTO RECONCILED 537745, 611704" in _sync_summary_lines(result)
+    summary = _sync_summary_lines(result)
+    assert "automatic exclusions: re-evaluated=2, restored=0, reconciled=2" in (
+        summary
+    )
+    assert "AUTO RECONCILED 537745, 611704" in summary
 
 
 def test_sync_review_summary_uses_scoped_persisted_count() -> None:

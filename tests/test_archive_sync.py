@@ -2051,6 +2051,162 @@ def test_browse_candidate_always_uses_canonical_subject_detail(
     assert facts.subject.japanese.evidence_type == "bangumi_public_region_tag"
 
 
+def test_sync_report_adds_monotonic_timings_for_success_and_skipped_quarters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    movie_id = 700101
+    movie = _candidate(movie_id, MediaFormat.MOVIE)
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi({movie_id: _detail(movie_id, media=MediaFormat.MOVIE)}),
+        DiscoveryBatch((movie,)),
+    )
+    skipped_quarter = Quarter(2026, 7)
+    repository.database.initialize()
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection,
+            QuarterSyncState(
+                skipped_quarter,
+                FACTS_COMPLETE,
+                "complete",
+                0,
+                0,
+                "attempt-1",
+                "success-1",
+            ),
+        )
+
+    clock_ns = 0
+
+    def controlled_clock() -> int:
+        nonlocal clock_ns
+        clock_ns += 1_000_000
+        return clock_ns
+
+    monkeypatch.setattr(sync_module, "_monotonic_ns", controlled_clock)
+    run = sync.run(SyncScope(QUARTER, skipped_quarter))
+
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    timing = report["timing"]
+    quarter_timings = {item["quarter"]: item for item in timing["quarters"]}
+    successful = quarter_timings["2026-04"]
+    skipped = quarter_timings["2026-07"]
+
+    assert run.exit_code == 0
+    assert run.scope_elapsed_ms == timing["scope"]["elapsed_ms"]
+    assert isinstance(run.report_write_elapsed_ms, int)
+    assert report["scope"] == "2026-04..2026-07"
+    assert report["started_at"] and report["completed_at"]
+    assert report["canonical_detail_requests"] == 1
+    assert report["quarters"][1]["accepted_movie"] == 1
+    assert "timing" in report
+    assert timing["unit"] == "ms"
+    assert timing["rounding"] == "nearest whole millisecond, half up"
+    assert timing["scope"]["status"] == "completed_with_skips"
+    assert timing["scope"]["excludes"] == [
+        "sync report serialization",
+        "CLI automatic incremental build",
+    ]
+    assert successful["status"] == "completed"
+    assert successful["facts_status"] == FACTS_COMPLETE
+    assert successful["covers_status"] == "complete"
+    assert successful["stages"]["discovery"]["status"] == "completed"
+    assert successful["stages"]["canonical_evaluation"]["elapsed_ms"] >= 0
+    assert successful["stages"]["incomplete_persistence"] == {
+        "status": "not_started",
+        "elapsed_ms": None,
+    }
+    assert skipped["status"] == "skipped"
+    assert skipped["main_sync_status"] == "skipped"
+    assert skipped["backfill_status"] == "completed"
+    assert skipped["stages"]["discovery"] == {
+        "status": "skipped",
+        "elapsed_ms": None,
+    }
+    assert timing["fact_delta"]["status"] == "not_computed"
+
+
+def test_sync_timing_marks_discovery_failure_and_unattempted_stages(
+    tmp_path: Path,
+) -> None:
+    failure = DiscoveryFailure(
+        DiscoverySource.BROWSE,
+        "2026-04",
+        "timeout",
+        "request timed out",
+    )
+    sync, _ = _sync(tmp_path, FakeApi({}), DiscoveryBatch((), (failure,)))
+
+    run = sync.run(SyncScope(QUARTER, QUARTER))
+
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    timing = report["timing"]
+    current = timing["quarters"][0]
+    assert run.exit_code == 1
+    assert timing["scope"]["status"] == "partial"
+    assert current["status"] == "partial"
+    assert current["facts_status"] == FACTS_INCOMPLETE
+    assert current["stages"]["discovery"]["status"] == "failed"
+    assert current["stages"]["discovery"]["elapsed_ms"] is not None
+    assert current["stages"]["canonical_evaluation"] == {
+        "status": "not_started",
+        "elapsed_ms": None,
+    }
+    assert current["stages"]["incomplete_persistence"]["status"] == "completed"
+    assert report["error_count"] == 1
+
+
+def test_backfill_interrupt_updates_skipped_target_timing_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    movie_id = 700102
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi({movie_id: _detail(movie_id, media=MediaFormat.MOVIE)}),
+        DiscoveryBatch((_candidate(movie_id, MediaFormat.MOVIE),)),
+    )
+    target = Quarter(2026, 7)
+    repository.database.initialize()
+    with repository.transaction() as connection:
+        repository.write_sync_state(
+            connection,
+            QuarterSyncState(
+                target,
+                FACTS_COMPLETE,
+                "complete",
+                0,
+                0,
+                "attempt-1",
+                "success-1",
+            ),
+        )
+    reconcile = sync._reconcile_continuing
+
+    def interrupt_backfill(
+        quarter: Quarter,
+        *,
+        excluded_subject_ids: frozenset[int],
+    ):
+        if quarter == target:
+            raise KeyboardInterrupt
+        return reconcile(quarter, excluded_subject_ids=excluded_subject_ids)
+
+    monkeypatch.setattr(sync, "_reconcile_continuing", interrupt_backfill)
+    run = sync.run(SyncScope(QUARTER, target))
+
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    timings = {item["quarter"]: item for item in report["timing"]["quarters"]}
+    source = timings["2026-04"]
+    backfill_target = timings["2026-07"]
+    assert run.exit_code == 130
+    assert source["stages"]["continuing_backfill"]["status"] == "interrupted"
+    assert backfill_target["status"] == "partial"
+    assert backfill_target["main_sync_status"] == "skipped"
+    assert backfill_target["backfill_status"] == "interrupted"
+    assert backfill_target["facts_status"] == FACTS_INCOMPLETE
+
+
 def test_canonical_detail_episode_count_is_persisted_after_partial_discovery(
     tmp_path: Path,
 ) -> None:
@@ -2419,6 +2575,18 @@ def test_interrupt_marks_current_quarter_incomplete_without_partial_facts(
     assert repository.get_subject_facts(99) is not None
     assert repository.get_subject_facts(101) is None
     assert repository.get_sync_state(QUARTER).facts_status == FACTS_INCOMPLETE  # type: ignore[union-attr]
+    report = json.loads(run.report_path.read_text(encoding="utf-8"))
+    interrupted = report["timing"]["quarters"][0]
+    assert report["interrupted"] is True
+    assert report["timing"]["scope"]["status"] == "interrupted"
+    assert interrupted["status"] == "interrupted"
+    assert interrupted["facts_status"] == FACTS_INCOMPLETE
+    assert interrupted["stages"]["canonical_evaluation"]["status"] == (
+        "interrupted"
+    )
+    assert interrupted["stages"]["incomplete_persistence"]["status"] == (
+        "completed"
+    )
 
 
 def test_discovery_interrupt_invalidates_prior_complete_state(

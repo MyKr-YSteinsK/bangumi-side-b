@@ -841,3 +841,20 @@ SHA and ordinary-push/remote confirmation belong in its TASK_RESULT.
   bounded Archive work does not approve E or create personal saved queries.
   The source commit, ordinary push, remote SHA and CI status are recorded only
   after direct verification in this task's TASK_RESULT.
+
+## 2026-10-16 Plan-67 Rev1 sync timing and trusted update summary
+
+- Sync reports add an additive `timing` object using monotonic elapsed
+  milliseconds for the overall processing scope and each requested quarter.
+  It distinguishes completed, partial, skipped, interrupted and not-started
+  work; a stage that did not run has a null elapsed value. Existing report
+  identity and count fields remain in place.
+- Scope timing ends before report serialization and excludes the CLI's later
+  automatic incremental build. The CLI reports report-write and automatic
+  build-phase durations separately. Stage boundaries and count meanings are
+  documented in `docs/USER_GUIDE.md`; timing does not influence sync decisions.
+- Exact persisted-fact additions/removals/changes are not calculated. Accepted
+  TV/Movie counts remain per-quarter decision counts, and range totals can
+  repeat a subject across quarters. The synthetic validation evidence and
+  limits are recorded in this task's TASK_RESULT; no live Bangumi sync,
+  private SQLite access, real-data build, release or Pages operation was run.

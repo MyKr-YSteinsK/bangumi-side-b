@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 import webbrowser
 from pathlib import Path
 
@@ -49,6 +50,7 @@ from bgm_side_b.sync import (
 )
 
 MAX_INLINE_SYNC_REVIEWS = 10
+_monotonic_ns = time.monotonic_ns
 
 
 def find_project_root(start: Path | None = None) -> Path | None:
@@ -444,13 +446,32 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 client.close()
         print(f"sync report: {_relative_output_path(root, run.report_path)}")
+        scope_elapsed_ms = getattr(run, "scope_elapsed_ms", None)
+        if scope_elapsed_ms is not None:
+            print(
+                "sync processing elapsed: "
+                f"{scope_elapsed_ms} ms "
+                "(excludes report serialization and automatic build)"
+            )
+        report_write_elapsed_ms = getattr(run, "report_write_elapsed_ms", None)
+        if report_write_elapsed_ms is not None:
+            print(
+                "sync report serialization elapsed: "
+                f"{report_write_elapsed_ms} ms"
+            )
         if scope.is_single_quarter and run.quarters:
             result = run.quarters[0]
             for line in _sync_summary_lines(result):
                 print(line)
             for line in _sync_review_lines(result, repository, scope.start):
                 print(line)
+        elif not scope.is_single_quarter:
+            for line in _sync_scope_summary_lines(
+                run.quarters, getattr(run, "quarter_timings", ())
+            ):
+                print(line)
         if run.exit_code == 0:
+            build_started_ns: int | None = None
             try:
                 settings = load_archive_sync_settings(
                     root / "config" / "bangumi.toml"
@@ -458,6 +479,7 @@ def main(argv: list[str] | None = None) -> int:
                 tags = load_tag_rules(
                     root / "config" / "allowed-tags.toml",
                 )
+                build_started_ns = _monotonic_ns()
                 with create_progress_reporter(args, "build") as build_reporter:
                     build_run = UnifiedSiteBuilder(
                         root,
@@ -468,8 +490,23 @@ def main(argv: list[str] | None = None) -> int:
                         excluded_subject_ids=settings.all_excluded_subject_ids,
                     ).build()
             except (SiteBuildError, ServeError, ValueError) as error:
-                print(f"sync facts committed but automatic build failed: {error}")
+                message = "sync facts committed but automatic build failed"
+                if build_started_ns is not None:
+                    build_elapsed_ms = _elapsed_ms(
+                        max(0, _monotonic_ns() - build_started_ns)
+                    )
+                    message += f" after {build_elapsed_ms} ms"
+                print(f"{message}: {error}")
                 return 1
+            assert build_started_ns is not None
+            build_elapsed_ms = _elapsed_ms(
+                max(0, _monotonic_ns() - build_started_ns)
+            )
+            print(
+                "automatic incremental build invocation elapsed: "
+                f"{build_elapsed_ms} ms "
+                "(separate from sync report timing)"
+            )
             print(
                 "facts synchronized; incremental site build: "
                 f"{_relative_output_path(root, build_run.report_path)}"
@@ -551,10 +588,11 @@ def _print_serve_ready(url: str, *, open_browser: bool = False) -> None:
 def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:
     """Render the bounded evidence summary for a single-quarter sync."""
     lines = [
+        f"status: facts={result.facts_status}, covers={result.covers_status}",
         (
-            f"NEW TV {result.accepted_tv} | "
+            f"TV ACCEPTED {result.accepted_tv} | "
             f"CONTINUING TV {result.continuing_end_date + result.continuing_episode} | "
-            f"MOVIE {result.accepted_movie}"
+            f"MOVIE ACCEPTED {result.accepted_movie}"
         ),
         (
             "continuing evidence: "
@@ -562,7 +600,22 @@ def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:
             f"main_episode={result.continuing_episode}, "
             f"unresolved={result.continuing_unresolved}"
         ),
+        (
+            f"candidate observations={result.discovered}, "
+            f"canonical detail requests={result.canonical_detail_requests}, "
+            f"persisted REVIEW={result.persisted_review_count}, "
+            "covers downloaded/reused/missing="
+            f"{result.cover_downloaded}/{result.cover_reused}/"
+            f"{result.cover_missing}"
+        ),
     ]
+    if result.auto_reconsidered or result.auto_restored or result.auto_reconciled:
+        lines.append(
+            "automatic exclusions: "
+            f"re-evaluated={result.auto_reconsidered}, "
+            f"restored={len(result.auto_restored)}, "
+            f"reconciled={len(result.auto_reconciled)}"
+        )
     lines.extend(
         (
             "AUTO PREMIERE "
@@ -589,6 +642,95 @@ def _sync_summary_lines(result: QuarterSyncResult) -> tuple[str, ...]:
             f"exceptions: warnings={len(result.warnings)}, errors={len(result.errors)}"
         )
     return tuple(lines)
+
+
+def _sync_scope_summary_lines(
+    results: tuple[QuarterSyncResult, ...],
+    quarter_timings: tuple[dict[str, object], ...] = (),
+) -> tuple[str, ...]:
+    """Render a bounded multi-quarter summary without claiming unique additions."""
+    if quarter_timings:
+        quarter_count = len(quarter_timings)
+        attempted = sum(
+            item.get("main_sync_status") not in {"skipped", "not_started"}
+            for item in quarter_timings
+        )
+        skipped = sum(
+            item.get("main_sync_status") == "skipped" for item in quarter_timings
+        )
+        facts_complete = sum(
+            item.get("facts_status") == "complete" for item in quarter_timings
+        )
+        facts_incomplete = sum(
+            item.get("facts_status") == "incomplete" for item in quarter_timings
+        )
+        facts_unknown = quarter_count - facts_complete - facts_incomplete
+        covers_complete = sum(
+            item.get("covers_status") == "complete" for item in quarter_timings
+        )
+        covers_incomplete = sum(
+            item.get("covers_status") == "incomplete" for item in quarter_timings
+        )
+        covers_unknown = quarter_count - covers_complete - covers_incomplete
+    else:
+        quarter_count = len(results)
+        attempted = sum(not item.skipped for item in results)
+        skipped = quarter_count - attempted
+        facts_complete = sum(item.facts_status == "complete" for item in results)
+        facts_incomplete = sum(item.facts_status != "complete" for item in results)
+        facts_unknown = 0
+        covers_complete = sum(item.covers_status == "complete" for item in results)
+        covers_incomplete = sum(item.covers_status != "complete" for item in results)
+        covers_unknown = 0
+    return (
+        (
+            f"scope quarters={quarter_count}, result rows={len(results)}, "
+            f"attempted={attempted}, skipped={skipped}, "
+            "facts complete/incomplete/unknown="
+            f"{facts_complete}/{facts_incomplete}/{facts_unknown}, "
+            "covers complete/incomplete/unknown="
+            f"{covers_complete}/{covers_incomplete}/{covers_unknown}"
+        ),
+        (
+            "per-quarter counts (candidates may repeat; accepted counts are "
+            "decisions, not unique/new works): "
+            f"candidate observations={sum(item.discovered for item in results)}, "
+            "canonical detail requests="
+            f"{sum(item.canonical_detail_requests for item in results)}, "
+            f"TV accepted={sum(item.accepted_tv for item in results)}, "
+            f"Movie accepted={sum(item.accepted_movie for item in results)}, "
+            f"persisted REVIEW={sum(item.persisted_review_count for item in results)}, "
+            "covers downloaded/reused/missing="
+            f"{sum(item.cover_downloaded for item in results)}/"
+            f"{sum(item.cover_reused for item in results)}/"
+            f"{sum(item.cover_missing for item in results)}, "
+            f"warnings/errors={sum(len(item.warnings) for item in results)}/"
+            f"{sum(len(item.errors) for item in results)}"
+        ),
+        (
+            "per-quarter decisions/events: "
+            "non-Japanese rejected="
+            f"{sum(item.rejected_non_japanese for item in results)}, "
+            f"blacklisted={sum(item.blacklisted for item in results)} "
+            "(manual/previous-auto/new-auto="
+            f"{sum(item.manual_blacklisted for item in results)}/"
+            f"{sum(item.existing_auto_blacklisted for item in results)}/"
+            f"{sum(len(item.auto_blacklisted) for item in results)}), "
+            "continuing confirmed by end-date/main-episode/unresolved="
+            f"{sum(item.continuing_end_date for item in results)}/"
+            f"{sum(item.continuing_episode for item in results)}/"
+            f"{sum(item.continuing_unresolved for item in results)}, "
+            "auto exclusions re-evaluated/restored/reconciled="
+            f"{sum(item.auto_reconsidered for item in results)}/"
+            f"{sum(len(item.auto_restored) for item in results)}/"
+            f"{sum(len(item.auto_reconciled) for item in results)}"
+        ),
+    )
+
+
+def _elapsed_ms(elapsed_ns: int) -> int:
+    """Round a non-negative monotonic duration to the nearest millisecond."""
+    return (max(0, elapsed_ns) + 500_000) // 1_000_000
 
 
 def _auto_blacklist_line(item: dict[str, object]) -> str:

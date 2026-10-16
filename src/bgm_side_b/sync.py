@@ -6,9 +6,11 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -85,6 +87,297 @@ from bgm_side_b.rules import (
     order_tag_candidates,
     resolve_source,
 )
+
+_monotonic_ns = time.monotonic_ns
+_SYNC_TIMING_STAGES = (
+    "discovery",
+    "candidate_preparation",
+    "canonical_evaluation",
+    "continuing_reconciliation",
+    "fact_persistence",
+    "cover_processing",
+    "result_finalization",
+    "continuing_backfill",
+    "incomplete_persistence",
+)
+
+
+def _elapsed_ms(elapsed_ns: int) -> int:
+    """Round a non-negative monotonic duration to the nearest millisecond."""
+    return (max(0, elapsed_ns) + 500_000) // 1_000_000
+
+
+@dataclass(frozen=True)
+class _StageTiming:
+    status: str
+    elapsed_ns: int | None
+
+
+@dataclass(frozen=True)
+class _QuarterTiming:
+    quarter: Quarter
+    status: str
+    main_sync_status: str
+    elapsed_ns: int | None
+    facts_status: str | None
+    covers_status: str | None
+    backfill_status: str | None
+    stages: tuple[tuple[str, _StageTiming], ...]
+
+    def payload(self) -> dict[str, object]:
+        stage_values = dict(self.stages)
+        measured_ns = sum(
+            item.elapsed_ns or 0
+            for item in stage_values.values()
+            if item.elapsed_ns is not None
+        )
+        elapsed_ms = (
+            _elapsed_ms(self.elapsed_ns) if self.elapsed_ns is not None else None
+        )
+        unattributed_ms = (
+            _elapsed_ms(max(0, self.elapsed_ns - measured_ns))
+            if self.elapsed_ns is not None
+            else None
+        )
+        return {
+            "quarter": _quarter_label(self.quarter),
+            "status": self.status,
+            "main_sync_status": self.main_sync_status,
+            "elapsed_ms": elapsed_ms,
+            "unattributed_elapsed_ms": unattributed_ms,
+            "facts_status": self.facts_status,
+            "covers_status": self.covers_status,
+            "backfill_status": self.backfill_status,
+            "stages": {
+                name: {
+                    "status": item.status,
+                    "elapsed_ms": (
+                        _elapsed_ms(item.elapsed_ns)
+                        if item.elapsed_ns is not None
+                        else None
+                    ),
+                }
+                for name, item in self.stages
+            },
+        }
+
+
+class _QuarterTimingRecorder:
+    """Collect non-overlapping monotonic timings for one scope quarter."""
+
+    def __init__(self, quarter: Quarter) -> None:
+        self.quarter = quarter
+        self.started_ns = _monotonic_ns()
+        self.finished_ns: int | None = None
+        self.status = "running"
+        self.main_sync_status = "not_started"
+        self.facts_status: str | None = None
+        self.covers_status: str | None = None
+        self.backfill_status: str | None = None
+        self._stages = {
+            name: _StageTiming("not_started", None)
+            for name in _SYNC_TIMING_STAGES
+        }
+
+    def stage(self, name: str) -> _StageMeasurement:
+        if name not in self._stages:
+            raise ValueError(f"unknown sync timing stage: {name}")
+        return _StageMeasurement(self, name)
+
+    def set_data_status(self, facts_status: str, covers_status: str) -> None:
+        self.facts_status = facts_status
+        self.covers_status = covers_status
+
+    def update_backfill_outcome(
+        self, status: str, facts_status: str, covers_status: str
+    ) -> None:
+        self.backfill_status = status
+        self.facts_status = facts_status
+        self.covers_status = covers_status
+        if facts_status != FACTS_COMPLETE or covers_status != COVERS_COMPLETE:
+            self.status = "partial"
+
+    def finish(
+        self,
+        status: str,
+        *,
+        facts_status: str | None = None,
+        covers_status: str | None = None,
+    ) -> None:
+        if self.finished_ns is None:
+            self.finished_ns = _monotonic_ns()
+        self.status = status
+        if self.main_sync_status == "not_started":
+            self.main_sync_status = status
+        if facts_status is not None:
+            self.facts_status = facts_status
+        if covers_status is not None:
+            self.covers_status = covers_status
+
+    def skip(self, facts_status: str, covers_status: str) -> None:
+        for name in self._stages:
+            self._stages[name] = _StageTiming("skipped", None)
+        self.finish(
+            "skipped", facts_status=facts_status, covers_status=covers_status
+        )
+
+    def snapshot(self) -> _QuarterTiming:
+        finished_ns = (
+            self.finished_ns if self.finished_ns is not None else _monotonic_ns()
+        )
+        return _QuarterTiming(
+            self.quarter,
+            self.status,
+            self.main_sync_status,
+            max(0, finished_ns - self.started_ns),
+            self.facts_status,
+            self.covers_status,
+            self.backfill_status,
+            tuple(self._stages.items()),
+        )
+
+    def _start(self, name: str, started_ns: int) -> None:
+        self._stages[name] = _StageTiming("running", None)
+
+    def _stop(self, name: str, status: str, elapsed_ns: int) -> None:
+        self._stages[name] = _StageTiming(status, max(0, elapsed_ns))
+
+    def stage_status(self, name: str) -> str:
+        return self._stages[name].status
+
+
+class _StageMeasurement:
+    def __init__(self, owner: _QuarterTimingRecorder, name: str) -> None:
+        self.owner = owner
+        self.name = name
+        self.started_ns = _monotonic_ns()
+        self.finished = False
+        self.forced_status: str | None = None
+        owner._start(name, self.started_ns)
+
+    def __enter__(self) -> _StageMeasurement:
+        return self
+
+    def __exit__(self, exc_type: object, *_: object) -> bool:
+        if self.finished:
+            return False
+        if isinstance(exc_type, type) and issubclass(exc_type, KeyboardInterrupt):
+            status = "interrupted"
+        elif exc_type is not None:
+            status = "failed"
+        else:
+            status = self.forced_status or "completed"
+        self.finish(status)
+        return False
+
+    def fail(self) -> None:
+        self.forced_status = "failed"
+
+    def finish(self, status: str) -> None:
+        if self.finished:
+            return
+        self.finished = True
+        self.owner._stop(
+            self.name, status, max(0, _monotonic_ns() - self.started_ns)
+        )
+
+
+def _not_started_timing_payload(quarter: Quarter) -> dict[str, object]:
+    return {
+        "quarter": _quarter_label(quarter),
+        "status": "not_started",
+        "main_sync_status": "not_started",
+        "elapsed_ms": None,
+        "unattributed_elapsed_ms": None,
+        "facts_status": None,
+        "covers_status": None,
+        "backfill_status": None,
+        "stages": {
+            name: {"status": "not_started", "elapsed_ms": None}
+            for name in _SYNC_TIMING_STAGES
+        },
+    }
+
+
+def _scope_timing_payload(
+    scope: SyncScope,
+    status: str,
+    elapsed_ns: int,
+    recorders: Mapping[Quarter, _QuarterTimingRecorder],
+) -> dict[str, object]:
+    quarters: list[dict[str, object]] = []
+    measured_quarter_ns = 0
+    for quarter in scope.quarters:
+        recorder = recorders.get(quarter)
+        if recorder is None:
+            quarters.append(_not_started_timing_payload(quarter))
+            continue
+        snapshot = recorder.snapshot()
+        quarters.append(snapshot.payload())
+        measured_quarter_ns += snapshot.elapsed_ns or 0
+    return {
+        "unit": "ms",
+        "rounding": "nearest whole millisecond, half up",
+        "scope": {
+            "status": status,
+            "elapsed_ms": _elapsed_ms(elapsed_ns),
+            "unattributed_elapsed_ms": _elapsed_ms(
+                max(0, elapsed_ns - measured_quarter_ns)
+            ),
+            "quarters_requested": len(scope.quarters),
+            "excludes": [
+                "sync report serialization",
+                "CLI automatic incremental build",
+            ],
+        },
+        "quarters": quarters,
+        "fact_delta": {"status": "not_computed"},
+    }
+
+
+def _timing_quarter_rows(
+    payload: Mapping[str, object],
+) -> tuple[dict[str, object], ...]:
+    values = payload.get("quarters")
+    if not isinstance(values, list):
+        return ()
+    return tuple(item for item in values if isinstance(item, dict))
+
+
+def _quarter_timing_status(result: QuarterSyncResult) -> str:
+    if result.skipped:
+        return "skipped"
+    if (
+        result.facts_status != FACTS_COMPLETE
+        or result.covers_status != COVERS_COMPLETE
+        or result.errors
+        or result.reviews
+        or result.external_reviews
+        or result.persisted_review_count
+        or result.warnings
+    ):
+        return "partial"
+    return "completed"
+
+
+def _scope_timing_status(
+    recorders: Mapping[Quarter, _QuarterTimingRecorder],
+    scope: SyncScope,
+    *,
+    interrupted: bool,
+) -> str:
+    if interrupted:
+        return "interrupted"
+    snapshots = [
+        recorders[quarter].snapshot()
+        for quarter in scope.quarters
+        if quarter in recorders
+    ]
+    if any(item.status == "partial" for item in snapshots):
+        return "partial"
+    if any(item.status == "skipped" for item in snapshots):
+        return "completed_with_skips"
+    return "completed"
 
 FACTS_COMPLETE = "complete"
 FACTS_INCOMPLETE = "incomplete"
@@ -214,6 +507,9 @@ class SyncRun:
     quarters: tuple[QuarterSyncResult, ...]
     report_path: Path
     exit_code: int
+    scope_elapsed_ms: int | None = None
+    report_write_elapsed_ms: int | None = None
+    quarter_timings: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -302,6 +598,7 @@ class ArchiveSynchronizer:
 
     def run(self, scope: SyncScope) -> SyncRun:
         """Synchronize the requested scope without writing any legacy fact tables."""
+        scope_started_ns = _monotonic_ns()
         if self.settings_path.is_file():
             settings = load_archive_sync_settings(self.settings_path)
             self._manual_excluded_subject_ids = set(settings.excluded_subject_ids)
@@ -321,8 +618,12 @@ class ArchiveSynchronizer:
             current=scope.label,
             counters={"季度": len(scope.quarters), "封面并发": MAX_COVER_CONCURRENCY},
         )
+        timing_records: dict[Quarter, _QuarterTimingRecorder] = {}
+        active_timing: _QuarterTimingRecorder | None = None
         try:
             for quarter in scope.quarters:
+                active_timing = _QuarterTimingRecorder(quarter)
+                timing_records[quarter] = active_timing
                 current = self.repository.get_sync_state(quarter)
                 if (
                     not scope.is_single_quarter
@@ -334,6 +635,7 @@ class ArchiveSynchronizer:
                     source_counts, episode_known, episode_unknown = (
                         _persisted_fact_aggregates(self.repository, quarter)
                     )
+                    active_timing.skip(current.facts_status, current.covers_status)
                     results.append(
                         _skipped_result(
                             quarter,
@@ -343,23 +645,98 @@ class ArchiveSynchronizer:
                             episode_unknown=episode_unknown,
                         )
                     )
+                    active_timing = None
                     continue
-                result = self._sync_quarter(quarter, overrides, current)
+                result = self._sync_quarter(
+                    quarter, overrides, current, active_timing
+                )
                 if result.facts_status == FACTS_COMPLETE:
+                    with active_timing.stage("continuing_backfill") as backfill_stage:
+                        backfill_warnings = self._backfill_next_quarter(quarter)
+                        failed_backfill = any(
+                            item.get("code") == "continuing_backfill_failed"
+                            for item in backfill_warnings
+                        )
+                        if failed_backfill:
+                            backfill_stage.fail()
+                        self._refresh_backfill_target_timing(
+                            _next_quarter(quarter),
+                            timing_records,
+                            "failed" if failed_backfill else "completed",
+                        )
                     result = replace(
-                        result,
-                        warnings=(
-                            *result.warnings,
-                            *self._backfill_next_quarter(quarter),
-                        ),
+                        result, warnings=(*result.warnings, *backfill_warnings)
                     )
+                active_timing.finish(
+                    _quarter_timing_status(result),
+                    facts_status=result.facts_status,
+                    covers_status=result.covers_status,
+                )
                 results.append(result)
+                active_timing = None
         except KeyboardInterrupt:
-            report_path = self._write_report(scope, started, results, interrupted=True)
-            return SyncRun(scope, tuple(results), report_path, 130)
-        report_path = self._write_report(scope, started, results, interrupted=False)
+            if active_timing is not None:
+                backfill_interrupted = (
+                    active_timing.stage_status("continuing_backfill")
+                    == "interrupted"
+                )
+                active_timing.finish("interrupted")
+                if backfill_interrupted:
+                    self._refresh_backfill_target_timing(
+                        _next_quarter(active_timing.quarter),
+                        timing_records,
+                        "interrupted",
+                    )
+            scope_elapsed_ns = max(0, _monotonic_ns() - scope_started_ns)
+            timing_payload = _scope_timing_payload(
+                scope,
+                "interrupted",
+                scope_elapsed_ns,
+                timing_records,
+            )
+            report_started_ns = _monotonic_ns()
+            report_path = self._write_report(
+                scope,
+                started,
+                results,
+                interrupted=True,
+                timing=timing_payload,
+            )
+            report_write_elapsed_ms = _elapsed_ms(
+                max(0, _monotonic_ns() - report_started_ns)
+            )
+            return SyncRun(
+                scope,
+                tuple(results),
+                report_path,
+                130,
+                _elapsed_ms(scope_elapsed_ns),
+                report_write_elapsed_ms,
+                _timing_quarter_rows(timing_payload),
+            )
         exit_code = (
             0 if all(item.facts_status == FACTS_COMPLETE for item in results) else 1
+        )
+        scope_elapsed_ns = max(0, _monotonic_ns() - scope_started_ns)
+        scope_status = _scope_timing_status(
+            timing_records, scope, interrupted=False
+        )
+        timing_payload = _scope_timing_payload(
+            scope,
+            scope_status,
+            scope_elapsed_ns,
+            timing_records,
+        )
+        report_started_ns = _monotonic_ns()
+        report_path = self._write_report(
+            scope,
+            started,
+            results,
+            interrupted=False,
+            timing=timing_payload,
+        )
+        report_write_elapsed_ms = _elapsed_ms(
+            max(0, _monotonic_ns() - report_started_ns)
         )
         self.reporter.complete(
             stage="summary",
@@ -369,7 +746,30 @@ class ArchiveSynchronizer:
                 "错误": sum(len(item.errors) for item in results),
             },
         )
-        return SyncRun(scope, tuple(results), report_path, exit_code)
+        return SyncRun(
+            scope,
+            tuple(results),
+            report_path,
+            exit_code,
+            _elapsed_ms(scope_elapsed_ns),
+            report_write_elapsed_ms,
+            _timing_quarter_rows(timing_payload),
+        )
+
+    def _refresh_backfill_target_timing(
+        self,
+        target: Quarter,
+        timing_records: Mapping[Quarter, _QuarterTimingRecorder],
+        backfill_status: str,
+    ) -> None:
+        timing = timing_records.get(target)
+        if timing is None:
+            return
+        state = self.repository.get_sync_state(target)
+        if state is not None:
+            timing.update_backfill_outcome(
+                backfill_status, state.facts_status, state.covers_status
+            )
 
     def import_single_subject(
         self, subject_id: int, override: QuarterOverride
@@ -434,53 +834,68 @@ class ArchiveSynchronizer:
         quarter: Quarter,
         overrides: Mapping[int, QuarterOverride],
         prior: QuarterSyncState | None,
+        timing: _QuarterTimingRecorder,
     ) -> QuarterSyncResult:
         episode_source_counts: Counter[str] = Counter()
         episode_warnings: list[dict[str, str]] = []
+        if prior is not None:
+            timing.set_data_status(prior.facts_status, prior.covers_status)
         self.reporter.stage(
             stage="discovery",
             message="发现 TV/MOVIE 候选",
             current=_quarter_label(quarter),
         )
         try:
-            browse_batch = self.browse.discover(quarter)
-            search_batch = self.search.discover(quarter)
+            with timing.stage("discovery") as discovery_stage:
+                browse_batch = self.browse.discover(quarter)
+                search_batch = self.search.discover(quarter)
+                batch = merge_discovery_batches(browse_batch, search_batch)
+                fatal_failures = tuple(
+                    item
+                    for item in batch.failures
+                    if item.source.value != "search"
+                )
+                discovery_warnings = tuple(
+                    _discovery_warning(item)
+                    for item in batch.failures
+                    if item.source.value == "search"
+                )
+                if fatal_failures:
+                    discovery_stage.fail()
         except KeyboardInterrupt:
-            self._write_incomplete(quarter, prior, 0, ())
+            self._write_incomplete(quarter, prior, 0, (), timing=timing)
             raise
-        batch = merge_discovery_batches(browse_batch, search_batch)
-        fatal_failures = tuple(
-            item for item in batch.failures if item.source.value != "search"
-        )
-        discovery_warnings = tuple(
-            _discovery_warning(item)
-            for item in batch.failures
-            if item.source.value == "search"
-        )
         if fatal_failures:
             errors = tuple(_discovery_error(item) for item in fatal_failures)
-            return self._write_incomplete(quarter, prior, len(batch.candidates), errors)
-        existing_by_subject = self.repository.get_subject_facts_many(
-            candidate.subject_id for candidate in batch.candidates
-        )
-        current_candidate_ids = {candidate.subject_id for candidate in batch.candidates}
-        stale_review_subject_ids = _stale_out_of_scope_review_ids(
-            self.repository.list_review_issues(),
-            quarter,
-            current_candidate_ids,
-        )
-        stale_review_snapshots = self.repository.get_subject_facts_many(
-            stale_review_subject_ids
-        )
-        irrelevant_subject_ids = {
-            subject_id
-            for subject_id, snapshot in stale_review_snapshots.items()
-            if snapshot.premiere is None
-            or snapshot.premiere.quarter == quarter
-        }
-        dominated_count, dominated_events, dominance_errors = (
-            self._retire_dominated_reviews(quarter, current_candidate_ids)
-        )
+            return self._write_incomplete(
+                quarter, prior, len(batch.candidates), errors, timing=timing
+            )
+        with timing.stage("candidate_preparation") as preparation_stage:
+            existing_by_subject = self.repository.get_subject_facts_many(
+                candidate.subject_id for candidate in batch.candidates
+            )
+            current_candidate_ids = {
+                candidate.subject_id for candidate in batch.candidates
+            }
+            stale_review_subject_ids = _stale_out_of_scope_review_ids(
+                self.repository.list_review_issues(),
+                quarter,
+                current_candidate_ids,
+            )
+            stale_review_snapshots = self.repository.get_subject_facts_many(
+                stale_review_subject_ids
+            )
+            irrelevant_subject_ids = {
+                subject_id
+                for subject_id, snapshot in stale_review_snapshots.items()
+                if snapshot.premiere is None
+                or snapshot.premiere.quarter == quarter
+            }
+            dominated_count, dominated_events, dominance_errors = (
+                self._retire_dominated_reviews(quarter, current_candidate_ids)
+            )
+            if dominance_errors:
+                preparation_stage.fail()
 
         prepared: list[_PreparedSubject] = []
         reviews: list[ReviewIssue] = []
@@ -504,6 +919,8 @@ class ArchiveSynchronizer:
         premiere_conflict_warnings: list[dict[str, str]] = []
         canonical_detail_requests = 0
         auto_reconsidered = 0
+        canonical_errors_before = len(errors)
+        canonical_stage = timing.stage("canonical_evaluation")
         try:
             for candidate in batch.candidates:
                 if candidate.subject_id in self._manual_excluded_subject_ids:
@@ -814,6 +1231,7 @@ class ArchiveSynchronizer:
                     else:
                         accepted_movie += 1
         except KeyboardInterrupt:
+            canonical_stage.finish("interrupted")
             self._write_incomplete(
                 quarter,
                 prior,
@@ -825,8 +1243,18 @@ class ArchiveSynchronizer:
                 auto_blacklisted=tuple(auto_blacklisted),
                 canonical_detail_requests=canonical_detail_requests,
                 auto_reconsidered=auto_reconsidered,
+                timing=timing,
             )
             raise
+        except BaseException:
+            canonical_stage.finish("failed")
+            raise
+        else:
+            canonical_stage.finish(
+                "failed"
+                if len(errors) > canonical_errors_before
+                else "completed"
+            )
         if errors:
             return self._write_incomplete(
                 quarter,
@@ -839,6 +1267,7 @@ class ArchiveSynchronizer:
                 auto_blacklisted=tuple(auto_blacklisted),
                 canonical_detail_requests=canonical_detail_requests,
                 auto_reconsidered=auto_reconsidered,
+                timing=timing,
             )
         if tv_candidates > 0 and admitted_japanese_tv == 0:
             self.reporter.error(
@@ -866,6 +1295,7 @@ class ArchiveSynchronizer:
                 auto_blacklisted=tuple(auto_blacklisted),
                 canonical_detail_requests=canonical_detail_requests,
                 auto_reconsidered=auto_reconsidered,
+                timing=timing,
             )
         if tv_candidates >= 20 and admitted_japanese_tv / tv_candidates < 0.20:
             premiere_conflict_warnings.append(
@@ -894,9 +1324,12 @@ class ArchiveSynchronizer:
             and item.snapshot.premiere.quarter == quarter
         }
         try:
-            reconciliation = self._reconcile_continuing(
-                quarter, excluded_subject_ids=frozenset(premiere_subject_ids)
-            )
+            with timing.stage("continuing_reconciliation") as reconciliation_stage:
+                reconciliation = self._reconcile_continuing(
+                    quarter, excluded_subject_ids=frozenset(premiere_subject_ids)
+                )
+                if reconciliation.errors:
+                    reconciliation_stage.fail()
         except KeyboardInterrupt:
             self._write_incomplete(
                 quarter,
@@ -909,6 +1342,7 @@ class ArchiveSynchronizer:
                 auto_blacklisted=tuple(auto_blacklisted),
                 canonical_detail_requests=canonical_detail_requests,
                 auto_reconsidered=auto_reconsidered,
+                timing=timing,
             )
             raise
         if reconciliation.errors:
@@ -923,6 +1357,7 @@ class ArchiveSynchronizer:
                 auto_blacklisted=tuple(auto_blacklisted),
                 canonical_detail_requests=canonical_detail_requests,
                 auto_reconsidered=auto_reconsidered,
+                timing=timing,
             )
 
         stale_ids = {
@@ -973,52 +1408,55 @@ class ArchiveSynchronizer:
             self.settings_path.read_bytes() if auto_removal_ids else None
         )
         try:
-            with self.repository.transaction() as connection:
-                for item in prepared:
-                    self.repository.replace_subject_snapshot(connection, item.snapshot)
-                self.repository.delete_review_issues_for_subjects(
-                    connection,
-                    quarter,
-                    stale_review_subject_ids,
-                    _OUT_OF_SCOPE_REVIEW_ISSUES,
-                )
-                self.repository.delete_unscoped_review_issues_for_subjects(
-                    connection,
-                    resolved_japanese_review_subject_ids,
-                    _JAPANESE_REVIEW_ISSUES,
-                )
-                self.repository.delete_subjects(connection, frozenset(stale_ids))
-                self.repository.replace_automatic_continuing_for_quarter(
-                    connection, quarter, continuing_appearances
-                )
-                self._replace_continuing_reviews(
-                    connection,
-                    reconciliation,
-                    {
-                        item.snapshot.subject.subject_id: item.snapshot
-                        for item in prepared
-                    },
-                )
-                self.repository.write_sync_state(
-                    connection,
-                    QuarterSyncState(
-                        quarter,
-                        FACTS_COMPLETE,
-                        COVERS_INCOMPLETE,
-                        subject_count,
-                        subject_count,
-                        completed_at,
-                        completed_at,
-                    ),
-                )
-                if auto_removal_ids:
-                    removed = remove_auto_excluded_subjects(
-                        self.settings_path, auto_removal_ids
-                    )
-                    if set(removed) != auto_removal_ids:
-                        raise SyncError(
-                            "automatic exclusion changed before reconciliation"
+            with timing.stage("fact_persistence"):
+                with self.repository.transaction() as connection:
+                    for item in prepared:
+                        self.repository.replace_subject_snapshot(
+                            connection, item.snapshot
                         )
+                    self.repository.delete_review_issues_for_subjects(
+                        connection,
+                        quarter,
+                        stale_review_subject_ids,
+                        _OUT_OF_SCOPE_REVIEW_ISSUES,
+                    )
+                    self.repository.delete_unscoped_review_issues_for_subjects(
+                        connection,
+                        resolved_japanese_review_subject_ids,
+                        _JAPANESE_REVIEW_ISSUES,
+                    )
+                    self.repository.delete_subjects(connection, frozenset(stale_ids))
+                    self.repository.replace_automatic_continuing_for_quarter(
+                        connection, quarter, continuing_appearances
+                    )
+                    self._replace_continuing_reviews(
+                        connection,
+                        reconciliation,
+                        {
+                            item.snapshot.subject.subject_id: item.snapshot
+                            for item in prepared
+                        },
+                    )
+                    self.repository.write_sync_state(
+                        connection,
+                        QuarterSyncState(
+                            quarter,
+                            FACTS_COMPLETE,
+                            COVERS_INCOMPLETE,
+                            subject_count,
+                            subject_count,
+                            completed_at,
+                            completed_at,
+                        ),
+                    )
+                    if auto_removal_ids:
+                        removed = remove_auto_excluded_subjects(
+                            self.settings_path, auto_removal_ids
+                        )
+                        if set(removed) != auto_removal_ids:
+                            raise SyncError(
+                                "automatic exclusion changed before reconciliation"
+                            )
         except BaseException:
             if original_config is not None:
                 try:
@@ -1032,15 +1470,19 @@ class ArchiveSynchronizer:
         for subject_id in auto_removal_ids:
             self._auto_excluded_subject_ids.discard(subject_id)
             self._active_excluded_subject_ids.discard(subject_id)
-        cleanup_warnings = self._remove_stale_covers(stale_ids)
-        cover_downloaded, cover_reused, cover_missing, cover_warnings = (
-            self._sync_covers(
-                item
-                for item in prepared
-                if item.snapshot.premiere is not None
-                and item.snapshot.premiere.quarter == quarter
+        timing.set_data_status(FACTS_COMPLETE, COVERS_INCOMPLETE)
+        with timing.stage("cover_processing") as cover_stage:
+            cleanup_warnings = self._remove_stale_covers(stale_ids)
+            cover_downloaded, cover_reused, cover_missing, cover_warnings = (
+                self._sync_covers(
+                    item
+                    for item in prepared
+                    if item.snapshot.premiere is not None
+                    and item.snapshot.premiere.quarter == quarter
+                )
             )
-        )
+            if cover_missing or cleanup_warnings:
+                cover_stage.fail()
         warnings = tuple(
             [
                 *discovery_warnings,
@@ -1056,23 +1498,25 @@ class ArchiveSynchronizer:
             if cover_missing == 0 and not cleanup_warnings
             else COVERS_INCOMPLETE
         )
-        with self.repository.transaction() as connection:
-            self.repository.write_sync_state(
-                connection,
-                QuarterSyncState(
-                    quarter,
-                    FACTS_COMPLETE,
-                    covers_status,
-                    subject_count,
-                    cover_missing,
-                    _timestamp(),
-                    completed_at,
-                ),
+        with timing.stage("result_finalization"):
+            with self.repository.transaction() as connection:
+                self.repository.write_sync_state(
+                    connection,
+                    QuarterSyncState(
+                        quarter,
+                        FACTS_COMPLETE,
+                        covers_status,
+                        subject_count,
+                        cover_missing,
+                        _timestamp(),
+                        completed_at,
+                    ),
+                )
+            persisted_review_count = len(self.repository.list_review_issues(quarter))
+            source_counts, episode_known, episode_unknown = _persisted_fact_aggregates(
+                self.repository, quarter
             )
-        persisted_review_count = len(self.repository.list_review_issues(quarter))
-        source_counts, episode_known, episode_unknown = _persisted_fact_aggregates(
-            self.repository, quarter
-        )
+        timing.set_data_status(FACTS_COMPLETE, covers_status)
         return QuarterSyncResult(
             quarter,
             FACTS_COMPLETE,
@@ -1580,25 +2024,37 @@ class ArchiveSynchronizer:
         canonical_detail_requests: int = 0,
         episode_source_counts: tuple[tuple[str, int], ...] = (),
         auto_reconsidered: int = 0,
+        timing: _QuarterTimingRecorder | None = None,
     ) -> QuarterSyncResult:
-        with self.repository.transaction() as connection:
-            self.repository.write_sync_state(
-                connection,
-                QuarterSyncState(
-                    quarter,
-                    FACTS_INCOMPLETE,
-                    prior.covers_status if prior is not None else COVERS_INCOMPLETE,
-                    prior.subject_count if prior is not None else 0,
-                    prior.missing_cover_count if prior is not None else 0,
-                    _timestamp(),
-                    prior.last_success_at if prior is not None else None,
-                ),
-            )
+        covers_status = (
+            prior.covers_status if prior is not None else COVERS_INCOMPLETE
+        )
+        persistence_stage = (
+            timing.stage("incomplete_persistence")
+            if timing is not None
+            else nullcontext()
+        )
+        with persistence_stage:
+            with self.repository.transaction() as connection:
+                self.repository.write_sync_state(
+                    connection,
+                    QuarterSyncState(
+                        quarter,
+                        FACTS_INCOMPLETE,
+                        covers_status,
+                        prior.subject_count if prior is not None else 0,
+                        prior.missing_cover_count if prior is not None else 0,
+                        _timestamp(),
+                        prior.last_success_at if prior is not None else None,
+                    ),
+                )
+        if timing is not None:
+            timing.set_data_status(FACTS_INCOMPLETE, covers_status)
         persisted_review_count = len(self.repository.list_review_issues(quarter))
         return QuarterSyncResult(
             quarter,
             FACTS_INCOMPLETE,
-            prior.covers_status if prior is not None else COVERS_INCOMPLETE,
+            covers_status,
             discovered,
             0,
             0,
@@ -1704,6 +2160,7 @@ class ArchiveSynchronizer:
         results: Iterable[QuarterSyncResult],
         *,
         interrupted: bool,
+        timing: Mapping[str, object] | None = None,
     ) -> Path:
         completed_at = _timestamp()
         serialized = [_result_payload(item) for item in results]
@@ -1786,6 +2243,8 @@ class ArchiveSynchronizer:
             "warning_count": sum(len(item["warnings"]) for item in serialized),
             "error_count": sum(len(item["errors"]) for item in serialized),
         }
+        if timing is not None:
+            payload["timing"] = dict(timing)
         return _write_json_report(
             self.reports_directory, f"sync-{scope.label}", payload
         )

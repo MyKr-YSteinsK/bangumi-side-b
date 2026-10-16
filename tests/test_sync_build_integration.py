@@ -44,6 +44,13 @@ def test_successful_sync_builds_and_failed_sync_does_not(
     report.write_text("{}", encoding="utf-8")
     scope = SyncScope(Quarter(2026, 7), Quarter(2026, 7))
     builds: list[bool] = []
+    fail_build = False
+    clock_ns = 0
+
+    def controlled_clock() -> int:
+        nonlocal clock_ns
+        clock_ns += 1_000_000
+        return clock_ns
 
     class FakeBuild:
         def __init__(self, *_: object, **__: object) -> None:
@@ -51,6 +58,8 @@ def test_successful_sync_builds_and_failed_sync_does_not(
 
         def build(self):
             builds.append(True)
+            if fail_build:
+                raise cli.SiteBuildError("synthetic build failure")
             return type(
                 "Run",
                 (),
@@ -61,12 +70,24 @@ def test_successful_sync_builds_and_failed_sync_does_not(
     monkeypatch.setattr(cli, "BangumiApiClient", _Client)
     monkeypatch.setattr(cli, "ArchiveSynchronizer", _Sync)
     monkeypatch.setattr(cli, "UnifiedSiteBuilder", FakeBuild)
-    _Sync.result = SyncRun(scope, (), report, 0)
+    monkeypatch.setattr(cli, "_monotonic_ns", controlled_clock)
+    _Sync.result = SyncRun(scope, (), report, 0, 12, 3)
     assert cli.main(["sync", "2026", "7", "--quiet"]) == 0
     assert builds == [True]
-    assert "incremental site build" in capsys.readouterr().out
+    successful_output = capsys.readouterr().out
+    assert "sync processing elapsed: 12 ms" in successful_output
+    assert "sync report serialization elapsed: 3 ms" in successful_output
+    assert "automatic incremental build invocation elapsed: 1 ms" in (
+        successful_output
+    )
+    assert "incremental site build" in successful_output
 
     builds.clear()
     _Sync.result = SyncRun(scope, (), report, 1)
     assert cli.main(["sync", "2026", "7", "--quiet"]) == 1
     assert builds == []
+
+    fail_build = True
+    _Sync.result = SyncRun(scope, (), report, 0)
+    assert cli.main(["sync", "2026", "7", "--quiet"]) == 1
+    assert "automatic build failed after 1 ms" in capsys.readouterr().out

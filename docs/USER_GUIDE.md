@@ -75,6 +75,39 @@ Browse/Search 只发现候选，正式 subject facts 会再通过 canonical deta
 detail 请求数；不会把原始 API 响应写入报告。来源顺序是精确 Infobox、已验证 exact source tag，
 再到能够明确区分类型的结构化 relation；当前 relations 不能区分小说与轻小说，因此保持来源未知。
 
+同步报告另有顶层 `timing` 诊断对象，使用 monotonic 时钟记录毫秒数（四舍五入到整数毫秒，半入）。
+`timing.scope.elapsed_ms` 从同步器开始处理起计到开始写报告之前，包含同步准备和季度处理；
+`unattributed_elapsed_ms` 表示没有归入阶段的处理时间。每个 `timing.quarters[]` 有自己的季度
+总耗时、最终已知事实/封面状态和分阶段结果。既有 `quarters[]` 仍表示各季度自身刷新结果；计时对象
+还反映之后对目标季度产生影响的续播回填。季度总耗时包含该季度的状态检查；已完成季度还包含紧随其后的
+续播回填。明确跳过的季度仍有自己的检查耗时，阶段状态为 `skipped`，未执行阶段的耗时为 `null`。
+`scope.status` 可为 `completed`、`completed_with_skips`、`partial` 或 `interrupted`；季度及阶段状态
+中，`quarters[].status` 可为 `completed`、`partial`、`skipped`、`interrupted` 或 `not_started`，
+`stages.<name>.status` 可为 `completed`、`failed`、`interrupted`、`skipped` 或 `not_started`。
+`main_sync_status` 保留该季度自身刷新是否被跳过；相邻季度回填失败或中断时，`status` 与事实/封面
+状态反映回填后的已知结果，`backfill_status` 记录对该目标季度的影响。也就是说，跳过的是该季度
+自身刷新，它仍可能被前一季度的续播回填处理。
+中断或提前失败的报告只列出已取得的时间，不能把尚未运行的阶段当作 0 毫秒或完成。
+
+阶段按现有流程边界定义：`discovery` 是 Browse/Search 候选发现与合并；`candidate_preparation`
+是本地既有事实和 REVIEW 检查、既有 REVIEW 退役及对应的自动排除记录；`canonical_evaluation`
+包含 canonical detail 请求、确定性裁决及候选整理；`continuing_reconciliation` 是当前目标季度的续播核对；
+`fact_persistence` 是季度事实、
+REVIEW、续播记录及受控自动排除配置的事务提交；`cover_processing` 包括旧封面清理和封面处理，
+其耗时是并发任务的墙钟时间，不累加各线程用时；`result_finalization` 写入最终封面状态并读取
+结果聚合；`continuing_backfill` 是对下一季度的既有回填，计在触发回填的较早季度下；
+`incomplete_persistence` 记录失败或中断时将季度标为未完成的持久化操作。`completed` 仅用于
+相应阶段确已运行并返回；季度若有未完成事实/封面、错误、警告或 REVIEW，会标为 `partial`。
+续播回填若需要将目标季度标为未完成，其持久化时间包含在触发回填的 `continuing_backfill` 阶段内。
+
+`timing.scope` 明确排除同步报告自身的序列化与后续 CLI 自动增量 build。控制台分别显示报告序列化
+耗时和自动 build 调用区间耗时；后者从创建 build 进度 reporter 前开始，到 build 返回且 reporter
+退出后结束，不含此前的配置/标签加载。自动 build 失败时仍保留“事实已提交、自动 build 失败”的独立结果。
+报告不计算事实新增、移除或变化的精确差异，`timing.fact_delta.status` 固定为
+`not_computed`。既有 `discovered` 是候选数，`accepted_tv` / `accepted_movie` 是本季度接受数，
+`canonical_detail_requests` 是请求数；它们都不能单独解释为本次新增的唯一作品。范围摘要的计数
+按季度累加，同一作品可能在不同季度重复出现。
+
 ## REVIEW 与人工裁决
 
 查看全部或某季度尚未解决的 REVIEW：

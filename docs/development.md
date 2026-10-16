@@ -63,7 +63,9 @@ Git author／committer 也不代替任务授权、验收或发布归因；沿用
   同步，也不发布。
 - `bgmb sync` 是唯一的常规 Bangumi 网络入口；事实和封面成功提交后才
   触发受影响范围的增量 build。未获计划或用户明确授权时不得执行 live
-  sync；未知 Subject 的远程 `assign` 导入同样受此边界约束。
+  sync；未知 Subject 的远程 `assign` 导入同样受此边界约束。同步报告以
+  monotonic 时钟追加分阶段诊断耗时；计时只作观测，不参与事实判断或处理顺序。
+  scope 时间排除报告序列化和 CLI 后续自动 build，阶段状态与摘要口径见[用户指南](USER_GUIDE.md)。
 - `bgmb release prepare` 执行本地资料审计和离线 build，可更新正式 `dist/site`
   与 build state、报告等派生状态；随后在临时 staging 验证候选并做 dry-run，
   写入 prepared state。它会只读访问 Git 远端 `gh-pages`，整个 prepare 并非

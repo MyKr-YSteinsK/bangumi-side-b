@@ -858,3 +858,91 @@ SHA and ordinary-push/remote confirmation belong in its TASK_RESULT.
   repeat a subject across quarters. The synthetic validation evidence and
   limits are recorded in this task's TASK_RESULT; no live Bangumi sync,
   private SQLite access, real-data build, release or Pages operation was run.
+
+## 2026-10-16 Plan-68 Rev1 local A/B entry and interaction evidence
+
+- At source HEAD `16c70f283442c23b76af66ba857ac5428654ca6b`, an isolated
+  Chromium 149 loopback study compared root-to-latest-quarter with direct
+  `2026-07/index.html` navigation, using 10 samples per entry/cache/network
+  group on synthetic 43-row and 503-row quarter fixtures (44 and 504 annual
+  appearances). At normal local speed, the root-minus-direct median to a
+  populated summary/searchable list ranged from -17 to +29 ms. With emulated
+  150 ms latency and 204800 B/s, it ranged from +350 to +631 ms. Root fetched
+  `data/archive-index.json` before navigating; the direct quarter route did
+  not. All measurements reflect the local test server, not production or
+  device latency.
+  The server supplied no `Cache-Control`, and the same-context revisit did not
+  establish a dependable warm-cache hit. Entry-matrix requests stayed on
+  loopback and returned 200. A separate index-503 check displayed the root's
+  Archive/Settings fallback. A controlled online visit followed by offline
+  root navigation reached the same runtime-cached quarter; the shell itself
+  did not precache the archive index, which had entered runtime cache during
+  the prior visit. A stale index with a newer shell, and offline navigation
+  when the latest index points to a quarter newer than the downloaded data,
+  were not tested.
+- With Chromium 149, reduced motion and 4× CPU throttling, each Quarter and
+  Archive path received 20 search-input events, 20 alternating Grid/List
+  activations and 10 detail open/close pairs on each fixture. Search and detail
+  synchronous capture-to-bubble medians were 2.9–9.25 ms (observed maxima
+  5.8–22.9 ms). Grid/List handlers were below 1 ms median, but the measured
+  event-to-next-frame median was 140–183 ms (observed maxima 214–324 ms),
+  compared with 16.4–17 ms idle frame medians under the same throttle. A view
+  switch preserved row order/identity, activated-control focus and scroll;
+  detail close returned focus to its opener. Search changes the mounted result
+  rows as expected. View switching produced about 1,227–1,232 short-lived CSS
+  transition objects despite reduced motion. These frame timings are local
+  instrumentation, not INP or real-device evidence. The 503-item fixture's
+  current page displayed 20 rows; search still traversed the larger dataset.
+- At 390×844, the current first Quarter row began at y=317.36 px and the first
+  Archive row at y=442.72 px; both document widths remained 390 px. The delayed
+  Archive index/catalog shell test and current list-preview/detail-original
+  cover browser check passed; both generated offline manifests retained the
+  original and deterministic preview cover. The focused browser selection
+  had 13 passes and one failure:
+  `test_archive_lazy_loads_and_reuses_selected_quarter_details` still expects
+  the original cover request before detail opens, while current list markup
+  requests the deterministic preview; the separate preview test verifies the
+  original detail cover. No product/test implementation was changed to mask
+  this stale assertion, so Plan-68 Gate C remains partial pending its explicit
+  test-maintenance review. A narrower follow-up selection of preview, delayed
+  Archive-shell and Service Worker offline-shell cases passed 9 tests.
+- The local diagnosis is `MIXED_GAPS`: a repeatable entry delay under the
+  simulated weak network and a reduced-motion Grid/List frame delay under 4×
+  CPU. This does not authorize changing root routing, CSS motion, PWA cache
+  behavior or any A–F direction. Any follow-up should separately assess the
+  reduced-motion transition cost and root-entry freshness/offline cases before
+  proposing a bounded implementation. Production remains unchanged, E remains
+  excluded, and no real device, production site or Bangumi access was used.
+  Synthetic scripts/results are confined to ignored
+  `workspace/reports/plan68-20261016/`. Gate D was not run because Gate C was
+  partial; no Plan-68 commit, source push or CI run was created.
+
+## 2026-10-16 Plan-68 Rev2 cover-test contract correction
+
+- At unchanged source HEAD
+  `16c70f283442c23b76af66ba857ac5428654ca6b`, the Archive lazy-detail test
+  reproduced Rev1's failure before opening a detail: its old assertion expected
+  the list to request `/covers/101.webp?v=`, while the isolated server recorded
+  `/covers/previews/<identity>.webp`. A separate run reproduced the same stale
+  expectation in the Quarter detail/history test. The active Static build,
+  Visual system, and PWA cover contracts confirm that browse lists use derived
+  previews and detail/Lightbox use the canonical original.
+- Only those two pre-detail expectations in `tests/test_unified_site_browser.py`
+  were corrected. Each now waits for the subject's loaded preview, verifies the
+  preview request and absence of an early original request, then verifies the
+  detail's loaded original. The Archive test retains its quarter JSON lazy-load,
+  cross-quarter selection, and request-reuse assertions. No runtime, data,
+  generated site, or other test files changed.
+- The bounded 16-case Chromium/Playwright-WebKit browser selection passed,
+  including preview fallback, Quarter detail/history/Lightbox, Archive lazy
+  detail/history, delayed Archive shell, and the existing offline-shell case.
+  Python 3.14.6, Playwright 1.61.0, and Chromium 149.0.7827.55 were used. This
+  is browser automation, not real Safari or device evidence. Active-document
+  guards passed 13 tests, Ruff passed, and `git diff --check` exited 0 with only
+  the repository's LF-to-CRLF working-copy notices.
+- Rev1's A/B measurements and `MIXED_GAPS` classification remain unchanged and
+  are reused because runtime source, configuration, and dependencies did not
+  change. They remain synthetic candidate-gap evidence, not production
+  acceptance, real-user performance, or approval of a routing, motion, or PWA
+  strategy. The original ignored Rev1 evidence remains local; no full browser
+  suite, real-data build, Bangumi access, release, or Pages operation was run.

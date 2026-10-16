@@ -1013,10 +1013,38 @@ def test_quarter_detail_movie_history_and_lightbox(
     requests: list[str] = []
     page.on("request", lambda request: requests.append(request.url))
     _open_quarter(page, site_server, (1440, 900))
-    assert any("/covers/101.webp?v=" in url for url in requests)
+    list_cover = page.locator(
+        '[data-subject-id="101"] .subject-row__cover img'
+    ).first
+    page.wait_for_function(
+        """() => {
+          const image = document.querySelector(
+            '[data-subject-id="101"] .subject-row__cover img'
+          );
+          return image?.complete && image.naturalWidth > 0;
+        }"""
+    )
+    preview_url = list_cover.evaluate("node => node.currentSrc")
+    assert "/covers/previews/" in preview_url
+    assert preview_url in requests
+    assert not any("/covers/101.webp?v=" in url for url in requests)
 
     page.goto(f"{site_server}/2026-07/index.html#bgm-101")
     page.wait_for_selector('[data-detail-panel]:not([hidden])')
+    detail_cover = page.locator(
+        '[data-detail-panel] .detail-cover-button img'
+    )
+    page.wait_for_function(
+        """() => {
+          const image = document.querySelector(
+            '[data-detail-panel] .detail-cover-button img'
+          );
+          return image?.complete && image.naturalWidth > 0;
+        }"""
+    )
+    detail_cover_url = detail_cover.evaluate("node => node.currentSrc")
+    assert "/covers/101.webp?v=" in detail_cover_url
+    assert detail_cover_url in requests
     detail = page.locator("[data-detail-panel]").inner_text()
     assert "续播" in detail
     assert "2026-04" in detail
@@ -4474,7 +4502,21 @@ def test_archive_lazy_loads_and_reuses_selected_quarter_details(
         return [url for url in requests if "/data/quarters/" in url]
 
     assert detail_requests() == []
-    assert any("/covers/101.webp?v=" in url for url in requests)
+    list_cover = page.locator(
+        '[data-subject-id="101"] .subject-row__cover img'
+    ).first
+    page.wait_for_function(
+        """() => {
+          const image = document.querySelector(
+            '[data-subject-id="101"] .subject-row__cover img'
+          );
+          return image?.complete && image.naturalWidth > 0;
+        }"""
+    )
+    preview_url = list_cover.evaluate("node => node.currentSrc")
+    assert "/covers/previews/" in preview_url
+    assert preview_url in requests
+    assert not any("/covers/101.webp?v=" in url for url in requests)
 
     occurrences = page.locator('[data-subject-id="101"] [data-open-subject]')
     occurrences.nth(0).click()
@@ -4483,6 +4525,20 @@ def test_archive_lazy_loads_and_reuses_selected_quarter_details(
     )
     assert len(detail_requests()) == 1
     assert detail_requests()[0].endswith("/data/quarters/2026-04.json")
+    detail_cover = page.locator(
+        '[data-detail-panel] .detail-cover-button img'
+    )
+    page.wait_for_function(
+        """() => {
+          const image = document.querySelector(
+            '[data-detail-panel] .detail-cover-button img'
+          );
+          return image?.complete && image.naturalWidth > 0;
+        }"""
+    )
+    detail_cover_url = detail_cover.evaluate("node => node.currentSrc")
+    assert "/covers/101.webp?v=" in detail_cover_url
+    assert detail_cover_url in requests
 
     occurrences.nth(0).click()
     page.wait_for_function(

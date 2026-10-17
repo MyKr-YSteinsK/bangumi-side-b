@@ -354,6 +354,115 @@ def test_unresolved_low_rating_is_outcome_dominated_without_fake_resolution() ->
     assert OUTCOME_DOMINATED_LOW_RATING == "outcome_dominated_low_rating"
 
 
+def test_low_rating_exemption_preserves_unresolved_japanese_review() -> None:
+    exempted = admit_subject(
+        _candidate(501729, formats=frozenset({MediaFormat.MOVIE})),
+        _detail(501729, platform="剧场版", country=None, rating_count=29),
+        Quarter(2026, 4),
+        evaluation_date=date(2026, 4, 20),
+        low_rating_exempt_subject_ids=frozenset({501729}),
+    )
+    ordinary = admit_subject(
+        _candidate(501730, formats=frozenset({MediaFormat.MOVIE})),
+        _detail(501730, platform="剧场版", country=None, rating_count=29),
+        Quarter(2026, 4),
+        evaluation_date=date(2026, 4, 20),
+        low_rating_exempt_subject_ids=frozenset({501729}),
+    )
+
+    assert exempted.status is AdmissionStatus.REVIEW
+    assert exempted.reason == JAPANESE_CLASSIFICATION_UNRESOLVED
+    assert not exempted.outcome_dominated
+    assert exempted.japanese is not None
+    assert exempted.japanese.classification is JapaneseClassification.UNRESOLVED
+    assert ordinary.status is AdmissionStatus.REVIEW
+    assert ordinary.outcome_dominated
+
+
+def test_low_rating_exemption_does_not_bypass_other_admission_gates() -> None:
+    exemption = frozenset({501729})
+    cases = (
+        (
+            _candidate(501729),
+            _detail(501729, subject_type=1, rating_count=25),
+            Quarter(2026, 4),
+            frozenset(),
+            AdmissionStatus.REJECTED,
+            "not_anime",
+        ),
+        (
+            _candidate(501729, formats=frozenset({MediaFormat.MOVIE})),
+            _detail(
+                501729,
+                platform="剧场版",
+                country="中国",
+                rating_count=25,
+            ),
+            Quarter(2026, 4),
+            frozenset(),
+            AdmissionStatus.REJECTED,
+            "non_japanese",
+        ),
+        (
+            _candidate(501729, formats=frozenset({MediaFormat.MOVIE})),
+            _detail(
+                501729,
+                platform="剧场版",
+                other="游乐设施电影",
+                rating_count=25,
+            ),
+            Quarter(2026, 4),
+            frozenset(),
+            AdmissionStatus.REJECTED,
+            NON_THEATRICAL_SPECIAL_VENUE,
+        ),
+        (
+            _candidate(
+                501729,
+                formats=frozenset({MediaFormat.MOVIE}),
+                dates=frozenset({date(2026, 7, 2)}),
+            ),
+            _detail(
+                501729,
+                platform="剧场版",
+                air_date="2026-07-02",
+                rating_count=25,
+            ),
+            Quarter(2026, 4),
+            frozenset(),
+            AdmissionStatus.REJECTED,
+            OUT_OF_SCOPE_QUARTER,
+        ),
+        (
+            _candidate(501729),
+            _detail(501729, rating_count=25),
+            Quarter(2026, 4),
+            frozenset({501729}),
+            AdmissionStatus.BLACKLISTED,
+            "blacklist",
+        ),
+    )
+
+    for (
+        candidate,
+        detail,
+        quarter,
+        exclusions,
+        expected_status,
+        expected_reason,
+    ) in cases:
+        decision = admit_subject(
+            candidate,
+            detail,
+            quarter,
+            excluded_subject_ids=exclusions,
+            evaluation_date=date(2026, 4, 20),
+            low_rating_exempt_subject_ids=exemption,
+        )
+        assert decision.status is expected_status
+        assert decision.reason == expected_reason
+
+
 def test_manual_japanese_override_does_not_change_quarter_scope() -> None:
     manual = admit_subject(
         _candidate(),

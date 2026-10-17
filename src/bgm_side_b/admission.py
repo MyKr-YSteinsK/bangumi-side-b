@@ -132,6 +132,7 @@ def admit_subject(
     japanese_override: JapaneseDecision | None = None,
     evaluation_date: date | None = None,
     allow_out_of_scope: bool = False,
+    low_rating_exempt_subject_ids: frozenset[int] = frozenset(),
 ) -> AdmissionDecision:
     """Apply blacklist, scope, Japanese-only, and quarter rules in fixed order."""
     if candidate.subject_id != detail.subject_id:
@@ -222,7 +223,11 @@ def admit_subject(
             outcome_dominated=(
                 evaluation_date is not None
                 and should_auto_blacklist(
-                    detail.air_date, detail.rating_total, evaluation_date
+                    detail.air_date,
+                    detail.rating_total,
+                    evaluation_date,
+                    subject_id=detail.subject_id,
+                    low_rating_exempt_subject_ids=low_rating_exempt_subject_ids,
                 )
             ),
         )

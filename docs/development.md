@@ -99,6 +99,10 @@ Search 的前一季度回看只服务 TV 边界，Movie 的非目标季度候选
 `outcome_dominated_low_rating` 而不伪造事实结论；仍可能改变收录的日本性
 问题只能通过独立的 `config/japanese-overrides.toml` 与
 `bgmb classify` 人工裁决。
+`config/bangumi.toml` 的 `[filters].low_rating_exempt_subject_ids` 仅记录
+经过明确批准的低评分规则豁免；当前只允许 subject `501729`。它只影响
+`low_rating_count` 和 `outcome_dominated_low_rating` 两条判断，不影响
+`information-insufficient` 自动排除、REVIEW 或其它准入门槛，也不代表无条件收录。
 canonical `platform=剧场版` 仍需通过非院线特殊场所门：当前只识别 Infobox
 `其他` 中两个已核验的精确值，不读取标题或 URL。旧自动排除在 fresh canonical
 结果变为非日本或非院线硬拒绝时，会事务性删除并记录 `auto_reconciled`，不会继续

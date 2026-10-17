@@ -3,6 +3,9 @@ excluded_subject_ids = [
     184017, # Bangumi Wiki 动画测试用沙盘
     551459, # 名侦探柯南 闪光的宇宙船（天文馆上映）
 ]
+low_rating_exempt_subject_ids = [
+    501729, # Approved exclusion from low-rating automatic rules only
+]
 auto_excluded_subject_ids = [
     332677, # 贝里琉岛 -乐园的格尔尼卡
     363612, # 沙盒
@@ -18,7 +21,6 @@ auto_excluded_subject_ids = [
     494044, # 电影 小鲨鱼去郊游
     496945, # 如果烧陶的话也做个马克杯吧 剧场版
     501198, # 怪兽世界征服
-    501729, # 剧场版 魔法科高校的劣等生 四叶继承篇
     504666, # 超星系
     505378, # 剧场版 美男高校地球防卫部ETERNAL LOVE！
     505562, # 剧场版 物怪 蛇神

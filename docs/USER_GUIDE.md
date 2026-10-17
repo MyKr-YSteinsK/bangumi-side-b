@@ -45,6 +45,9 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 跨季度搜索回看只作为 TV 边界候选；非目标季度 Movie 会被自动视为无关，不产生日本性 REVIEW
 或错误的 `assign` 指引。未决或冲突的日本性在可靠日期超过 7 天且评分人数少于 30 时，会记录
 为 `outcome_dominated_low_rating` 自动排除；底层日本性仍保持 `UNRESOLVED`，不伪造人工结论。
+唯一获批的单项例外是 subject `501729`：它只跳过上述低评分自动排除及相同低评分支配路径，
+不绕过 Anime、日本性、TV/MOVIE、自然季度、人工排除或 REVIEW 规则；信息不足型 allowlist
+仍按原规则处理。该例外不会强制收录作品，是否进入本地季度事实仍须经过另行授权的 fresh sync。
 命中作品会写入 `config/bangumi.toml` 的
 `auto_excluded_subject_ids`，同时记录标题注释和审计证据，并在本次同步中跳过季度归属、REVIEW、
 封面和站点输出。`auto_excluded_subject_ids` 是可重新评估的自动缓存：作品再次出现在实际刷新

@@ -23,6 +23,7 @@ class ArchiveSyncSettings:
     request_timeout_seconds: int
     max_retries: int
     auto_excluded_subject_ids: frozenset[int] = frozenset()
+    low_rating_exempt_subject_ids: frozenset[int] = frozenset()
 
     @property
     def all_excluded_subject_ids(self) -> frozenset[int]:
@@ -51,6 +52,17 @@ def load_archive_sync_settings(path: Path) -> ArchiveSyncSettings:
     auto_excluded = _subject_ids(
         filters, "auto_excluded_subject_ids", required=False
     )
+    low_rating_exempt = (
+        _subject_ids(filters, "low_rating_exempt_subject_ids", required=True)
+        if "low_rating_exempt_subject_ids" in filters
+        else []
+    )
+    if not set(low_rating_exempt).issubset(
+        APPROVED_LOW_RATING_EXEMPT_SUBJECT_IDS
+    ):
+        raise ValueError(
+            "low_rating_exempt_subject_ids contains an unapproved subject id"
+        )
     values = ("api_concurrency", "request_timeout_seconds", "max_retries")
     if not all(_integer(sync.get(value)) for value in values):
         raise ValueError("sync settings must be integers")
@@ -67,6 +79,7 @@ def load_archive_sync_settings(path: Path) -> ArchiveSyncSettings:
         timeout,
         retries,
         frozenset(auto_excluded),
+        frozenset(low_rating_exempt),
     )
 
 
@@ -74,6 +87,9 @@ def should_auto_blacklist(
     air_date: date | None,
     rating_count: int | None,
     evaluation_date: date,
+    *,
+    subject_id: int | None = None,
+    low_rating_exempt_subject_ids: frozenset[int] = frozenset(),
 ) -> bool:
     """Return whether a reliable, older low-rating-count subject is eligible.
 
@@ -81,6 +97,11 @@ def should_auto_blacklist(
     deterministic in both synchronization and tests.  Missing values are
     deliberately treated as unknown rather than as a zero rating count.
     """
+    if (
+        subject_id is not None
+        and subject_id in low_rating_exempt_subject_ids
+    ):
+        return False
     if air_date is None or rating_count is None or rating_count < 0:
         return False
     return (evaluation_date - air_date).days > 7 and rating_count < 30
@@ -317,6 +338,9 @@ def _integer(value: object) -> bool:
 
 def _positive_id(value: object) -> bool:
     return _integer(value) and value > 0
+
+
+APPROVED_LOW_RATING_EXEMPT_SUBJECT_IDS = frozenset({501729})
 
 
 def load_archive_source_rules(path: Path) -> ArchiveSourceRules:

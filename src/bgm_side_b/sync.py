@@ -593,6 +593,9 @@ class ArchiveSynchronizer:
         self.evaluation_date = evaluation_date or date.today()
         self._manual_excluded_subject_ids = set(settings.excluded_subject_ids)
         self._auto_excluded_subject_ids = set(settings.auto_excluded_subject_ids)
+        self._low_rating_exempt_subject_ids = set(
+            settings.low_rating_exempt_subject_ids
+        )
         self._active_excluded_subject_ids = set(settings.all_excluded_subject_ids)
         self._japanese_overrides: dict[int, JapaneseOverride] = {}
 
@@ -603,6 +606,9 @@ class ArchiveSynchronizer:
             settings = load_archive_sync_settings(self.settings_path)
             self._manual_excluded_subject_ids = set(settings.excluded_subject_ids)
             self._auto_excluded_subject_ids = set(settings.auto_excluded_subject_ids)
+            self._low_rating_exempt_subject_ids = set(
+                settings.low_rating_exempt_subject_ids
+            )
             self._active_excluded_subject_ids = set(settings.all_excluded_subject_ids)
         self.repository.database.initialize()
         self._purge_blacklist()
@@ -980,6 +986,9 @@ class ArchiveSynchronizer:
                             else None
                         ),
                         evaluation_date=self.evaluation_date,
+                        low_rating_exempt_subject_ids=frozenset(
+                            self._low_rating_exempt_subject_ids
+                        ),
                     )
                 except BangumiApiError as error:
                     errors.append({"code": error.code, "summary": error.summary})
@@ -1054,7 +1063,13 @@ class ArchiveSynchronizer:
                         )
                     continue
                 if _eligible_for_auto_blacklist(decision) and should_auto_blacklist(
-                    detail.air_date, detail.rating_total, self.evaluation_date
+                    detail.air_date,
+                    detail.rating_total,
+                    self.evaluation_date,
+                    subject_id=detail.subject_id,
+                    low_rating_exempt_subject_ids=frozenset(
+                        self._low_rating_exempt_subject_ids
+                    ),
                 ):
                     if was_auto_excluded:
                         added = False
@@ -1571,6 +1586,10 @@ class ArchiveSynchronizer:
                 item.subject.air_date,
                 item.subject.rating_count,
                 self.evaluation_date,
+                subject_id=item.subject.subject_id,
+                low_rating_exempt_subject_ids=frozenset(
+                    self._low_rating_exempt_subject_ids
+                ),
             )
         }
         snapshots = self.repository.get_subject_facts_many(subject_ids)

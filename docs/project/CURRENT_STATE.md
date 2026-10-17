@@ -37,6 +37,15 @@ requirement for a file to contain its own commit SHA.
   pipeline, offline incremental static build, existing-tree serve command, PWA
   runtime, and prepared-state release workflow described by the specialist
   owners.
+- Plan-72 Rev2 records a single approved low-rating exclusion exemption for
+  subject `501729`; source configuration removes that ID from the automatic
+  exclusion cache and limits the new exemption setting to the approved ID.
+  This does not create archive facts or change the published `0.9.0` site:
+  `501729` was absent from the integrity-checked local archive database at the
+  preflight, and no fresh synchronization or Pages publication was authorized.
+  Plan-72 Rev1's incomplete 2026-10 discovery and unrefreshed historical
+  quarters remain unchanged. Source delivery evidence is in this task's
+  `TASK_RESULT`.
 - The current frontend and user guide implement full-width mobile detail,
   draft/apply mobile filtering, continuous Quarter browsing, paginated Archive
   browsing, and `Side B` PWA identity.

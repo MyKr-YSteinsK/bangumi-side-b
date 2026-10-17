@@ -218,3 +218,15 @@ That view is verified and client-pinned in the bounded runtime cache, but it
 does not promote or replace the offline active package, mark it complete, or
 expand the selected offline quarters. Failed checks or loads keep the verified
 saved page usable.
+
+## D-023 — Subject 501729 is exempt only from low-rating automatic exclusions
+
+Subject `501729` is exempt from the reliable-date low-rating rule and its
+`outcome_dominated_low_rating` use for unresolved Japanese reviews. This is a
+single-subject exception to those automatic exclusion reasons, not a positive
+inclusion whitelist. Anime type, Japanese evidence, theatrical Movie scope,
+natural-quarter ownership, manual exclusions, REVIEW outcomes, and the separate
+information-insufficiency rule remain in force. Other automatic exclusions
+remain re-evaluable under D-019. Restoring this subject to archive facts still
+requires a separately authorized fresh synchronization; this decision does not
+claim current database or published-site inclusion.

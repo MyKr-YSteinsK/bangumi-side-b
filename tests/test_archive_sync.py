@@ -333,8 +333,9 @@ def test_blacklist_source_counts_manual_hit_explicitly(
     assert repository.get_subject_facts(650000) is None
 
 
+@pytest.mark.parametrize("rating_count", (25, 29))
 def test_auto_blacklist_stops_before_review_and_cover_download(
-    tmp_path: Path,
+    tmp_path: Path, rating_count: int
 ) -> None:
     settings_path = _auto_settings_path(tmp_path)
     api = FakeApi(
@@ -342,7 +343,7 @@ def test_auto_blacklist_stops_before_review_and_cover_download(
             650001: _detail(
                 650001,
                 air_date="2026-04-02",
-                rating_count=29,
+                rating_count=rating_count,
             )
         }
     )
@@ -370,13 +371,160 @@ def test_auto_blacklist_stops_before_review_and_cover_download(
     )
     event = result.auto_blacklisted[0]
     assert event["days_since_air_date"] == 9
-    assert event["rating_count"] == 29
+    assert event["rating_count"] == rating_count
     report = json.loads(run.report_path.read_text(encoding="utf-8"))
     assert report["auto_blacklisted_count"] == 1
     assert report["manual_blacklisted"] == 0
     assert report["quarters"][0]["auto_blacklisted"][0]["reason"] == (
         "low_rating_count"
     )
+
+
+@pytest.mark.parametrize("rating_count", (25, 29, 30, None))
+def test_approved_low_rating_exemption_only_removes_the_rating_gate(
+    tmp_path: Path, rating_count: int | None
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 501729
+    evaluation_date = date(2026, 4, 20)
+    api = FakeApi(
+        {
+            subject_id: _detail(
+                subject_id,
+                media=MediaFormat.MOVIE,
+                rating_count=rating_count,
+                cover=None,
+            )
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.MOVIE),)),
+        settings_path=settings_path,
+        evaluation_date=evaluation_date,
+    )
+
+    result = sync.run(SyncScope(QUARTER, QUARTER)).quarters[0]
+
+    assert result.auto_blacklisted == ()
+    assert result.accepted_movie == 1
+    assert repository.get_subject_facts(subject_id) is not None
+    settings = load_archive_sync_settings(settings_path)
+    assert settings.low_rating_exempt_subject_ids == frozenset({subject_id})
+    assert subject_id not in settings.auto_excluded_subject_ids
+
+
+def test_low_rating_exemption_does_not_bypass_information_insufficiency_rule(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 501729
+    api = FakeApi(
+        {
+            subject_id: _detail(
+                subject_id,
+                media=MediaFormat.MOVIE,
+                air_date=None,
+                rating_count=25,
+                cover=None,
+            )
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.MOVIE),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 20),
+    )
+
+    result = sync.run(SyncScope(QUARTER, QUARTER)).quarters[0]
+
+    assert result.outcome_dominated == 0
+    assert len(result.auto_blacklisted) == 1
+    assert result.auto_blacklisted[0]["reason"] == "insufficient_airing_information"
+    assert repository.get_subject_facts(subject_id) is None
+    settings = load_archive_sync_settings(settings_path)
+    assert subject_id in settings.auto_excluded_subject_ids
+
+
+def test_low_rating_exemption_keeps_current_japanese_ambiguity_as_review(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 501729
+    api = FakeApi(
+        {
+            subject_id: _detail(
+                subject_id,
+                media=MediaFormat.MOVIE,
+                country=None,
+                rating_count=25,
+                cover=None,
+            )
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.MOVIE),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 20),
+    )
+
+    result = sync.run(SyncScope(QUARTER, QUARTER)).quarters[0]
+
+    assert result.outcome_dominated == 0
+    assert result.auto_blacklisted == ()
+    snapshot = repository.get_subject_facts(subject_id)
+    assert snapshot is not None
+    assert snapshot.subject.japanese.classification is (
+        JapaneseClassification.UNRESOLVED
+    )
+    assert any(
+        issue.issue_code == "JAPANESE_CLASSIFICATION_UNRESOLVED"
+        for issue in snapshot.review_issues
+    )
+    assert subject_id not in load_archive_sync_settings(
+        settings_path
+    ).auto_excluded_subject_ids
+
+
+def test_low_rating_exemption_restores_a_rediscovered_old_auto_entry(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    subject_id = 501729
+    add_auto_excluded_subject(settings_path, subject_id, name_cn="旧自动项")
+    api = FakeApi(
+        {
+            subject_id: _detail(
+                subject_id,
+                media=MediaFormat.MOVIE,
+                rating_count=25,
+                cover=None,
+            )
+        }
+    )
+    sync, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.MOVIE),)),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 20),
+    )
+
+    result = sync.run(SyncScope(QUARTER, QUARTER)).quarters[0]
+
+    assert result.auto_reconsidered == 1
+    assert result.auto_restored == (subject_id,)
+    assert result.auto_blacklisted == ()
+    assert result.accepted_movie == 1
+    assert repository.get_subject_facts(subject_id) is not None
+    settings = load_archive_sync_settings(settings_path)
+    assert settings.low_rating_exempt_subject_ids == frozenset({subject_id})
+    assert subject_id not in settings.auto_excluded_subject_ids
 
 
 @pytest.mark.parametrize(
@@ -811,6 +959,58 @@ def test_stale_target_japanese_review_is_dominated_from_stored_facts(
     assert load_archive_sync_settings(settings_path).auto_excluded_subject_ids == (
         frozenset({subject_id})
     )
+
+
+def test_low_rating_exemption_skips_persisted_review_dominance(
+    tmp_path: Path,
+) -> None:
+    settings_path = _auto_settings_path(tmp_path)
+    target = Quarter(2026, 4)
+    subject_id = 501729
+    review = ReviewIssue(
+        "JAPANESE_CLASSIFICATION_UNRESOLVED",
+        None,
+        "2026-04-02",
+        {"provenance": ["browse:MOVIE:2026-05"]},
+        "old",
+    )
+    sync, repository = _sync(
+        tmp_path,
+        FakeApi({}),
+        DiscoveryBatch(()),
+        settings_path=settings_path,
+        evaluation_date=date(2026, 4, 20),
+    )
+    _store_existing(
+        repository,
+        subject_id,
+        media=MediaFormat.MOVIE,
+        review_issues=(review,),
+    )
+    snapshot = repository.get_subject_facts(subject_id)
+    assert snapshot is not None
+    unresolved = replace(
+        snapshot,
+        subject=replace(
+            snapshot.subject,
+            rating_count=25,
+            japanese=JapaneseDecision(
+                JapaneseClassification.UNRESOLVED,
+                "unresolved_missing_japanese_region",
+                "[]",
+            ),
+        ),
+    )
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(connection, unresolved)
+
+    result = sync.run(SyncScope(target, target)).quarters[0]
+
+    assert result.outcome_dominated == 0
+    assert result.auto_blacklisted == ()
+    assert subject_id not in load_archive_sync_settings(
+        settings_path
+    ).auto_excluded_subject_ids
 
 
 def test_current_non_japanese_decision_removes_stale_japanese_review(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from bgm_side_b.domain import (
@@ -34,6 +36,24 @@ def test_quarter_accepts_only_calendar_quarter_starts(month: int) -> None:
 def test_quarter_rejects_non_quarter_months(month: int) -> None:
     with pytest.raises(ValueError, match="quarter month"):
         Quarter(2026, month)
+
+
+@pytest.mark.parametrize(
+    ("last_day", "label", "next_start"),
+    (
+        (date(2026, 3, 31), "2026-01", date(2026, 4, 1)),
+        (date(2026, 6, 30), "2026-04", date(2026, 7, 1)),
+        (date(2026, 9, 30), "2026-07", date(2026, 10, 1)),
+        (date(2026, 12, 31), "2026-10", date(2027, 1, 1)),
+    ),
+)
+def test_quarter_calendar_boundaries(
+    last_day: date, label: str, next_start: date
+) -> None:
+    quarter = Quarter.from_date(last_day)
+    assert quarter.label == label
+    assert quarter.next().start_date == next_start
+    assert Quarter.from_date(next_start).previous() == quarter
 
 
 def test_japanese_classification_is_explicit_and_evidence_bound() -> None:

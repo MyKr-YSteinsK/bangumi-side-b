@@ -140,7 +140,7 @@ class _QuarterTiming:
             else None
         )
         return {
-            "quarter": _quarter_label(self.quarter),
+            "quarter": self.quarter.label,
             "status": self.status,
             "main_sync_status": self.main_sync_status,
             "elapsed_ms": elapsed_ms,
@@ -284,7 +284,7 @@ class _StageMeasurement:
 
 def _not_started_timing_payload(quarter: Quarter) -> dict[str, object]:
     return {
-        "quarter": _quarter_label(quarter),
+        "quarter": quarter.label,
         "status": "not_started",
         "main_sync_status": "not_started",
         "elapsed_ms": None,
@@ -426,14 +426,14 @@ class SyncScope:
             quarters.append(current)
             if current == self.start:
                 break
-            current = _previous_quarter(current)
+            current = current.previous()
         return tuple(quarters)
 
     @property
     def label(self) -> str:
         if self.is_single_quarter:
-            return _quarter_label(self.start)
-        return f"{_quarter_label(self.start)}..{_quarter_label(self.end)}"
+            return self.start.label
+        return f"{self.start.label}..{self.end.label}"
 
 
 def parse_sync_scope(
@@ -666,7 +666,7 @@ class ArchiveSynchronizer:
                         if failed_backfill:
                             backfill_stage.fail()
                         self._refresh_backfill_target_timing(
-                            _next_quarter(quarter),
+                            quarter.next(),
                             timing_records,
                             "failed" if failed_backfill else "completed",
                         )
@@ -689,7 +689,7 @@ class ArchiveSynchronizer:
                 active_timing.finish("interrupted")
                 if backfill_interrupted:
                     self._refresh_backfill_target_timing(
-                        _next_quarter(active_timing.quarter),
+                        active_timing.quarter.next(),
                         timing_records,
                         "interrupted",
                     )
@@ -849,7 +849,7 @@ class ArchiveSynchronizer:
         self.reporter.stage(
             stage="discovery",
             message="发现 TV/MOVIE 候选",
-            current=_quarter_label(quarter),
+            current=quarter.label,
         )
         try:
             with timing.stage("discovery") as discovery_stage:
@@ -1196,7 +1196,7 @@ class ArchiveSynchronizer:
                                 "summary": (
                                     f"retained existing premiere for subject "
                                     f"{candidate.subject_id} instead of later "
-                                    f"{_quarter_label(quarter)} discovery"
+                                    f"{quarter.label} discovery"
                                 ),
                             }
                         )
@@ -1288,7 +1288,7 @@ class ArchiveSynchronizer:
             self.reporter.error(
                 stage="candidate-summary",
                 message="候选存在但日本 TV 收录为 0；保留旧事实并标记未完成。",
-                quarter=_quarter_label(quarter),
+                quarter=quarter.label,
                 counters={"TV 候选": tv_candidates, "日本 TV": 0},
             )
             return self._write_incomplete(
@@ -1325,7 +1325,7 @@ class ArchiveSynchronizer:
             self.reporter.warning(
                 stage="candidate-summary",
                 message="日本 TV 收录率低于 20%。",
-                quarter=_quarter_label(quarter),
+                quarter=quarter.label,
                 counters={
                     "TV 候选": tv_candidates,
                     "日本 TV": admitted_japanese_tv,
@@ -1404,7 +1404,7 @@ class ArchiveSynchronizer:
             {
                 "subject_id": item.snapshot.subject.subject_id,
                 "air_date": item.snapshot.subject.air_date.isoformat(),
-                "premiere_quarter": _quarter_label(quarter),
+                "premiere_quarter": quarter.label,
                 "evidence": item.snapshot.premiere.evidence_value,
             }
             for item in prepared
@@ -1707,7 +1707,7 @@ class ArchiveSynchronizer:
         excluded_subject_ids: frozenset[int] = frozenset(),
     ) -> _ContinuingReconciliation:
         """Gather all continuing evidence before mutating target-quarter rows."""
-        target_start = date(quarter.year, quarter.month, 1)
+        target_start = quarter.start_date
         appearances: list[tuple[int, QuarterAppearance]] = []
         examined: list[SubjectSnapshot] = []
         reviews: list[tuple[SubjectSnapshot, ReviewIssue]] = []
@@ -1808,7 +1808,7 @@ class ArchiveSynchronizer:
                         "code": "continuing_not_confirmed",
                         "summary": (
                             f"no main episode airdate confirms subject "
-                            f"{subject.subject_id} in {_quarter_label(quarter)}"
+                            f"{subject.subject_id} in {quarter.label}"
                         ),
                     }
                 )
@@ -1826,7 +1826,7 @@ class ArchiveSynchronizer:
 
     def _backfill_next_quarter(self, quarter: Quarter) -> tuple[dict[str, str], ...]:
         """Converge the already-managed next quarter after a prior sync succeeds."""
-        target = _next_quarter(quarter)
+        target = quarter.next()
         state = self.repository.get_sync_state(target)
         if state is None:
             return ()
@@ -2293,18 +2293,6 @@ def _quarter_from_values(values: list[str], label: str) -> Quarter:
         raise ValueError(f"{label} requires a valid YEAR QUARTER_MONTH") from error
 
 
-def _previous_quarter(quarter: Quarter) -> Quarter:
-    if quarter.month == 1:
-        return Quarter(quarter.year - 1, 10)
-    return Quarter(quarter.year, quarter.month - 3)
-
-
-def _next_quarter(quarter: Quarter) -> Quarter:
-    if quarter.month == 10:
-        return Quarter(quarter.year + 1, 1)
-    return Quarter(quarter.year, quarter.month + 3)
-
-
 def _automatic_continuing(
     quarter: Quarter, evidence_type: str, evidence_value: str
 ) -> QuarterAppearance:
@@ -2355,10 +2343,6 @@ def _persisted_fact_aggregates(
     )
     known = sum(snapshot.subject.episode_count is not None for snapshot in snapshots)
     return tuple(sorted(source_counts.items())), known, len(snapshots) - known
-
-
-def _quarter_label(quarter: Quarter) -> str:
-    return f"{quarter.year:04d}-{quarter.month:02d}"
 
 
 def _timestamp() -> str:
@@ -2483,7 +2467,7 @@ def _auto_blacklist_event(
         assert issue_code is not None
         event["issue_code"] = issue_code
         if target_quarter is not None:
-            event["target_quarter"] = _quarter_label(target_quarter)
+            event["target_quarter"] = target_quarter.label
         if japanese is not None:
             event["japanese_evidence"] = {
                 "classification": japanese.classification.value,
@@ -2538,11 +2522,8 @@ def _review_belongs_to_quarter(issue: object, quarter: Quarter) -> bool:
     provenance = details.get("provenance") if isinstance(details, Mapping) else None
     if not isinstance(provenance, (list, tuple)):
         return False
-    target_start = date(quarter.year, quarter.month, 1)
-    next_start_quarter = _next_quarter(quarter)
-    next_start = date(
-        next_start_quarter.year, next_start_quarter.month, 1
-    )
+    target_start = quarter.start_date
+    next_start = quarter.next().start_date
     search_start = target_start - timedelta(days=TV_BOUNDARY_LOOKBACK_DAYS)
     expected_search = (
         f"search:air_date:{search_start.isoformat()}..{next_start.isoformat()}"
@@ -2587,7 +2568,7 @@ def _stored_subject_is_out_of_scope(
         return False
     if subject.media_format is MediaFormat.MOVIE:
         return True
-    target_start = date(quarter.year, quarter.month, 1)
+    target_start = quarter.start_date
     days_before_target = (target_start - subject.air_date).days
     return not 1 <= days_before_target <= TV_BOUNDARY_LOOKBACK_DAYS
 
@@ -2623,7 +2604,7 @@ def _external_review(
         "subject_id": subject_id,
         "issue_code": finding.issue_code,
         "candidate_quarter": (
-            _quarter_label(finding.candidate_quarter)
+            finding.candidate_quarter.label
             if finding.candidate_quarter is not None
             else None
         ),
@@ -2719,7 +2700,7 @@ def _needs_tv_boundary_evidence(
         return False
     if detail.platform is None or normalize_text(detail.platform) != "TV":
         return False
-    target_start = date(target_quarter.year, target_quarter.month, 1)
+    target_start = target_quarter.start_date
     days_before_target = (target_start - detail.air_date).days
     return 1 <= days_before_target <= TV_BOUNDARY_LOOKBACK_DAYS
 
@@ -2861,7 +2842,7 @@ def _skipped_result(
 
 def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
     return {
-        "quarter": _quarter_label(result.quarter),
+        "quarter": result.quarter.label,
         "facts_status": result.facts_status,
         "covers_status": result.covers_status,
         "discovered": result.discovered,
@@ -2901,7 +2882,7 @@ def _result_payload(result: QuarterSyncResult) -> dict[str, object]:
                 "subject_id": issue.details.get("subject_id"),
                 "issue_code": issue.issue_code,
                 "candidate_quarter": (
-                    _quarter_label(issue.candidate_quarter)
+                    issue.candidate_quarter.label
                     if issue.candidate_quarter is not None
                     else None
                 ),

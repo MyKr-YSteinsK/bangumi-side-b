@@ -412,7 +412,9 @@ def project_quarter(
             (item.quarter for item in subject.appearances if item.kind == "premiere"),
             None,
         )
-        premiere_by_subject[subject.subject_id] = _quarter_label(premiere)
+        premiere_by_subject[subject.subject_id] = (
+            premiere.label if premiere is not None else None
+        )
     projected: list[SubjectProjection] = []
     for subject, appearance in grouped:
         projected.append(
@@ -446,7 +448,7 @@ def project_quarter(
     ):
         raise ProjectionError(f"movie continuing appearance in {quarter}")
     return QuarterProjection(
-        _quarter_label(quarter),
+        quarter.label,
         tuple(tv_premiere),
         tuple(tv_continuing),
         tuple(movie_premiere),
@@ -560,7 +562,7 @@ def _project_subject(
         cover_url,
         cover_hash,
         appearance.kind,
-        _quarter_label(appearance.quarter) or "",
+        appearance.quarter.label,
         premiere_quarter,
         f"https://bgm.tv/subject/{subject.subject_id}",
     )
@@ -664,10 +666,6 @@ def _public_episode_count(value: object) -> int | None:
 
 def _date_label(value: date | None) -> str | None:
     return value.isoformat() if value else None
-
-
-def _quarter_label(value: Quarter | None) -> str | None:
-    return None if value is None else f"{value.year:04d}-{value.month:02d}"
 
 
 def safe_relative_path(value: str) -> PurePosixPath:

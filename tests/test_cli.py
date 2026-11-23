@@ -18,11 +18,7 @@ from bgm_side_b.archive_config import (
     remove_auto_excluded_subject,
 )
 from bgm_side_b.cli import (
-    _auto_blacklist_line,
     _relative_output_path,
-    _sync_review_lines,
-    _sync_scope_summary_lines,
-    _sync_summary_lines,
     build_parser,
     find_project_root,
     main,
@@ -31,6 +27,12 @@ from bgm_side_b.database import Database
 from bgm_side_b.domain import Quarter
 from bgm_side_b.repository import SubjectRepository
 from bgm_side_b.sync import QuarterSyncResult
+from bgm_side_b.sync_output import (
+    _auto_blacklist_line,
+    sync_review_lines,
+    sync_scope_summary_lines,
+    sync_summary_lines,
+)
 
 _PNG = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -354,7 +356,7 @@ def test_active_documentation_matches_the_final_cli_contract() -> None:
     documents = (
         root / "README.md",
         root / "docs" / "USER_GUIDE.md",
-        root / "docs" / "development.md",
+        root / "docs" / "项目源文件" / "RUNBOOK.md",
         root / "docs" / "static-build.md",
         root / "docs" / "pwa.md",
         root / "docs" / "publish.md",
@@ -421,7 +423,7 @@ def test_sync_summary_is_compact_and_lists_early_premiere_evidence() -> None:
         ),
     )
 
-    assert _sync_summary_lines(result) == (
+    assert sync_summary_lines(result) == (
         "status: facts=complete, covers=complete",
         "TV ACCEPTED 2 | CONTINUING TV 3 | MOVIE ACCEPTED 1",
         "continuing evidence: end_date=1, main_episode=2, unresolved=0",
@@ -475,7 +477,7 @@ def test_multi_quarter_summary_labels_per_quarter_counts_and_skips() -> None:
             "backfill_status": "failed",
         },
     )
-    lines = _sync_scope_summary_lines((completed, skipped), quarter_timings)
+    lines = sync_scope_summary_lines((completed, skipped), quarter_timings)
 
     assert lines[0] == (
         "scope quarters=2, result rows=2, attempted=1, skipped=1, "
@@ -506,7 +508,7 @@ def test_sync_summary_separates_hard_rejection_reconciliation() -> None:
         auto_reconciled=(537745, 611704),
     )
 
-    summary = _sync_summary_lines(result)
+    summary = sync_summary_lines(result)
     assert "automatic exclusions: re-evaluated=2, restored=0, reconciled=2" in (
         summary
     )
@@ -533,9 +535,9 @@ def test_sync_review_summary_uses_scoped_persisted_count() -> None:
         persisted_review_count=0,
     )
 
-    assert _sync_review_lines(result, SimpleNamespace(), Quarter(2026, 4)) == ()
+    assert sync_review_lines(result, SimpleNamespace(), Quarter(2026, 4)) == ()
     result = replace(result, persisted_review_count=12)
-    assert _sync_review_lines(result, SimpleNamespace(), Quarter(2026, 4)) == (
+    assert sync_review_lines(result, SimpleNamespace(), Quarter(2026, 4)) == (
         "12 persisted REVIEW items; run bgmb review for the complete local queue",
     )
 

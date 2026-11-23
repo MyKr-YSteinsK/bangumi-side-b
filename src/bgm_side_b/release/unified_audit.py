@@ -100,7 +100,7 @@ class UnifiedReleaseAuditor:
             failures.append(UnifiedAuditFailure("subjects", 1, "no archive subjects"))
         review_quarters = tuple(
             sorted(
-                f"{item.year:04d}-{item.month:02d}"
+                item.label
                 for item in facts.review_quarters
             )
         )
@@ -110,7 +110,7 @@ class UnifiedReleaseAuditor:
         publishable = tuple(
             sorted(
                 {
-                    f"{quarter.year:04d}-{quarter.month:02d}"
+                    quarter.label
                     for quarter, state in facts.state_by_quarter.items()
                     if state.facts_status == "complete"
                     and state.covers_status == "complete"
@@ -141,7 +141,7 @@ class UnifiedReleaseAuditor:
         summaries = tuple(
             _quarter_summary(facts, quarter)
             for quarter in sorted(facts.state_by_quarter)
-            if _quarter_label(quarter) in publishable
+            if quarter.label in publishable
         )
         return UnifiedAuditResult(
             len(facts.subjects),
@@ -154,10 +154,6 @@ class UnifiedReleaseAuditor:
 
 def _failed(check: str, reason: str) -> UnifiedAuditResult:
     return UnifiedAuditResult(0, (), (), (UnifiedAuditFailure(check, 1, reason),))
-
-
-def _quarter_label(quarter: Quarter) -> str:
-    return f"{quarter.year:04d}-{quarter.month:02d}"
 
 
 def _quarter_summary(facts: ArchiveFacts, quarter: Quarter) -> QuarterAuditSummary:
@@ -179,7 +175,7 @@ def _quarter_summary(facts: ArchiveFacts, quarter: Quarter) -> QuarterAuditSumma
             for subject, appearance in entries
         ),
     }
-    return QuarterAuditSummary(_quarter_label(quarter), **counts)
+    return QuarterAuditSummary(quarter.label, **counts)
 
 
 def _safe_error(error: BaseException) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 
 
@@ -25,6 +26,31 @@ class Quarter:
             raise ValueError("quarter year must be positive")
         if self.month not in {1, 4, 7, 10}:
             raise ValueError("quarter month must be one of 1, 4, 7, or 10")
+
+    @classmethod
+    def from_date(cls, value: date) -> Quarter:
+        """Return the natural calendar quarter containing the date."""
+        start_month = ((value.month - 1) // 3) * 3 + 1
+        return cls(value.year, start_month)
+
+    @property
+    def start_date(self) -> date:
+        return date(self.year, self.month, 1)
+
+    @property
+    def label(self) -> str:
+        """Return the quarter key used by the site and reports."""
+        return f"{self.year:04d}-{self.month:02d}"
+
+    def previous(self) -> Quarter:
+        if self.month == 1:
+            return Quarter(self.year - 1, 10)
+        return Quarter(self.year, self.month - 3)
+
+    def next(self) -> Quarter:
+        if self.month == 10:
+            return Quarter(self.year + 1, 1)
+        return Quarter(self.year, self.month + 3)
 
 
 class SourceType(StrEnum):

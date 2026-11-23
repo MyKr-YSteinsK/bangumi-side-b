@@ -130,7 +130,7 @@ class BrowseDiscoveryAdapter:
                 )
             )
         else:
-            target_start = date(quarter.year, quarter.month, 1)
+            target_start = quarter.start_date
             boundary_start = target_start - timedelta(days=TV_BOUNDARY_LOOKBACK_DAYS)
             candidates.extend(
                 _from_api_candidate(candidate, MediaFormat.TV, provenance)
@@ -156,11 +156,9 @@ class SearchDiscoveryAdapter:
         self.boundary_lookback_days = boundary_lookback_days
 
     def discover(self, quarter: Quarter) -> DiscoveryBatch:
-        target_start = date(quarter.year, quarter.month, 1)
-        start = date(quarter.year, quarter.month, 1) - timedelta(
-            days=self.boundary_lookback_days
-        )
-        end = _quarter_end_exclusive(quarter)
+        target_start = quarter.start_date
+        start = target_start - timedelta(days=self.boundary_lookback_days)
+        end = quarter.next().start_date
         provenance = f"search:air_date:{start.isoformat()}..{end.isoformat()}"
         try:
             candidates = self.client.search_subjects(
@@ -270,12 +268,6 @@ def _from_api_candidate(
 
 def _browse_provenance(media_format: MediaFormat, year: int, month: int) -> str:
     return f"browse:{media_format.value}:{year:04d}-{month:02d}"
-
-
-def _quarter_end_exclusive(quarter: Quarter) -> date:
-    if quarter.month == 10:
-        return date(quarter.year + 1, 1, 1)
-    return date(quarter.year, quarter.month + 3, 1)
 
 
 def _previous_month(quarter: Quarter) -> tuple[int, int]:

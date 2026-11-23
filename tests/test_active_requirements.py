@@ -1,55 +1,75 @@
-"""Small guards against reintroducing superseded active requirements."""
+"""Guard active documentation and source against retired archive behavior."""
 
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-PROJECT = ROOT / "docs" / "project"
+PROJECT = ROOT / "docs" / "项目源文件"
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _compact(text: str) -> str:
-    return " ".join(text.split())
+def test_recovery_and_project_upload_sources_are_reachable() -> None:
+    agents = _read(ROOT / "AGENTS.md")
+    start = _read(PROJECT / "00-START_HERE.md")
+    instructions = _read(PROJECT / "PROJECT_INSTRUCTIONS.md")
+    readme = _read(ROOT / "README.md")
+
+    for name in ("PROJECT_BRIEF.md", "CURRENT_STATE.md", "DECISIONS.md", "RUNBOOK.md"):
+        assert (PROJECT / name).is_file()
+        assert f"(docs/项目源文件/{name})" in agents
+        assert f"({name})" in start
+        assert name in instructions
+
+    assert "(PROJECT_INSTRUCTIONS.md)" in start
+    assert len(instructions.encode("utf-16-le")) // 2 <= 8000
+    assert "(docs/项目源文件/00-START_HERE.md)" in readme
+    assert "/docs/delete/" in _read(ROOT / ".gitignore")
 
 
-def test_project_state_and_active_docs_match_current_archive_evidence_model() -> None:
+def test_current_docs_preserve_mobile_and_offline_browsing() -> None:
     brief = _read(PROJECT / "PROJECT_BRIEF.md")
-    decisions = _read(PROJECT / "DECISIONS.md")
-    ownership = _read(PROJECT / "DOC_OWNERSHIP.md")
     guide = _read(ROOT / "docs" / "USER_GUIDE.md")
     visual = _read(ROOT / "docs" / "visual-system.md")
-    pwa = _read(ROOT / "docs" / "pwa.md")
-    readme = _read(ROOT / "README.md")
-    active = "\n".join((brief, decisions, ownership, guide, visual, pwa, readme))
-    compact_brief = _compact(brief)
-    compact_guide = _compact(guide)
-    compact_visual = _compact(visual)
 
-    assert "full-screen/full-width single-column" in compact_brief
-    assert "no narrow context rail" in compact_brief
-    assert "draft/apply" in compact_brief
-    assert "close/back cancels unapplied changes" in compact_brief
-    assert "Quarter mobile browsing is continuous" in compact_brief
-    assert "Archive browsing remains paginated" in compact_brief
-    assert "The PWA short name is `Side B`" in compact_brief
-    assert "View Transition is not the default motion foundation" in compact_brief
-    assert "不保留 context rail" in compact_guide
-    assert "只修改草稿" in compact_guide
-    assert "一次性应用" in compact_guide
-    assert "关闭或系统返回会取消草稿" in compact_guide
-    assert "不保留 context rail" in compact_visual
-    assert "draft" in compact_visual
-    assert "apply" in compact_visual
+    for required in (
+        "全宽单栏",
+        "关闭放弃未应用项",
+        "连续浏览",
+        "Archive 提供分页",
+        "Side B",
+    ):
+        assert required in brief
+    for required in (
+        "只修改草稿",
+        "一次性应用",
+        "关闭或系统返回会取消草稿",
+        "不保留 context rail",
+    ):
+        assert required in guide
+    for required in ("不保留 context rail", "draft", "apply"):
+        assert required in visual
 
+    active = "\n".join(
+        (
+            brief,
+            guide,
+            visual,
+            _read(PROJECT / "DECISIONS.md"),
+            _read(PROJECT / "RUNBOOK.md"),
+            _read(ROOT / "README.md"),
+            _read(ROOT / "docs" / "pwa.md"),
+        )
+    )
     for stale in (
+        "BGM B",
         "allow_tv_default_without_country",
         "一个 Subject 最多属于一个归档季度",
+        "一个 Subject 最多一个归档季度",
         "sync 只联网同步，不 build",
         "PWA 不提供在线浏览模式",
         "首次完整初始化并校验后才可进入",
-        "一个 Subject 最多一个归档季度",
         "手机为底部/单列高面板",
         "community alias mapping",
         "窄 context rail",
@@ -58,196 +78,53 @@ def test_project_state_and_active_docs_match_current_archive_evidence_model() ->
     ):
         assert stale not in active
 
-    # The old identity is mentioned only to record its supersession, never as
-    # a current product identity or PWA manifest requirement.
-    assert "BGM B" in decisions
-    assert "superseded" in decisions
-    current_identity = "\n".join((brief, guide, pwa, readme))
-    assert "BGM B" not in current_identity
 
-    for required_owner in (
-        "docs/USER_GUIDE.md",
-        "docs/development.md",
-        "docs/country-filter.md",
-        "docs/api-field-notes.md",
-        "config/source-rules.toml",
-        "config/allowed-tags.toml",
-        "config/bangumi.toml",
-        "config/quarter-overrides.toml",
-        "docs/static-build.md",
-        "docs/pwa.md",
-        "docs/visual-system.md",
-        "docs/publish.md",
-        "docs/releases.md",
-        "docs/repository-metadata.md",
-        "CHANGELOG.md",
-        "src/bgm_side_b/_version.py",
-        "pyproject.toml",
-        ".github/workflows/ci.yml",
-        ".github/workflows/deep-regression.yml",
-        "LICENSE",
-    ):
-        assert required_owner in ownership
-
-    for legacy_name in (
+def test_historical_docs_have_a_recovery_pointer() -> None:
+    archives = ROOT / "docs" / "archive"
+    archive = _read(archives / "README.md")
+    for retired in (
         "project-requirements-baseline.md",
         "subject-sync.md",
         "data-reset.md",
     ):
-        assert not (ROOT / "docs" / legacy_name).exists()
-        assert (ROOT / "docs" / "archive" / legacy_name).exists()
-    archive_index = _read(ROOT / "docs" / "archive" / "README.md")
-    assert "is an active product requirement" in archive_index
-    assert "RED:REPEAT" in archive_index
-
-    for current_doc in (
-        ROOT / "README.md",
-        ROOT / "docs" / "USER_GUIDE.md",
-        ROOT / "docs" / "development.md",
-        ROOT / "docs" / "visual-system.md",
-        ROOT / "docs" / "pwa.md",
-        ROOT / "docs" / "static-build.md",
-        ROOT / "docs" / "publish.md",
-        ROOT / "docs" / "releases.md",
-    ):
-        current_text = _read(current_doc)
-        assert "docs/subject-sync.md" not in current_text
-        assert "docs/data-reset.md" not in current_text
-        assert "docs/project-requirements-baseline.md" not in current_text
+        assert not (archives / retired).exists()
+        assert retired in archive
+    assert "git show b6c21de:docs/project/CURRENT_STATE.md" in archive
 
 
-def test_issue_taxonomy_distinguishes_information_gaps_from_conflicts() -> None:
-    canonical_docs = (
-        PROJECT / "PROJECT_BRIEF.md",
-        PROJECT / "DECISIONS.md",
-        ROOT / "docs" / "development.md",
-    )
-    for path in canonical_docs:
-        text = _compact(_read(path))
-        assert "information-insufficient" in text
-        assert "automatic exclusion" in text
-        assert "factual conflict" in text
-        assert "REVIEW" in text
-
-    decisions = _compact(_read(PROJECT / "DECISIONS.md")).lower()
-    assert "manual exclusion" in decisions
-    assert "automatic exclusion uses" in decisions
-    assert "`auto_excluded_subject_ids`" in decisions
-    assert "not one universal disposition" in decisions
-    assert "Conflicts and insufficient evidence remain REVIEW" not in decisions
-    assert "冲突或不足证据进入 REVIEW" not in _read(ROOT / "docs" / "development.md")
-
-
-def test_current_state_records_checkpoint_baseline_and_completion() -> None:
-    state = _compact(_read(PROJECT / "CURRENT_STATE.md"))
-    adoption_sha = "4c458a7da6a23563f3a01306b604c52cb546981c"
-    checkpoint_sha = "7e7c7671dd9620a38c61a5d1f1aed29fd94331dc"
-
-    assert (
-        f"Migration adoption audit start: `{adoption_sha}`" in state
-    )
-    assert (
-        f"Migration Checkpoint adopted baseline: `{checkpoint_sha}`" in state
-    )
-    assert "Migration status: adoption is complete at the checkpoint baseline" in state
-    assert "historical context, not the current adopted baseline" in state
-    assert "Lifecycle stage: Production" in state
-    assert "Lifecycle stage: Stabilization" not in state
-    assert "Current milestone: Production maintenance checkpoint (Plan-47)" in state
-    assert (
-        "exact resulting HEAD of state-only documentation updates is "
-        "authoritative in its TASK_RESULT" in state
-    )
-    assert (
-        "requested real iPhone/iPad Safari and standalone PWA checks were "
-        "completed with no problems observed" in state
-    )
-    assert (
-        "device model, iOS version, and Safari build were not supplied and are "
-        "intentionally not inferred" in state
-    )
-    assert "For Plan-42, manually inspect" in state
-    assert "Application-update candidate: `NOT EXERCISED` during Plan-39" in state
-    assert "allowed non-failure state" in state
-    assert "not a Production promotion blocker" in state
-    assert "next gate is the explicit real-device USER CHECK" not in state
-    assert "being retired" not in state
-    assert "migration is being changed" not in state
-
-
-def test_durable_decisions_preserve_migration_guardrails() -> None:
-    decisions = _compact(_read(PROJECT / "DECISIONS.md")).lower()
-
+def test_decisions_distinguish_evidence_gaps_from_human_review() -> None:
+    decisions = _read(PROJECT / "DECISIONS.md")
     for required in (
-        "independent repository",
-        "mykr-ops",
-        "generic plugin",
-        "package/api boundary",
-        "package update",
-        "quarter-data update",
-        "root or cross-document view transition",
-        "full-screen black flash",
-        "real-device evidence",
-        "fast gate",
-        "manual/deep layer",
+        "information-insufficient",
+        "自动排除缓存",
+        "事实冲突进入 REVIEW",
+        "人工裁决",
+        "excluded_subject_ids",
+        "auto_excluded_subject_ids",
+        "重新发现",
     ):
         assert required in decisions
+    for number in range(1, 24):
+        assert f"**D-{number:03d}**" in decisions
 
 
-def test_agents_is_repo_specific_and_covers_live_access_boundary() -> None:
+def test_agents_keep_data_and_delivery_boundaries() -> None:
     agents = _read(ROOT / "AGENTS.md")
-
     for required in (
         "bgmb sync",
         "bgmb assign",
         "Live Bangumi sync: AUTHORIZED",
-        "Unknown or newer",
+        "未知或更高版本",
+        "本机 `gh-pages`",
+        "普通推送一次到配置的上游",
+        "核对实际远端 HEAD",
+        "推送失败时保留本地提交",
+        "无 tracked 改动无需提交或推送",
+        "禁止强推、改写历史",
+        "Pages 独立授权",
         "release publish",
-        "never calls `sync` or `build`",
-        "A source push is not a Pages publication",
-        "official project origin",
-        "local `gh-pages` state",
-    ):
-        assert required in agents
-
-    for generic_workflow in (
-        "Each Phase must",
-        "Version impact",
-        "Validation cost policy",
-        "CI-repair",
-        "full pytest",
-    ):
-        assert generic_workflow not in agents
-
-
-def test_agents_require_formal_plan_source_delivery_before_complete() -> None:
-    agents = _compact(_read(ROOT / "AGENTS.md")).lower()
-
-    for required in (
-        "formal approved plan",
-        "tracked source changes",
-        "implementation, docs, and tests changes",
-        "required validation has passed",
-        "final source commit exists",
-        "ordinary `git push`",
-        "configured upstream",
-        "upstream must accept that commit",
-        "local branch head must equal the configured upstream head",
-        "full `pass` / `complete`",
-        "delivery failure",
-        "`blocked`",
-        "force push",
-        "force-with-lease",
-        "rebase",
-        "amend",
-        "squash",
-        "history rewrite",
-        "no source changes / no push required",
-        "current source branch",
-        "`release publish`",
-        "pages publication",
-        "`gh-pages` mutation",
-        "live bangumi access",
+        "官方 origin",
+        "禁止 sync 或 build",
     ):
         assert required in agents
 
@@ -318,9 +195,8 @@ def test_pwa_contract_replaces_the_legacy_snapshot_product() -> None:
         "covers/<ID>.webp?v=<content-hash>",
     ):
         assert required in contract
-    assert "explicit complete-quarter downloads" in brief
-    assert "extends the same online site" in brief
-    assert "explicit complete quarter downloads" in agent_contract
+    assert "PWA 下载完整季度" in brief
+    assert "在线与离线共用" in brief
 
 
 def test_readme_describes_current_admission_and_quarter_pwa() -> None:

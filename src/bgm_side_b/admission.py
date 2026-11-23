@@ -288,7 +288,7 @@ def admit_subject(
 
 def quarter_for_date(value: date) -> Quarter:
     """Return the natural calendar quarter containing a reliable date."""
-    return Quarter(value.year, ((value.month - 1) // 3) * 3 + 1)
+    return Quarter.from_date(value)
 
 
 def _quarter_relevance(
@@ -302,7 +302,7 @@ def _quarter_relevance(
         return True
     if media_format is MediaFormat.MOVIE:
         return False
-    target_start = date(target_quarter.year, target_quarter.month, 1)
+    target_start = target_quarter.start_date
     days_before_target = (target_start - detail.air_date).days
     return 1 <= days_before_target <= TV_BOUNDARY_LOOKBACK_DAYS
 
@@ -396,7 +396,7 @@ def _resolve_quarter(
             "air_date",
             detail.air_date.isoformat(),
         )
-    target_start = date(target_quarter.year, target_quarter.month, 1)
+    target_start = target_quarter.start_date
     days_before_target = (target_start - detail.air_date).days
     if 1 <= days_before_target <= TV_BOUNDARY_LOOKBACK_DAYS:
         if _is_short_tv_run(detail, boundary_evidence):
@@ -423,7 +423,7 @@ def _resolve_quarter(
             target_quarter,
             detail.air_date.isoformat(),
             {
-                "natural_quarter": _quarter_label(natural_quarter),
+                "natural_quarter": natural_quarter.label,
                 "days_before_target": days_before_target,
                 "provenance": list(candidate.provenance),
             },
@@ -484,7 +484,7 @@ def _continuing_boundary_run(
         return None
     if evidence.main_episode_airdates is None:
         return None
-    target_start = date(target_quarter.year, target_quarter.month, 1)
+    target_start = target_quarter.start_date
     end_date = _structured_end_date(detail)
     if end_date is not None and end_date < target_start:
         return None
@@ -543,7 +543,7 @@ def _date_mismatch(
         target_quarter,
         detail.air_date.isoformat(),
         {
-            "natural_quarter": _quarter_label(natural_quarter),
+            "natural_quarter": natural_quarter.label,
             "provenance": list(candidate.provenance),
         },
     )
@@ -574,10 +574,6 @@ def _platform_media_format(value: str | None) -> MediaFormat | None:
     if platform in {"剧场版", "Movie"}:
         return MediaFormat.MOVIE
     return None
-
-
-def _quarter_label(quarter: Quarter) -> str:
-    return f"{quarter.year:04d}-{quarter.month:02d}"
 
 
 def _japanese_review_code(japanese: JapaneseDecision) -> str:

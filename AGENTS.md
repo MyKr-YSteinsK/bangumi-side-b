@@ -1,106 +1,23 @@
-# AGENTS.md
+# Bangumi Side B
 
-This file is the repository-specific AI contract. Generic execution workflow,
-planning, validation tiers, and collaboration behavior are provided by the
-active Codex Skills/runtime and are not repeated here.
+Bangumi Side B（`MyKr-YSteinsK/bangumi-side-b`，CLI `bgmb`）是本地优先的日本动画季度档案。
 
-## Repository identity
+## 接手入口
 
-- Repository: `MyKr-YSteinsK/bangumi-side-b`
-- Package: `bgm_side_b`
-- CLI: `bgmb`
-- Product: a local-first Japanese anime broadcast archive.
+- 先读 [项目说明](docs/项目源文件/PROJECT_BRIEF.md) 和 [当前状态](docs/项目源文件/CURRENT_STATE.md)，再按任务查阅 [长期决定](docs/项目源文件/DECISIONS.md) 和 [运行手册](docs/项目源文件/RUNBOOK.md)。
+- [升级审查](docs/项目源文件/升级路线与技术审查.md) 收录待用户确认的方案。[历史摘要](docs/archive/README.md) 供追溯。
+- 普通任务可以直接在 Codex 处理。正式 Plan 优先从本仓库获授权的 GitHub Issue 读取完整正文，沿用已有任务编号。涉及受限内容时走获授权的私有渠道。以当前任务授予的操作范围和验收为准。
 
-## Source and data boundaries
+## 数据与操作边界
 
-- The first-version product scope is Japanese Anime (`type == 2`) TV and
-  theatrical movies only. TV has premiere and later continuing appearances;
-  movies have premiere appearances only.
-- SQLite facts, verified workspace covers, tracked configuration, and checked-in
-  static source assets are the canonical build inputs. `dist/site`, build state,
-  reports, prepared state, staging data, and local workspace contents are
-  derived or private and must not be committed.
-- Never commit SQLite databases, downloaded media, reports, caches, generated
-  sites, backups, secrets, tokens, authorization headers, private absolute
-  paths, usernames, or raw API dumps. Pages and PWA output must not contain
-  character or voice-actor images.
-- Preserve the user's local workspace and local `gh-pages` state. Do not reset,
-  purge, delete, rebase, amend, squash, or otherwise rewrite data or history to
-  make a task easier. If data must be set aside, move it to a recoverable backup
-  outside the repository.
+- 当前收录日本 Anime（`type == 2`）TV 与剧场版。TV 可有首播和续播 appearance，剧场版只有首播。以 canonical detail、确定性规则和显式人工裁决确定归属、续播、媒体、来源、标签和排除状态。公开作品图片限于已校验的封面。
+- SQLite 事实、已校验封面、受控配置和静态源资源是构建输入。仅接受 `bangumi-side-b-archive` schema 2，遇到未知或更高版本即失败并保留原数据。
+- 真实 Bangumi 访问须由用户本次明确授权，或正式 Plan 明示 `Live Bangumi sync: AUTHORIZED`。这也适用于 `bgmb sync`、会远程导入未知作品的 `bgmb assign` 及间接调用。
+- `build` 完全离线，仅产出正式 `dist/site`。`serve` 仅读取这棵树。成功提交事实与封面后，sync 可增量构建。上一次可用站点须经得起失败或中断。
+- 保护本机数据库、封面、备份、正式站点和本机 `gh-pages`。数据库、下载媒体、报告、缓存、生成站点、凭据、私有路径与原始 API 数据须留在 Git 之外。`docs/delete/` 是本机待用户清理区，已忽略。
 
-## Bangumi access and fact authority
+## Git 与发布
 
-- Bangumi network access is opt-in. Do not run `bgmb sync`, or `bgmb assign`
-  when an unknown subject would be imported remotely, unless the approved Plan
-  explicitly says `Live Bangumi sync: AUTHORIZED` or the user explicitly asks
-  for a real data sync in the current task. Do not reach Bangumi through a
-  wrapper, test, build helper, audit, or release command.
-- AI must not infer quarter ownership, continuation, media format, source,
-  tags, blacklist membership, or generated facts. Deterministic evidence and
-  rules decide automatic facts; explicit human adjudication is stored only in
-  the supported human-decision configuration.
-- The supported SQLite family/version contract is strict. Unknown or newer
-  schemas fail closed; do not add migration baggage, reset/purge behavior, or
-  destructive data cleanup without an approved product plan.
-
-## CLI side effects
-
-- `sync` is the network operation: after a successful facts/covers commit it
-  may trigger the affected-scope incremental build. Incomplete facts must not
-  replace last-known-good output.
-- `build` is fully offline and produces the single formal site at `dist/site`.
-- `serve` serves the existing `dist/site` tree only; it does not read SQLite,
-  build, sync, or publish.
-- The PWA extends the same online `dist/site` with a minimal shell, runtime
-  caching, and explicit complete quarter downloads; normal online startup is
-  never gated on downloading the archive.
-- `release prepare` is an offline candidate check/build and does not sync or
-  push. `release publish` publishes only a verified prepared `dist/site`; it
-  never calls `sync` or `build`.
-
-## Version and release safety
-
-- The application SemVer comes from `src/bgm_side_b/_version.py` and the
-  package metadata. It is separate from the Pages batch identity
-  `YYYY.MM.DD.N` stored in `gh-pages` release metadata.
-- A source push is not a Pages publication. Pages mutation requires the
-  explicit release workflow and its current prepared-state checks.
-- Real publication accepts only the official project origin and uses an
-  ordinary non-force push to `gh-pages`. Never force-push, modify remotes, or
-  attribute another actor's remote commit to this repository's release.
-
-## Formal Plan delivery
-
-- For a formal approved Plan that produces tracked source changes, after
-  implementation, docs, and tests changes are complete, required validation has
-  passed, and the final source commit exists, Codex must automatically run one
-  ordinary `git push` to the current branch's configured upstream. When the Plan
-  authorizes live data validation, that push is gated behind the final bounded
-  live validation, target/global review, audit, and relevant regression; no
-  intermediate source push is allowed unless the user explicitly authorizes it.
-- The upstream must accept that commit and the local branch HEAD must equal the
-  configured upstream HEAD before the Plan can be reported as full `PASS` /
-  `COMPLETE`.
-- A push failure (including authentication, non-fast-forward, upstream
-  abnormality, or remote rejection) is a delivery failure and makes the Plan
-  `BLOCKED`; keep completed local commits. Never use force push,
-  force-with-lease, rebase, amend, squash, or history rewrite to recover.
-- A formal Plan with no tracked source changes must not create an empty commit
-  or push just to satisfy this rule; report `no source changes / no push
-  required`.
-- This source push targets only the current source branch. It never authorizes
-  `release publish`, Pages publication or `gh-pages` mutation, or live Bangumi
-  access.
-
-## Canonical project context
-
-- Stable product purpose, scope, architecture boundaries, invariants, and UX
-  baselines live in `docs/project/PROJECT_BRIEF.md`.
-- Durable decisions and superseding relationships live in
-  `docs/project/DECISIONS.md`.
-- Observed branch/version/capability/risk and delivery state live in
-  `docs/project/CURRENT_STATE.md`.
-- Active supporting-document ownership is registered in
-  `docs/project/DOC_OWNERSHIP.md`. Archived material is historical evidence,
-  not an active requirement or instruction source.
+- 源码同步走当前源码分支。获批准的正式 Plan 有 tracked 变更时，完成必要验证与最终提交后，普通推送一次到配置的上游并核对实际远端 HEAD。获准的 live-data 验证及相关 review、audit、回归须在该次推送前完成。以本地和远端 HEAD 一致作为交付完成依据。推送失败时保留本地提交并报告交付受阻。无 tracked 改动无需提交或推送。
+- 保留 Git 历史。禁止强推、改写历史、擅自修改远端或重置本机发布分支。
+- Pages 独立授权。`release prepare` 可只读访问 Git 远端并离线构建和校验候选。`release publish` 只向官方 origin 的 `gh-pages` 普通推送绑定该候选的 release commit，期间禁止 sync 或 build。发布细节见 [发布说明](docs/publish.md)。源代码 SemVer 与 Pages 批次身份独立。

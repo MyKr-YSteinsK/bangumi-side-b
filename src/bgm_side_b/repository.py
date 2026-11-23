@@ -780,7 +780,7 @@ class SubjectRepository:
         self, target_quarter: Quarter
     ) -> tuple[SubjectSnapshot, ...]:
         """Return the carry-forward TV candidates for a target quarter."""
-        previous = _previous_quarter(target_quarter)
+        previous = target_quarter.previous()
         return tuple(
             snapshot
             for snapshot in self.list_subjects_appearing_in_quarter(previous)
@@ -1021,9 +1021,3 @@ def _require_kind(
 ) -> None:
     if appearance.appearance_kind is not expected:
         raise ValueError(f"appearance must have {expected.value} kind")
-
-
-def _previous_quarter(quarter: Quarter) -> Quarter:
-    if quarter.month == 1:
-        return Quarter(quarter.year - 1, 10)
-    return Quarter(quarter.year, quarter.month - 3)

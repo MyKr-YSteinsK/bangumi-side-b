@@ -48,3 +48,6 @@ dist/*
 *.tmp
 *.temp
 *.bak
+
+# Local material staged for manual cleanup
+/docs/delete/

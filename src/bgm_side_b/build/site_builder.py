@@ -157,7 +157,7 @@ class UnifiedSiteBuilder:
     def build(self, quarter: Quarter | None = None) -> SiteBuildRun:
         """Build all managed quarters, optionally validating a requested quarter."""
         started = monotonic()
-        scope_label = "all" if quarter is None else _quarter_label(quarter)
+        scope_label = "all" if quarter is None else quarter.label
         self.reporter.start(
             stage="scope",
             message="building unified static site",
@@ -171,16 +171,16 @@ class UnifiedSiteBuilder:
                 raise BuildError(str(error)) from error
             previous = read_build_state(self.state_path)
             managed_quarters = tuple(
-                sorted(_quarter_label(item) for item in facts.state_by_quarter)
+                sorted(item.label for item in facts.state_by_quarter)
             )
             appearance_quarters = {
-                _quarter_label(item) for item in facts.by_quarter
+                item.label for item in facts.by_quarter
             }
             available = managed_quarters
-            if quarter is not None and _quarter_label(quarter) not in available:
-                if previous is None or _quarter_label(quarter) not in previous.quarters:
+            if quarter is not None and quarter.label not in available:
+                if previous is None or quarter.label not in previous.quarters:
                     raise BuildError(
-                        f"quarter is not managed: {_quarter_label(quarter)}"
+                        f"quarter is not managed: {quarter.label}"
                     )
             blocked = _blocked_quarters(facts)
             eligible = tuple(label for label in managed_quarters if label not in blocked)
@@ -188,7 +188,7 @@ class UnifiedSiteBuilder:
             projection_labels = eligible
             retained_scope: tuple[str, ...] = ()
             if quarter is not None and previous is not None:
-                target = _quarter_label(quarter)
+                target = quarter.label
                 other_eligible = tuple(label for label in eligible if label != target)
                 reusable, missing = self._retained_quarters(previous, other_eligible)
                 if not missing:
@@ -231,7 +231,7 @@ class UnifiedSiteBuilder:
                 current,
                 available_quarters=tuple(item.quarter for item in quarter_projections),
                 requested_quarters=(
-                    None if quarter is None else (_quarter_label(quarter),)
+                    None if quarter is None else (quarter.label,)
                 ),
             )
             dirty = replace(
@@ -322,7 +322,7 @@ class UnifiedSiteBuilder:
         allowed = set(eligible)
         projections: list[QuarterProjection] = []
         for quarter in sorted(facts.state_by_quarter):
-            label = _quarter_label(quarter)
+            label = quarter.label
             if label not in allowed:
                 continue
             self.reporter.progress(
@@ -2090,17 +2090,13 @@ def _revision_href(path: str, revision: str) -> str:
     return f"{path}?v={revision}"
 
 
-def _quarter_label(quarter: Quarter) -> str:
-    return f"{quarter.year:04d}-{quarter.month:02d}"
-
-
 def _blocked_quarters(facts: ArchiveFacts) -> tuple[str, ...]:
-    reviews = {_quarter_label(item) for item in facts.review_quarters}
+    reviews = {item.label for item in facts.review_quarters}
     return tuple(
         sorted(
-            _quarter_label(quarter)
+            quarter.label
             for quarter, state in facts.sync_states
-            if state.facts_status != "complete" or _quarter_label(quarter) in reviews
+            if state.facts_status != "complete" or quarter.label in reviews
         )
     )
 

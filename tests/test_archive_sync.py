@@ -737,6 +737,42 @@ def test_proven_multi_week_boundary_tv_can_use_narrow_next_quarter_exception(
     assert api.episode_calls == [subject_id]
 
 
+def test_boundary_count_fallback_is_reused_when_preparing_snapshot(
+    tmp_path: Path,
+) -> None:
+    subject_id = 750001
+    air_date = date(2026, 3, 28)
+    detail = replace(
+        _detail(subject_id, air_date=air_date.isoformat(), cover=None),
+        eps=None,
+        tags=(ApiTag("2026年4月", 100),),
+    )
+    count_calls = []
+
+    class RegistryApi(FakeApi):
+        def get_main_episode_count(self, requested_id: int) -> int:
+            count_calls.append(requested_id)
+            return 12
+
+    api = RegistryApi(
+        {subject_id: detail},
+        episode_airdates={subject_id: (air_date, date(2026, 4, 4), date(2026, 4, 11))},
+    )
+    synchronizer, repository = _sync(
+        tmp_path,
+        api,
+        DiscoveryBatch((_candidate(subject_id, MediaFormat.TV, air_date),)),
+    )
+    run = synchronizer.run(SyncScope(QUARTER, QUARTER))
+
+    stored = repository.get_subject_facts(subject_id)
+    assert run.exit_code == 0
+    assert stored is not None and stored.premiere is not None
+    assert (stored.subject.episode_count, stored.premiere.quarter) == (12, QUARTER)
+    assert count_calls == api.subject_calls == api.episode_calls == [subject_id]
+    assert dict(run.quarters[0].episode_source_counts) == {"episode_registry": 1}
+
+
 def test_unresolved_movie_review_is_auto_blacklisted_immediately_and_cleaned(
     tmp_path: Path,
 ) -> None:

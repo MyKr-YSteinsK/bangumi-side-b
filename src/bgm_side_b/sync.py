@@ -20,17 +20,12 @@ from bgm_side_b.admission import (
     JAPANESE_CLASSIFICATION_UNRESOLVED,
     OUT_OF_SCOPE_QUARTER,
     OUTCOME_DOMINATED_LOW_RATING,
-    SEARCH_ONLY_MEDIA_UNRESOLVED,
     AdmissionDecision,
     AdmissionStatus,
     QuarterOverride,
     ReviewFinding,
-    TVBoundaryEvidence,
     admit_subject,
-    is_conflict_review,
-    is_unresolved_cold_review,
     quarter_for_date,
-    should_auto_blacklist_unresolved_cold,
 )
 from bgm_side_b.api import (
     ApiInfoboxItem,
@@ -57,8 +52,6 @@ from bgm_side_b.discovery import (
     merge_discovery_batches,
 )
 from bgm_side_b.domain import (
-    JapaneseClassification,
-    JapaneseDecision,
     MediaFormat,
     Quarter,
     QuarterAppearanceKind,
@@ -82,9 +75,14 @@ from bgm_side_b.repository import (
 )
 from bgm_side_b.rules import (
     normalize_aliases,
-    normalize_text,
     order_tag_candidates,
     resolve_source,
+)
+from bgm_side_b.sync_candidate import (
+    auto_blacklist_event,
+    evaluate_candidate,
+    resolve_episode_count,
+    resolve_episode_count_with_fallback,
 )
 
 _monotonic_ns = time.monotonic_ns
@@ -529,13 +527,6 @@ class _PreparedSubject:
 
 
 @dataclass(frozen=True)
-class _EpisodeCountResolution:
-    value: int | None
-    source: str
-    warning: str | None = None
-
-
-@dataclass(frozen=True)
 class _ContinuingReconciliation:
     """Complete externally gathered evidence for one target-quarter replacement."""
 
@@ -792,7 +783,6 @@ class ArchiveSynchronizer:
             if detail.air_date is not None
             else Quarter(1970, 1)
         )
-        from bgm_side_b.discovery import DiscoveredSubject
 
         candidate = DiscoveredSubject(
             subject_id, frozenset(), frozenset(), frozenset(), ("manual:assign",)
@@ -940,55 +930,29 @@ class ArchiveSynchronizer:
                 candidate_is_tv = MediaFormat.TV in candidate.media_formats
                 try:
                     canonical_detail_requests += 1
-                    detail = self.api.get_subject(candidate.subject_id)
-                    episode_resolution: _EpisodeCountResolution | None = None
-                    boundary_evidence = None
-                    if _needs_tv_boundary_evidence(candidate, detail, quarter):
-                        episode_resolution = _resolve_episode_count_with_fallback(
-                            self.api,
-                            detail,
-                            candidate.subject_id,
-                            episode_warnings,
-                        )
-                        air_dates = None
-                        if (
-                            episode_resolution.warning is None
-                            and episode_resolution.value not in {1, 2}
-                        ):
-                            air_dates = _read_boundary_episode_airdates(
-                                self.api,
-                                candidate.subject_id,
-                                episode_warnings,
-                            )
-                        boundary_evidence = TVBoundaryEvidence(
-                            episode_resolution.value,
-                            air_dates,
-                            episode_resolution.warning is not None,
-                        )
-                    decision = admit_subject(
+                    japanese_override = self._japanese_overrides.get(
+                        candidate.subject_id
+                    )
+                    evaluation = evaluate_candidate(
+                        self.api,
                         candidate,
-                        detail,
                         quarter,
                         excluded_subject_ids=frozenset(
                             self._active_excluded_subject_ids
-                            - (
-                                {candidate.subject_id}
-                                if was_auto_excluded
-                                else set()
-                            )
+                            - ({candidate.subject_id} if was_auto_excluded else set())
                         ),
                         override=overrides.get(candidate.subject_id),
-                        boundary_evidence=boundary_evidence,
                         japanese_override=(
-                            self._japanese_overrides.get(candidate.subject_id).decision
-                            if candidate.subject_id in self._japanese_overrides
-                            else None
+                            japanese_override.decision if japanese_override else None
                         ),
                         evaluation_date=self.evaluation_date,
                         low_rating_exempt_subject_ids=frozenset(
                             self._low_rating_exempt_subject_ids
                         ),
+                        warnings=episode_warnings,
                     )
+                    detail = evaluation.detail
+                    decision = evaluation.decision
                 except BangumiApiError as error:
                     errors.append({"code": error.code, "summary": error.summary})
                     continue
@@ -1030,11 +994,12 @@ class ArchiveSynchronizer:
                     elif was_auto_excluded:
                         existing_auto_blacklisted += 1
                     continue
-                if decision.outcome_dominated:
-                    if candidate_is_tv or decision.media_format is MediaFormat.TV:
+                if evaluation.auto_exclusion is not None:
+                    if decision.outcome_dominated and (
+                        candidate_is_tv or decision.media_format is MediaFormat.TV
+                    ):
                         tv_candidates -= 1
                     if was_auto_excluded:
-                        added = False
                         existing_auto_blacklisted += 1
                     else:
                         try:
@@ -1047,118 +1012,12 @@ class ArchiveSynchronizer:
                                 }
                             )
                             continue
-                    outcome_dominated += 1
-                    blacklisted += 1
-                    if added:
-                        auto_blacklisted.append(
-                            _auto_blacklist_event(
-                                detail,
-                                self.evaluation_date,
-                                reason=OUTCOME_DOMINATED_LOW_RATING,
-                                issue_code=_japanese_issue_code(decision),
-                                target_quarter=quarter,
-                                japanese=decision.japanese,
-                            )
-                        )
-                    continue
-                if _eligible_for_auto_blacklist(decision) and should_auto_blacklist(
-                    detail.air_date,
-                    detail.rating_total,
-                    self.evaluation_date,
-                    subject_id=detail.subject_id,
-                    low_rating_exempt_subject_ids=frozenset(
-                        self._low_rating_exempt_subject_ids
-                    ),
-                ):
-                    if was_auto_excluded:
-                        added = False
-                        existing_auto_blacklisted += 1
-                    else:
-                        try:
-                            added = self._record_auto_blacklist(
-                                detail,
-                                existing_by_subject.get(candidate.subject_id),
-                            )
-                        except Exception as error:
-                            errors.append(
-                                {
-                                    "code": "auto_blacklist_persist",
-                                    "summary": _auto_blacklist_error_summary(error),
-                                }
-                            )
-                            continue
-                    blacklisted += 1
-                    if added:
-                        auto_blacklisted.append(
-                            _auto_blacklist_event(detail, self.evaluation_date)
-                        )
-                    continue
-                unresolved_cold = _persisted_unresolved_cold_review(decision)
-                if unresolved_cold is not None:
-                    issue_code, target_quarter = unresolved_cold
-                    if should_auto_blacklist_unresolved_cold(issue_code):
-                        if was_auto_excluded:
-                            added = False
-                            existing_auto_blacklisted += 1
-                        else:
-                            try:
-                                added = self._record_auto_blacklist(
-                                    detail,
-                                    existing_by_subject.get(candidate.subject_id),
-                                )
-                            except Exception as error:
-                                errors.append(
-                                    {
-                                        "code": "auto_blacklist_persist",
-                                        "summary": _auto_blacklist_error_summary(error),
-                                    }
-                                )
-                                continue
-                        blacklisted += 1
                         if added:
-                            auto_blacklisted.append(
-                                _auto_blacklist_event(
-                                    detail,
-                                    self.evaluation_date,
-                                    reason="insufficient_airing_information",
-                                    issue_code=issue_code,
-                                    target_quarter=target_quarter,
-                                )
-                            )
-                        continue
-                external_cold = _external_unresolved_cold_review(decision, quarter)
-                if external_cold is not None:
-                    issue_code, target_quarter = external_cold
-                    if should_auto_blacklist_unresolved_cold(issue_code):
-                        if was_auto_excluded:
-                            added = False
-                            existing_auto_blacklisted += 1
-                        else:
-                            try:
-                                added = self._record_auto_blacklist(
-                                    detail,
-                                    existing_by_subject.get(candidate.subject_id),
-                                )
-                            except Exception as error:
-                                errors.append(
-                                    {
-                                        "code": "auto_blacklist_persist",
-                                        "summary": _auto_blacklist_error_summary(error),
-                                    }
-                                )
-                                continue
-                        blacklisted += 1
-                        if added:
-                            auto_blacklisted.append(
-                                _auto_blacklist_event(
-                                    detail,
-                                    self.evaluation_date,
-                                    reason="insufficient_airing_information",
-                                    issue_code=issue_code,
-                                    target_quarter=target_quarter,
-                                )
-                            )
-                        continue
+                            auto_blacklisted.append(evaluation.auto_exclusion)
+                    if decision.outcome_dominated:
+                        outcome_dominated += 1
+                    blacklisted += 1
+                    continue
                 if decision.status is AdmissionStatus.REJECTED:
                     if was_auto_excluded:
                         reconciled_auto_ids.add(candidate.subject_id)
@@ -1200,8 +1059,9 @@ class ArchiveSynchronizer:
                             }
                         )
                         continue
+                    episode_resolution = evaluation.episode_count
                     if episode_resolution is None:
-                        episode_resolution = _resolve_episode_count_with_fallback(
+                        episode_resolution = resolve_episode_count_with_fallback(
                             self.api,
                             detail,
                             candidate.subject_id,
@@ -1612,7 +1472,7 @@ class ArchiveSynchronizer:
                 continue
             dominated += 1
             events.append(
-                _auto_blacklist_event(
+                auto_blacklist_event(
                     detail,
                     self.evaluation_date,
                     reason=OUTCOME_DOMINATED_LOW_RATING,
@@ -1626,13 +1486,12 @@ class ArchiveSynchronizer:
     def _prepare_subject(
         self,
         detail: SubjectDetail,
-        decision: object,
+        decision: AdmissionDecision,
         existing: SubjectSnapshot | None,
         review_scope: Quarter,
         *,
         episode_count: int | None = None,
     ) -> _PreparedSubject:
-        assert isinstance(decision, AdmissionDecision)
         assert decision.media_format is not None
         assert decision.japanese is not None
         name = detail.name
@@ -1659,7 +1518,9 @@ class ArchiveSynchronizer:
                 decision.media_format,
                 detail.air_date,
                 _end_date(detail.infobox),
-                _episode_count(detail) if episode_count is None else episode_count,
+                resolve_episode_count(detail).value
+                if episode_count is None
+                else episode_count,
                 detail.rating_score,
                 detail.rating_total,
                 decision.japanese,
@@ -2284,115 +2145,10 @@ def _review_issue(finding: ReviewFinding, subject_id: int) -> ReviewIssue:
     )
 
 
-def _eligible_for_auto_blacklist(decision: AdmissionDecision) -> bool:
-    return (
-        decision.media_format in {MediaFormat.TV, MediaFormat.MOVIE}
-        and decision.japanese is not None
-        and decision.japanese.classification is JapaneseClassification.ACCEPTED_JAPANESE
-        and all(
-            not is_conflict_review(issue.issue_code)
-            for issue in decision.reviews
-        )
-    )
-
-
-def _persisted_unresolved_cold_review(
-    decision: AdmissionDecision,
-) -> tuple[str, Quarter | None] | None:
-    """Return an explicit information-insufficiency issue for cleanup."""
-    if (
-        decision.status is not AdmissionStatus.REVIEW
-        or decision.media_format not in {MediaFormat.TV, MediaFormat.MOVIE}
-        or decision.japanese is None
-        or decision.japanese.classification
-        is not JapaneseClassification.ACCEPTED_JAPANESE
-        or not decision.reviews
-    ):
-        return None
-    if any(
-        not is_unresolved_cold_review(issue.issue_code)
-        for issue in decision.reviews
-    ):
-        return None
-    target_quarters = {issue.candidate_quarter for issue in decision.reviews}
-    target_quarter = (
-        next(iter(target_quarters)) if len(target_quarters) == 1 else None
-    )
-    return decision.reviews[0].issue_code, target_quarter
-
-
-def _external_unresolved_cold_review(
-    decision: AdmissionDecision, target_quarter: Quarter
-) -> tuple[str, Quarter] | None:
-    """Return a Search-only cold issue whose sync scope supplies its target."""
-    if (
-        decision.status is not AdmissionStatus.REVIEW
-        or decision.media_format is not None
-        or decision.japanese is not None
-        or not decision.reviews
-    ):
-        return None
-    if any(
-        issue.issue_code != SEARCH_ONLY_MEDIA_UNRESOLVED
-        or issue.candidate_quarter is not None
-        for issue in decision.reviews
-    ):
-        return None
-    return decision.reviews[0].issue_code, target_quarter
-
-
 def _auto_blacklist_error_summary(error: Exception) -> str:
     if isinstance(error, SyncError):
         return str(error)
     return "automatic blacklist transaction failed"
-
-
-def _auto_blacklist_event(
-    detail: SubjectDetail,
-    evaluation_date: date,
-    *,
-    reason: str = "low_rating_count",
-    issue_code: str | None = None,
-    target_quarter: Quarter | None = None,
-    japanese: JapaneseDecision | None = None,
-) -> dict[str, object]:
-    event: dict[str, object] = {
-        "subject_id": detail.subject_id,
-        "title": detail.name_cn or detail.name or str(detail.subject_id),
-        "evaluation_date": evaluation_date.isoformat(),
-        "reason": reason,
-    }
-    if reason in {"low_rating_count", OUTCOME_DOMINATED_LOW_RATING}:
-        assert detail.air_date is not None
-        assert detail.rating_total is not None
-        event.update(
-            {
-                "rating_count": detail.rating_total,
-                "air_date": detail.air_date.isoformat(),
-                "days_since_air_date": (evaluation_date - detail.air_date).days,
-                "threshold": "rating_count < 30",
-                "protection_days": "> 7 days",
-            }
-        )
-    if reason != "low_rating_count":
-        assert issue_code is not None
-        event["issue_code"] = issue_code
-        if target_quarter is not None:
-            event["target_quarter"] = target_quarter.label
-        if japanese is not None:
-            event["japanese_evidence"] = {
-                "classification": japanese.classification.value,
-                "evidence_type": japanese.evidence_type,
-                "evidence_value": japanese.evidence_value,
-            }
-    return event
-
-
-def _japanese_issue_code(decision: AdmissionDecision) -> str:
-    for finding in decision.reviews:
-        if finding.issue_code.startswith("JAPANESE_"):
-            return finding.issue_code
-    return "JAPANESE_CLASSIFICATION_UNRESOLVED"
 
 
 def _stale_out_of_scope_review_ids(
@@ -2525,157 +2281,6 @@ def _external_review(
             f"{target_quarter.year} {target_quarter.month}"
         ),
     }
-
-
-def _resolve_episode_count(
-    detail: SubjectDetail, *, registry_count: object = None
-) -> _EpisodeCountResolution:
-    """Resolve the planned main-episode count from bounded trusted evidence.
-
-    ``eps`` is the subject-level planned-count fact.  Bangumi's
-    ``total_episodes`` reports the number of episode rows currently present in
-    its database, so it is diagnostic only and must not create a planned-count
-    conflict or fill an otherwise unknown value.
-    """
-    eps = _strict_positive_integer(detail.eps)
-    infobox = [
-        positive
-        for item in detail.infobox
-        if item.key == "话数"
-        and (positive := _strict_positive_integer(item.value)) is not None
-    ]
-    trusted = ({eps} if eps is not None else set()) | set(infobox)
-    if len(trusted) > 1:
-        return _EpisodeCountResolution(None, "conflict", "episode_count_conflict")
-    if eps is not None:
-        return _EpisodeCountResolution(eps, "subject_structured")
-    if infobox:
-        return _EpisodeCountResolution(infobox[0], "infobox")
-    registry = _strict_positive_integer(registry_count)
-    if registry is not None:
-        return _EpisodeCountResolution(registry, "episode_registry")
-    return _EpisodeCountResolution(None, "unknown")
-
-
-def _resolve_episode_count_with_fallback(
-    api: object,
-    detail: SubjectDetail,
-    subject_id: int,
-    warnings: list[dict[str, str]],
-) -> _EpisodeCountResolution:
-    """Resolve episode count once, using only the existing bounded fallback."""
-    resolution = _resolve_episode_count(detail)
-    if resolution.source != "unknown":
-        return resolution
-    get_episode_count = getattr(api, "get_main_episode_count", None)
-    if not callable(get_episode_count):
-        return resolution
-    try:
-        registry_count = get_episode_count(subject_id)
-    except BangumiApiError as error:
-        warnings.append(
-            {
-                "code": "episode_count_fallback",
-                "summary": (
-                    f"episode registry unavailable for subject {subject_id}: "
-                    f"{error.summary}"
-                ),
-            }
-        )
-    except (TypeError, ValueError):
-        warnings.append(
-            {
-                "code": "episode_count_fallback",
-                "summary": (
-                    f"episode registry response invalid for subject {subject_id}"
-                ),
-            }
-        )
-    else:
-        return _resolve_episode_count(detail, registry_count=registry_count)
-    return resolution
-
-
-def _needs_tv_boundary_evidence(
-    candidate: DiscoveredSubject, detail: SubjectDetail, target_quarter: Quarter
-) -> bool:
-    """Keep boundary probes limited to unambiguous TV candidates."""
-    if detail.air_date is None or candidate.has_date_conflict:
-        return False
-    if (
-        candidate.candidate_date is not None
-        and candidate.candidate_date != detail.air_date
-    ):
-        return False
-    if any(media is not MediaFormat.TV for media in candidate.media_formats):
-        return False
-    if detail.platform is None or normalize_text(detail.platform) != "TV":
-        return False
-    target_start = target_quarter.start_date
-    days_before_target = (target_start - detail.air_date).days
-    return 1 <= days_before_target <= TV_BOUNDARY_LOOKBACK_DAYS
-
-
-def _read_boundary_episode_airdates(
-    api: object,
-    subject_id: int,
-    warnings: list[dict[str, str]],
-) -> tuple[date, ...] | None:
-    """Read optional main-story dates without making a boundary guess on error."""
-    get_airdates = getattr(api, "get_main_episode_airdates", None)
-    if not callable(get_airdates):
-        return None
-    try:
-        values = get_airdates(subject_id)
-    except BangumiApiError as error:
-        warnings.append(
-            {
-                "code": "boundary_episode_evidence",
-                "summary": (
-                    f"main episode boundary evidence unavailable for subject "
-                    f"{subject_id}: {error.summary}"
-                ),
-            }
-        )
-        return None
-    except (TypeError, ValueError):
-        warnings.append(
-            {
-                "code": "boundary_episode_evidence",
-                "summary": (
-                    f"main episode boundary evidence invalid for subject {subject_id}"
-                ),
-            }
-        )
-        return None
-    if not isinstance(values, (tuple, list)) or not all(
-        isinstance(value, date) for value in values
-    ):
-        warnings.append(
-            {
-                "code": "boundary_episode_evidence",
-                "summary": (
-                    f"main episode boundary evidence invalid for subject {subject_id}"
-                ),
-            }
-        )
-        return None
-    return tuple(values)
-
-
-def _episode_count(detail: SubjectDetail) -> int | None:
-    return _resolve_episode_count(detail).value
-
-
-def _strict_positive_integer(value: object) -> int | None:
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value if value > 0 else None
-    if isinstance(value, str):
-        normalized = value.strip()
-        if normalized.isdecimal():
-            parsed = int(normalized)
-            return parsed if parsed > 0 else None
-    return None
 
 
 def _end_date(items: Iterable[object]) -> date | None:

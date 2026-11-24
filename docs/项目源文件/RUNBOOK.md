@@ -63,12 +63,13 @@ python -m pytest -m "not browser" -q
 python -m pytest -m release_smoke -q
 ```
 
+- 重验同步职责变更可先运行 `python -m pytest tests/test_admission.py tests/test_archive_sync.py tests/test_sync_replay.py tests/test_write_recovery.py -q`。其中 `test_cli_sync_replay` 在临时根目录走真实 CLI、SQLite 和构建，用合成 API 提供输入。跨版本对照可让两份源码各调用一次同一测试模块的 `replay(root, monkeypatch)`，分别给空目录，保持 fixture、静态资源、配置和更新日志字节一致，再逐步比较返回的映射。
 - 默认 CI 跑 Python 3.11 的 Linux/Windows 非浏览器测试与 Linux Chromium release smoke。手动 Deep regression 才会跑完整 Chromium 和 WebKit 集。源码与工作流位于 `.github/workflows/`。回归依赖 fixtures、loopback HTTP 和临时 Git 仓库。需要避免 Windows 历史临时目录权限问题时，给 pytest 的 `--basetemp` 指定 `workspace/tmp/` 下本次未使用的目录。
 - 事实变更跑候选发现、规则、REVIEW、事务和增量构建用例。重点检查重复执行、失败中断和目标/全局影响。本地构建或 PWA 改动查候选文件树、离线资源闭包、完整包替换及老数据/应用组合。真机、真实弱网、真实 Bangumi 与生产 Pages 按任务授权分别验收。
 - 确认当前工作树和配置的上游再提交。只把授权的改动暂存，查询实际远端 ref 核对推送结果。正式 Plan 默认按获授权 Issue 交接，保留既有编号和可追溯证据。私有正文不进公开 Issue 或 Git。复杂依赖和下一步记入 [当前状态](CURRENT_STATE.md)。
 
 ## 专项文档与代码入口
 
-- 领域证据与裁决由 [日本范围规则](../country-filter.md)、[API 字段记录](../api-field-notes.md) 及 `discovery.py`、`admission.py`、`rules.py`、`sync.py`、`adjudication.py` 维护。
+- 领域证据与裁决由 [日本范围规则](../country-filter.md)、[API 字段记录](../api-field-notes.md) 及 `discovery.py`、`admission.py`、`sync_candidate.py`、`rules.py`、`sync.py`、`adjudication.py` 维护。
 - 数据读写在 `database.py`、`repository.py`、`media.py`。生成链路见 [静态构建](../static-build.md) 与 `src/bgm_side_b/build/`。
 - [视觉系统](../visual-system.md) 对应 `static/css/site.css` 和 `static/js/app.js`。[PWA 合同](../pwa.md) 对应 `static/js/pwa.js` 和 `static/pwa/sw.js`。发布编排和候选校验在 `src/bgm_side_b/release/`。

@@ -36,36 +36,27 @@ bgmb sync --from 2026 4 --to 2026 7 --refresh-existing
 `sync` 会联网访问 Bangumi，获取可验证的事实和封面。事实成功提交后，它会自动触发受影响
 范围的增量 build。局部失败或中断不会把未验证资料标记为完整。
 
-同步在确认 Anime、日本、TV/MOVIE 基础范围后，还会应用两条自动冷门规则：可靠首播超过 7 天且
-评分人数少于 30；或明确 allowlist 中的信息不足型 REVIEW 立即自动排除，与目标季度成熟度和评分人数无关。
-第二条规则只处理信息不足的 allowlist issue；冲突型 REVIEW 不会自动排除。
-季度边界不确定性 `TV_QUARTER_BOUNDARY` 不在这个 allowlist 中：它会保留为 REVIEW，不能因为边界证据不足
-而被自动排除。TV 默认使用自然日历季度；1～2 集短篇即使在季度末几天首播也保留自然季度，只有
-连续多周主线播出证据与明确目标季度证据同时成立时，才会采用下一季度的窄例外。标题中的季节词不构成证据。
-跨季度搜索回看只作为 TV 边界候选；非目标季度 Movie 会被自动视为无关，不产生日本性 REVIEW
-或错误的 `assign` 指引。未决或冲突的日本性在可靠日期超过 7 天且评分人数少于 30 时，会记录
-为 `outcome_dominated_low_rating` 自动排除；底层日本性仍保持 `UNRESOLVED`，不伪造人工结论。
-唯一获批的单项例外是 subject `501729`：它只跳过上述低评分自动排除及相同低评分支配路径，
-不绕过 Anime、日本性、TV/MOVIE、自然季度、人工排除或 REVIEW 规则；信息不足型 allowlist
-仍按原规则处理。该例外不会强制收录作品，是否进入本地季度事实仍须经过另行授权的 fresh sync。
-命中作品会写入 `config/bangumi.toml` 的
-`auto_excluded_subject_ids`，同时记录标题注释和审计证据，并在本次同步中跳过季度归属、REVIEW、
-封面和站点输出。`auto_excluded_subject_ids` 是可重新评估的自动缓存：作品再次出现在实际刷新
-的季度候选中时会重新读取 canonical detail；评分人数增长、证据补全等使其重新满足收录条件时，系统
-会自动移除旧自动排除并正常处理。重新评估仍遵守全部 Anime、日本、TV/MOVIE、季度和 REVIEW 规则。
-如果 fresh canonical 结果已经成为非日本或明确的非院线特殊场所硬拒绝，旧自动排除也会事务性
-移除，并在同步报告的 `auto_reconciled` 中单列，不再显示为历史低评分黑名单。
+### 准入决定与实际写入
 
-`platform=剧场版` 不是普通院线上映的充分证明；已核验的 Infobox `其他=游乐设施电影` 或
-`其他=プラネタリウム上映作品` 会直接排除。标题和官网 URL 不参与这个判断；缺少可复用结构化
-证据的已核实个案应使用精确人工 `excluded_subject_ids`。
+下面按同步时遇到问题的顺序对照。回放用判断日 2026-07-20，先管理七月，再同步四月，因此可以同时观察四月首播与七月续播。表中的 ID 和日期来自合成案例。国家字段、评分阈值和边界证据的定义见[日本范围规则](country-filter.md)与 [API 字段记录](api-field-notes.md)。
 
-人工 `excluded_subject_ids` 仍是持久的显式排除，不会因评分或同步自动恢复；它与自动列表来源不同，
-均应保留配置中的现有注释。若只是想立即触发重新评估，应刷新包含该作品的目标季度，不要直接清空
-整个自动黑名单。
-同步报告会分别显示人工命中、历史自动命中和本次新增自动拉黑数量，在 `new_auto_by_reason` 中
-区分可靠首播低评分和信息不足型未决冷门两类原因，并用 `auto_reconciled` 记录已由硬拒绝取代的
-旧自动状态。
+| 输入和先后条件 | 决定与原因 | SQLite、配置、封面和报告的结果 |
+| --- | --- | --- |
+| 区间内季度已有完整 facts 和 covers | 默认跳过该季度自身刷新。单季度同步或区间显式 `--refresh-existing` 才重新处理已完整季度 | 两季都跳过的回放中，detail、下载和站点写入均为 0。较早季度重新同步时，仍可能回填相邻的已管理季度。 |
+| 候选出现在人工 `excluded_subject_ids` | 在请求 canonical detail 前计为人工命中。已有自动项只有在实际刷新中重新发现才获取新证据 | 同步开始时清理排除项已有事实和对应封面。人工项 110 没有 detail 请求，自动项 103、104 各请求一次。人工和自动列表分别计数。 |
+| Browse 与 Search 发现同一 ID，或只有 Search 找到 | 合并来源后读 canonical detail。Browse 失败使季度未完成。Search 失败记录警告，可靠的 Browse 结果仍可提交 | Search-only 且媒体无法确定的 `SEARCH_ONLY_MEDIA_UNRESOLVED` 命中信息不足规则，按请求季度记录自动排除。其他无法形成 subject 快照的 finding 进入报告的 `external_reviews`。 |
+| 类型不符、明确 WEB/OVA/OAD，或剧场版有精确特殊场所证据 | 优先得到 `not_anime`、`unsupported_media` 或 `non_theatrical_special_venue`。特殊场所门检查精确 Infobox 值 `其他=游乐设施电影` 或 `其他=プラネタリウム上映作品` | 本次不创建首播、REVIEW 或下载。候选的 Browse 分类和作品标题均不能覆盖这些门。旧自动项得到新的硬拒时，在季度事实提交时清理配置。 |
+| 可靠日期、无季度覆盖且落在目标范围外，或发现日期与正典冲突 | 范围外的 `out_of_scope_quarter` 在判断日本性前返回。日期冲突进入 REVIEW。TV 若在开季前 1–7 天首播，已确认的 1–2 集短篇归自然季，明确目标季度标签与连续多周正片同时成立才移至目标季 | 旧自然季 premiere 保留。边界证据不足时，`TV_QUARTER_BOUNDARY` 归目标季 REVIEW，不能仅据边界不明自动排除。准备快照时复用边界判断已经取得的计划集数。 |
+| 精确地区含日本、全为非日本、缺少证据，或两个独立来源相冲突 | 同一来源的日本合拍可通过。非日本硬拒为 `non_japanese`。缺失或冲突且仍影响结果时，保留对应 `JAPANESE_*` finding。显式日本性裁决参与此门，通过媒体与日本性门后才处理人工季度归属 | 日本性 REVIEW 可持久化为无季度记录。案例 106 在全局 REVIEW 可见，季度队列计数为 0，证据补齐后清除。非日本硬拒可清理旧日本性 REVIEW。两类人工裁决保存在各自 TOML。 |
+| 日本 TV/剧场版、无阻断冲突，且首播至判断日超过 7 天、评分人数少于 30，或日本性仍未决但已满足低评分条件 | 前者为 `low_rating_count`，后者为 `outcome_dominated_low_rating`。后者报告原始日本性、issue、日期和评分。501729 只豁免这两个低评分分支 | 命中自动排除时事务性清理作品事实、REVIEW、关联封面并更新自动列表。案例 105 保留未决证据，501729 凭其余事实正常收录。对豁免项仍检查人工排除、季度、媒体、日本性和信息不足规则。 |
+| 信息不足型 finding，或已有自动项被重新发现 | 仅 `TV_QUARTER_DATE_UNRESOLVED`、`MOVIE_DATE_UNRESOLVED`、`SEARCH_ONLY_MEDIA_UNRESOLVED` 命中即时清理。原原因仍成立则保留自动项。可收录或需有效 REVIEW 则恢复。硬拒则清理旧自动状态 | 107 的信息不足排除无需等待评分或季度成熟。103 从自动列表恢复后写回事实，104 因法国证据仅计为 `auto_reconciled`。新增事件以独立事务成功为准。配置写入失败保留旧配置、事实和封面，报告 `auto_blacklist_persist`。 |
+| 已有 premiere 的 TV 在后季再被发现，或新同步较早季度而后季已受管理 | 同一 ID 的自然首播受保护。续播使用结束日期或目标季度正片日期，证据冲突保留 REVIEW。剧场版仅有首播 | 101 保有四月 premiere，并为七月添加 `main_episode_airdate` continuing。续播增加 appearance，复用原 subject。回填失败会更新受影响季度的状态。 |
+| canonical 超时、ID 不匹配、封面缺失或处理中断 | detail 或规范化错误阻止提交整季新事实，独立提交的自动排除仍有效。事实提交时先标记 covers 未完成，封面成功后再更新状态 | 回放的 `timeout` 和 `normalization` 都保留上次站点。封面失败保留已提交事实。取消时等待已启动任务退出。区间重试会处理未完整季度。 |
+
+要触发一次自动项重评，刷新包含该作品的目标季度即可。自动项保存在 `config/bangumi.toml` 的 `auto_excluded_subject_ids` 中，写入时保留标题注释。报告的 `new_auto_by_reason` 按原因统计新增，`auto_restored` 列出恢复项，`auto_reconciled` 单列被硬拒取代的旧自动项。
+
+- 逐条准入与优先级见[准入用例](../tests/test_admission.py)和[领域对照样本](../tests/fixtures/plan47_admission_controls.json)。[生命周期样本](../tests/fixtures/auto_exclusion_lifecycle.json)在[同步测试](../tests/test_archive_sync.py)中核对配置、事实、旧 REVIEW 和封面。
+- [CLI 回放](../tests/test_sync_replay.py)串起上述作品和两个季度，检查请求、报告和构建。[写入中断测试](../tests/test_write_recovery.py)在自动排除 TOML 已替换、SQLite 尚未提交时终止写进程，检查下一写者恢复原始 TOML、事实和封面。
 
 Browse/Search 只发现候选，正式 subject facts 会再通过 canonical detail 验证。`episode_count`
 只表示作品计划正片总话数，优先使用 canonical detail 的 `eps`；Bangumi 的 `total_episodes`

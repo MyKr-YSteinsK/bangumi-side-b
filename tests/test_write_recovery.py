@@ -318,6 +318,45 @@ def _install_fixture_api(monkeypatch):
     monkeypatch.setattr(cli, "ArchiveSynchronizer", synchronizer)
 
 
+def test_sync_exclusion_death_recovers_config_facts_and_cover(project):
+    from bgm_side_b.archive_config import load_archive_sync_settings
+
+    repo = SubjectRepository(make_builder(project).database)
+    config = project / "config/bangumi.toml"
+    cover = project / "workspace/covers/101.webp"
+    original = config.read_bytes(), cover.read_bytes(), repo.get_subject_facts(101)
+    with stopped_at(
+        project,
+        """
+from dataclasses import replace
+from pytest import MonkeyPatch
+from tests.test_write_recovery import _install_fixture_api
+from tests.test_archive_sync import FakeApi
+from bgm_side_b import sync
+
+_install_fixture_api(MonkeyPatch())
+get_detail = FakeApi.get_subject
+def missing_date(self, subject):
+    return replace(get_detail(self, subject), air_date=None)
+FakeApi.get_subject = missing_date
+insert = sync.add_auto_excluded_subject
+def stop_after_config(*args, **kwargs):
+    insert(*args, **kwargs)
+    pause()
+sync.add_auto_excluded_subject = stop_after_config
+main(['sync','2026','4'])
+""",
+    ):
+        assert 101 in load_archive_sync_settings(config).auto_excluded_subject_ids
+        assert not cover.exists()
+        assert repo.get_subject_facts(101) == original[2]
+        assert pending_facts(repo.database)
+    assert main(["build", "--all"]) == 0
+    restored = config.read_bytes(), cover.read_bytes(), repo.get_subject_facts(101)
+    assert restored == original
+    assert not pending_facts(repo.database)
+
+
 def test_range_cover_death_resumes_only_incomplete_quarter(project, monkeypatch):
     repo = SubjectRepository(make_builder(project).database)
     january, april = Quarter(2026, 1), Quarter(2026, 4)

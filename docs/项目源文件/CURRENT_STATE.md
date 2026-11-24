@@ -1,8 +1,27 @@
 # Bangumi Side B 当前状态
 
-观察日为 2026-11-24。应用版本 `0.9.1`，处于 Production 维护。本批源码起点为 `38759cd6e28766ba83314c01aa8c58b78e0132ee`，本机 main 与配置的 origin/main 一致。工程范围与授权见 [Plan-73 · Issue #1](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/1)。
+观察日为 2026-11-24。应用版本 `0.9.1`，处于 Production 维护。Plan-74 从 `4fbda787966a0f9d1175b6acb86c38136037abb9` 开始，本机 `main`、配置上游 `origin/main` 和实际远端源码 HEAD 当时一致。[Plan-74 · Issue #2](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/2)
+
+## Plan-74 同步准入与季度写入
+
+原先 `_sync_quarter` 同时取单作品证据、做准入判断，并在四处重复处理自动排除写入。[单候选评估](../../src/bgm_side_b/sync_candidate.py)现在读取 canonical detail，按需获取边界正片证据，调用已有的 `admit_subject`，返回裁决、可复用的集数结果和拟记录的自动排除证据。[季度编排](../../src/bgm_side_b/sync.py)负责候选计数、错误和 REVIEW 去向、受保护的自动排除事务、季度事实、封面及相邻季度续播。自动排除仍可先于整季事实独立提交，报告只记录成功写入的新增事件。
+
+| 隔离回放 | 重构前后均观察到的结果 |
+| --- | --- |
+| 七月单季 → 四月单季 | 先生成 20 个文件。四月请求 7 个 detail，下载 4 张封面，101 的四月首播回填为七月续播，增量写 12 项，站点共 27 个文件。 |
+| 跳过完整区间 → 显式刷新 | 跳过时没有 detail 请求、下载或站点写入。显式刷新使 106 的日本性待裁决，记录可在全局找到，季度队列仍为 0，站点变为 26 项。 |
+| detail 超时 → 返回不同 subject ID → 区间重试 | 两次失败分别报告 `timeout`、`normalization`，上次可用站点的 26 个文件字节一致。重试后旧 REVIEW 清除，重新生成 6 项。 |
+| 无变化重跑 → 从同一事实全量构建 | 前者写 0 项，后者写 27 项。两棵树与恢复后增量结果的相对路径、SHA-256 全部一致。 |
+
+[九步 CLI 回放](../../tests/test_sync_replay.py)在基线与本批源码上使用同一批合成输入、配置和静态文件。共对照 35 次完整准入决定、10 张 SQLite 表的逻辑行、5 份 TOML 的字节摘要、封面和站点文件、请求与下载记录，以及各步的报告、错误码和终端汇总。判断日固定为 2026-07-20，每步固定同步时间戳与单调时钟。报告文件名中的运行时间与构建耗时归一化。SQLite 提交标记按首次出现次序编号，保留标记变化。上述结果逐项一致，因而沿用 0.9.1。
+
+新增的[自动排除中断回归](../../tests/test_write_recovery.py)在子进程替换 TOML、移除封面且 SQLite 尚未提交时从外部终止它。此时独立读者仍能读取原事实，恢复记录仍在。下一次离线 build 恢复原 TOML 和封面字节、原作品快照，并清除已处理的恢复记录。[边界证据回归](../../tests/test_archive_sync.py)核对同一作品获取 detail、回退集数及正片日期各一次。规则、写入后果及逐项测试入口见[用户指南](../USER_GUIDE.md#准入决定与实际写入)。
+
+本机以 Windows、Python 3.14.6 和 SQLite 3.50.4 完成验证。Ruff、431 项非浏览器测试和 21 项 Chromium release smoke 均通过，包含 Plan-73 的写者互斥、恢复中断、配置冲突、Windows 封面占用、嵌套 build 与过期候选回归。本批使用隔离合成数据。生产资料的新鲜度与已发布页面沿用各自的最近观察。
 
 ## Plan-73 本机恢复
+
+该批源码起点为 `38759cd6e28766ba83314c01aa8c58b78e0132ee`，工程范围与授权见 [Plan-73 · Issue #1](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/1)。
 
 | 故障点 | 修复与证据 |
 | --- | --- |

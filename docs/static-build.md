@@ -1,6 +1,6 @@
 # Static build
 
-`bgmb build` is a completely offline operation. It reads only the clean SQLite
+`bgmb build` is a completely offline operation. After reconciling any pending write, its inputs are the SQLite
 fact store, `workspace/covers`, configuration, and checked-in static source files.
 It never calls Bangumi and never publishes.
 
@@ -69,8 +69,9 @@ an identical second build does not read cover bytes, regenerate unchanged HTML o
 JSON, compare every output byte, or scan the whole site. The writer stages only
 changed files in `workspace/build-staging`, validates newly generated artifacts and
 cross-artifact metadata, checks retained artifacts by existence/size, applies
-replacements/deletions, and commits build-state last. A failed replace, delete, or
-validation restores the touched files and leaves the previous state intact.
+replacements/deletions, and commits build-state last. A failed replace, delete or
+validation starts rollback. If a sharing violation blocks restoration, the writer
+retains the backup and marks the tree as pending recovery.
 
 An identical second build must leave generated artifact bytes and timestamps
 unchanged and report skipped quarters. Unchanged preview artifacts reuse the
@@ -105,3 +106,12 @@ http://127.0.0.1:8000/bangumi-side-b/
 
 It does not read SQLite, build, sync, publish, or mutate files. A used port is a
 clear error; it is never silently replaced with another port.
+
+## Interrupted builds
+
+Before planning, the builder reconciles a pending patch against the old and
+intended build state. Backups cover touched files, including a record of paths
+that did not previously exist. The preview server can serve different generations
+across requests while a patch is in progress. Full candidate validation checks
+for a pending patch and verifies the paths, sizes and SHA-256 of the site.
+See the [runbook](项目源文件/RUNBOOK.md) for lock conflicts and recovery.

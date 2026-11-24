@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 
 from bgm_side_b import __version__
 from bgm_side_b.archive_config import load_archive_sync_settings
+from bgm_side_b.build.recovery import pending_patches
 from bgm_side_b.config import load_tag_rules
 from bgm_side_b.database import Database, DatabaseError
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
@@ -38,6 +39,7 @@ from bgm_side_b.release.unified_audit import (
     UnifiedAuditResult,
     UnifiedReleaseAuditor,
 )
+from bgm_side_b.write_recovery import pending_facts
 
 
 class WorkflowError(RuntimeError):
@@ -193,6 +195,8 @@ def _compute_local_status(
         )
     else:
         sqlite_status = _quick_sqlite_status(root)
+    if pending_facts(Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")):
+        sqlite_status = "recovery pending"
     candidate, site_status = _quick_site_status(root, head)
     prepared_status, prepared_source = _prepared_local_status(root, head, candidate)
     try:
@@ -388,6 +392,8 @@ def _quick_sqlite_status(root: Path) -> str:
 def _quick_site_status(
     root: Path, head: str | None
 ) -> tuple[SiteCandidate | None, str]:
+    if pending_patches(root / "workspace"):
+        return None, "recovery pending"
     site = root / "dist" / "site"
     if head is None or not site.is_dir():
         return None, "missing"

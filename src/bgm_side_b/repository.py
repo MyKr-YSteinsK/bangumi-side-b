@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import PurePosixPath
@@ -21,6 +21,7 @@ from bgm_side_b.domain import (
     SourceDecision,
     SourceType,
 )
+from bgm_side_b.write_recovery import fact_transaction
 
 _ID_QUERY_CHUNK_SIZE = 400
 
@@ -161,18 +162,8 @@ class SubjectRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
-        connection = self.database.connect()
-        try:
-            connection.execute("BEGIN")
-            yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+    def transaction(self) -> AbstractContextManager[sqlite3.Connection]:
+        return fact_transaction(self.database)
 
     def replace_subject_snapshot(
         self, connection: sqlite3.Connection, snapshot: SubjectSnapshot

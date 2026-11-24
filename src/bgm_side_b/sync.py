@@ -46,7 +46,6 @@ from bgm_side_b.archive_config import (
     add_auto_excluded_subject,
     load_archive_sync_settings,
     remove_auto_excluded_subjects,
-    restore_archive_config,
     should_auto_blacklist,
 )
 from bgm_side_b.discovery import (
@@ -71,7 +70,7 @@ from bgm_side_b.japanese_overrides import (
     load_japanese_overrides,
 )
 from bgm_side_b.media import MAX_COVER_CONCURRENCY, CoverResult, CoverStore
-from bgm_side_b.overrides import load_quarter_overrides
+from bgm_side_b.overrides import load_quarter_overrides, save_quarter_overrides
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 from bgm_side_b.repository import (
     QuarterAppearance,
@@ -816,16 +815,16 @@ class ArchiveSynchronizer:
             )
         prepared = self._prepare_subject(detail, decision, None, target)
         with self.repository.transaction() as connection:
-            self.repository.replace_subject_snapshot(connection, prepared.snapshot)
-        cover = self._sync_cover(prepared)
-        snapshot = (
-            replace(prepared.snapshot, cover=cover.cover)
-            if cover.cover
-            else prepared.snapshot
-        )
-        if cover.cover is not None:
-            with self.repository.transaction() as connection:
-                self.repository.replace_subject_snapshot(connection, snapshot)
+            assignments = load_quarter_overrides(self.overrides_path)
+            assignments[subject_id] = override
+            save_quarter_overrides(self.overrides_path, assignments)
+            cover = self._sync_cover(prepared)
+            snapshot = (
+                replace(prepared.snapshot, cover=cover.cover)
+                if cover.cover
+                else prepared.snapshot
+            )
+            self.repository.replace_subject_snapshot(connection, snapshot)
         try:
             report_path = self._write_single_import_report(subject_id, snapshot, cover)
         except OSError as error:
@@ -1419,75 +1418,62 @@ class ArchiveSynchronizer:
             issue.issue_code == "TV_QUARTER_BOUNDARY" for issue in reviews
         )
         auto_removal_ids = restored_auto_ids | reconciled_auto_ids
-        original_config = (
-            self.settings_path.read_bytes() if auto_removal_ids else None
-        )
-        try:
-            with timing.stage("fact_persistence"):
-                with self.repository.transaction() as connection:
-                    for item in prepared:
-                        self.repository.replace_subject_snapshot(
-                            connection, item.snapshot
-                        )
-                    self.repository.delete_review_issues_for_subjects(
-                        connection,
+        with timing.stage("fact_persistence"):
+            with self.repository.transaction() as connection:
+                for item in prepared:
+                    self.repository.replace_subject_snapshot(
+                        connection, item.snapshot
+                    )
+                self.repository.delete_review_issues_for_subjects(
+                    connection,
+                    quarter,
+                    stale_review_subject_ids,
+                    _OUT_OF_SCOPE_REVIEW_ISSUES,
+                )
+                self.repository.delete_unscoped_review_issues_for_subjects(
+                    connection,
+                    resolved_japanese_review_subject_ids,
+                    _JAPANESE_REVIEW_ISSUES,
+                )
+                for subject_id in sorted(stale_ids):
+                    self.covers.remove_subject_cover(subject_id)
+                self.repository.delete_subjects(connection, frozenset(stale_ids))
+                self.repository.replace_automatic_continuing_for_quarter(
+                    connection, quarter, continuing_appearances
+                )
+                self._replace_continuing_reviews(
+                    connection,
+                    reconciliation,
+                    {
+                        item.snapshot.subject.subject_id: item.snapshot
+                        for item in prepared
+                    },
+                )
+                self.repository.write_sync_state(
+                    connection,
+                    QuarterSyncState(
                         quarter,
-                        stale_review_subject_ids,
-                        _OUT_OF_SCOPE_REVIEW_ISSUES,
+                        FACTS_COMPLETE,
+                        COVERS_INCOMPLETE,
+                        subject_count,
+                        subject_count,
+                        completed_at,
+                        completed_at,
+                    ),
+                )
+                if auto_removal_ids:
+                    removed = remove_auto_excluded_subjects(
+                        self.settings_path, auto_removal_ids
                     )
-                    self.repository.delete_unscoped_review_issues_for_subjects(
-                        connection,
-                        resolved_japanese_review_subject_ids,
-                        _JAPANESE_REVIEW_ISSUES,
-                    )
-                    self.repository.delete_subjects(connection, frozenset(stale_ids))
-                    self.repository.replace_automatic_continuing_for_quarter(
-                        connection, quarter, continuing_appearances
-                    )
-                    self._replace_continuing_reviews(
-                        connection,
-                        reconciliation,
-                        {
-                            item.snapshot.subject.subject_id: item.snapshot
-                            for item in prepared
-                        },
-                    )
-                    self.repository.write_sync_state(
-                        connection,
-                        QuarterSyncState(
-                            quarter,
-                            FACTS_COMPLETE,
-                            COVERS_INCOMPLETE,
-                            subject_count,
-                            subject_count,
-                            completed_at,
-                            completed_at,
-                        ),
-                    )
-                    if auto_removal_ids:
-                        removed = remove_auto_excluded_subjects(
-                            self.settings_path, auto_removal_ids
+                    if set(removed) != auto_removal_ids:
+                        raise SyncError(
+                            "automatic exclusion changed before reconciliation"
                         )
-                        if set(removed) != auto_removal_ids:
-                            raise SyncError(
-                                "automatic exclusion changed before reconciliation"
-                            )
-        except BaseException:
-            if original_config is not None:
-                try:
-                    if self.settings_path.read_bytes() != original_config:
-                        restore_archive_config(self.settings_path, original_config)
-                except OSError as error:
-                    raise SyncError(
-                        "automatic exclusion reconciliation rollback is incomplete"
-                    ) from error
-            raise
         for subject_id in auto_removal_ids:
             self._auto_excluded_subject_ids.discard(subject_id)
             self._active_excluded_subject_ids.discard(subject_id)
         timing.set_data_status(FACTS_COMPLETE, COVERS_INCOMPLETE)
         with timing.stage("cover_processing") as cover_stage:
-            cleanup_warnings = self._remove_stale_covers(stale_ids)
             cover_downloaded, cover_reused, cover_missing, cover_warnings = (
                 self._sync_covers(
                     item
@@ -1496,21 +1482,20 @@ class ArchiveSynchronizer:
                     and item.snapshot.premiere.quarter == quarter
                 )
             )
-            if cover_missing or cleanup_warnings:
+            if cover_missing:
                 cover_stage.fail()
         warnings = tuple(
             [
                 *discovery_warnings,
                 *episode_warnings,
                 *premiere_conflict_warnings,
-                *cleanup_warnings,
                 *cover_warnings,
                 *reconciliation.warnings,
             ]
         )
         covers_status = (
             COVERS_COMPLETE
-            if cover_missing == 0 and not cleanup_warnings
+            if cover_missing == 0
             else COVERS_INCOMPLETE
         )
         with timing.stage("result_finalization"):
@@ -1913,36 +1898,28 @@ class ArchiveSynchronizer:
         prior_states = {
             quarter: self.repository.get_sync_state(quarter) for quarter in affected
         }
-        try:
-            covers = self.covers.quarantine_subject_covers(excluded)
-        except OSError as error:
-            raise SyncError("blacklisted cover cleanup failed") from error
-        try:
-            with self.repository.transaction() as connection:
-                self.repository.delete_subjects(connection, excluded)
-                for quarter in affected:
-                    prior = prior_states[quarter]
-                    if prior is not None:
-                        self.repository.write_sync_state(
-                            connection,
-                            replace(
-                                prior,
-                                facts_status=FACTS_INCOMPLETE,
-                                last_attempt_at=_timestamp(),
-                            ),
-                        )
-        except BaseException:
-            try:
-                covers.restore()
-            except OSError as recovery_error:
-                raise SyncError(
-                    "blacklist transaction failed and cover recovery is incomplete"
-                ) from recovery_error
-            raise
-        try:
-            covers.finalize()
-        except OSError as error:
-            raise SyncError("blacklisted cover cleanup finalization failed") from error
+        with self.repository.transaction() as connection:
+            self._remove_excluded(connection, excluded, prior_states)
+
+    def _remove_excluded(
+        self,
+        connection: sqlite3.Connection,
+        excluded: frozenset[int],
+        prior_states: Mapping[Quarter, QuarterSyncState | None],
+    ) -> None:
+        for subject_id in sorted(excluded):
+            self.covers.remove_subject_cover(subject_id)
+        self.repository.delete_subjects(connection, excluded)
+        for prior in prior_states.values():
+            if prior is not None:
+                self.repository.write_sync_state(
+                    connection,
+                    replace(
+                        prior,
+                        facts_status=FACTS_INCOMPLETE,
+                        last_attempt_at=_timestamp(),
+                    ),
+                )
 
     def _record_auto_blacklist(
         self, detail: SubjectDetail, existing: SubjectSnapshot | None
@@ -1953,7 +1930,6 @@ class ArchiveSynchronizer:
             return False
         if not self.settings_path.is_file():
             raise SyncError("automatic blacklist configuration is missing")
-        original_config = self.settings_path.read_bytes()
         affected = (
             self.repository.affected_quarters(frozenset({subject_id}))
             if existing is not None
@@ -1962,71 +1938,17 @@ class ArchiveSynchronizer:
         prior_states = {
             quarter: self.repository.get_sync_state(quarter) for quarter in affected
         }
-        covers = None
-        if existing is not None:
-            try:
-                covers = self.covers.quarantine_subject_covers({subject_id})
-            except OSError as error:
-                raise SyncError(
-                    "automatic blacklist cover quarantine failed"
-                ) from error
-        config_changed = False
-        try:
-            with self.repository.transaction() as connection:
-                if existing is not None:
-                    self.repository.delete_subjects(connection, frozenset({subject_id}))
-                    for quarter in affected:
-                        prior = prior_states[quarter]
-                        if prior is not None:
-                            self.repository.write_sync_state(
-                                connection,
-                                replace(
-                                    prior,
-                                    facts_status=FACTS_INCOMPLETE,
-                                    last_attempt_at=_timestamp(),
-                                ),
-                            )
-                add_auto_excluded_subject(
-                    self.settings_path,
-                    subject_id,
-                    name_cn=detail.name_cn,
-                    name_original=detail.name,
-                )
-                config_changed = True
-                self._auto_excluded_subject_ids.add(subject_id)
-                self._active_excluded_subject_ids.add(subject_id)
-        except BaseException:
-            self._auto_excluded_subject_ids.discard(subject_id)
-            self._active_excluded_subject_ids.discard(subject_id)
-            if config_changed or self.settings_path.read_bytes() != original_config:
-                try:
-                    restore_archive_config(self.settings_path, original_config)
-                except OSError as error:
-                    if covers is not None:
-                        try:
-                            covers.restore()
-                        except OSError as recovery_error:
-                            raise SyncError(
-                                "automatic blacklist rollback is incomplete"
-                            ) from recovery_error
-                    raise SyncError(
-                        "automatic blacklist configuration rollback failed"
-                    ) from error
-            if covers is not None:
-                try:
-                    covers.restore()
-                except OSError as error:
-                    raise SyncError(
-                        "automatic blacklist cover recovery is incomplete"
-                    ) from error
-            raise
-        if covers is not None:
-            try:
-                covers.finalize()
-            except OSError as error:
-                raise SyncError(
-                    "automatic blacklist cover cleanup finalization failed"
-                ) from error
+        with self.repository.transaction() as connection:
+            if existing is not None:
+                self._remove_excluded(connection, frozenset({subject_id}), prior_states)
+            add_auto_excluded_subject(
+                self.settings_path,
+                subject_id,
+                name_cn=detail.name_cn,
+                name_original=detail.name,
+            )
+        self._auto_excluded_subject_ids.add(subject_id)
+        self._active_excluded_subject_ids.add(subject_id)
         return True
 
     def _write_incomplete(
@@ -2125,7 +2047,7 @@ class ArchiveSynchronizer:
         except BaseException:
             for future in futures:
                 future.cancel()
-            executor.shutdown(wait=False, cancel_futures=True)
+            executor.shutdown(wait=True, cancel_futures=True)
             raise
         else:
             executor.shutdown(wait=True)
@@ -2160,17 +2082,6 @@ class ArchiveSynchronizer:
         return self.covers.sync_subject(
             prepared.snapshot, prepared.cover_url, prepared.cover_variant
         )
-
-    def _remove_stale_covers(self, subject_ids: Iterable[int]) -> list[dict[str, str]]:
-        warnings: list[dict[str, str]] = []
-        for subject_id in subject_ids:
-            try:
-                self.covers.remove_subject_cover(subject_id)
-            except OSError:
-                warnings.append(
-                    {"code": "cover_cleanup", "summary": "stale cover cleanup failed"}
-                )
-        return warnings
 
     def _write_report(
         self,

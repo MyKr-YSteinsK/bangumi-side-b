@@ -130,8 +130,8 @@ def test_restore_failure_invalidates_state_and_keeps_bounded_recovery(
     assert not (workspace / "build-state.json").exists()
     recoveries = sorted((workspace / "build-staging").glob("recovery-*"))
     assert len(recoveries) == 1
-    assert (recoveries[0] / "index.html").read_bytes() == b"old"
-    assert not (recoveries[0] / "untouched.txt").exists()
+    assert (recoveries[0] / "files" / "index.html").read_bytes() == b"old"
+    assert not (recoveries[0] / "files" / "untouched.txt").exists()
     assert (recoveries[0] / "build-state.invalid.json").is_file()
 
     monkeypatch.setattr(writer_module.os, "replace", original_replace)
@@ -198,7 +198,7 @@ def test_failed_recovery_retention_never_deletes_the_only_old_backup(
 
     recoveries = tuple((workspace / "build-staging").glob("recovery-*"))
     assert len(recoveries) == 1
-    assert (recoveries[0] / "index.html").read_bytes() == b"old"
+    assert (recoveries[0] / "files" / "index.html").read_bytes() == b"old"
     assert (recoveries[0] / "build-state.invalid.json").is_file()
     assert not (workspace / "build-state.json").exists()
 
@@ -301,7 +301,7 @@ def test_ambiguous_state_replace_is_reconciled_before_output_rollback(
     assert (site / "index.html").read_bytes() == b"new"
 
 
-def test_ambiguous_state_that_cannot_be_invalidated_keeps_old_recovery(
+def test_locked_state_keeps_provable_previous_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     site = tmp_path / "site"
@@ -325,12 +325,11 @@ def test_ambiguous_state_that_cannot_be_invalidated_keeps_old_recovery(
 
     monkeypatch.setattr(writer_module.os, "replace", fail_state_replace)
     monkeypatch.setattr(Path, "unlink", fail_state_unlink)
-    with pytest.raises(SiteRecoveryError, match="could not be invalidated"):
+    with pytest.raises(SiteWriteError, match="blocked"):
         writer.apply(
             {"index.html": b"new"}, previous, validate_staged=lambda _: None
         )
 
-    recoveries = tuple((workspace / "build-staging").glob("recovery-*"))
-    assert len(recoveries) == 1
-    assert (recoveries[0] / "index.html").read_bytes() == b"old"
-    assert (site / "index.html").read_bytes() == b"new"
+    assert read_build_state(workspace / "build-state.json") == previous
+    assert (site / "index.html").read_bytes() == b"old"
+    assert not tuple((workspace / "build-staging").glob("recovery-*"))

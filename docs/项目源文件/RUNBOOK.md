@@ -48,6 +48,13 @@ python -m venv .venv
 
 发布操作及命令例子见 [用户指南](../USER_GUIDE.md) 和 [发布说明](../publish.md)。应用版本与 Pages 批次的关系见 [版本说明](../releases.md)。项目源码 SHA 只能追溯 tracked 输入；要证明某个站点的内容，核验候选文件树和发布记录。
 
+## 写命令冲突与中断恢复
+
+- `sync`（含自动 build）、`assign`、`classify`、`build`、`release prepare` 和 `release publish` 在整个命令期间独占 workspace 写锁。收到 `workspace writer busy` 时，等当前写命令结束再重试。进程退出或被终止时内核释放锁。保留 `workspace/writer.lock`，删除活跃锁文件可能让两个写者进入不同的锁。
+- 若 status 显示事实 `recovery pending`，可先用离线 `bgmb build --all`。写者在读取配置前按 SQLite 提交标记恢复对应 TOML、封面和事实。封面阶段中断时检查受影响季度的 facts/covers 状态，在具备 live 授权后重跑原区间。此前已完整的季度按原有范围跳过规则处理。
+- 若站点显示 `recovery pending`，关闭占用输出文件的程序，再运行 `bgmb build --all`。待恢复清单位于 `workspace/build-staging/recovery-*`，事实写集位于数据库旁的 `*.undo-*`。保留这两类目录、原库与现有站点。旧版未带清单的残余备份需人工比对。预览按请求读取磁盘文件，在构建中途可见不同代际；正式候选须通过完整校验。
+- 遇到 `recovery conflict`，先另存用户修改与整个受影响写集。对照清单内的路径、原始证据和目标摘要，由维护者确定该文件应保留的版本。恢复到记录能识别的字节后重跑命令，再通过正常裁决命令重放另存的决定。不要通过删除证据或强制发布来处理冲突。
+
 ## 验证与接续
 
 ```powershell

@@ -13,6 +13,7 @@ from bgm_side_b.build.site_projection import (
 )
 from bgm_side_b.database import Database, DatabaseError, UnknownSchemaError
 from bgm_side_b.domain import MediaFormat, Quarter
+from bgm_side_b.write_recovery import pending_facts
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,8 @@ class UnifiedReleaseAuditor:
         if not self.database_path.is_file():
             return _failed("workspace", "workspace database is missing")
         database = Database(self.database_path)
+        if pending_facts(database):
+            return _failed("workspace", "fact recovery pending; rerun a local writer")
         try:
             database.verify_integrity()
             facts = ArchiveFactsReader(database, self.root / "workspace").read(

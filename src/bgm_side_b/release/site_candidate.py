@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from bgm_side_b.build.recovery import pending_patches
+
 
 class SiteCandidateError(ValueError):
     """Raised when a site tree is not safe or complete enough to publish."""
@@ -122,6 +124,8 @@ def validate_site(site_root: Path, *, source_commit: str = "") -> SiteCandidate:
 
 def validate_build_state(site_root: Path, workspace: Path) -> None:
     """Require the derived build state to describe the exact site tree."""
+    if pending_patches(workspace):
+        raise SiteCandidateError("site recovery pending; run build")
     try:
         payload = json.loads((workspace / "build-state.json").read_text("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:

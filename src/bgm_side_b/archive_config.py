@@ -12,6 +12,7 @@ from datetime import date
 from pathlib import Path
 
 from bgm_side_b.domain import SourceType
+from bgm_side_b.write_recovery import install_file
 
 
 @dataclass(frozen=True)
@@ -326,7 +327,7 @@ def _atomic_replace_bytes(path: Path, content: bytes) -> None:
             file.write(content)
             file.flush()
             os.fsync(file.fileno())
-        os.replace(temporary, path)
+        install_file(Path(temporary), path)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise

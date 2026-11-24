@@ -128,14 +128,9 @@ class ArchiveAdjudicator:
         assignments: dict[int, QuarterOverride],
         snapshot: SubjectSnapshot,
     ) -> None:
-        previous = load_quarter_overrides(self.overrides_path)
-        save_quarter_overrides(self.overrides_path, assignments)
-        try:
-            with self.repository.transaction() as connection:
-                self.repository.replace_subject_snapshot(connection, snapshot)
-        except BaseException:
-            save_quarter_overrides(self.overrides_path, previous)
-            raise
+        with self.repository.transaction() as connection:
+            save_quarter_overrides(self.overrides_path, assignments)
+            self.repository.replace_subject_snapshot(connection, snapshot)
 
 
 def render_review(repository: SubjectRepository, quarter: Quarter | None = None) -> str:
@@ -269,14 +264,9 @@ class JapaneseAdjudicator:
         overrides: dict[int, JapaneseOverride],
         snapshot: SubjectSnapshot,
     ) -> None:
-        previous = load_japanese_overrides(self.overrides_path)
-        save_japanese_overrides(self.overrides_path, overrides)
-        try:
-            with self.repository.transaction() as connection:
-                self.repository.replace_subject_snapshot(connection, snapshot)
-        except BaseException:
-            save_japanese_overrides(self.overrides_path, previous)
-            raise
+        with self.repository.transaction() as connection:
+            save_japanese_overrides(self.overrides_path, overrides)
+            self.repository.replace_subject_snapshot(connection, snapshot)
 
     def _delete_subject(
         self,
@@ -289,43 +279,23 @@ class JapaneseAdjudicator:
             quarter: self.repository.get_sync_state(quarter) for quarter in affected
         }
         covers = CoverStore(self.workspace_directory / "covers", None)
-        try:
-            cover_batch = covers.quarantine_subject_covers({subject_id})
-        except OSError as error:
-            raise AssignmentError("Japanese-scope cover cleanup failed") from error
-        previous = load_japanese_overrides(self.overrides_path)
-        try:
+        with self.repository.transaction() as connection:
+            covers.remove_subject_cover(subject_id)
             save_japanese_overrides(self.overrides_path, overrides)
-            with self.repository.transaction() as connection:
-                self.repository.delete_subjects(connection, frozenset({subject_id}))
-                for quarter in affected:
-                    prior = prior_states[quarter]
-                    if prior is not None:
-                        self.repository.write_sync_state(
-                            connection,
-                            replace(
-                                prior,
-                                facts_status="incomplete",
-                                last_attempt_at=datetime.now(UTC)
-                                .isoformat()
-                                .replace("+00:00", "Z"),
-                            ),
-                        )
-        except BaseException:
-            try:
-                save_japanese_overrides(self.overrides_path, previous)
-                cover_batch.restore()
-            except OSError as error:
-                raise AssignmentError(
-                    "Japanese-scope change failed and recovery is incomplete"
-                ) from error
-            raise
-        try:
-            cover_batch.finalize()
-        except OSError as error:
-            raise AssignmentError(
-                "Japanese-scope cover cleanup finalization failed"
-            ) from error
+            self.repository.delete_subjects(connection, frozenset({subject_id}))
+            for quarter in affected:
+                prior = prior_states[quarter]
+                if prior is not None:
+                    self.repository.write_sync_state(
+                        connection,
+                        replace(
+                            prior,
+                            facts_status="incomplete",
+                            last_attempt_at=datetime.now(UTC)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                        ),
+                    )
 
 
 def _automatic_target(

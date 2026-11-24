@@ -31,7 +31,6 @@ from bgm_side_b.config import load_tag_rules
 from bgm_side_b.database import Database as ArchiveDatabase
 from bgm_side_b.database import DatabaseError
 from bgm_side_b.domain import JapaneseClassification, Quarter
-from bgm_side_b.overrides import load_quarter_overrides, save_quarter_overrides
 from bgm_side_b.progress import create_progress_reporter
 from bgm_side_b.release.unified_audit import UnifiedReleaseAuditor
 from bgm_side_b.release.workflow import (
@@ -51,6 +50,12 @@ from bgm_side_b.sync_output import (
     sync_review_lines,
     sync_scope_summary_lines,
     sync_summary_lines,
+)
+from bgm_side_b.write_recovery import (
+    RecoveryError,
+    pending_facts,
+    recover_facts,
+    writer_lock,
 )
 
 _monotonic_ns = time.monotonic_ns
@@ -187,6 +192,24 @@ def main(argv: list[str] | None = None) -> int:
     """Run the command-line interface and return a process exit code."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    root = find_project_root()
+    if args.command in {"sync", "assign", "classify", "build", "release"} and root:
+        workspace = root / "workspace"
+        database = ArchiveDatabase(workspace / "data" / "bangumi-side-b.sqlite3")
+        try:
+            with writer_lock(workspace):
+                if args.command == "release" and args.release_command == "publish":
+                    if pending_facts(database):
+                        raise RecoveryError("fact recovery pending; run build first")
+                else:
+                    recover_facts(database)
+                return _dispatch(args, parser)
+        except (RecoveryError, DatabaseError, OSError) as error:
+            parser.error(str(error))
+    return _dispatch(args, parser)
+
+
+def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if args.command is None:
         return 0
     if args.command == "audit":
@@ -259,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             repository = ArchiveSubjectRepository(database)
             if args.command == "review":
+                if pending_facts(database):
+                    parser.error("fact recovery pending; run build first")
                 if len(args.scope) not in {0, 2}:
                     parser.error("review accepts no scope or YEAR QUARTER_MONTH")
                 quarter = (
@@ -293,14 +318,6 @@ def main(argv: list[str] | None = None) -> int:
                     raise AssignmentError(
                         "cannot clear an assignment for an unknown subject"
                     )
-                assignments = load_quarter_overrides(
-                    root / "config" / "quarter-overrides.toml"
-                )
-                previous = dict(assignments)
-                assignments[args.subject_id] = override
-                save_quarter_overrides(
-                    root / "config" / "quarter-overrides.toml", assignments
-                )
                 client = BangumiApiClient(
                     timeout_seconds=settings.request_timeout_seconds,
                     max_retries=settings.max_retries,
@@ -322,11 +339,6 @@ def main(argv: list[str] | None = None) -> int:
                         reports_directory=root / "workspace" / "reports",
                         settings_path=root / "config" / "bangumi.toml",
                     ).import_single_subject(args.subject_id, override)
-                except BaseException:
-                    save_quarter_overrides(
-                        root / "config" / "quarter-overrides.toml", previous
-                    )
-                    raise
                 finally:
                     client.close()
                 snapshot = imported.snapshot
@@ -562,7 +574,7 @@ def main(argv: list[str] | None = None) -> int:
             except KeyboardInterrupt:
                 reporter.warning(
                     stage="interrupted",
-                    message="已中断｜上一版 dist 输出保持不变",
+                    message="已中断｜重新运行 build 以核对站点状态",
                 )
                 return 130
             except (DatabaseError, SiteBuildError, ValueError) as error:

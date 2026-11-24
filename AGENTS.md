@@ -5,7 +5,7 @@ Bangumi Side B（`MyKr-YSteinsK/bangumi-side-b`，CLI `bgmb`）是本地优先�
 ## 接手入口
 
 - 先读 [项目说明](docs/项目源文件/PROJECT_BRIEF.md) 和 [当前状态](docs/项目源文件/CURRENT_STATE.md)，再按任务查阅 [长期决定](docs/项目源文件/DECISIONS.md) 和 [运行手册](docs/项目源文件/RUNBOOK.md)。
-- [升级审查](docs/项目源文件/升级路线与技术审查.md) 收录待用户确认的方案。[历史摘要](docs/archive/README.md) 供追溯。
+- [升级审查](docs/项目源文件/升级路线与技术审查.md) 记录 D-025 已接受的升级方向、分批顺序和仍需验证的技术选择。[历史摘要](docs/archive/README.md) 供追溯。
 - 普通任务可以直接在 Codex 处理。正式 Plan 优先从本仓库获授权的 GitHub Issue 读取完整正文，沿用已有任务编号。涉及受限内容时走获授权的私有渠道。以当前任务授予的操作范围和验收为准。
 
 ## 数据与操作边界

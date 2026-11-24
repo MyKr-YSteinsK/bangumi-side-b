@@ -21,6 +21,8 @@ prepare 不执行 Bangumi sync，也不要求此时 `HEAD == origin/main`。
 索引、至少一个完整公开季度，以及数据库、workspace、报告、敏感文件、绝对本机路径和旧
 角色媒体安全规则。
 
+CLI 为 prepare 和 publish 各自持有整个工作区写锁，覆盖嵌套构建、完整校验和对应的 Git 操作。存在待恢复站点清单时，完整校验拒绝候选。恢复步骤见[运行手册](项目源文件/RUNBOOK.md)。
+
 成功后写入 `workspace/state/prepared-release.json`（schema 2），只绑定 source commit、
 程序版本、候选内容哈希、文件数、总字节数、公开季度和准备时的远端 `gh-pages` commit。
 候选哈希来自排序后的相对路径、文件 SHA-256 和大小；build state 只作为一致性校验，不能

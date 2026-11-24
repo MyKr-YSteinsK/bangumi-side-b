@@ -11,6 +11,7 @@ from pathlib import Path
 
 from bgm_side_b.admission import QuarterOverride
 from bgm_side_b.domain import Quarter
+from bgm_side_b.write_recovery import install_file
 
 
 def load_quarter_overrides(path: Path) -> dict[int, QuarterOverride]:
@@ -87,7 +88,7 @@ def save_quarter_overrides(
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as file:
             file.write("\n".join(lines))
-        Path(temporary).replace(path)
+        install_file(Path(temporary), path)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise

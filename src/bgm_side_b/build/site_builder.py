@@ -169,6 +169,11 @@ class UnifiedSiteBuilder:
                 changelog = load_changelog(self.changelog_path)
             except ChangelogError as error:
                 raise BuildError(str(error)) from error
+            writer = IncrementalSiteWriter(
+                self.site_directory,
+                self.workspace_directory,
+            )
+            writer.recover()
             previous = read_build_state(self.state_path)
             managed_quarters = tuple(
                 sorted(item.label for item in facts.state_by_quarter)
@@ -261,10 +266,6 @@ class UnifiedSiteBuilder:
                 current,
                 artifacts={} if previous is None else previous.artifacts,
                 artifact_sizes={} if previous is None else previous.artifact_sizes,
-            )
-            writer = IncrementalSiteWriter(
-                self.site_directory,
-                self.workspace_directory,
             )
             result = writer.apply(
                 plan,

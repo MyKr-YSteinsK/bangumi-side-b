@@ -18,8 +18,15 @@ from pathlib import Path, PurePosixPath
 
 from bgm_side_b import __version__
 from bgm_side_b.archive_config import load_archive_sync_settings
+from bgm_side_b.build.errors import BuildError
 from bgm_side_b.build.recovery import pending_patches
-from bgm_side_b.build.site_paths import ARCHIVE_INDEX, CORE_SITE_PATHS, quarter_paths
+from bgm_side_b.build.site_paths import (
+    ARCHIVE_INDEX,
+    CORE_SITE_PATHS,
+    SHELL_MANIFEST,
+    quarter_paths,
+)
+from bgm_side_b.build.site_validation import shell_package_paths
 from bgm_side_b.config import load_tag_rules
 from bgm_side_b.database import Database, DatabaseError
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
@@ -27,7 +34,6 @@ from bgm_side_b.release.site_candidate import (
     CandidateIdentity,
     SiteCandidate,
     SiteCandidateError,
-    validate_build_state,
     validate_site,
 )
 from bgm_side_b.release.site_publish import (
@@ -186,7 +192,11 @@ def _compute_local_status(
         sqlite_status = _quick_sqlite_status(root)
     if pending_facts(Database(root / "workspace" / "data" / "bangumi-side-b.sqlite3")):
         sqlite_status = "recovery pending"
-    candidate, site_status = _quick_site_status(root, head)
+    candidate, site_status = (
+        _site_status(root, head)
+        if audit is not None
+        else _quick_site_status(root, head)
+    )
     prepared_status, prepared_source = _prepared_local_status(root, head, candidate)
     try:
         package = distribution_version("bgm-side-b")
@@ -349,18 +359,22 @@ def _validated_candidate(root: Path) -> SiteCandidate:
     if head is None:
         raise WorkflowError("无法确认 HEAD")
     try:
-        validate_build_state(root / "dist" / "site", root / "workspace")
-        return validate_site(root / "dist" / "site", source_commit=head)
+        return validate_site(
+            root / "dist/site", source_commit=head, workspace=root / "workspace"
+        )
     except SiteCandidateError as error:
         raise WorkflowError(str(error)) from error
 
 
 def _site_status(root: Path, head: str | None) -> tuple[SiteCandidate | None, str]:
+    if pending_patches(root / "workspace"):
+        return None, "recovery pending"
     if head is None or not (root / "dist" / "site").is_dir():
         return None, "missing"
     try:
-        validate_build_state(root / "dist" / "site", root / "workspace")
-        candidate = validate_site(root / "dist" / "site", source_commit=head)
+        candidate = validate_site(
+            root / "dist/site", source_commit=head, workspace=root / "workspace"
+        )
     except SiteCandidateError:
         return None, "stale"
     return candidate, "valid"
@@ -409,12 +423,16 @@ def _quick_site_status(
                 and sizes[relative] >= 0
             )
         }
+        shell = json.loads((site / SHELL_MANIFEST).read_text("utf-8"))
+        if not isinstance(shell, dict):
+            raise ValueError
+        required = set(CORE_SITE_PATHS).union(shell_package_paths(shell))
         if len(normalized) != len(artifacts) or any(
             relative not in normalized
             or not (site / PurePosixPath(relative)).is_file()
             or (site / PurePosixPath(relative)).stat().st_size
             != normalized[relative][1]
-            for relative in CORE_SITE_PATHS
+            for relative in required
         ):
             raise ValueError
         archive = json.loads(
@@ -458,7 +476,7 @@ def _quick_site_status(
             quarters,
             tuple(sorted(normalized)),
         )
-    except (KeyError, OSError, UnicodeError, json.JSONDecodeError, ValueError):
+    except (BuildError, KeyError, OSError, ValueError):
         return None, "stale"
     return candidate, "valid"
 

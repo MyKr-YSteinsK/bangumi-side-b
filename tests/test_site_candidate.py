@@ -13,31 +13,13 @@ from bgm_side_b.release.site_candidate import (
     validate_build_state,
     validate_site,
 )
+from tests.test_site_builder import _build_fixture
 
 
-def _site(root: Path, *, quarter: str = "2026-07") -> Path:
-    required = (
-        "index.html",
-        "archive/index.html",
-        "settings/index.html",
-        "assets/app.css",
-        "assets/app.js",
-        "assets/pwa.js",
-        "manifest.webmanifest",
-        "sw.js",
-        "data/archive-index.json",
-        "data/pwa-shell.json",
-        f"{quarter}/index.html",
-        f"data/quarters/{quarter}.json",
-        f"data/offline/{quarter}.json",
-    )
-    for relative in required:
-        path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if relative == "data/archive-index.json":
-            path.write_text(json.dumps({"quarters": [{"quarter": quarter}]}), "utf-8")
-        else:
-            path.write_text(relative, "utf-8")
+def _site(root: Path) -> Path:
+    builder, _ = _build_fixture(root.parent / "fixture")
+    builder.site_directory = root
+    builder.build()
     return root
 
 
@@ -50,8 +32,8 @@ def test_identity_is_deterministic_and_quarter_scope_is_data_driven(
     second = validate_site(root, source_commit="a" * 40)
 
     assert first.identity == second.identity
-    assert first.public_quarters == ("2026-07",)
-    assert first.identity.artifact_count == 13
+    assert first.public_quarters == ("2026-04", "2026-07")
+    assert first.identity.artifact_count == sum(p.is_file() for p in root.rglob("*"))
 
 
 def test_safety_scan_rejects_databases_and_absolute_paths_but_not_api_urls(
@@ -63,11 +45,10 @@ def test_safety_scan_rejects_databases_and_absolute_paths_but_not_api_urls(
         validate_site(root)
 
     (root / "data" / "extra.db").unlink()
-    (root / "assets" / "app.js").write_text(
-        'fetch("https://bgm.tv/api")', "utf-8"
-    )
-    assert validate_site(root).public_quarters == ("2026-07",)
-    (root / "assets" / "app.js").write_text('const debug = "C:\\\\private"', "utf-8")
+    quarter_bytes = (root / "data/quarters/2026-07.json").read_bytes()
+    assert b"https://bgm.tv/subject/" in quarter_bytes
+    assert validate_site(root).public_quarters == ("2026-04", "2026-07")
+    (root / "index.html").write_text(r"C:\fixture", "utf-8")
     with pytest.raises(SiteCandidateError, match="absolute Windows"):
         validate_site(root)
 

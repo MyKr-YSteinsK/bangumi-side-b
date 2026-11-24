@@ -1043,7 +1043,7 @@ def test_saved_view_mode_applies_before_delayed_app_bundle(
         f"localStorage.setItem('bsb-browse-view-mode', '{mode}')"
     )
     page.route(
-        "**/assets/app.js*",
+        "**/assets/app.*.js",
         lambda route: route.fulfill(
             status=200,
             content_type="application/javascript",

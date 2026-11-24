@@ -4,9 +4,9 @@
 
   const scriptUrl = document.currentScript?.src || "";
   const siteRoot = new URL("../", scriptUrl || location.href);
-  const CONTENT_CACHE = "bsb-content-v1";
-  const RUNTIME_CACHE = "bsb-runtime-v1";
-  const META_CACHE = "bsb-meta-v1";
+  const CONTENT_CACHE = "bsb-content-v2";
+  const RUNTIME_CACHE = "bsb-runtime-v2";
+  const META_CACHE = "bsb-meta-v2";
   const CONTENT_PATH = "__bsb_content__/";
   const META_PATH = "__bsb_meta__/";
   const QUEUE_META = "queue.json";
@@ -17,13 +17,16 @@
   const FALLBACK_QUEUE_LOCK_LEASE = 30000;
   const QUARTER_MUTATION_LOCK_PREFIX = "bsb-offline-quarter-";
   const CONTENT_MAINTENANCE_LOCK_NAME = "bsb-pwa-content-maintenance";
-  const STATE_CHANNEL_NAME = "bsb-pwa-state";
+  const STATE_CHANNEL_NAME = "bsb-pwa-state-v2";
+  const OFFLINE_SCHEMA = 2;
+  const CORE_ASSET = /^assets\/(app|pwa)\.([a-f0-9]{64})\.(css|js)$/;
+  const CORE_NAMES = ["app.css", "app.js", "pwa.js"];
   const HEX_64 = /^[a-f0-9]{64}$/;
   const QUARTER = /^\d{4}-(?:01|04|07|10)$/;
   const RETRY_DELAYS = Object.freeze([1000, 3000, 10000]);
   const MAX_CONCURRENT_RESOURCES = 3;
   const MAX_CONCURRENT_MANIFEST_CHECKS = 3;
-  const AUTO_MAINTENANCE_SESSION_KEY = "bsb-offline-auto-maintenance";
+  const AUTO_MAINTENANCE_SESSION_KEY = "bsb-offline-auto-maintenance-v2";
   const listeners = new Set();
   let queueRunner = null;
   let installPrompt = null;
@@ -68,6 +71,7 @@
       unsupported: "unavailable",
       registering: "registering",
       ready: "ready",
+      "upgrade-required": "refresh required",
       "registration-failed": "registration failed",
     }[capabilityState] || capabilityState;
   }
@@ -224,6 +228,7 @@
     if (
       !value
       || typeof value !== "object"
+      || value.schema !== OFFLINE_SCHEMA
       || value.quarter !== expectedQuarter
       || typeof value.revision !== "string"
       || !value.revision
@@ -244,7 +249,18 @@
       seen.add(resource.url);
       return resource;
     });
+    const core = resources.filter(({ url }) => url.startsWith("assets/"));
+    if (core.length !== CORE_NAMES.length || core.some((resource, index) => {
+      const match = CORE_ASSET.exec(resource.url);
+      return !match || `${match[1]}.${match[3]}` !== CORE_NAMES[index]
+        || match[2] !== resource.content_hash;
+    })) throw new Error("季度公共资源无效");
+    const data = resources.find(({ url }) => url === `data/quarters/${expectedQuarter}.json`);
+    if (!seen.has(`${expectedQuarter}/index.html`) || data?.content_hash !== value.data_revision) {
+      throw new Error("季度页面或数据摘要缺失");
+    }
     return {
+      schema: OFFLINE_SCHEMA,
       quarter: expectedQuarter,
       revision: value.revision,
       data_revision: value.data_revision,
@@ -252,19 +268,9 @@
     };
   }
 
-  function effectiveDataRevision(manifest) {
-    if (HEX_64.test(manifest?.data_revision || "")) return manifest.data_revision;
-    const quarter = manifest?.quarter;
-    const resources = Array.isArray(manifest?.resources) ? manifest.resources : [];
-    const resource = resources.find(
-      (item) => item?.url === `data/quarters/${quarter}.json`,
-    );
-    return HEX_64.test(resource?.content_hash || "") ? resource.content_hash : null;
-  }
-
   async function fetchQuarterManifest(quarter) {
     if (!QUARTER.test(quarter)) throw new Error("季度编号无效");
-    const response = await fetch(absolute(`data/offline/${quarter}.json`), {
+    const response = await fetch(absolute(`data/offline-v2/${quarter}.json`), {
       cache: "no-store",
       credentials: "same-origin",
     });
@@ -870,7 +876,7 @@
               return {
                 state: {
                   ...current,
-                  status: "INCOMPLETE",
+                  status: current.active ? "UPDATE_INCOMPLETE" : "INCOMPLETE",
                   staging: {
                     ...current.staging,
                     verified_hashes: [...nextVerified].sort(),
@@ -954,7 +960,7 @@
         return {
           state: {
             ...current,
-            status: "INCOMPLETE",
+            status: current.active ? "UPDATE_INCOMPLETE" : "INCOMPLETE",
             staging: { ...manifest, verified_hashes: [...verified].sort() },
             error: null,
           },
@@ -997,24 +1003,20 @@
       return state;
     } catch (error) {
       if (error instanceof StaleQueueError) throw error;
-      await updateQuarterDownloadState(quarter, generation, (current) => ({
-        state: {
-          ...current,
-          status: current.auto_maintenance === "package"
-            && effectiveDataRevision(current.active) === manifest.data_revision
-            ? "COMPLETE"
-            : "INCOMPLETE",
-          staging: current.auto_maintenance === "package"
-            && effectiveDataRevision(current.active) === manifest.data_revision
-            ? null
-            : current.staging,
-          auto_maintenance: current.auto_maintenance === "package"
-            && effectiveDataRevision(current.active) === manifest.data_revision
-            ? "package"
-            : null,
-          error: shortError(error),
-        },
-      }));
+      await updateQuarterDownloadState(quarter, generation, (current) => {
+        const keepComplete = current.auto_maintenance === "package"
+          && current.active?.data_revision === manifest.data_revision;
+        return {
+          state: {
+            ...current,
+            status: keepComplete ? "COMPLETE"
+              : current.active ? "UPDATE_INCOMPLETE" : "INCOMPLETE",
+            staging: keepComplete ? null : current.staging,
+            auto_maintenance: keepComplete ? "package" : null,
+            error: shortError(error),
+          },
+        };
+      });
       throw error;
     }
   }
@@ -1396,21 +1398,9 @@
               || latest.active.revision !== snapshot.active.revision
               || latest.staging
             ) return null;
-            const activeDataRevision = effectiveDataRevision(latest.active);
-            const hasDataUpdate = activeDataRevision !== current.data_revision;
-            const needsMigration = (
-              latest.active.data_revision !== current.data_revision
-              && activeDataRevision === current.data_revision
-            );
-            if (hasDataUpdate) {
+            if (latest.active.data_revision !== current.data_revision) {
               await writeQuarterStateUnlocked({ ...latest, status: "UPDATE_AVAILABLE" });
               return "DATA_UPDATE";
-            }
-            if (needsMigration) {
-              await writeQuarterStateUnlocked({
-                ...latest,
-                active: { ...latest.active, data_revision: current.data_revision },
-              });
             }
             if (current.revision === latest.active.revision) return "NONE";
             return "PACKAGE_MAINTENANCE";
@@ -1573,7 +1563,7 @@
     registrationError = null;
     notify({ areas: ["app", "quarter", "queue", "selector"], reason: "capability" });
     try {
-      const workerUrl = new URL("../sw.js", scriptUrl);
+      const workerUrl = new URL("../sw-v2.js", scriptUrl);
       const scopeUrl = new URL("../", scriptUrl);
       const registration = await navigator.serviceWorker.register(workerUrl, {
         scope: scopeUrl.pathname,
@@ -1582,6 +1572,12 @@
       watchRegistration(registration);
       serviceWorkerRegistration = await waitForActiveRegistration(registration);
       if (!serviceWorkerRegistration.active) throw new Error("Service Worker inactive");
+      if (serviceWorkerRegistration.active.scriptURL !== workerUrl.href) {
+        capabilityState = "upgrade-required";
+        notify({ areas: ["app", "quarter", "queue", "selector"], reason: "capability" });
+        await parkQueueForServiceWorker();
+        return serviceWorkerRegistration;
+      }
       capabilityState = "ready";
       registrationError = null;
       notify({ areas: ["app", "quarter", "queue", "selector"], reason: "capability" });
@@ -2364,6 +2360,10 @@
           window.location.reload();
         }
       } else {
+        if (capabilityState === "upgrade-required") {
+          registrationPromise = null;
+          void getOrStartServiceWorkerRegistration().catch(() => null);
+        }
         notify({ areas: ["app"], reason: "controller-change" });
         void checkQuarterFreshness();
       }

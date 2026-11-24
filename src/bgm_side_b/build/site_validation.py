@@ -10,6 +10,7 @@ from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 
 from bgm_side_b.build.cover_preview import (
+    ORIGINAL_COVER_PATH,
     PREVIEW_PATH,
     cover_preview_path,
     validate_preview_image,
@@ -19,11 +20,16 @@ from bgm_side_b.build.site_manifests import offline_revision, shell_revision
 from bgm_side_b.build.site_paths import (
     APP_ASSETS,
     ARCHIVE_INDEX,
+    OFFLINE_DIRECTORY,
+    OFFLINE_SCHEMA,
     REQUIRED_BUILD_PATHS,
+    SERVICE_WORKER,
     SHELL_MANIFEST,
-    SHELL_RESOURCE_PATHS,
+    SHELL_PAGES,
     WEB_APP_MANIFEST,
+    app_asset_identity,
     quarter_paths,
+    shell_resource_paths,
 )
 from bgm_side_b.build.site_projection import ArchiveIndexProjection, QuarterProjection
 from bgm_side_b.build.writer import ArtifactPlan
@@ -31,6 +37,7 @@ from bgm_side_b.build.writer import ArtifactPlan
 _HREF_RE = re.compile(r'(?:href|src)="([^"]+)"')
 _HEX_64 = re.compile(r"[0-9a-f]{64}")
 _QUARTER_LABEL = re.compile(r"[0-9]{4}-(?:01|04|07|10)")
+ArtifactIdentity = tuple[str, int]
 
 
 def _validate_site_paths(paths: Collection[str]) -> None:
@@ -80,7 +87,8 @@ def validate_full_site(
     _validate_site_paths(mapping)
     archive = _load_json(mapping, ARCHIVE_INDEX)
     _validate_web_app_manifest(_load_json(mapping, WEB_APP_MANIFEST))
-    _validate_pwa_shell(mapping, None, None)
+    read, identity = _artifact_access(mapping)
+    validate_shell_package(read, identity)
     quarter_labels = {
         item["quarter"]
         for item in archive.get("quarters", [])
@@ -95,8 +103,8 @@ def validate_full_site(
                 raise BuildError("quarter data is not listed in archive index")
             _validate_quarter_items(payload, mapping.__contains__, excluded_subject_ids)
     for path in mapping:
-        if path.startswith("data/offline/") and path.endswith(".json"):
-            _validate_offline_manifest(path, mapping, None, None)
+        if path.startswith(f"{OFFLINE_DIRECTORY}/") and path.endswith(".json"):
+            validate_quarter_package(Path(path).stem, read, identity)
     for path, content in mapping.items():
         if path.endswith(".html"):
             _validate_html_links(path, content, mapping.__contains__)
@@ -112,6 +120,8 @@ def validate_dirty_artifacts(
 
     def has_path(relative: str) -> bool:
         return relative in plan.specs or (site / relative).is_file()
+
+    read, identity = _artifact_access(mapping, plan, site)
 
     for path, content in mapping.items():
         spec = plan.specs.get(path)
@@ -138,12 +148,12 @@ def validate_dirty_artifacts(
             _validate_year_catalog(path, _load_json(mapping, path), has_path)
         if path == ARCHIVE_INDEX:
             _validate_archive_index(_load_json(mapping, path), has_path)
-        if path.startswith("data/offline/") and path.endswith(".json"):
-            _validate_offline_manifest(path, mapping, plan, site)
+        if path.startswith(f"{OFFLINE_DIRECTORY}/") and path.endswith(".json"):
+            validate_quarter_package(Path(path).stem, read, identity)
         if path == WEB_APP_MANIFEST:
             _validate_web_app_manifest(_load_json(mapping, path))
         if path == SHELL_MANIFEST:
-            _validate_pwa_shell(mapping, plan, site)
+            validate_shell_package(read, identity)
 
 
 def validate_scoped_site(
@@ -281,51 +291,92 @@ def quarter_cover_dependencies(
     return required
 
 
-def _validate_offline_manifest(
-    path: str,
-    mapping: Mapping[str, bytes],
-    plan: ArtifactPlan | None,
-    site: Path | None,
-) -> None:
-    payload = _load_json(mapping, path)
-    label = payload.get("quarter")
-    if not isinstance(label, str) or _QUARTER_LABEL.fullmatch(label) is None:
+def _required_json(path: str, read: Callable[[str], bytes]) -> dict[str, object]:
+    return _load_json({path: read(path)}, path)
+
+
+def _require_page_assets(path: str, page: bytes, app_assets: tuple[str, ...]) -> str:
+    try:
+        text = page.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise BuildError(f"generated HTML is not UTF-8: {path}") from error
+    prefix = "../" if "/" in path else ""
+    observed = tuple(
+        ref
+        for ref in _HREF_RE.findall(text)
+        if ref.startswith(("assets/", "../assets/"))
+    )
+    if observed != tuple(prefix + relative for relative in app_assets):
+        raise BuildError(f"page asset binding is invalid: {path}")
+    return text
+
+
+def _core_assets(resources: list[dict]) -> tuple[str, ...]:
+    paths = tuple(
+        entry["url"] for entry in resources if entry["url"].startswith("assets/")
+    )
+    identities = tuple(app_asset_identity(path) for path in paths)
+    if (
+        tuple(identity[0] for identity in identities if identity is not None)
+        != APP_ASSETS
+    ):
+        raise BuildError("manifest core assets are invalid")
+    if len(paths) != len(APP_ASSETS):
+        raise BuildError("manifest core assets are invalid")
+    return paths
+
+
+def validate_quarter_package(
+    label: str,
+    read: Callable[[str], bytes],
+    identity: Callable[[str], ArtifactIdentity | None],
+) -> tuple[str, ...]:
+    """Validate a single package and return its dependency paths, including itself."""
+    if _QUARTER_LABEL.fullmatch(label) is None:
         raise BuildError("offline manifest quarter is invalid")
     page_path, data_path, manifest_path = quarter_paths(label)
-    if path != manifest_path:
+    payload = _required_json(manifest_path, read)
+    if payload.get("schema") != OFFLINE_SCHEMA:
+        raise BuildError(f"offline manifest protocol is unsupported: {label}")
+    if payload.get("quarter") != label:
         raise BuildError("offline manifest quarter is invalid")
     data_revision = payload.get("data_revision")
     if not isinstance(data_revision, str) or _HEX_64.fullmatch(data_revision) is None:
         raise BuildError("offline manifest data revision is invalid")
-    data = mapping.get(data_path)
-    if data is None:
-        if site is None or not (site / data_path).is_file():
-            raise BuildError(f"offline manifest data payload is missing: {label}")
-        try:
-            data = (site / data_path).read_bytes()
-        except OSError as error:
-            raise BuildError(
-                f"offline manifest data payload is unreadable: {label}"
-            ) from error
+    data = read(data_path)
     if hashlib.sha256(data).hexdigest() != data_revision:
         raise BuildError(f"offline manifest data revision is invalid: {label}")
-    page = mapping.get(page_path)
-    if page is None and site is not None:
-        try:
-            page = (site / page_path).read_bytes()
-        except OSError as error:
-            raise BuildError("offline manifest page is unavailable") from error
-    if not page:
-        raise BuildError("offline page dependency is missing")
     quarter = _load_json({data_path: data}, data_path)
-    required = {page_path, data_path, *APP_ASSETS}
-    required.update(quarter_cover_dependencies(label, page, quarter))
+    if quarter.get("quarter") != label:
+        raise BuildError(f"quarter payload label is invalid: {data_path}")
+    page = read(page_path)
     resources = _manifest_entries(payload.get("resources"), "offline")
-    if not required.issubset(entry["url"] for entry in resources):
-        raise BuildError("offline manifest omits a page or cover dependency")
-    _validate_resource_metadata(resources, mapping, plan, site, name="offline")
+    app_assets = _core_assets(resources)
+    text = _require_page_assets(page_path, page, app_assets)
+    main = re.search(r"<main\b[^>]*>", text)
+    data_pin = f'data-data-url="../{data_path}?v={data_revision}"'
+    if not main or f'data-quarter="{label}"' not in main[0] or data_pin not in main[0]:
+        raise BuildError(f"offline page data binding is invalid: {label}")
+    required = {page_path, data_path, *app_assets}
+    required.update(quarter_cover_dependencies(label, page, quarter))
+    resource_map = {entry["url"]: entry for entry in resources}
+    if required != resource_map.keys():
+        raise BuildError(
+            "offline manifest omits a page or cover dependency or adds unrelated paths"
+        )
+    for item in quarter_items(quarter):
+        cover = item.get("cover_url")
+        if isinstance(cover, str):
+            relative, _, pin = cover.partition("?v=")
+            if (
+                not ORIGINAL_COVER_PATH.fullmatch(relative)
+                or resource_map[relative].get("content_hash") != pin
+            ):
+                raise BuildError(f"offline cover binding is invalid: {relative}")
+    _validate_resource_metadata(resources, identity, name="offline")
     if payload.get("revision") != offline_revision(label, data_revision, resources):
         raise BuildError(f"offline manifest revision is invalid: {label}")
+    return (manifest_path, *resource_map)
 
 
 def _validate_web_app_manifest(payload: Mapping[str, object]) -> None:
@@ -349,18 +400,35 @@ def _validate_web_app_manifest(payload: Mapping[str, object]) -> None:
             raise BuildError("web app manifest icon URL is unsafe")
 
 
-def _validate_pwa_shell(
-    mapping: Mapping[str, bytes], plan: ArtifactPlan | None, site: Path | None
-) -> None:
-    payload = _load_json(mapping, SHELL_MANIFEST)
-    if payload.get("schema") != 1:
-        raise BuildError("PWA shell manifest is invalid")
+def shell_package_paths(payload: Mapping[str, object]) -> tuple[str, ...]:
+    """Read the expected physical shell paths without inspecting resource bytes."""
+    if payload.get("schema") != OFFLINE_SCHEMA:
+        raise BuildError("PWA shell manifest protocol is unsupported")
     resources = _manifest_entries(payload.get("resources"), "PWA shell")
-    if tuple(entry["url"] for entry in resources) != SHELL_RESOURCE_PATHS:
+    paths = shell_resource_paths(_core_assets(resources))
+    if tuple(entry["url"] for entry in resources) != paths:
         raise BuildError("PWA shell resources are invalid")
-    if payload.get("revision") != shell_revision(resources):
+    return paths
+
+
+def validate_shell_package(
+    read: Callable[[str], bytes],
+    identity: Callable[[str], ArtifactIdentity | None],
+) -> tuple[str, ...]:
+    payload = _required_json(SHELL_MANIFEST, read)
+    paths = shell_package_paths(payload)
+    resources = _manifest_entries(payload["resources"], "PWA shell")
+    revision = shell_revision(resources)
+    if payload.get("revision") != revision:
         raise BuildError("PWA shell revision is invalid")
-    _validate_resource_metadata(resources, mapping, plan, site, name="PWA shell")
+    _validate_resource_metadata(resources, identity, name="PWA shell")
+    app_assets = _core_assets(resources)
+    for path in SHELL_PAGES:
+        _require_page_assets(path, read(path), app_assets)
+    sw = read(SERVICE_WORKER)
+    if f'const BSB_SHELL_REVISION = "{revision}";'.encode("ascii") not in sw:
+        raise BuildError("service worker shell revision is invalid")
+    return paths
 
 
 def _manifest_entries(value: object, name: str) -> list[dict]:
@@ -385,38 +453,56 @@ def _manifest_entries(value: object, name: str) -> list[dict]:
 
 def _validate_resource_metadata(
     resources: list[dict],
-    mapping: Mapping[str, bytes],
-    plan: ArtifactPlan | None,
-    site: Path | None,
+    identity: Callable[[str], ArtifactIdentity | None],
     *,
     name: str,
 ) -> None:
     for entry in resources:
         relative = entry["url"]
-        expected_hash = expected_size = None
-        if relative in mapping:
-            content = mapping[relative]
-            expected_hash, expected_size = (
-                hashlib.sha256(content).hexdigest(),
-                len(content),
-            )
-        else:
-            spec = plan.specs.get(relative) if plan is not None else None
-            if spec is not None:
-                expected_hash, expected_size = spec.content_hash, spec.size_bytes
-            elif site is None or not (site / relative).is_file():
-                raise BuildError(f"{name} resource is missing: {relative}")
+        actual = identity(relative)
+        if actual is None:
+            raise BuildError(f"{name} resource is missing: {relative}")
+        expected_hash, expected_size = actual
         digest = entry.get("content_hash")
         size = entry.get("size_bytes")
+        path_identity = app_asset_identity(relative)
         if (
             not isinstance(digest, str)
             or _HEX_64.fullmatch(digest) is None
-            or (expected_hash is not None and digest != expected_hash)
+            or digest != expected_hash
+            or (path_identity is not None and path_identity[1] != digest)
         ):
             raise BuildError(f"{name} resource hash is invalid: {relative}")
-        if (
-            type(size) is not int
-            or size < 0
-            or (expected_size is not None and size != expected_size)
-        ):
+        if type(size) is not int or size < 0 or size != expected_size:
             raise BuildError(f"{name} resource size is invalid: {relative}")
+
+
+def _artifact_access(
+    mapping: Mapping[str, bytes],
+    plan: ArtifactPlan | None = None,
+    site: Path | None = None,
+) -> tuple[
+    Callable[[str], bytes],
+    Callable[[str], ArtifactIdentity | None],
+]:
+    def read(relative: str) -> bytes:
+        content = mapping.get(relative)
+        if content is not None:
+            return content
+        if site is None:
+            raise BuildError(f"required artifact is missing: {relative}")
+        try:
+            return (site / relative).read_bytes()
+        except OSError as error:
+            raise BuildError(f"required artifact is unavailable: {relative}") from error
+
+    def identity(relative: str) -> ArtifactIdentity | None:
+        content = mapping.get(relative)
+        if content is not None:
+            return hashlib.sha256(content).hexdigest(), len(content)
+        spec = plan.specs.get(relative) if plan is not None else None
+        if spec and spec.content_hash is not None and spec.size_bytes is not None:
+            return spec.content_hash, spec.size_bytes
+        return None
+
+    return read, identity

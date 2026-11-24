@@ -23,16 +23,27 @@ The default precache is the minimum application shell:
 - shared CSS and JavaScript;
 - the web app manifest and required icons.
 
-The builder records those resources in order in `data/pwa-shell.json`. The
+The builder records those resources in order in `data/pwa-shell-v2.json`. The
 shell revision covers their paths, hashes and sizes. The builder injects that
-revision into `sw.js` so the worker can check the matching shell.
+revision into `sw-v2.js` so the worker can check the matching shell.
+CSS and both scripts have their full SHA-256 in the physical filename.
+Retained-quarter HTML and manifests can use older filenames from the same
+protocol while the current shell uses the latest files.
 While browsing online, the runtime cache may retain visited quarter
 pages, quarter JSON, year catalogs, covers, and the archive index. Online use is
 available immediately and is never gated on downloading a complete archive.
 
+The v2 page waits for an active `sw-v2.js` before allowing guaranteed offline
+downloads. On the first upgrade from v1, open Settings online, choose the
+available application refresh, then download the desired quarters. The new
+worker and page use `bsb-meta-v2`, `bsb-content-v2`, and `bsb-runtime-v2`.
+They leave the old caches available for user-managed cleanup. A v1 package
+will appear as undownloaded in v2. The v2 manifest describes the resources
+for the v2 paths and has `schema: 2`.
+
 ## Quarter offline unit
 
-`data/offline/YYYY-MM.json` is the only formal resource manifest for one offline
+`data/offline-v2/YYYY-MM.json` is the only formal resource manifest for one offline
 quarter. A quarter download contains the quarter page, quarter detail JSON,
 quarter-owned covers, shared shell dependencies, and the manifest itself. Movie
 and continuing records are included whenever they are present in that quarter's
@@ -204,7 +215,9 @@ successful online view still does not count as a complete offline download.
 Use Settings' explicit quarter download/update action when the offline package
 itself should be replaced.
 
-The selected online quarter pin follows the same tab across same-origin
-non-quarter pages, so returning to that quarter can keep the selected
-generation. Navigating to a different quarter clears the previous quarter pin;
+The selected online quarter pin is keyed by the verified page hash in the
+bounded runtime cache. Two pages can have the same data revision and distinct
+asset sets. The pin follows the same tab across same-origin non-quarter pages,
+so returning to that quarter can keep the selected generation. Navigating to
+a different quarter clears the previous quarter pin;
 each tab keeps its own pin, and online pins never replace offline active data.

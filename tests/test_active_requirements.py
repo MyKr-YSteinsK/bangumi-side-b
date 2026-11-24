@@ -188,7 +188,7 @@ def test_pwa_contract_replaces_the_legacy_snapshot_product() -> None:
         assert stale not in contract
         assert stale not in agent_contract
     for required in (
-        "data/offline/YYYY-MM.json",
+        "data/offline-v2/YYYY-MM.json",
         "quarter",
         "runtime cache",
         "Background Fetch",

@@ -253,7 +253,7 @@ def test_cover_previews_include_originals_repair_and_reuse_without_reads(
     builder, _ = _build_preview_fixture(tmp_path)
     builder.build()
     site = tmp_path / "dist/site"
-    manifest = json.loads((site / "data/offline/2026-07.json").read_text("utf-8"))
+    manifest = json.loads((site / "data/offline-v2/2026-07.json").read_text("utf-8"))
     originals = [r for r in manifest["resources"] if re.fullmatch(
         r"covers/[0-9]+\.webp", r["url"]
     )]
@@ -309,7 +309,7 @@ def test_preview_rule_changes_package_not_data_and_keeps_retained_closure(
     builder, database = _build_preview_fixture(tmp_path)
     builder.build()
     site = tmp_path / "dist/site"
-    old_package = json.loads((site / "data/offline/2026-07.json").read_text("utf-8"))
+    old_package = json.loads((site / "data/offline-v2/2026-07.json").read_text("utf-8"))
     old_april = (site / "2026-04/index.html").read_bytes()
     old_april_data = (site / "data/quarters/2026-04.json").read_bytes()
     old_data = (site / "data/quarters/2026-07.json").read_bytes()
@@ -325,7 +325,7 @@ def test_preview_rule_changes_package_not_data_and_keeps_retained_closure(
         )
     monkeypatch.setitem(cover_preview.COVER_PREVIEW_RULE, "quality", 79)
     run = builder.build()
-    package = json.loads((site / "data/offline/2026-07.json").read_text("utf-8"))
+    package = json.loads((site / "data/offline-v2/2026-07.json").read_text("utf-8"))
     new_preview = cover_preview.cover_preview_path(original_url)
     assert package["data_revision"] == old_package["data_revision"]
     assert package["revision"] != old_package["revision"]
@@ -336,7 +336,7 @@ def test_preview_rule_changes_package_not_data_and_keeps_retained_closure(
     assert json.loads(run.report_path.read_text("utf-8"))["retained_quarters"] == [
         "2026-04"
     ]
-    retained = json.loads((site / "data/offline/2026-04.json").read_text("utf-8"))
+    retained = json.loads((site / "data/offline-v2/2026-04.json").read_text("utf-8"))
     for resource in retained["resources"]:
         body = (site / resource["url"]).read_bytes()
         assert hashlib.sha256(body).hexdigest() == resource["content_hash"]
@@ -348,7 +348,7 @@ def test_preview_rule_changes_package_not_data_and_keeps_retained_closure(
     assert "2026-04/index.html" in recovered.patch.written
     assert (site / "data/quarters/2026-04.json").read_bytes() == old_april_data
     assert new_preview.encode("ascii") in (site / "2026-04/index.html").read_bytes()
-    refreshed = json.loads((site / "data/offline/2026-04.json").read_bytes())
+    refreshed = json.loads((site / "data/offline-v2/2026-04.json").read_bytes())
     assert refreshed["data_revision"] == retained["data_revision"]
     assert refreshed["revision"] != retained["revision"]
     assert new_preview in {entry["url"] for entry in refreshed["resources"]}
@@ -412,7 +412,9 @@ def test_retained_cover_collision_fails_before_site_mutation(tmp_path: Path) -> 
         repository.write_sync_state(connection, QuarterSyncState(
             Quarter(2026, 4), "incomplete", "complete", 1, 0, now, now,
         ))
-    with pytest.raises(BuildError, match="retained cover conflicts"):
+    with pytest.raises(
+        BuildError, match="retained quarter.*resource conflicts.*covers/101"
+    ):
         builder.build()
     assert builder.state_path.read_bytes() == state
     assert previous == {p.relative_to(site): p.read_bytes()
@@ -428,7 +430,7 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert (site / "2026-07" / "index.html").is_file()
     assert (site / "archive" / "index.html").is_file()
     assert (site / "settings" / "index.html").is_file()
-    assert (site / "data" / "offline" / "2026-07.json").is_file()
+    assert (site / "data" / "offline-v2" / "2026-07.json").is_file()
     assert not (site / "subjects").exists()
     for page in (
         "index.html",
@@ -497,7 +499,7 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert 'aria-label="结果视图"' in july_html
     assert 'data-view-mode="grid"' in archive_html
     assert 'aria-label="结果视图"' in archive_html
-    css_files = list((site / "assets").glob("app.css"))
+    css_files = list((site / "assets").glob("app.*.css"))
     assert css_files
     css = css_files[0].read_text("utf-8")
     assert "@view-transition" not in css
@@ -506,7 +508,7 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
         "101.webp"
     ]
     offline = json.loads(
-        (site / "data" / "offline" / "2026-07.json").read_text("utf-8")
+        (site / "data" / "offline-v2" / "2026-07.json").read_text("utf-8")
     )
     cover_resource = next(
         item for item in offline["resources"] if item["url"] == "covers/101.webp"
@@ -702,14 +704,13 @@ def test_unified_pwa_shell_is_complete_stable_and_prefix_safe(tmp_path: Path) ->
     builder.build()
     site = tmp_path / "dist" / "site"
     expected = {
-        "sw.js",
+        "sw-v2.js",
         "manifest.webmanifest",
-        "assets/pwa.js",
         "icons/pwa-192.png",
         "icons/pwa-512.png",
         "icons/pwa-maskable-512.png",
         "icons/favicon.svg",
-        "data/pwa-shell.json",
+        "data/pwa-shell-v2.json",
     }
     state = json.loads((tmp_path / "workspace" / "build-state.json").read_text("utf-8"))
     assert expected <= set(state["artifacts"])
@@ -726,10 +727,10 @@ def test_unified_pwa_shell_is_complete_stable_and_prefix_safe(tmp_path: Path) ->
         with Image.open(site / relative) as icon:
             assert icon.size == dimensions
 
-    shell = json.loads((site / "data" / "pwa-shell.json").read_text("utf-8"))
+    shell = json.loads((site / "data" / "pwa-shell-v2.json").read_text("utf-8"))
     shell_urls = {item["url"] for item in shell["resources"]}
-    assert shell["schema"] == 1
-    assert expected - {"sw.js", "data/pwa-shell.json"} <= shell_urls
+    assert shell["schema"] == 2
+    assert expected - {"sw-v2.js", "data/pwa-shell-v2.json"} <= shell_urls
     assert "index.html" in shell_urls
     assert "archive/index.html" in shell_urls
     assert "settings/index.html" in shell_urls
@@ -738,7 +739,7 @@ def test_unified_pwa_shell_is_complete_stable_and_prefix_safe(tmp_path: Path) ->
         url.startswith(("2026-", "data/quarters/", "covers/"))
         for url in shell_urls
     )
-    assert shell["revision"] in (site / "sw.js").read_text("utf-8")
+    assert shell["revision"] in (site / "sw-v2.js").read_text("utf-8")
 
     for relative in (
         "index.html",
@@ -750,9 +751,10 @@ def test_unified_pwa_shell_is_complete_stable_and_prefix_safe(tmp_path: Path) ->
         assert 'rel="manifest"' in page
         assert 'name="theme-color"' in page
         assert 'rel="icon"' in page
-        assert "assets/pwa.js?v=" in page
-        assert "assets/app.css?v=" in page
-        assert "assets/app.js?v=" in page
+        for stem, extension in (("app", "css"), ("app", "js"), ("pwa", "js")):
+            asset = re.search(rf'assets/{stem}\.[a-f0-9]{{64}}\.{extension}"', page)
+            assert asset is not None
+            assert asset[0][:-1] in shell_urls
     root = (site / "index.html").read_text("utf-8")
     assert "http-equiv=\"refresh\"" not in root
     assert "2026-07" not in root
@@ -768,8 +770,8 @@ def test_pwa_shell_revision_changes_only_with_shell_inputs(tmp_path: Path) -> No
     site = tmp_path / "dist" / "site"
 
     def shell_state() -> tuple[str, bytes]:
-        shell = json.loads((site / "data" / "pwa-shell.json").read_text("utf-8"))
-        return shell["revision"], (site / "sw.js").read_bytes()
+        shell = json.loads((site / "data" / "pwa-shell-v2.json").read_text("utf-8"))
+        return shell["revision"], (site / "sw-v2.js").read_bytes()
 
     initial = shell_state()
     repository = SubjectRepository(database)
@@ -820,16 +822,16 @@ def test_offline_package_revision_covers_resources_but_not_sw_or_icons(
 
     def package_state() -> tuple[str, str, str, bytes]:
         package = json.loads(
-            (site / "data" / "offline" / "2026-07.json").read_text("utf-8")
+            (site / "data" / "offline-v2" / "2026-07.json").read_text("utf-8")
         )
-        shell = json.loads((site / "data" / "pwa-shell.json").read_text("utf-8"))
+        shell = json.loads((site / "data" / "pwa-shell-v2.json").read_text("utf-8"))
         data = (site / "data" / "quarters" / "2026-07.json").read_bytes()
         assert package["data_revision"] == hashlib.sha256(data).hexdigest()
         return (
             package["revision"],
             package["data_revision"],
             shell["revision"],
-            (site / "sw.js").read_bytes(),
+            (site / "sw-v2.js").read_bytes(),
         )
 
     initial = package_state()
@@ -889,7 +891,7 @@ def test_quarter_output_uses_master_detail_shell_and_static_rows(
         in page
     )
     offline_manifest = json.loads(
-        (tmp_path / "dist" / "site" / "data" / "offline" / "2026-07.json")
+        (tmp_path / "dist" / "site" / "data" / "offline-v2" / "2026-07.json")
         .read_text("utf-8")
     )
     manifest_data = next(
@@ -980,16 +982,11 @@ def test_quarter_static_rows_match_default_runtime_order() -> None:
             record(6, 7.5, 1, "2026-07-01", media="MOVIE"),
         ),
     )
-    revisions = {
-        "assets/app.css": "css",
-        "assets/app.js": "js",
-        "assets/pwa.js": "pwa",
-        "manifest.webmanifest": "manifest",
-        "icons/favicon.svg": "favicon",
-    }
+    assets = (f"assets/app.{'a' * 64}.css", f"assets/app.{'b' * 64}.js",
+              f"assets/pwa.{'c' * 64}.js")
     data = site_builder.json_bytes(quarter.to_dict())
     page = _quarter_html(
-        quarter, revisions, data_revision=hashlib.sha256(data).hexdigest()
+        quarter, assets, data_revision=hashlib.sha256(data).hexdigest()
     ).decode("utf-8")
     tv_section = page.split('data-list-section="tv"', 1)[1].split(
         'data-list-section="movie"', 1
@@ -1164,34 +1161,18 @@ def test_unmanaged_appearance_and_new_blocked_quarter_are_not_public(
     assert any("2026-10" in warning for warning in second.warnings)
 
 
-def test_blocked_last_good_without_site_is_omitted_with_warning(tmp_path: Path) -> None:
-    builder, database = _build_fixture(tmp_path)
-    builder.build()
-    site = tmp_path / "dist" / "site"
-    shutil.rmtree(site / "2026-07")
-    (site / "data" / "quarters" / "2026-07.json").unlink()
-    (site / "data" / "offline" / "2026-07.json").unlink()
-    repository = SubjectRepository(database)
-    state = repository.get_sync_state(Quarter(2026, 7))
-    assert state is not None
-    with repository.transaction() as connection:
-        repository.write_sync_state(
-            connection, replace(state, facts_status="incomplete")
-        )
-    run = builder.build()
-    archive = json.loads((site / "data" / "archive-index.json").read_text("utf-8"))
-    assert [item["quarter"] for item in archive["quarters"]] == ["2026-04"]
-    assert not (site / "2026-07" / "index.html").exists()
-    assert any("no last-known-good" in warning for warning in run.warnings)
-
-
-def test_blocked_last_good_with_missing_cover_is_omitted_safely(
-    tmp_path: Path,
+@pytest.mark.parametrize("missing", [
+    "2026-07/index.html", "covers/101.webp", "data/catalog/2026.json",
+])
+def test_missing_prior_quarter_dependency_stops_build(
+    tmp_path: Path, missing: str
 ) -> None:
     builder, database = _build_fixture(tmp_path)
     builder.build()
-    site = tmp_path / "dist" / "site"
-    (site / "covers" / "101.webp").unlink()
+    site = builder.site_directory
+    (site / missing).unlink()
+    prior = {p: p.read_bytes() for p in site.rglob("*") if p.is_file()}
+    old_state = builder.state_path.read_bytes()
     repository = SubjectRepository(database)
     state = repository.get_sync_state(Quarter(2026, 7))
     assert state is not None
@@ -1200,40 +1181,11 @@ def test_blocked_last_good_with_missing_cover_is_omitted_safely(
             connection, replace(state, facts_status="incomplete")
         )
 
-    run = builder.build()
-
-    archive = json.loads((site / "data" / "archive-index.json").read_text("utf-8"))
-    assert [item["quarter"] for item in archive["quarters"]] == ["2026-04"]
-    assert not (site / "2026-07" / "index.html").exists()
-    assert not (site / "data" / "quarters" / "2026-07.json").exists()
-    assert "covers/101.webp" in run.patch.written
-    assert (site / "2026-04" / "index.html").is_file()
-    assert any("2026-07" in warning for warning in run.warnings)
-
-
-def test_blocked_last_good_without_aggregate_metadata_is_omitted(
-    tmp_path: Path,
-) -> None:
-    builder, database = _build_fixture(tmp_path)
-    builder.build()
-    site = tmp_path / "dist" / "site"
-    (site / "data" / "catalog" / "2026.json").unlink()
-    repository = SubjectRepository(database)
-    state = repository.get_sync_state(Quarter(2026, 7))
-    assert state is not None
-    with repository.transaction() as connection:
-        repository.write_sync_state(
-            connection, replace(state, facts_status="incomplete")
-        )
-
-    run = builder.build()
-
-    archive = json.loads((site / "data" / "archive-index.json").read_text("utf-8"))
-    catalog = json.loads((site / "data" / "catalog" / "2026.json").read_text("utf-8"))
-    assert [item["quarter"] for item in archive["quarters"]] == ["2026-04"]
-    assert {item["quarter"] for item in catalog["records"]} == {"2026-04"}
-    assert not (site / "2026-07" / "index.html").exists()
-    assert any("2026-07" in warning for warning in run.warnings)
+    with pytest.raises(BuildError, match=r"cannot retain quarter 2026-07") as failure:
+        builder.build()
+    assert missing in str(failure.value)
+    assert builder.state_path.read_bytes() == old_state
+    assert {p: p.read_bytes() for p in site.rglob("*") if p.is_file()} == prior
 
 
 def test_relevant_review_on_last_good_quarter_retains_previous_output(
@@ -1393,7 +1345,7 @@ def test_missing_artifact_triggers_targeted_repair_without_cover_read(
     assert run.patch.cover_files_read == 0
 
 
-@pytest.mark.parametrize("path", ["sw.js", "data/pwa-shell.json"])
+@pytest.mark.parametrize("path", ["sw-v2.js", "data/pwa-shell-v2.json"])
 def test_missing_shell_file_is_repaired_independently(
     tmp_path: Path, path: str
 ) -> None:
@@ -1495,7 +1447,7 @@ def test_public_scope_change_updates_navigation_and_packages(tmp_path: Path) -> 
         )
     existing_labels = ("2026-04", "2026-07")
     original = {
-        label: json.loads((site / f"data/offline/{label}.json").read_bytes())
+        label: json.loads((site / f"data/offline-v2/{label}.json").read_bytes())
         for label in existing_labels
     }
 
@@ -1503,7 +1455,7 @@ def test_public_scope_change_updates_navigation_and_packages(tmp_path: Path) -> 
 
     for label in existing_labels:
         page_path = f"{label}/index.html"
-        manifest_path = f"data/offline/{label}.json"
+        manifest_path = f"data/offline-v2/{label}.json"
         assert {page_path, manifest_path}.issubset(added.patch.written)
         assert f"data/quarters/{label}.json" not in added.patch.written
         assert b'href="../2027-01/index.html"' in (site / page_path).read_bytes()
@@ -1521,7 +1473,7 @@ def test_public_scope_change_updates_navigation_and_packages(tmp_path: Path) -> 
         assert b'href="../2027-01/index.html"' not in (
             site / f"{label}/index.html"
         ).read_bytes()
-        assert json.loads((site / f"data/offline/{label}.json").read_bytes()) == (
+        assert json.loads((site / f"data/offline-v2/{label}.json").read_bytes()) == (
             original[label]
         )
 

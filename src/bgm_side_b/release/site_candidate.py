@@ -8,8 +8,22 @@ import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from bgm_side_b.build.errors import BuildError
+from bgm_side_b.build.fingerprint import STATE_SCHEMA
 from bgm_side_b.build.recovery import pending_patches
-from bgm_side_b.build.site_paths import ARCHIVE_INDEX, CORE_SITE_PATHS, quarter_paths
+from bgm_side_b.build.site_paths import (
+    ARCHIVE_INDEX,
+    OFFLINE_DIRECTORY,
+    REQUIRED_BUILD_PATHS,
+    SERVICE_WORKER,
+    SHELL_MANIFEST,
+    year_catalog_path,
+)
+from bgm_side_b.build.site_validation import (
+    ArtifactIdentity,
+    validate_quarter_package,
+    validate_shell_package,
+)
 
 
 class SiteCandidateError(ValueError):
@@ -66,25 +80,40 @@ _TEXT_SUFFIXES = frozenset(
 )
 
 
-def validate_site(site_root: Path, *, source_commit: str = "") -> SiteCandidate:
+def validate_site(
+    site_root: Path, *, source_commit: str = "", workspace: Path | None = None
+) -> SiteCandidate:
     """Validate and index the actual files that would be sent to Pages."""
+    expected = _expected_artifacts(workspace) if workspace is not None else None
     root = site_root.resolve()
     if not root.is_dir():
         raise SiteCandidateError("dist/site is missing")
     files = tuple(sorted(path for path in root.rglob("*") if path.is_file()))
     if not files:
         raise SiteCandidateError("dist/site is empty")
-    relative_files: list[str] = []
+    actual: dict[str, ArtifactIdentity] = {}
+    documents: dict[str, bytes] = {}
     content_hash = hashlib.sha256()
     total_bytes = 0
     for path in files:
         relative = path.relative_to(root).as_posix()
         _validate_path(relative)
-        content = path.read_bytes()
+        try:
+            content = path.read_bytes()
+        except OSError as error:
+            raise SiteCandidateError(
+                f"cannot read site artifact: {relative}"
+            ) from error
         _validate_content(relative, content)
         digest = hashlib.sha256(content).hexdigest()
         size = len(content)
-        relative_files.append(relative)
+        actual[relative] = (digest, size)
+        if (
+            relative.endswith(".html")
+            or relative.startswith((f"{OFFLINE_DIRECTORY}/", "data/quarters/"))
+            or relative in {ARCHIVE_INDEX, SHELL_MANIFEST, SERVICE_WORKER}
+        ):
+            documents[relative] = content
         total_bytes += size
         content_hash.update(relative.encode("utf-8"))
         content_hash.update(b"\0")
@@ -93,24 +122,65 @@ def validate_site(site_root: Path, *, source_commit: str = "") -> SiteCandidate:
         content_hash.update(str(size).encode("ascii"))
         content_hash.update(b"\n")
 
-    missing = [path for path in CORE_SITE_PATHS if path not in relative_files]
-    if missing:
-        raise SiteCandidateError("formal site is missing required artifacts")
-    quarters = _public_quarters(root, set(relative_files))
+    if expected is not None and expected != actual:
+        raise SiteCandidateError("dist/site does not match build state")
+    if REQUIRED_BUILD_PATHS.difference(actual):
+        raise SiteCandidateError("formal site is missing required artifacts; run build")
+    quarters = _public_quarters(documents[ARCHIVE_INDEX])
     if not quarters:
         raise SiteCandidateError("formal site has no publishable quarter")
+
+    def read(relative: str) -> bytes:
+        try:
+            return documents[relative]
+        except KeyError as error:
+            raise BuildError(f"required artifact is missing: {relative}") from error
+
+    try:
+        required = set(REQUIRED_BUILD_PATHS)
+        required.update(validate_shell_package(read, actual.get))
+        for label in quarters:
+            required.update(validate_quarter_package(label, read, actual.get))
+            required.add(year_catalog_path(int(label[:4])))
+    except BuildError as error:
+        raise SiteCandidateError(
+            f"site dependency closure is invalid: {error}"
+        ) from error
+    missing = required - actual.keys()
+    if missing:
+        raise SiteCandidateError(f"formal site artifact is missing: {min(missing)}")
+    unreferenced = actual.keys() - required
+    if unreferenced:
+        raise SiteCandidateError(
+            f"formal site contains an unreferenced artifact: {min(unreferenced)}"
+        )
     identity = CandidateIdentity(
         schema=1,
         source_commit=source_commit,
-        artifact_count=len(relative_files),
+        artifact_count=len(actual),
         total_bytes=total_bytes,
         content_hash=content_hash.hexdigest(),
     )
-    return SiteCandidate(identity, quarters, tuple(relative_files))
+    return SiteCandidate(identity, quarters, tuple(actual))
 
 
 def validate_build_state(site_root: Path, workspace: Path) -> None:
     """Require the derived build state to describe the exact site tree."""
+    expected = _expected_artifacts(workspace)
+    root = site_root.resolve()
+    actual: dict[str, ArtifactIdentity] = {}
+    for path in root.rglob("*"):
+        if path.is_file():
+            content = path.read_bytes()
+            actual[path.relative_to(root).as_posix()] = (
+                hashlib.sha256(content).hexdigest(),
+                len(content),
+            )
+    if expected != actual:
+        raise SiteCandidateError("dist/site does not match build state")
+
+
+def _expected_artifacts(workspace: Path) -> dict[str, ArtifactIdentity]:
     if pending_patches(workspace):
         raise SiteCandidateError("site recovery pending; run build")
     try:
@@ -120,28 +190,20 @@ def validate_build_state(site_root: Path, workspace: Path) -> None:
     artifacts = payload.get("artifacts") if isinstance(payload, dict) else None
     sizes = payload.get("artifact_sizes") if isinstance(payload, dict) else None
     schema = payload.get("schema") if isinstance(payload, dict) else None
-    if schema != 1 or not isinstance(artifacts, dict) or not isinstance(sizes, dict):
+    if (
+        schema != STATE_SCHEMA
+        or not isinstance(artifacts, dict)
+        or not isinstance(sizes, dict)
+    ):
         raise SiteCandidateError("build state is missing or invalid")
-    root = site_root.resolve()
-    actual: dict[str, tuple[str, int]] = {}
-    for path in root.rglob("*"):
-        if path.is_file():
-            content = path.read_bytes()
-            actual[path.relative_to(root).as_posix()] = (
-                hashlib.sha256(content).hexdigest(),
-                len(content),
-            )
-    expected = {
-        str(relative): (str(sha), int(sizes[relative]))
-        for relative, sha in artifacts.items()
-        if (
-            relative in sizes
-            and isinstance(sha, str)
-            and isinstance(sizes[relative], int)
-        )
+    if artifacts.keys() != sizes.keys() or any(
+        not isinstance(digest, str) or type(sizes[relative]) is not int
+        for relative, digest in artifacts.items()
+    ):
+        raise SiteCandidateError("build state is missing or invalid")
+    return {
+        relative: (digest, sizes[relative]) for relative, digest in artifacts.items()
     }
-    if expected != actual:
-        raise SiteCandidateError("dist/site does not match build state")
 
 
 def candidate_content_hash(site_root: Path) -> str:
@@ -149,10 +211,10 @@ def candidate_content_hash(site_root: Path) -> str:
     return validate_site(site_root).identity.content_hash
 
 
-def _public_quarters(root: Path, files: set[str]) -> tuple[str, ...]:
+def _public_quarters(content: bytes) -> tuple[str, ...]:
     try:
-        archive = json.loads((root / ARCHIVE_INDEX).read_text("utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        archive = json.loads(content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
         raise SiteCandidateError("archive index is invalid") from error
     values = archive.get("quarters") if isinstance(archive, dict) else None
     if not isinstance(values, list):
@@ -162,10 +224,9 @@ def _public_quarters(root: Path, files: set[str]) -> tuple[str, ...]:
         if not isinstance(item, dict) or not isinstance(item.get("quarter"), str):
             raise SiteCandidateError("archive index quarter is invalid")
         quarter = item["quarter"]
-        if not re.fullmatch(r"\d{4}-(?:01|04|07|10)", quarter):
+        if not re.fullmatch(r"[0-9]{4}-(?:01|04|07|10)", quarter):
             raise SiteCandidateError("archive index quarter is invalid")
-        if all(path in files for path in quarter_paths(quarter)):
-            quarters.append(quarter)
+        quarters.append(quarter)
     return tuple(sorted(set(quarters)))
 
 

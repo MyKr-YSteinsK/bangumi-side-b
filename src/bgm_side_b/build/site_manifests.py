@@ -6,7 +6,11 @@ from collections.abc import Iterable, Mapping
 
 from bgm_side_b.build.cover_preview import cover_preview_path
 from bgm_side_b.build.fingerprint import fingerprint
-from bgm_side_b.build.site_paths import APP_ASSETS, SHELL_RESOURCE_PATHS, quarter_paths
+from bgm_side_b.build.site_paths import (
+    OFFLINE_SCHEMA,
+    quarter_paths,
+    shell_resource_paths,
+)
 from bgm_side_b.build.site_projection import (
     ProjectionError,
     QuarterProjection,
@@ -29,6 +33,7 @@ def offline_revision(
 ) -> str:
     return fingerprint(
         {
+            "schema": OFFLINE_SCHEMA,
             "quarter": quarter,
             "data_revision": data_revision,
             "resources": _resource_signatures(resources),
@@ -37,7 +42,9 @@ def offline_revision(
 
 
 def shell_revision(resources: Iterable[Mapping[str, object]]) -> str:
-    return fingerprint(_resource_signatures(resources))
+    return fingerprint(
+        {"schema": OFFLINE_SCHEMA, "resources": _resource_signatures(resources)}
+    )
 
 
 def _manifest_resources(
@@ -59,7 +66,9 @@ def _manifest_resources(
 
 
 def offline_manifest_bytes(
-    quarter: QuarterProjection, specs: Mapping[str, ArtifactSpec]
+    quarter: QuarterProjection,
+    specs: Mapping[str, ArtifactSpec],
+    app_assets: tuple[str, ...],
 ) -> bytes:
     label = quarter.quarter
     page_path, data_path, _ = quarter_paths(label)
@@ -77,7 +86,7 @@ def offline_manifest_bytes(
         {path for cover in covers if (path := cover_preview_path(cover)) is not None}
     )
     resources = _manifest_resources(
-        (page_path, data_path, *APP_ASSETS, *originals, *previews),
+        (page_path, data_path, *app_assets, *originals, *previews),
         specs,
         name="offline",
     )
@@ -85,6 +94,7 @@ def offline_manifest_bytes(
     assert data_revision is not None
     return json_bytes(
         {
+            "schema": OFFLINE_SCHEMA,
             "quarter": label,
             "revision": offline_revision(label, data_revision, resources),
             "data_revision": data_revision,
@@ -93,9 +103,17 @@ def offline_manifest_bytes(
     )
 
 
-def pwa_shell_manifest(specs: Mapping[str, ArtifactSpec]) -> dict[str, object]:
-    resources = _manifest_resources(SHELL_RESOURCE_PATHS, specs, name="PWA shell")
-    return {"schema": 1, "revision": shell_revision(resources), "resources": resources}
+def pwa_shell_manifest(
+    specs: Mapping[str, ArtifactSpec], app_assets: tuple[str, ...]
+) -> dict[str, object]:
+    resources = _manifest_resources(
+        shell_resource_paths(app_assets), specs, name="PWA shell"
+    )
+    return {
+        "schema": OFFLINE_SCHEMA,
+        "revision": shell_revision(resources),
+        "resources": resources,
+    }
 
 
 def service_worker_bytes(source: bytes, revision: str) -> bytes:

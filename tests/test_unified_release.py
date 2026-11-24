@@ -12,6 +12,7 @@ import pytest
 import bgm_side_b.release.site_publish as publish_module
 from bgm_side_b.release.site_publish import SitePublishError, UnifiedPublisher
 from bgm_side_b.release.workflow import WorkflowError, _read_prepared
+from tests.test_site_builder import _build_fixture
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -24,32 +25,6 @@ def _git(cwd: Path, *args: str) -> str:
         check=True,
     )
     return result.stdout.strip()
-
-
-def _site(root: Path) -> None:
-    files = (
-        "index.html",
-        "archive/index.html",
-        "settings/index.html",
-        "assets/app.css",
-        "assets/app.js",
-        "assets/pwa.js",
-        "manifest.webmanifest",
-        "sw.js",
-        "data/pwa-shell.json",
-        "2026-07/index.html",
-        "data/quarters/2026-07.json",
-        "data/offline/2026-07.json",
-    )
-    for relative in files:
-        path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if relative == "data/archive-index.json":
-            continue
-        path.write_text(relative, "utf-8")
-    (root / "data" / "archive-index.json").write_text(
-        json.dumps({"quarters": [{"quarter": "2026-07"}]}), "utf-8"
-    )
 
 
 def _seed_pages(root: Path, remote: Path, message: str) -> None:
@@ -75,22 +50,8 @@ def _seed_pages(root: Path, remote: Path, message: str) -> None:
 def isolated_release(tmp_path: Path) -> tuple[Path, Path]:
     root = tmp_path / "project"
     root.mkdir()
-    _site(root / "dist" / "site")
-    (root / "workspace" / "data").mkdir(parents=True)
-    artifacts: dict[str, str] = {}
-    sizes: dict[str, int] = {}
-    from hashlib import sha256
-
-    for path in (root / "dist" / "site").rglob("*"):
-        if path.is_file():
-            relative = path.relative_to(root / "dist" / "site").as_posix()
-            content = path.read_bytes()
-            artifacts[relative] = sha256(content).hexdigest()
-            sizes[relative] = len(content)
-    (root / "workspace" / "build-state.json").write_text(
-        json.dumps({"schema": 1, "artifacts": artifacts, "artifact_sizes": sizes}),
-        "utf-8",
-    )
+    builder, _ = _build_fixture(root)
+    builder.build()
     _git(root, "init", "-q")
     _git(root, "checkout", "-q", "-b", "main")
     (root / "README.md").write_text("fixture", "utf-8")
@@ -233,8 +194,8 @@ def test_publish_race_before_push_fails_without_force_or_retry(
     root, remote = isolated_release
     publisher = UnifiedPublisher(root)
     publisher.publish()
-    index = root / "dist" / "site" / "index.html"
-    index.write_text(index.read_text("utf-8") + "\nrelease change\n", "utf-8")
+    index = root / "dist/site/data/archive-index.json"
+    index.write_text(index.read_text("utf-8") + "\n\n", "utf-8")
 
     racer = root.parent / "pre-push-racer"
     _git(root.parent, "clone", "-q", "--branch", "gh-pages", str(remote), str(racer))
@@ -277,8 +238,8 @@ def test_publish_rejects_remote_advance_between_precheck_and_fetch(
     root, remote = isolated_release
     publisher = UnifiedPublisher(root)
     first = publisher.publish()
-    index = root / "dist" / "site" / "index.html"
-    index.write_text(index.read_text("utf-8") + "\nrelease change\n", "utf-8")
+    index = root / "dist/site/data/archive-index.json"
+    index.write_text(index.read_text("utf-8") + "\n\n", "utf-8")
 
     racer = root.parent / "fetch-racer"
     _git(root.parent, "clone", "-q", "--branch", "gh-pages", str(remote), str(racer))
@@ -335,8 +296,8 @@ def test_publish_rejects_candidate_mutation_while_staging(
         nonlocal mutated
         if not mutated and Path(source).resolve() == publisher.site.resolve():
             mutated = True
-            index = publisher.site / "index.html"
-            index.write_text(index.read_text("utf-8") + "\nmutation\n", "utf-8")
+            index = publisher.site / "data/archive-index.json"
+            index.write_text(index.read_text("utf-8") + "\n\n", "utf-8")
         return original_copytree(source, destination, *args, **kwargs)
 
     monkeypatch.setattr(publish_module.shutil, "copytree", mutate_then_copy)

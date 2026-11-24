@@ -32,6 +32,10 @@ pytestmark = [pytest.mark.browser, pytest.mark.deep_regression]
 _NEXT_SAFE_PORT = 18080
 
 
+class _BrowserTestServer(http.server.ThreadingHTTPServer):
+    allow_reuse_address = False
+
+
 def _server(handler: object) -> http.server.ThreadingHTTPServer:
     """Use high, Chromium-safe loopback ports instead of unsafe-port roulette."""
     global _NEXT_SAFE_PORT
@@ -39,7 +43,7 @@ def _server(handler: object) -> http.server.ThreadingHTTPServer:
         port = _NEXT_SAFE_PORT
         _NEXT_SAFE_PORT += 1
         try:
-            return http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
+            return _BrowserTestServer(("127.0.0.1", port), handler)
         except OSError:
             continue
     raise RuntimeError("could not allocate a safe browser test port")
@@ -113,7 +117,7 @@ def _rewrite_quarter_snapshot(
     edit_payload: object,
 ) -> None:
     data_path = site / "data" / "quarters" / f"{quarter}.json"
-    manifest_path = site / "data" / "offline" / f"{quarter}.json"
+    manifest_path = site / "data" / "offline-v2" / f"{quarter}.json"
     page_path = site / quarter / "index.html"
     payload = json.loads(data_path.read_text("utf-8"))
     manifest = json.loads(manifest_path.read_text("utf-8"))
@@ -354,7 +358,7 @@ def test_preview_package_failure_preserves_active_offline_and_reference_safe_gc(
     old_resource = next(r for r in old["active"]["resources"] if r["url"] == old_path)
     monkeypatch.setitem(cover_preview.COVER_PREVIEW_RULE, "quality", 79)
     builder.build()
-    current = json.loads((site / "data/offline/2026-07.json").read_text("utf-8"))
+    current = json.loads((site / "data/offline-v2/2026-07.json").read_text("utf-8"))
     new_path = cover_preview.cover_preview_path(original)
     new_resource = next(r for r in current["resources"] if r["url"] == new_path)
     assert current["data_revision"] == old["active"]["data_revision"]
@@ -369,12 +373,12 @@ def test_preview_package_failure_preserves_active_offline_and_reference_safe_gc(
     valid_preview = target.read_bytes()
     target.unlink()
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
-    page.wait_for_function("""async () => {
-      const queue = await window.BsbPwa.currentQueue();
-      return queue.state === 'idle' && queue.failed.includes('2026-07');
-    }""")
+    _wait_for_queue(page, 1)
+    assert page.evaluate("async () => (await BsbPwa.currentQueue()).failed") == [
+        "2026-07"
+    ]
     failed = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
-    assert failed["status"] == "INCOMPLETE"
+    assert failed["status"] == "UPDATE_INCOMPLETE"
     assert failed["active"]["revision"] == old["active"]["revision"]
     assert failed["staging"]["revision"] == current["revision"]
     assert new_resource["content_hash"] not in failed["staging"]["verified_hashes"]
@@ -412,14 +416,13 @@ def test_preview_package_failure_preserves_active_offline_and_reference_safe_gc(
     page.goto(f"{preview_pwa_server}/settings/index.html")
     _wait_for_pwa_startup_queue_quiescent(page)
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
-    page.wait_for_function("""async revision => {
-      const state = await window.BsbPwa.getQuarterState('2026-07');
-      const queue = await window.BsbPwa.currentQueue();
-      return queue.state === 'idle' && state.status === 'COMPLETE'
-        && state.active?.revision === revision && state.staging === null;
-    }""", arg=current["revision"])
+    _wait_for_queue(page, 1)
+    updated = page.evaluate("() => BsbPwa.getQuarterState('2026-07')")
+    assert updated["status"] == "COMPLETE"
+    assert updated["active"]["revision"] == current["revision"]
+    assert updated["staging"] is None
     has_content = """async hash => {
-      const content = await caches.open('bsb-content-v1');
+      const content = await caches.open('bsb-content-v2');
       return Boolean(await content.match(new Request(new URL(
         `../__bsb_content__/${hash}`, location.href
       ))));
@@ -492,7 +495,7 @@ def delayed_manifest_server(pwa_site: Path) -> Iterator[str]:
                 self.send_response(204)
                 self.end_headers()
                 return
-            if not path.endswith("/data/offline/2026-07.json"):
+            if not path.endswith("/data/offline-v2/2026-07.json"):
                 super().do_GET()
                 return
             with manifest_condition:
@@ -533,7 +536,7 @@ def _write_offline_manifest(
     quarter: str,
     manifest: dict[str, object],
 ) -> None:
-    (pwa_site / "data" / "offline" / f"{quarter}.json").write_text(
+    (pwa_site / "data" / "offline-v2" / f"{quarter}.json").write_text(
         json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
@@ -543,7 +546,7 @@ def _seed_quarter_state(page: Page, quarter: str, state: dict[str, object]) -> N
     page.evaluate(
         """
         async ({ quarter, state }) => {
-          const meta = await caches.open('bsb-meta-v1');
+          const meta = await caches.open('bsb-meta-v2');
           await meta.put(
             new Request(new URL(
               `../__bsb_meta__/quarters/${quarter}.json`, location.href)),
@@ -561,7 +564,7 @@ def _seed_quarter_state(page: Page, quarter: str, state: dict[str, object]) -> N
 def failing_manifest_server(pwa_site: Path) -> Iterator[str]:
     class FailingManifestHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
-            if self.path.split("?", 1)[0].endswith("/data/offline/2026-07.json"):
+            if self.path.split("?", 1)[0].endswith("/data/offline-v2/2026-07.json"):
                 self.send_error(503, "manifest unavailable")
                 return
             super().do_GET()
@@ -585,7 +588,7 @@ def failing_manifest_server(pwa_site: Path) -> Iterator[str]:
 def slow_pwa_server(pwa_site: Path) -> Iterator[str]:
     class SlowHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
-            if self.path.split("?", 1)[0].endswith("/sw.js"):
+            if self.path.split("?", 1)[0].endswith("/sw-v2.js"):
                 time.sleep(7)
             super().do_GET()
 
@@ -607,7 +610,7 @@ def retry_pwa_server(pwa_site: Path) -> Iterator[tuple[str, list[int]]]:
 
     class RetryHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
-            if self.path.split("?", 1)[0].endswith("/sw.js"):
+            if self.path.split("?", 1)[0].endswith("/sw-v2.js"):
                 attempts[0] += 1
                 if attempts[0] == 1:
                     self.send_error(503, "registration fixture failure")
@@ -734,7 +737,7 @@ def freshness_server(
             if path == "/bangumi-side-b/2026-07/index.html":
                 with lock:
                     control["page_requests"].append(time.time())
-            if path == "/bangumi-side-b/data/offline/2026-07.json":
+            if path == "/bangumi-side-b/data/offline-v2/2026-07.json":
                 with lock:
                     delay = float(control["next_delay"])
                     status = (
@@ -821,11 +824,11 @@ def test_service_worker_controls_pages_prefix_and_serves_shell_offline(
     assert scope == f"{pwa_server}/"
 
     shell_count = page.evaluate(
-        "fetch('../data/pwa-shell.json').then((response) => response.json())"
+        "fetch('../data/pwa-shell-v2.json').then((response) => response.json())"
         ".then((manifest) => manifest.resources.length)"
     )
     content_count = page.evaluate(
-        "caches.open('bsb-content-v1').then((cache) => cache.keys())"
+        "caches.open('bsb-content-v2').then((cache) => cache.keys())"
         ".then((keys) => keys.length)"
     )
     assert content_count == shell_count
@@ -846,7 +849,7 @@ def test_shell_hash_failure_never_activates_or_writes_active_metadata(
     pwa_server: str,
     pwa_site: Path,
 ) -> None:
-    css = pwa_site / "assets" / "app.css"
+    css = next((pwa_site / "assets").glob("app.*.css"))
     css.write_bytes(css.read_bytes() + b"\ncorrupt-after-build")
     context = chromium.new_context()
     page = context.new_page()
@@ -854,7 +857,7 @@ def test_shell_hash_failure_never_activates_or_writes_active_metadata(
     page.wait_for_timeout(1500)
     assert page.evaluate("navigator.serviceWorker.controller") is None
     active_shell = page.evaluate(
-        "caches.open('bsb-meta-v1').then((cache) => "
+        "caches.open('bsb-meta-v2').then((cache) => "
         "cache.match(new URL('../__bsb_meta__/shell.json', location.href)))"
         ".then((response) => Boolean(response))"
     )
@@ -874,14 +877,14 @@ def test_shell_manifest_rejects_conflicting_content_identity(
     shell_before = page.evaluate(
         """
         async () => {
-          const cache = await caches.open("bsb-meta-v1");
+          const cache = await caches.open("bsb-meta-v2");
           const response = await cache.match(new Request(new URL(
             "../__bsb_meta__/shell.json", location.href)));
           return response.json();
         }
         """
     )
-    shell_path = pwa_site / "data" / "pwa-shell.json"
+    shell_path = pwa_site / "data" / "pwa-shell-v2.json"
     shell = json.loads(shell_path.read_text("utf-8"))
     first = shell["resources"][0]
     shell["resources"].append(
@@ -895,7 +898,7 @@ def test_shell_manifest_rejects_conflicting_content_identity(
         json.dumps(shell, ensure_ascii=False, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
-    sw_path = pwa_site / "sw.js"
+    sw_path = pwa_site / "sw-v2.js"
     sw_path.write_bytes(sw_path.read_bytes() + b"\n// identity conflict fixture\n")
     page.evaluate(
         "navigator.serviceWorker.ready.then((registration) => registration.update())"
@@ -907,7 +910,7 @@ def test_shell_manifest_rejects_conflicting_content_identity(
     shell_after = page.evaluate(
         """
         async () => {
-          const cache = await caches.open("bsb-meta-v1");
+          const cache = await caches.open("bsb-meta-v2");
           const response = await cache.match(new Request(new URL(
             "../__bsb_meta__/shell.json", location.href)));
           return response.json();
@@ -917,7 +920,7 @@ def test_shell_manifest_rejects_conflicting_content_identity(
     pending = page.evaluate(
         """
         async () => {
-          const cache = await caches.open("bsb-meta-v1");
+          const cache = await caches.open("bsb-meta-v2");
           return (await cache.keys()).some((request) =>
             request.url.includes("shell-pending-"));
         }
@@ -973,7 +976,7 @@ def test_persisted_queue_waits_for_service_worker_after_registration_failure(
     page.evaluate(
         """
         async () => {
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           await meta.put(
             new Request(new URL("../__bsb_meta__/queue.json", location.href)),
             new Response(JSON.stringify({
@@ -1013,7 +1016,7 @@ def test_persisted_queue_waits_for_service_worker_after_registration_failure(
         "queue.state === 'waiting-service-worker')"
     )
     page.wait_for_timeout(250)
-    assert not any("data/offline/2026-07.json" in url for url in requests)
+    assert not any("data/offline-v2/2026-07.json" in url for url in requests)
     assert page.evaluate(
         "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
     ) == "NONE"
@@ -1112,7 +1115,7 @@ def test_paused_persisted_queue_is_not_auto_resumed(
     page.evaluate(
         """
         async () => {
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           await meta.put(
             new Request(new URL("../__bsb_meta__/queue.json", location.href)),
             new Response(JSON.stringify({
@@ -1136,7 +1139,7 @@ def test_paused_persisted_queue_is_not_auto_resumed(
         "window.BsbPwa.currentQueue().then((queue) => queue.state === 'paused')"
     )
     page.wait_for_timeout(250)
-    assert not any("data/offline/2026-07.json" in url for url in requests)
+    assert not any("data/offline-v2/2026-07.json" in url for url in requests)
     context.close()
 
 
@@ -1149,12 +1152,12 @@ def test_active_quarter_uses_content_identity_for_offline_navigation_and_cover(
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("navigator.serviceWorker.controller !== null")
     manifest = page.evaluate(
-        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+        "fetch('../data/offline-v2/2026-07.json').then((response) => response.json())"
     )
     page.evaluate(
         """
         async (manifest) => {
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           for (const resource of manifest.resources) {
             const response = await fetch(new URL(`../${resource.url}`, location.href));
             await content.put(
@@ -1165,7 +1168,7 @@ def test_active_quarter_uses_content_identity_for_offline_navigation_and_cover(
               response,
             );
           }
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           await meta.put(
             new Request(new URL(
               "../__bsb_meta__/quarters/2026-07.json",
@@ -1187,7 +1190,8 @@ def test_active_quarter_uses_content_identity_for_offline_navigation_and_cover(
         item for item in manifest["resources"] if item["url"] == "covers/101.webp"
     )
     app_script = next(
-        item for item in manifest["resources"] if item["url"] == "assets/app.js"
+        item for item in manifest["resources"]
+        if item["url"].startswith("assets/app.") and item["url"].endswith(".js")
     )
     quarter_page = next(
         item for item in manifest["resources"] if item["url"] == "2026-07/index.html"
@@ -1205,12 +1209,8 @@ def test_active_quarter_uses_content_identity_for_offline_navigation_and_cover(
     )
     assert response_size == cover["size_bytes"]
     old_app_status = page.evaluate(
-        "({ url, hash }) => fetch(`${url}?v=${hash}`)"
-        ".then((response) => response.status)",
-        {
-            "url": f"{pwa_server}/{app_script['url']}",
-            "hash": app_script["content_hash"],
-        },
+        "url => fetch(url).then((response) => response.status)",
+        f"{pwa_server}/{app_script['url']}",
     )
     assert old_app_status == 200
     mismatched_status = page.evaluate(
@@ -1245,10 +1245,10 @@ def test_versioned_service_worker_repair_does_not_recreate_removed_content(
     page.evaluate(
         """
         async (resource) => {
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           await content.delete(new Request(new URL(
             `../__bsb_content__/${resource.content_hash}`, location.href)));
-          const runtime = await caches.open("bsb-runtime-v1");
+          const runtime = await caches.open("bsb-runtime-v2");
           for (const url of [
             resource.url,
             `${resource.url}?v=${resource.content_hash}`,
@@ -1284,7 +1284,7 @@ def test_versioned_service_worker_repair_does_not_recreate_removed_content(
     assert page.evaluate(
         """
         async (hash) => {
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           return Boolean(await content.match(new Request(new URL(
             `../__bsb_content__/${hash}`, location.href))));
         }
@@ -1318,7 +1318,7 @@ def test_quarter_downloader_deduplicates_shared_cover_and_garbage_collects(
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
     _wait_for_queue(page, 1)
     assert repeated_requests == [
-        f"{pwa_server}/data/offline/2026-07.json"
+        f"{pwa_server}/data/offline-v2/2026-07.json"
     ]
 
     april = next(state for state in states if state["quarter"] == "2026-04")
@@ -1329,7 +1329,7 @@ def test_quarter_downloader_deduplicates_shared_cover_and_garbage_collects(
     )
     matching = page.evaluate(
         """
-        (hash) => caches.open("bsb-content-v1")
+        (hash) => caches.open("bsb-content-v2")
           .then((cache) => cache.keys())
           .then((keys) => keys.filter((key) => key.url.endsWith(hash)).length)
         """,
@@ -1340,7 +1340,7 @@ def test_quarter_downloader_deduplicates_shared_cover_and_garbage_collects(
     page.evaluate("window.BsbPwa.removeQuarter('2026-04')")
     assert page.evaluate(
         """
-        (hash) => caches.open("bsb-content-v1")
+        (hash) => caches.open("bsb-content-v2")
           .then((cache) => cache.keys())
           .then((keys) => keys.some((key) => key.url.endsWith(hash)))
         """,
@@ -1349,7 +1349,7 @@ def test_quarter_downloader_deduplicates_shared_cover_and_garbage_collects(
     page.evaluate("window.BsbPwa.removeQuarter('2026-07')")
     assert not page.evaluate(
         """
-        (hash) => caches.open("bsb-content-v1")
+        (hash) => caches.open("bsb-content-v2")
           .then((cache) => cache.keys())
           .then((keys) => keys.some((key) => key.url.endsWith(hash)))
         """,
@@ -1370,7 +1370,7 @@ def test_content_gc_waits_for_cross_page_reference_lease(
     page.evaluate(
         """
         async (hash) => {
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           await content.put(
             new Request(new URL(`../__bsb_content__/${hash}`, location.href)),
             new Response("orphan"),
@@ -1397,7 +1397,7 @@ def test_content_gc_waits_for_cross_page_reference_lease(
     assert page.evaluate(
         """
         async (hash) => {
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           return Boolean(await content.match(new Request(new URL(
             `../__bsb_content__/${hash}`, location.href))));
         }
@@ -1409,7 +1409,7 @@ def test_content_gc_waits_for_cross_page_reference_lease(
     assert page.evaluate(
         """
         async (hash) => {
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           return Boolean(await content.match(new Request(new URL(
             `../__bsb_content__/${hash}`, location.href))));
         }
@@ -1425,7 +1425,7 @@ def test_content_gc_snapshot_cannot_delete_new_quarter_content(
     pwa_site: Path,
 ) -> None:
     manifest = json.loads(
-        (pwa_site / "data" / "offline" / "2026-07.json").read_text("utf-8")
+        (pwa_site / "data" / "offline-v2" / "2026-07.json").read_text("utf-8")
     )
     target_hashes = {item["content_hash"] for item in manifest["resources"]}
     orphan_hash = "e" * 64
@@ -1437,7 +1437,7 @@ def test_content_gc_snapshot_cannot_delete_new_quarter_content(
     first.evaluate(
         """
         async (hash) => {
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           await content.put(
             new Request(new URL(`../__bsb_content__/${hash}`, location.href)),
             new Response("orphan"),
@@ -1455,7 +1455,7 @@ def test_content_gc_snapshot_cannot_delete_new_quarter_content(
           window.__releaseGcKeys = null;
           caches.open = async (name) => {
             const cache = await nativeOpen(name);
-            if (name !== "bsb-content-v1" || wrapped.has(cache)) return cache;
+            if (name !== "bsb-content-v2" || wrapped.has(cache)) return cache;
             wrapped.add(cache);
             const nativeKeys = cache.keys.bind(cache);
             cache.keys = async (...args) => {
@@ -1488,7 +1488,7 @@ def test_content_gc_snapshot_cannot_delete_new_quarter_content(
     assert first.evaluate(
         """
         async (hash) => {
-          const cache = await caches.open("bsb-content-v1");
+          const cache = await caches.open("bsb-content-v2");
           return Boolean(await cache.match(new Request(new URL(
             `../__bsb_content__/${hash}`, location.href))));
         }
@@ -1506,7 +1506,7 @@ def test_content_gc_snapshot_cannot_delete_new_quarter_content(
         second.evaluate(
             """
             async (hash) => {
-              const content = await caches.open("bsb-content-v1");
+              const content = await caches.open("bsb-content-v2");
               return Boolean(await content.match(new Request(new URL(
                 `../__bsb_content__/${hash}`, location.href))));
             }
@@ -1518,7 +1518,7 @@ def test_content_gc_snapshot_cannot_delete_new_quarter_content(
     assert not second.evaluate(
         """
         async (hash) => {
-          const cache = await caches.open("bsb-content-v1");
+          const cache = await caches.open("bsb-content-v2");
           return Boolean(await cache.match(new Request(new URL(
             `../__bsb_content__/${hash}`, location.href))));
         }
@@ -1551,7 +1551,7 @@ def test_no_web_locks_defers_destructive_content_gc(
     page.evaluate(
         """
         async () => {
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           await content.put(
             new Request(new URL(`../__bsb_content__/${"d".repeat(64)}`, location.href)),
             new Response("orphan"),
@@ -1580,7 +1580,7 @@ def test_no_web_locks_defers_destructive_content_gc(
     assert page.evaluate(
         """
         async (hash) => {
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           return Boolean(await content.match(new Request(new URL(
             `../__bsb_content__/${hash}`, location.href))));
         }
@@ -1590,7 +1590,7 @@ def test_no_web_locks_defers_destructive_content_gc(
     assert page.evaluate(
         """
         async (hash) => {
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           return Boolean(await content.match(new Request(new URL(
             `../__bsb_content__/${hash}`, location.href))));
         }
@@ -1605,21 +1605,17 @@ def test_quarter_progress_counts_logical_resources_and_shares_inflight_hash(
     pwa_server: str,
     pwa_site: Path,
 ) -> None:
-    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest_path = pwa_site / "data" / "offline-v2" / "2026-07.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
     original = next(
         item for item in manifest["resources"]
         if item["url"] == "data/quarters/2026-07.json"
     )
-    other = next(
-        item for item in manifest["resources"]
-        if item["url"] == "2026-07/index.html"
-    )
     alias_url = "data/quarters/2026-07-alias.json"
     alias_path = pwa_site / alias_url
     alias_path.write_bytes((pwa_site / original["url"]).read_bytes())
     alias = {**original, "url": alias_url}
-    manifest["resources"] = [original, alias, other]
+    manifest["resources"].append(alias)
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
         encoding="utf-8",
@@ -1637,7 +1633,8 @@ def test_quarter_progress_counts_logical_resources_and_shares_inflight_hash(
         """
         async () => {
           const state = await window.BsbPwa.getQuarterState("2026-07");
-          const hash = state.active.resources[0].content_hash;
+          const hash = state.active.resources.find(
+            ({url}) => url === "data/quarters/2026-07.json").content_hash;
           return window.BsbPwa.__quarterProgress(
             "2026-07",
             state.active.resources,
@@ -1647,7 +1644,7 @@ def test_quarter_progress_counts_logical_resources_and_shares_inflight_hash(
         """
     )
     assert progress["verified_resources"] == 2
-    assert progress["total_resources"] == 3
+    assert progress["total_resources"] == len(manifest["resources"])
     assert progress["verified_bytes"] == original["size_bytes"] * 2
     resource_requests = [
         url
@@ -1663,7 +1660,7 @@ def test_same_hash_dedupe_survives_delayed_metadata_commit(
     pwa_server: str,
     pwa_site: Path,
 ) -> None:
-    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest_path = pwa_site / "data" / "offline-v2" / "2026-07.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
     original = next(
         item for item in manifest["resources"]
@@ -1671,11 +1668,7 @@ def test_same_hash_dedupe_survives_delayed_metadata_commit(
     )
     alias_url = "data/quarters/2026-07-alias.json"
     (pwa_site / alias_url).write_bytes((pwa_site / original["url"]).read_bytes())
-    other = [
-        item for item in manifest["resources"]
-        if item["url"] in {"2026-07/index.html", "covers/101.webp"}
-    ]
-    manifest["resources"] = [original, *other, {**original, "url": alias_url}]
+    manifest["resources"].append({**original, "url": alias_url})
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
         encoding="utf-8",
@@ -1725,7 +1718,7 @@ def test_same_hash_dedupe_survives_delayed_metadata_commit(
     page.evaluate(
         """
         async (hash) => {
-          const cache = await caches.open("bsb-content-v1");
+          const cache = await caches.open("bsb-content-v2");
           await cache.delete(new Request(new URL(
             `../__bsb_content__/${hash}`, location.href)));
         }
@@ -1742,7 +1735,7 @@ def test_same_hash_dedupe_survives_delayed_metadata_commit(
         """
         async (resource) => {
           const response = await fetch(new URL(`../${resource.url}`, location.href));
-          const cache = await caches.open("bsb-content-v1");
+          const cache = await caches.open("bsb-content-v2");
           await cache.put(new Request(new URL(
             `../__bsb_content__/${resource.content_hash}`, location.href)), response);
         }
@@ -1784,12 +1777,12 @@ def test_orphan_offline_quarter_stays_visible_without_entering_public_queue(
         "document.querySelectorAll('[data-offline-quarter]').length === 2"
     )
     manifest = page.evaluate(
-        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+        "fetch('../data/offline-v2/2026-07.json').then((response) => response.json())"
     )
     page.evaluate(
         """
         async (manifest) => {
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           await meta.put(
             new Request(new URL(
               "../__bsb_meta__/quarters/2027-01.json", location.href)),
@@ -1839,7 +1832,7 @@ def test_two_pages_share_one_queue_runner_and_persist_merge(
         time.sleep(0.25)
         route.continue_()
 
-    first.route("**/data/offline/2026-07.json", delay_manifest)
+    first.route("**/data/offline-v2/2026-07.json", delay_manifest)
     first.goto(f"{pwa_server}/settings/index.html")
     second.goto(f"{pwa_server}/settings/index.html")
     first.wait_for_function("Boolean(window.BsbPwa)")
@@ -1852,15 +1845,15 @@ def test_two_pages_share_one_queue_runner_and_persist_merge(
     )
     assert merged["generation"] == generation
     assert merged["current"] in (None, "2026-07")
-    first.unroute("**/data/offline/2026-07.json")
+    first.unroute("**/data/offline-v2/2026-07.json")
     _wait_for_queue(second, 2)
     queue = second.evaluate("async () => window.BsbPwa.currentQueue()")
     assert queue["succeeded"] == ["2026-07", "2026-04"]
     manifest_requests = [
-        url for url in [*first_requests, *second_requests] if "data/offline/" in url
+        url for url in [*first_requests, *second_requests] if "data/offline-v2/" in url
     ]
-    assert manifest_requests.count(f"{pwa_server}/data/offline/2026-07.json") == 1
-    assert manifest_requests.count(f"{pwa_server}/data/offline/2026-04.json") == 1
+    assert manifest_requests.count(f"{pwa_server}/data/offline-v2/2026-07.json") == 1
+    assert manifest_requests.count(f"{pwa_server}/data/offline-v2/2026-04.json") == 1
     context.close()
 
 
@@ -1960,7 +1953,7 @@ def test_simultaneous_cross_tab_enqueue_without_web_locks_keeps_both_labels(
     second_result = second.evaluate("window.__enqueueResult")
     first.wait_for_function(
         """
-        () => caches.open("bsb-meta-v1")
+        () => caches.open("bsb-meta-v2")
           .then((cache) => cache.keys())
           .then((keys) => !keys.some((key) =>
             key.url.includes("/__bsb_meta__/locks/queue-mutation/")))
@@ -2011,7 +2004,7 @@ def test_quarter_metadata_writes_merge_monotonically_when_older_write_is_delayed
     page.evaluate(
         """
         async () => {
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           const put = (path, value) => meta.put(
             new Request(new URL(`../__bsb_meta__/${path}`, location.href)),
             new Response(JSON.stringify(value)),
@@ -2113,7 +2106,7 @@ def test_stale_quarter_generation_cannot_overwrite_new_staging(
     page.evaluate(
         """
         async () => {
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           const put = (path, value) => meta.put(
             new Request(new URL(`../__bsb_meta__/${path}`, location.href)),
             new Response(JSON.stringify(value)),
@@ -2178,7 +2171,7 @@ def test_new_generation_clears_stale_progress_before_manifest_failure(
     page.evaluate(
         """
         async () => {
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           const put = (path, value) => meta.put(
             new Request(new URL(`../__bsb_meta__/${path}`, location.href)),
             new Response(JSON.stringify(value)),
@@ -2228,7 +2221,7 @@ def test_new_generation_clears_stale_progress_before_manifest_failure(
     page.wait_for_function(
         """
         async () => {
-          const cache = await caches.open("bsb-meta-v1");
+          const cache = await caches.open("bsb-meta-v2");
           return !await cache.match(new Request(new URL(
             "../__bsb_meta__/progress/2026-07.json", location.href)));
         }
@@ -2248,7 +2241,7 @@ def test_cancelled_runner_cannot_modify_new_queue_generation(
         time.sleep(0.5)
         route.continue_()
 
-    page.route("**/data/offline/2026-07.json", delay_manifest)
+    page.route("**/data/offline-v2/2026-07.json", delay_manifest)
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
     old = page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
@@ -2333,7 +2326,7 @@ def test_remove_current_queue_quarter_requires_cancel_first(
         time.sleep(0.5)
         route.continue_()
 
-    page.route("**/data/offline/2026-07.json", delay_manifest)
+    page.route("**/data/offline-v2/2026-07.json", delay_manifest)
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
@@ -2366,7 +2359,7 @@ def test_remove_quarter_waits_for_runner_before_gc(
     pwa_site: Path,
 ) -> None:
     manifest = json.loads(
-        (pwa_site / "data" / "offline" / "2026-07.json").read_text("utf-8")
+        (pwa_site / "data" / "offline-v2" / "2026-07.json").read_text("utf-8")
     )
     target = next(
         item for item in manifest["resources"]
@@ -2428,7 +2421,7 @@ def test_remove_quarter_waits_for_runner_before_gc(
     assert page.evaluate(
         """
         async (hash) => {
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           return Boolean(await content.match(new Request(new URL(
             `../__bsb_content__/${hash}`, location.href))));
         }
@@ -2449,7 +2442,7 @@ def test_remove_pending_queue_quarter_scrubs_it_before_runner_reaches_it(
         time.sleep(0.5)
         route.continue_()
 
-    page.route("**/data/offline/2026-07.json", delay_current_manifest)
+    page.route("**/data/offline-v2/2026-07.json", delay_current_manifest)
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
     requests: list[str] = []
@@ -2463,7 +2456,7 @@ def test_remove_pending_queue_quarter_scrubs_it_before_runner_reaches_it(
     queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
     assert queue["labels"] == ["2026-07"]
     assert queue["succeeded"] == ["2026-07"]
-    assert not any("data/offline/2026-04.json" in url for url in requests)
+    assert not any("data/offline-v2/2026-04.json" in url for url in requests)
     assert page.evaluate(
         "async () => (await window.BsbPwa.getQuarterState('2026-04')).status"
     ) == "NONE"
@@ -2479,12 +2472,12 @@ def test_update_detection_does_not_resurrect_removed_quarter_during_fetch(
     page.goto(f"{delayed_manifest_server}/settings/index.html")
     page.wait_for_function("navigator.serviceWorker.controller !== null")
     manifest = page.evaluate(
-        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+        "fetch('../data/offline-v2/2026-07.json').then((response) => response.json())"
     )
     page.evaluate(
         """
         async (manifest) => {
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           await meta.put(
             new Request(new URL(
               "../__bsb_meta__/quarters/2026-07.json", location.href)),
@@ -2534,12 +2527,12 @@ def test_update_detection_does_not_overwrite_completed_update(
     page.goto(f"{delayed_manifest_server}/settings/index.html")
     page.wait_for_function("navigator.serviceWorker.controller !== null")
     manifest = page.evaluate(
-        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+        "fetch('../data/offline-v2/2026-07.json').then((response) => response.json())"
     )
     page.evaluate(
         """
         async (manifest) => {
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           await meta.put(
             new Request(new URL(
               "../__bsb_meta__/quarters/2026-07.json", location.href)),
@@ -2605,12 +2598,12 @@ def test_update_detection_preserves_partial_staging_during_fetch(
     page.goto(f"{delayed_manifest_server}/settings/index.html")
     page.wait_for_function("navigator.serviceWorker.controller !== null")
     manifest = page.evaluate(
-        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+        "fetch('../data/offline-v2/2026-07.json').then((response) => response.json())"
     )
     page.evaluate(
         """
         async (manifest) => {
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           await meta.put(
             new Request(new URL(
               "../__bsb_meta__/quarters/2026-07.json", location.href)),
@@ -2636,7 +2629,7 @@ def test_update_detection_preserves_partial_staging_during_fetch(
           const detection = window.BsbPwa.detectUpdates();
           const staging = new Promise((resolve) => {
             setTimeout(async () => {
-              const meta = await caches.open("bsb-meta-v1");
+              const meta = await caches.open("bsb-meta-v2");
               await meta.put(
                 new Request(new URL(
                   "../__bsb_meta__/quarters/2026-07.json", location.href)),
@@ -2683,7 +2676,7 @@ def test_update_detection_separates_data_and_package_revisions(
     page.wait_for_function("navigator.serviceWorker.controller !== null")
     page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
     page.wait_for_function(
-        "sessionStorage.getItem('bsb-offline-auto-maintenance') === 'complete'"
+        "sessionStorage.getItem('bsb-offline-auto-maintenance-v2') === 'complete'"
     )
     startup = page.evaluate("""async () => ({
       queue: await window.BsbPwa.currentQueue(),
@@ -2693,14 +2686,14 @@ def test_update_detection_separates_data_and_package_revisions(
     assert startup["quarter"]["status"] == "NONE", json.dumps(
         startup, ensure_ascii=False
     )
-    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest_path = pwa_site / "data" / "offline-v2" / "2026-07.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
 
     def write_state(active: dict[str, object]) -> None:
         page.evaluate(
             """
             async (active) => {
-              const meta = await caches.open("bsb-meta-v1");
+              const meta = await caches.open("bsb-meta-v2");
               await meta.put(
                 new Request(new URL(
                   "../__bsb_meta__/quarters/2026-07.json", location.href)),
@@ -2734,23 +2727,11 @@ def test_update_detection_separates_data_and_package_revisions(
         "async () => (await window.BsbPwa.getQuarterState('2026-07')).status"
     ) == "COMPLETE"
 
-    legacy = {key: value for key, value in manifest.items() if key != "data_revision"}
-    write_state({**legacy, "revision": "legacy-package-revision"})
-    manifest["revision"] = "legacy-migrated-revision"
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
-    migrated = page.evaluate("async () => window.BsbPwa.detectUpdates()")
-    assert migrated["dataUpdates"] == []
-    assert migrated["packageMaintenance"] == ["2026-07"]
-    migrated_state = page.evaluate(
-        "async () => window.BsbPwa.getQuarterState('2026-07')"
-    )
-    assert migrated_state["active"]["data_revision"] == manifest["data_revision"]
-
     manifest["revision"] = "data-update-revision"
     manifest["data_revision"] = "d" * 64
+    for item in manifest["resources"]:
+        if item["url"] == "data/quarters/2026-07.json":
+            item["content_hash"] = manifest["data_revision"]
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
         encoding="utf-8",
@@ -2786,7 +2767,7 @@ def test_update_detection_separates_data_and_package_revisions(
           succeeded: queue.succeeded,
           failed: queue.failed,
         },
-        autoMaintenance: sessionStorage.getItem('bsb-offline-auto-maintenance'),
+        autoMaintenance: sessionStorage.getItem('bsb-offline-auto-maintenance-v2'),
         manifest: {
           revision: manifest.revision,
           data_revision: manifest.data_revision,
@@ -2796,7 +2777,7 @@ def test_update_detection_separates_data_and_package_revisions(
     failure_context = {
         **data_update,
         "offlineManifestRequests": [
-            request for request in requests if "/data/offline/" in request
+            request for request in requests if "/data/offline-v2/" in request
         ],
     }
     assert data_update["result"]["dataUpdates"] == ["2026-07"], json.dumps(
@@ -2852,27 +2833,27 @@ def test_auto_maintenance_is_active_only(
         "error": "test",
     })
     page.wait_for_function(
-        "sessionStorage.getItem('bsb-offline-auto-maintenance') === 'complete'"
+        "sessionStorage.getItem('bsb-offline-auto-maintenance-v2') === 'complete'"
     )
     requests: list[str] = []
     page.on("request", lambda request: requests.append(request.url))
     in_flight = page.evaluate("""() => {
-      sessionStorage.removeItem('bsb-offline-auto-maintenance');
+      sessionStorage.removeItem('bsb-offline-auto-maintenance-v2');
       const pending = window.BsbPwa.autoMaintainDownloadedQuarters();
       return {
         isPromise: pending instanceof Promise,
-        marker: sessionStorage.getItem('bsb-offline-auto-maintenance'),
+        marker: sessionStorage.getItem('bsb-offline-auto-maintenance-v2'),
       };
     }""")
     assert in_flight == {"isPromise": True, "marker": None}
     assert page.locator("[data-pwa-settings]").is_visible()
     page.wait_for_function(
-        "sessionStorage.getItem('bsb-offline-auto-maintenance') === 'complete'"
+        "sessionStorage.getItem('bsb-offline-auto-maintenance-v2') === 'complete'"
     )
-    manifest_requests = [url for url in requests if "data/offline/" in url]
-    assert any("data/offline/2026-07.json" in url for url in manifest_requests)
-    assert not any("data/offline/2026-04.json" in url for url in manifest_requests)
-    assert not any("data/offline/2026-01.json" in url for url in manifest_requests)
+    manifest_requests = [url for url in requests if "data/offline-v2/" in url]
+    assert any("data/offline-v2/2026-07.json" in url for url in manifest_requests)
+    assert not any("data/offline-v2/2026-04.json" in url for url in manifest_requests)
+    assert not any("data/offline-v2/2026-01.json" in url for url in manifest_requests)
     queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
     assert queue["state"] == "idle"
     assert queue["succeeded"] == ["2026-07"]
@@ -2895,7 +2876,7 @@ def test_auto_maintenance_updates_data_and_package_without_data_notice(
     quarter_path = pwa_site / "data" / "quarters" / "2026-07.json"
     changed_bytes = quarter_path.read_bytes() + b" "
     quarter_path.write_bytes(changed_bytes)
-    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest_path = pwa_site / "data" / "offline-v2" / "2026-07.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
     data_resource = next(
         item for item in manifest["resources"]
@@ -2906,7 +2887,7 @@ def test_auto_maintenance_updates_data_and_package_without_data_notice(
     manifest["revision"] = "d" * 64
     manifest["data_revision"] = data_resource["content_hash"]
     _write_offline_manifest(pwa_site, "2026-07", manifest)
-    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance-v2')")
     page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
     _wait_for_queue(page, 1)
     data_state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
@@ -2917,7 +2898,7 @@ def test_auto_maintenance_updates_data_and_package_without_data_notice(
 
     manifest["revision"] = "p" * 64
     _write_offline_manifest(pwa_site, "2026-07", manifest)
-    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance-v2')")
     page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
     _wait_for_queue(page, 1)
     package_state = page.evaluate(
@@ -2953,15 +2934,19 @@ def test_auto_package_failure_keeps_active_downloaded_and_records_error(
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
     _wait_for_queue(page, 1)
     original = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
-    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest_path = pwa_site / "data" / "offline-v2" / "2026-07.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
     app_resource = next(
-        item for item in manifest["resources"] if item["url"] == "assets/app.js"
+        item for item in manifest["resources"]
+        if item["url"].startswith("assets/app.") and item["url"].endswith(".js")
+    )
+    app_resource["url"] = app_resource["url"].replace(
+        app_resource["content_hash"], "e" * 64
     )
     app_resource["content_hash"] = "e" * 64
     manifest["revision"] = "f" * 64
     _write_offline_manifest(pwa_site, "2026-07", manifest)
-    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance-v2')")
     page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
     _wait_for_queue(page, 1)
     state = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
@@ -2984,33 +2969,35 @@ def test_auto_maintenance_session_guard_and_offline_recovery(
     page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
     _wait_for_queue(page, 1)
-    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance-v2')")
     requests: list[str] = []
     page.on("request", lambda request: requests.append(request.url))
     page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
     page.wait_for_function(
-        "sessionStorage.getItem('bsb-offline-auto-maintenance') === 'complete'"
+        "sessionStorage.getItem('bsb-offline-auto-maintenance-v2') === 'complete'"
     )
     page.goto(f"{pwa_server}/2026-07/index.html")
     page.goto(f"{pwa_server}/archive/index.html")
     page.goto(f"{pwa_server}/settings/index.html")
-    manifest_requests = [url for url in requests if "data/offline/2026-07.json" in url]
+    manifest_requests = [
+        url for url in requests if "data/offline-v2/2026-07.json" in url
+    ]
     assert len(manifest_requests) == 1
 
     page.wait_for_timeout(300)
-    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance-v2')")
     requests.clear()
     context.set_offline(True)
     page.wait_for_function("navigator.onLine === false")
     page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
     page.wait_for_timeout(150)
-    assert not any("data/offline/2026-07.json" in url for url in requests)
+    assert not any("data/offline-v2/2026-07.json" in url for url in requests)
     context.set_offline(False)
     page.evaluate("window.dispatchEvent(new Event('online'))")
     page.wait_for_function(
-        "sessionStorage.getItem('bsb-offline-auto-maintenance') === 'complete'"
+        "sessionStorage.getItem('bsb-offline-auto-maintenance-v2') === 'complete'"
     )
-    assert any("data/offline/2026-07.json" in url for url in requests)
+    assert any("data/offline-v2/2026-07.json" in url for url in requests)
     context.close()
 
 
@@ -3025,12 +3012,12 @@ def test_auto_maintenance_merges_existing_queue_generation(
     page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
     _wait_for_queue(page, 1)
-    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest_path = pwa_site / "data" / "offline-v2" / "2026-07.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
     manifest["revision"] = "m" * 64
     _write_offline_manifest(pwa_site, "2026-07", manifest)
     manifest_04 = json.loads(
-        (pwa_site / "data" / "offline" / "2026-04.json").read_text("utf-8")
+        (pwa_site / "data" / "offline-v2" / "2026-04.json").read_text("utf-8")
     )
     _seed_quarter_state(page, "2026-04", {
         "schema": 1,
@@ -3044,7 +3031,7 @@ def test_auto_maintenance_merges_existing_queue_generation(
     page.evaluate(
         """
         async (generation) => {
-          const meta = await caches.open('bsb-meta-v1');
+          const meta = await caches.open('bsb-meta-v2');
           await meta.put(
             new Request(new URL('../__bsb_meta__/queue.json', location.href)),
             new Response(JSON.stringify({
@@ -3062,7 +3049,7 @@ def test_auto_maintenance_merges_existing_queue_generation(
         """,
         generation,
     )
-    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance')")
+    page.evaluate("sessionStorage.removeItem('bsb-offline-auto-maintenance-v2')")
     page.evaluate("async () => window.BsbPwa.autoMaintainDownloadedQuarters()")
     page.wait_for_function(
         "window.BsbPwa.currentQueue().then((queue) => "
@@ -3078,10 +3065,12 @@ def test_auto_maintenance_merges_existing_queue_generation(
     context.close()
 
 
+@pytest.mark.parametrize("fault", ["corrupt-response", "quota"])
 def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_bytes(
     chromium: Browser,
     pwa_server: str,
     pwa_site: Path,
+    fault: str,
 ) -> None:
     context = chromium.new_context()
     context.add_init_script(
@@ -3099,30 +3088,39 @@ def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_byte
     original = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
     assert original["status"] == "COMPLETE"
 
+    def edit_payload(payload: dict) -> None:
+        payload["movie"]["premiere"][0]["rating_score"] = 9.0
+
+    _rewrite_quarter_snapshot(pwa_site, "2026-07", edit_payload)
     quarter_path = pwa_site / "data" / "quarters" / "2026-07.json"
-    changed_bytes = quarter_path.read_bytes() + b" "
-    quarter_path.write_bytes(b"incorrect quarter bytes")
-    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
-    manifest = json.loads(manifest_path.read_text("utf-8"))
-    manifest["revision"] = "updated-quarter-revision"
-    resource = next(
-        item
-        for item in manifest["resources"]
-        if item["url"] == "data/quarters/2026-07.json"
-    )
-    resource["content_hash"] = hashlib.sha256(changed_bytes).hexdigest()
-    resource["size_bytes"] = len(changed_bytes)
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
+    changed_bytes = quarter_path.read_bytes()
+    manifest_path = pwa_site / "data" / "offline-v2" / "2026-07.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    if fault == "quota":
+        page.evaluate(
+            """digest => {
+              const put = Cache.prototype.put;
+              window.restoreCachePut = () => { Cache.prototype.put = put; };
+              Cache.prototype.put = function (request, response) {
+                if (request.url.endsWith('/__bsb_content__/' + digest)) {
+                  throw new DOMException('test quota exhausted', 'QuotaExceededError');
+                }
+                return put.call(this, request, response);
+              };
+            }""",
+            manifest["data_revision"],
+        )
+    else:
+        quarter_path.write_bytes(b"incorrect quarter bytes")
 
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
     _wait_for_queue(page, 1)
     failed = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
-    assert failed["status"] == "INCOMPLETE"
+    assert failed["status"] == "UPDATE_INCOMPLETE"
     assert failed["active"]["revision"] == original["active"]["revision"]
-    assert failed["staging"]["revision"] == "updated-quarter-revision"
+    assert failed["staging"]["revision"] == manifest["revision"]
+    if fault == "quota":
+        assert "test quota exhausted" in failed["error"]
     page.wait_for_function(
         "document.querySelector('[data-offline-quarter=\"2026-07\"]')"
         "?.textContent.includes('更新未完成')"
@@ -3137,7 +3135,7 @@ def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_byte
     )
     assert page.evaluate(
         """
-        (hash) => caches.open("bsb-content-v1")
+        (hash) => caches.open("bsb-content-v2")
           .then((cache) => cache.match(new URL(
             `../__bsb_content__/${hash}`,
             location.href,
@@ -3147,23 +3145,27 @@ def test_failed_quarter_update_keeps_active_and_resume_fetches_only_missing_byte
         old_hash,
     )
 
-    quarter_path.write_bytes(changed_bytes)
+    if fault == "quota":
+        page.evaluate("window.restoreCachePut()")
+    else:
+        quarter_path.write_bytes(changed_bytes)
     requests: list[str] = []
     page.on("request", lambda request: requests.append(request.url))
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
     _wait_for_queue(page, 1)
     complete = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
     assert complete["status"] == "COMPLETE"
-    assert complete["active"]["revision"] == "updated-quarter-revision"
+    assert complete["active"]["revision"] == manifest["revision"]
     assert complete["staging"] is None
     resource_requests = [
         url
         for url in requests
-        if not url.endswith("data/offline/2026-07.json")
+        if not url.endswith("data/offline-v2/2026-07.json")
     ]
-    assert resource_requests == [
-        f"{pwa_server}/data/quarters/2026-07.json"
-    ]
+    # A quota failure can reuse the verified runtime response on retry.
+    assert resource_requests == (
+        [] if fault == "quota" else [f"{pwa_server}/data/quarters/2026-07.json"]
+    )
     context.close()
 
 
@@ -3173,7 +3175,7 @@ def test_final_promotion_repairs_missing_verified_content_blob(
     pwa_site: Path,
 ) -> None:
     manifest = json.loads(
-        (pwa_site / "data" / "offline" / "2026-07.json").read_text("utf-8")
+        (pwa_site / "data" / "offline-v2" / "2026-07.json").read_text("utf-8")
     )
     target = next(
         item for item in manifest["resources"]
@@ -3200,7 +3202,7 @@ def test_final_promotion_repairs_missing_verified_content_blob(
                 if (hashes.size >= uniqueCount) {{
                   deleted = true;
                   window.__closureDeleted = true;
-                  const content = await caches.open("bsb-content-v1");
+                  const content = await caches.open("bsb-content-v2");
                   await content.delete(new Request(new URL(
                     `../__bsb_content__/${{targetHash}}`, location.href)));
                 }}
@@ -3219,7 +3221,7 @@ def test_final_promotion_repairs_missing_verified_content_blob(
     page.evaluate(
         """
         async (resource) => {
-          const runtime = await caches.open("bsb-runtime-v1");
+          const runtime = await caches.open("bsb-runtime-v2");
           const candidates = [
             resource.url,
             `${resource.url}?v=${resource.content_hash}`,
@@ -3242,7 +3244,7 @@ def test_final_promotion_repairs_missing_verified_content_blob(
     assert page.evaluate(
         """
         async (hash) => {
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           return Boolean(await content.match(new Request(new URL(
             `../__bsb_content__/${hash}`, location.href))));
         }
@@ -3295,7 +3297,7 @@ def test_missing_verified_blob_repair_failure_keeps_old_active_incomplete(
                 if (hashes.size >= uniqueCount) {
                   deleted = true;
                   window.__closureDeleted = true;
-                  const content = await caches.open("bsb-content-v1");
+                  const content = await caches.open("bsb-content-v2");
                   await content.delete(new Request(new URL(
                     `../__bsb_content__/${targetHash}`, location.href)));
                 }
@@ -3307,7 +3309,7 @@ def test_missing_verified_blob_repair_failure_keeps_old_active_incomplete(
         """,
         {"targetHash": target["content_hash"], "uniqueCount": unique_count},
     )
-    manifest_path = pwa_site / "data" / "offline" / "2026-07.json"
+    manifest_path = pwa_site / "data" / "offline-v2" / "2026-07.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
     manifest["revision"] = "closure-repair-failure-revision"
     manifest_path.write_text(
@@ -3318,7 +3320,7 @@ def test_missing_verified_blob_repair_failure_keeps_old_active_incomplete(
     page.evaluate(
         """
         async (resource) => {
-          const runtime = await caches.open("bsb-runtime-v1");
+          const runtime = await caches.open("bsb-runtime-v2");
           const candidates = [
             resource.url,
             `${resource.url}?v=${resource.content_hash}`,
@@ -3334,7 +3336,7 @@ def test_missing_verified_blob_repair_failure_keeps_old_active_incomplete(
     _wait_for_queue(page, 1)
     failed = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
     assert page.evaluate("window.__closureDeleted")
-    assert failed["status"] == "INCOMPLETE"
+    assert failed["status"] == "UPDATE_INCOMPLETE"
     assert failed["active"]["revision"] == original["active"]["revision"]
     assert failed["staging"]["revision"] == "closure-repair-failure-revision"
     assert failed["staging"]["verified_hashes"]
@@ -3349,14 +3351,9 @@ def test_quarter_manifest_validation_rejects_unsafe_and_duplicate_resources(
     page = context.new_page()
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
-    valid = {
-        "quarter": "2026-07",
-        "revision": "revision",
-        "data_revision": "b" * 64,
-        "resources": [
-            {"url": "index.html", "content_hash": "a" * 64, "size_bytes": 1}
-        ],
-    }
+    valid = page.evaluate(
+        "fetch('../data/offline-v2/2026-07.json').then((response) => response.json())"
+    )
     assert page.evaluate(
         "([value]) => window.BsbPwa.validateQuarterManifest(value, '2026-07')",
         [valid],
@@ -3399,13 +3396,13 @@ def test_quarter_manifest_validation_rejects_unsafe_and_duplicate_resources(
         [duplicate],
     )
     alias = {**valid, "resources": [
-        valid["resources"][0],
+        *valid["resources"],
         {**valid["resources"][0], "url": "alias.html"},
     ]}
     assert page.evaluate(
         "([value]) => window.BsbPwa.validateQuarterManifest(value, '2026-07')",
         [alias],
-    )["resources"][1]["content_hash"] == "a" * 64
+    )["resources"][-1]["content_hash"] == valid["resources"][0]["content_hash"]
     conflicting_size = {**valid, "resources": [
         valid["resources"][0],
         {**valid["resources"][0], "url": "conflict.html", "size_bytes": 2},
@@ -3499,7 +3496,7 @@ def test_cancelled_queue_keeps_partial_staging_and_does_not_resume_on_reopen(
     reopened.wait_for_timeout(200)
     queue = reopened.evaluate("async () => window.BsbPwa.currentQueue()")
     assert queue["state"] == "cancelled"
-    assert not any("data/offline/2026-07.json" in url for url in requests)
+    assert not any("data/offline-v2/2026-07.json" in url for url in requests)
     context.close()
 
 
@@ -3540,7 +3537,7 @@ def test_runtime_resource_is_promoted_and_hash_mismatch_is_refetched(
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("Boolean(window.BsbPwa)")
     manifest = page.evaluate(
-        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+        "fetch('../data/offline-v2/2026-07.json').then((response) => response.json())"
     )
     cover = next(
         item for item in manifest["resources"] if item["url"] == "covers/101.webp"
@@ -3551,7 +3548,7 @@ def test_runtime_resource_is_promoted_and_hash_mismatch_is_refetched(
     page.evaluate(
         """
         async ({ cover, quarterPage }) => {
-          const runtime = await caches.open("bsb-runtime-v1");
+          const runtime = await caches.open("bsb-runtime-v2");
           const coverResponse = await fetch(new URL(`../${cover.url}`, location.href));
           await runtime.put(
             new Request(new URL(
@@ -3575,7 +3572,7 @@ def test_runtime_resource_is_promoted_and_hash_mismatch_is_refetched(
     assert not any("covers/101.webp" in url for url in requests)
     assert requests.count(f"{pwa_server}/2026-07/index.html") == 1
     runtime_entries = page.evaluate(
-        "caches.open('bsb-runtime-v1').then((cache) => cache.keys())"
+        "caches.open('bsb-runtime-v2').then((cache) => cache.keys())"
         ".then((keys) => keys.map((key) => key.url))"
     )
     assert not any("covers/101.webp" in url for url in runtime_entries)
@@ -3591,22 +3588,25 @@ def test_missing_old_versioned_blob_never_returns_current_physical_bytes(
     page.goto(f"{pwa_server}/settings/index.html")
     page.wait_for_function("navigator.serviceWorker.controller !== null")
     manifest = page.evaluate(
-        "fetch('../data/offline/2026-07.json').then((response) => response.json())"
+        "fetch('../data/offline-v2/2026-07.json').then((response) => response.json())"
     )
     old_hash = hashlib.sha256(b"old app revision").hexdigest()
     result = page.evaluate(
         """
         async ({ manifest, oldHash }) => {
-          const app = manifest.resources.find((item) => item.url === "assets/app.js");
+          const app = manifest.resources.find(
+            ({url}) => url.startsWith("assets/app.") && url.endsWith(".js"));
+
           if (!app) throw new Error("app.js resource missing");
-          const oldResource = { ...app, content_hash: oldHash, size_bytes: 16 };
+          const oldUrl = app.url.replace(app.content_hash, oldHash);
+          const oldResource = { url: oldUrl, content_hash: oldHash, size_bytes: 16 };
           const activeManifest = {
             ...manifest,
             resources: manifest.resources.map((item) => (
               item.url === app.url ? oldResource : item
             )),
           };
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           await meta.put(
             new Request(new URL(
               "../__bsb_meta__/quarters/2026-07.json", location.href)),
@@ -3619,19 +3619,17 @@ def test_missing_old_versioned_blob_never_returns_current_physical_bytes(
               error: null,
             })),
           );
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           await content.delete(new Request(new URL(
             `../__bsb_content__/${oldHash}`, location.href,
           )));
-          const runtime = await caches.open("bsb-runtime-v1");
+          const runtime = await caches.open("bsb-runtime-v2");
           const currentBytes = await fetch(new URL(`../${app.url}`, location.href));
           await runtime.put(
-            new Request(new URL(`../${app.url}?v=${oldHash}`, location.href)),
+            new Request(new URL(`../${oldUrl}`, location.href)),
             currentBytes,
           );
-          const response = await fetch(new URL(
-            `../${app.url}?v=${oldHash}`, location.href,
-          ));
+          const response = await fetch(new URL(`../${oldUrl}`, location.href));
           return {
             status: response.status,
             body: await response.text(),
@@ -3644,7 +3642,7 @@ def test_missing_old_versioned_blob_never_returns_current_physical_bytes(
     )
     assert result["status"] == 503
     assert "Versioned resource unavailable" in result["body"]
-    assert not any(f"?v={old_hash}" in url for url in result["runtime"])
+    assert not any(f".{old_hash}.js" in url for url in result["runtime"])
     assert not any(url.endswith(old_hash) for url in result["content"])
     context.close()
 
@@ -3770,7 +3768,7 @@ def test_settings_progress_keeps_selector_identity_focus_and_skips_storage_refre
         "await window.BsbPwa.pauseQueue(); return queue.generation; }"
     )
     page.evaluate(
-        "async () => { const cache = await caches.open('bsb-meta-v1'); "
+        "async () => { const cache = await caches.open('bsb-meta-v2'); "
         "const request = new Request(new URL('../__bsb_meta__/queue.json', "
         "location.href)); "
         "const queue = await (await cache.match(request)).json(); "
@@ -3837,7 +3835,7 @@ def test_settings_can_remove_incomplete_download_and_partial_content(
     )
     page.wait_for_function(
         """async (hash) => {
-          const cache = await caches.open("bsb-content-v1");
+          const cache = await caches.open("bsb-content-v2");
           const response = await cache.match(new URL(
             `../__bsb_content__/${hash}`, location.href));
           return !response;
@@ -3846,7 +3844,7 @@ def test_settings_can_remove_incomplete_download_and_partial_content(
     )
     assert page.evaluate(
         """
-        (hash) => caches.open("bsb-content-v1")
+        (hash) => caches.open("bsb-content-v2")
           .then((cache) => cache.match(new URL(
             `../__bsb_content__/${hash}`, location.href)))
           .then(Boolean)
@@ -3871,8 +3869,8 @@ def test_settings_can_remove_update_incomplete_and_keep_shared_content(
     manifests = page.evaluate(
         """
         async () => Promise.all([
-          fetch('../data/offline/2026-04.json').then((response) => response.json()),
-          fetch('../data/offline/2026-07.json').then((response) => response.json()),
+          fetch('../data/offline-v2/2026-04.json').then((response) => response.json()),
+          fetch('../data/offline-v2/2026-07.json').then((response) => response.json()),
         ])
         """
     )
@@ -3889,7 +3887,7 @@ def test_settings_can_remove_update_incomplete_and_keep_shared_content(
     page.evaluate(
         """
         async ({ april, july, sharedHash, uniqueHash }) => {
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           const put = (path, value) => meta.put(
             new Request(new URL(`../__bsb_meta__/${path}`, location.href)),
             new Response(JSON.stringify(value)),
@@ -3924,7 +3922,7 @@ def test_settings_can_remove_update_incomplete_and_keep_shared_content(
             },
             error: "update paused",
           });
-          const content = await caches.open("bsb-content-v1");
+          const content = await caches.open("bsb-content-v2");
           for (const hash of [sharedHash, uniqueHash]) {
             await content.put(
               new Request(new URL(`../__bsb_content__/${hash}`, location.href)),
@@ -3959,7 +3957,7 @@ def test_settings_can_remove_update_incomplete_and_keep_shared_content(
     )
     page.wait_for_function(
         """async (hash) => {
-          const cache = await caches.open("bsb-content-v1");
+          const cache = await caches.open("bsb-content-v2");
           const response = await cache.match(new URL(
             `../__bsb_content__/${hash}`, location.href));
           return !response;
@@ -3968,7 +3966,7 @@ def test_settings_can_remove_update_incomplete_and_keep_shared_content(
     )
     assert page.evaluate(
         """
-        (hash) => caches.open("bsb-content-v1")
+        (hash) => caches.open("bsb-content-v2")
           .then((cache) => cache.match(new URL(
             `../__bsb_content__/${hash}`, location.href)))
           .then(Boolean)
@@ -3977,7 +3975,7 @@ def test_settings_can_remove_update_incomplete_and_keep_shared_content(
     ) is True
     assert page.evaluate(
         """
-        (hash) => caches.open("bsb-content-v1")
+        (hash) => caches.open("bsb-content-v2")
           .then((cache) => cache.match(new URL(
             `../__bsb_content__/${hash}`, location.href)))
           .then(Boolean)
@@ -4192,7 +4190,7 @@ def test_verified_quarter_shows_old_first_and_explicitly_loads_coherent_online_u
     _set_preview_fixture_cover(tmp_path, database, 101, large=True)
     builder.build()
     new_payload = json.loads((served / "data/quarters/2026-07.json").read_text("utf-8"))
-    new_manifest = json.loads((served / "data/offline/2026-07.json").read_text("utf-8"))
+    new_manifest = json.loads((served / "data/offline-v2/2026-07.json").read_bytes())
     new_revision = new_manifest["data_revision"]
     assert new_revision != old_revision
     new_item = next(
@@ -4326,7 +4324,7 @@ def test_verified_quarter_shows_old_first_and_explicitly_loads_coherent_online_u
     )
     builder.build()
     package_after_app_change = json.loads(
-        (served / "data/offline/2026-07.json").read_text("utf-8")
+        (served / "data/offline-v2/2026-07.json").read_text("utf-8")
     )
     assert package_after_app_change["data_revision"] == new_revision
     assert package_after_app_change["revision"] != new_manifest["revision"]
@@ -4386,7 +4384,7 @@ def test_verified_quarter_shows_old_first_and_explicitly_loads_coherent_online_u
         'main[data-page="quarter"]'
     ).get_attribute("data-data-url")
     assert page.evaluate(
-        """caches.open('bsb-meta-v1').then(cache => cache.keys())
+        """caches.open('bsb-meta-v2').then(cache => cache.keys())
           .then(keys => keys.filter(
             key => key.url.includes('/quarter-clients/'),
           ).length)"""
@@ -4413,7 +4411,7 @@ def test_verified_quarter_shows_old_first_and_explicitly_loads_coherent_online_u
     assert after_app_update["active"]["revision"] == old_state["active"]["revision"]
     assert after_app_update["staging"] is None
     content_keeps_old = """async hash => {
-      const content = await caches.open('bsb-content-v1');
+      const content = await caches.open('bsb-content-v2');
       return Boolean(await content.match(new Request(new URL(
         `../__bsb_content__/${hash}`, location.href
       ))));
@@ -4473,7 +4471,7 @@ def test_online_quarter_pin_isolated_per_client_and_kept_across_revisit(
         )
     builder.build()
     new_manifest = json.loads(
-        (_served / "data/offline/2026-07.json").read_text("utf-8")
+        (_served / "data/offline-v2/2026-07.json").read_text("utf-8")
     )
 
     client_a.reload()
@@ -4563,7 +4561,7 @@ def test_quarter_old_first_requires_complete_verified_pinned_generation(
     changed = page.evaluate(
         """
         async (failure) => {
-          const meta = await caches.open("bsb-meta-v1");
+          const meta = await caches.open("bsb-meta-v2");
           const key = new Request(new URL(
             "../__bsb_meta__/quarters/2026-07.json", location.href,
           ));
@@ -4583,7 +4581,7 @@ def test_quarter_old_first_requires_complete_verified_pinned_generation(
             if (failure === "invalid-page-hash") {
               resource.content_hash = "f".repeat(64);
             } else {
-              const content = await caches.open("bsb-content-v1");
+              const content = await caches.open("bsb-content-v2");
               const contentKey = new Request(new URL(
                 `../__bsb_content__/${resource.content_hash}`, location.href,
               ));
@@ -4606,11 +4604,11 @@ def test_quarter_old_first_requires_complete_verified_pinned_generation(
             const pageResource = active.active.resources.find(
               (item) => item.url === "2026-07/index.html",
             );
-            const content = await caches.open("bsb-content-v1");
+            const content = await caches.open("bsb-content-v2");
             const storedPage = await content.match(new Request(new URL(
               `../__bsb_content__/${pageResource.content_hash}`, location.href,
             )));
-            const runtime = await caches.open("bsb-runtime-v1");
+            const runtime = await caches.open("bsb-runtime-v2");
             await runtime.put(
               new Request(new URL("../2026-07/index.html", location.href)),
               storedPage,
@@ -4681,7 +4679,7 @@ def test_webkit_verified_quarter_freshness_requires_explicit_update(
         )
     builder.build()
     new_manifest = json.loads(
-        (served / "data/offline/2026-07.json").read_text("utf-8")
+        (served / "data/offline-v2/2026-07.json").read_text("utf-8")
     )
 
     page.goto(f"{server_url}/2026-07/index.html")
@@ -4728,8 +4726,8 @@ def test_app_update_waits_for_user_and_data_only_build_does_not_update_shell(
     page = context.new_page()
     page.goto(f"{update_server}/settings/index.html")
     page.wait_for_function("navigator.serviceWorker.controller !== null")
-    shell_before = (served / "data" / "pwa-shell.json").read_bytes()
-    worker_before = (served / "sw.js").read_bytes()
+    shell_before = (served / "data" / "pwa-shell-v2.json").read_bytes()
+    worker_before = (served / "sw-v2.js").read_bytes()
 
     repository = SubjectRepository(database)
     subject = repository.get_subject_facts(202)
@@ -4740,8 +4738,8 @@ def test_app_update_waits_for_user_and_data_only_build_does_not_update_shell(
             replace(subject, subject=replace(subject.subject, rating_score=9.4)),
         )
     builder.build()
-    assert (served / "data" / "pwa-shell.json").read_bytes() == shell_before
-    assert (served / "sw.js").read_bytes() == worker_before
+    assert (served / "data" / "pwa-shell-v2.json").read_bytes() == shell_before
+    assert (served / "sw-v2.js").read_bytes() == worker_before
     page.evaluate(
         "navigator.serviceWorker.ready.then((registration) => registration.update())"
     )
@@ -4754,11 +4752,11 @@ def test_app_update_waits_for_user_and_data_only_build_does_not_update_shell(
         encoding="utf-8",
     )
     builder.build()
-    assert (served / "data" / "pwa-shell.json").read_bytes() != shell_before
-    assert (served / "sw.js").read_bytes() != worker_before
-    worker_stat = (served / "sw.js").stat()
+    assert (served / "data" / "pwa-shell-v2.json").read_bytes() != shell_before
+    assert (served / "sw-v2.js").read_bytes() != worker_before
+    worker_stat = (served / "sw-v2.js").stat()
     os.utime(
-        served / "sw.js",
+        served / "sw-v2.js",
         (worker_stat.st_atime + 2, worker_stat.st_mtime + 2),
     )
     page.evaluate(
@@ -4804,14 +4802,12 @@ def test_auto_maintenance_rechecks_offline_updates_after_reconnect(
     page.wait_for_function("window.BsbPwa?.capabilityState() === 'ready'")
     page.evaluate("async () => window.BsbPwa.enqueue(['2026-07'])")
     _wait_for_queue(page, 1)
-    manifest_path = served / "data" / "offline" / "2026-07.json"
-    manifest = json.loads(manifest_path.read_text("utf-8"))
-    manifest["revision"] = "reconnect-update-revision"
-    manifest["data_revision"] = "f" * 64
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
+    def edit_payload(payload: dict) -> None:
+        payload["movie"]["premiere"][0]["rating_score"] = 9.1
+
+    _rewrite_quarter_snapshot(served, "2026-07", edit_payload)
+    manifest_path = served / "data" / "offline-v2" / "2026-07.json"
+    next_revision = json.loads(manifest_path.read_bytes())["revision"]
 
     context.set_offline(True)
     page.reload()
@@ -4827,7 +4823,7 @@ def test_auto_maintenance_rechecks_offline_updates_after_reconnect(
         queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
         if (
             after["status"] == "COMPLETE"
-            and after["active"]["revision"] == "reconnect-update-revision"
+            and after["active"]["revision"] == next_revision
             and queue["state"] == "idle"
             and queue["current"] is None
         ):
@@ -4838,9 +4834,9 @@ def test_auto_maintenance_rechecks_offline_updates_after_reconnect(
     after = page.evaluate("async () => window.BsbPwa.getQuarterState('2026-07')")
     queue = page.evaluate("async () => window.BsbPwa.currentQueue()")
     assert after["status"] == "COMPLETE", (after, queue, page.evaluate(
-        "sessionStorage.getItem('bsb-offline-auto-maintenance')"
+        "sessionStorage.getItem('bsb-offline-auto-maintenance-v2')"
     ))
-    assert after["active"]["revision"] == "reconnect-update-revision", after
+    assert after["active"]["revision"] == next_revision, after
     assert after["staging"] is None
     assert queue["state"] == "idle"
     assert queue["current"] is None
@@ -4858,7 +4854,7 @@ def test_waiting_shell_survives_page_gc_and_activation_cleans_pending_metadata(
     page.goto(f"{update_server}/settings/index.html")
     page.wait_for_function("navigator.serviceWorker.controller !== null")
     shell_before = json.loads(
-        (served / "data" / "pwa-shell.json").read_text("utf-8")
+        (served / "data" / "pwa-shell-v2.json").read_text("utf-8")
     )
 
     pwa_source = isolated_root / "static" / "js" / "pwa.js"
@@ -4867,8 +4863,8 @@ def test_waiting_shell_survives_page_gc_and_activation_cleans_pending_metadata(
         encoding="utf-8",
     )
     builder.build()
-    worker_stat = (served / "sw.js").stat()
-    os.utime(served / "sw.js", (worker_stat.st_atime + 2, worker_stat.st_mtime + 2))
+    worker_stat = (served / "sw-v2.js").stat()
+    os.utime(served / "sw-v2.js", (worker_stat.st_atime + 2, worker_stat.st_mtime + 2))
     page.evaluate(
         "navigator.serviceWorker.ready.then((registration) => registration.update())"
     )
@@ -4878,7 +4874,7 @@ def test_waiting_shell_survives_page_gc_and_activation_cleans_pending_metadata(
           const registration = await navigator.serviceWorker.ready;
           for (let attempt = 0; attempt < 200; attempt += 1) {
             if (registration.waiting) {
-              const meta = await caches.open("bsb-meta-v1");
+              const meta = await caches.open("bsb-meta-v2");
               const keys = await meta.keys();
               const key = keys.find((request) =>
                 request.url.includes("shell-pending-"));
@@ -4895,7 +4891,7 @@ def test_waiting_shell_survives_page_gc_and_activation_cleans_pending_metadata(
     assert page.evaluate(
         """
         async (manifest) => {
-          const cache = await caches.open("bsb-content-v1");
+          const cache = await caches.open("bsb-content-v2");
           for (const resource of manifest.resources) {
             const key = new URL(
               `../__bsb_content__/${resource.content_hash}`,
@@ -4916,7 +4912,7 @@ def test_waiting_shell_survives_page_gc_and_activation_cleans_pending_metadata(
     page.wait_for_function(
         """
         async (revision) => {
-          const response = await caches.open("bsb-meta-v1").then((cache) =>
+          const response = await caches.open("bsb-meta-v2").then((cache) =>
             cache.match(new URL("../__bsb_meta__/shell.json", location.href)));
           const value = response ? await response.json() : null;
           return value && value.revision !== revision;
@@ -4925,7 +4921,7 @@ def test_waiting_shell_survives_page_gc_and_activation_cleans_pending_metadata(
         arg=shell_before["revision"],
     )
     pending_count = page.evaluate(
-        "caches.open('bsb-meta-v1').then((cache) => cache.keys())"
+        "caches.open('bsb-meta-v2').then((cache) => cache.keys())"
         ".then((keys) => keys.filter((key) => "
         "key.url.includes('shell-pending-')).length)"
     )
@@ -4952,7 +4948,7 @@ def test_shell_activation_gc_serializes_with_quarter_download(
     shell_before = page.evaluate(
         """
         async () => {
-          const cache = await caches.open("bsb-meta-v1");
+          const cache = await caches.open("bsb-meta-v2");
           const response = await cache.match(new Request(new URL(
             "../__bsb_meta__/shell.json", location.href)));
           return response.json();
@@ -4989,8 +4985,8 @@ def test_shell_activation_gc_serializes_with_quarter_download(
         encoding="utf-8",
     )
     builder.build()
-    worker_stat = (served / "sw.js").stat()
-    os.utime(served / "sw.js", (worker_stat.st_atime + 2, worker_stat.st_mtime + 2))
+    worker_stat = (served / "sw-v2.js").stat()
+    os.utime(served / "sw-v2.js", (worker_stat.st_atime + 2, worker_stat.st_mtime + 2))
     control.evaluate(
         "navigator.serviceWorker.ready.then((registration) => registration.update())"
     )
@@ -5000,7 +4996,7 @@ def test_shell_activation_gc_serializes_with_quarter_download(
           const registration = await navigator.serviceWorker.ready;
           for (let attempt = 0; attempt < 200; attempt += 1) {
             if (registration.waiting) {
-              const meta = await caches.open("bsb-meta-v1");
+              const meta = await caches.open("bsb-meta-v2");
               const keys = await meta.keys();
               const key = keys.find((request) =>
                 request.url.includes("shell-pending-"));
@@ -5018,7 +5014,7 @@ def test_shell_activation_gc_serializes_with_quarter_download(
     shell_during = page.evaluate(
         """
         async () => {
-          const cache = await caches.open("bsb-meta-v1");
+          const cache = await caches.open("bsb-meta-v2");
           const response = await cache.match(new Request(new URL(
             "../__bsb_meta__/shell.json", location.href)));
           return response.json();
@@ -5032,7 +5028,7 @@ def test_shell_activation_gc_serializes_with_quarter_download(
     page.wait_for_function(
         """
         async (revision) => {
-          const cache = await caches.open("bsb-meta-v1");
+          const cache = await caches.open("bsb-meta-v2");
           const response = await cache.match(new Request(new URL(
             "../__bsb_meta__/shell.json", location.href)));
           const value = response ? await response.json() : null;
@@ -5050,7 +5046,7 @@ def test_shell_activation_gc_serializes_with_quarter_download(
         page.evaluate(
             """
             async (hash) => {
-              const content = await caches.open("bsb-content-v1");
+              const content = await caches.open("bsb-content-v2");
               return Boolean(await content.match(new Request(new URL(
                 `../__bsb_content__/${hash}`, location.href))));
             }

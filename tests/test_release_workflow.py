@@ -223,7 +223,6 @@ def test_status_uses_metadata_without_full_integrity_or_site_hashing(
 
     monkeypatch.setattr(workflow.Database, "verify_integrity", unexpected)
     monkeypatch.setattr(workflow.UnifiedReleaseAuditor, "audit", unexpected)
-    monkeypatch.setattr(workflow, "validate_build_state", unexpected)
     monkeypatch.setattr(workflow, "validate_site", unexpected)
 
     status = workflow.local_status(root)
@@ -257,31 +256,27 @@ def test_release_prepare_retains_full_database_and_site_validation(
 ) -> None:
     root, _ = create_release_project(tmp_path)
     monkeypatch.setattr(workflow, "validate_release_origin", lambda _: "fixture")
-    counts = {"integrity": 0, "build_state": 0, "site": 0}
+    counts = {"integrity": 0, "candidate": 0}
     native_integrity = workflow.Database.verify_integrity
-    native_build_state = workflow.validate_build_state
     native_site = workflow.validate_site
 
     def counted_integrity(database: workflow.Database) -> None:
         counts["integrity"] += 1
         native_integrity(database)
 
-    def counted_build_state(site: Path, workspace: Path) -> None:
-        counts["build_state"] += 1
-        native_build_state(site, workspace)
-
-    def counted_site(site: Path, *, source_commit: str = ""):
-        counts["site"] += 1
-        return native_site(site, source_commit=source_commit)
+    def counted_site(
+        site: Path, *, source_commit: str = "", workspace: Path | None = None
+    ):
+        assert workspace == root / "workspace"
+        counts["candidate"] += 1
+        return native_site(site, source_commit=source_commit, workspace=workspace)
 
     monkeypatch.setattr(workflow.Database, "verify_integrity", counted_integrity)
-    monkeypatch.setattr(workflow, "validate_build_state", counted_build_state)
     monkeypatch.setattr(workflow, "validate_site", counted_site)
     workflow.prepare_release(root)
 
     assert counts["integrity"] == 1
-    assert counts["build_state"] >= 1
-    assert counts["site"] >= 1
+    assert counts["candidate"] >= 1
 
 
 def test_confirmed_publish_survives_prepared_state_cleanup_failure(

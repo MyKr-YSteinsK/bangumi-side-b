@@ -55,6 +55,15 @@ python -m venv .venv
 - 若站点显示 `recovery pending`，关闭占用输出文件的程序，再运行 `bgmb build --all`。待恢复清单位于 `workspace/build-staging/recovery-*`，事实写集位于数据库旁的 `*.undo-*`。保留这两类目录、原库与现有站点。旧版未带清单的残余备份需人工比对。预览按请求读取磁盘文件，在构建中途可见不同代际；正式候选须通过完整校验。
 - 遇到 `recovery conflict`，先另存用户修改与整个受影响写集。对照清单内的路径、原始证据和目标摘要，由维护者确定该文件应保留的版本。恢复到记录能识别的字节后重跑命令，再通过正常裁决命令重放另存的决定。不要通过删除证据或强制发布来处理冲突。
 
+## 离线协议 v2 升级
+
+1. 从 0.10.0 开始，CSS、应用脚本和 PWA 脚本的实际路径带有内容摘要。先保留同一代的 `dist/site` 与 `workspace/build-state.json` 备份。数据库、封面、人工配置与发布分支继续按原边界保护。
+2. 用完整的本机资料运行 `bgmb build --all`，再用 `bgmb doctor --local` 检查。有已记录的受阻季度且只剩旧协议或损坏文件时，构建会指出季度和出错资源。可恢复经过验证的 v2 站点与对应 build state，或等本机事实完成后再构建。保留故障现场及备份。
+3. 准备正式候选时重新运行 `bgmb release prepare`，为新源码和站点建立绑定。回退到旧源码时使用同一代的旧站点与状态副本。生产发布仍按独立授权。
+4. 访问新版 Settings 时保持联网，确认应用刷新，然后重新下载需要的季度。旧 `bsb-*-v1` 缓存由用户决定是否清理。v2 的中断续传继续复用当前代已经验证过的字节。
+
+若完整检查发现同长度损坏而增量构建仍写入 0 项，优先还原经过验证的同代站点和 build state。只有全部本机事实与封面准备妥当、写锁空闲、且没有待恢复写集时，才可把 `dist/site` 与 `workspace/build-state.json` 成对移到备份位置，再离线构建并运行 `bgmb doctor --local`。重建失败时可成对还原，保留原诊断证据。
+
 ## 验证与接续
 
 ```powershell
@@ -65,6 +74,7 @@ python -m pytest -m release_smoke -q
 
 - 重验同步职责变更可先运行 `python -m pytest tests/test_admission.py tests/test_archive_sync.py tests/test_sync_replay.py tests/test_write_recovery.py -q`。其中 `test_cli_sync_replay` 在临时根目录走真实 CLI、SQLite 和构建，用合成 API 提供输入。跨版本对照可让两份源码各调用一次同一测试模块的 `replay(root, monkeypatch)`，分别给空目录，保持 fixture、静态资源、配置和更新日志字节一致，再逐步比较返回的映射。
 - 构建变更优先跑 `tests/test_site_builder.py`、`tests/test_build_fingerprint.py`、`tests/test_incremental_writer.py` 和 `tests/test_sync_build_integration.py`。比较全量与增量时，固定版本、更新日志、静态字节、Pillow/libwebp、合成 SQLite 和封面。需要保留季度的两次实验应从相同的上次可用树与 build state 开始。中断与实际候选绑定另见 `tests/test_write_recovery.py`、`tests/test_unified_release.py` 和 `tests/test_release_workflow.py`。
+- 公共资源身份变更另跑 `python -m pytest tests/test_retained_resources.py tests/test_versioned_assets_browser.py -q`。该组在隔离目录生成三代站点，浏览器测试使用本机 Chromium 与 WebKit。
 - 默认 CI 跑 Python 3.11 的 Linux/Windows 非浏览器测试与 Linux Chromium release smoke。手动 Deep regression 才会跑完整 Chromium 和 WebKit 集。源码与工作流位于 `.github/workflows/`。回归依赖 fixtures、loopback HTTP 和临时 Git 仓库。需要避免 Windows 历史临时目录权限问题时，给 pytest 的 `--basetemp` 指定 `workspace/tmp/` 下本次未使用的目录。
 - 事实变更跑候选发现、规则、REVIEW、事务和增量构建用例。重点检查重复执行、失败中断和目标/全局影响。本地构建或 PWA 改动查候选文件树、离线资源闭包、完整包替换及老数据/应用组合。真机、真实弱网、真实 Bangumi 与生产 Pages 按任务授权分别验收。
 - 确认当前工作树和配置的上游再提交。只把授权的改动暂存，查询实际远端 ref 核对推送结果。正式 Plan 默认按获授权 Issue 交接，保留既有编号和可追溯证据。私有正文不进公开 Issue 或 Git。复杂依赖和下一步记入 [当前状态](CURRENT_STATE.md)。

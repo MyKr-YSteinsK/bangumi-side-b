@@ -26,8 +26,6 @@ from bgm_side_b.build.changelog import (
 )
 from bgm_side_b.build.cover_preview import (
     COVER_PREVIEW_RULE,
-    ORIGINAL_COVER_PATH,
-    PREVIEW_PATH,
     cover_preview_bytes,
     cover_preview_path,
     cover_preview_rule_id,
@@ -57,6 +55,7 @@ from bgm_side_b.build.site_paths import (
     SETTINGS_PAGE,
     SHELL_MANIFEST,
     SHELL_STATIC_PATHS,
+    app_asset_path,
     original_cover_path,
     quarter_paths,
     year_catalog_path,
@@ -76,11 +75,12 @@ from bgm_side_b.build.site_projection import (
     project_year,
 )
 from bgm_side_b.build.site_validation import (
-    quarter_cover_dependencies,
+    ArtifactIdentity,
     quarter_items,
     validate_dirty_artifacts,
     validate_full_site,
     validate_plan,
+    validate_quarter_package,
     validate_scoped_site,
 )
 from bgm_side_b.build.writer import (
@@ -168,13 +168,15 @@ class UnifiedSiteBuilder:
                     )
             blocked = _blocked_quarters(facts)
             eligible = tuple(label for label in managed_quarters if label not in blocked)
-            retained_blocked, omitted = self._retained_quarters(previous, blocked)
+            retained_blocked, omitted = self._retained_quarters(
+                previous, blocked, required=True
+            )
             public_scope_changed = (
                 previous is not None
                 and set(eligible).union(retained_blocked) != previous.quarters.keys()
             )
             projection_labels = eligible
-            retained_scope: tuple[str, ...] = ()
+            retained_scope: dict[str, tuple[str, ...]] = {}
             if quarter is not None and previous is not None and not public_scope_changed:
                 target = quarter.label
                 other_eligible = tuple(label for label in eligible if label != target)
@@ -182,7 +184,8 @@ class UnifiedSiteBuilder:
                 if not missing:
                     projection_labels = (target,) if target in eligible else ()
                     retained_scope = reusable
-            retained = tuple(sorted(set(retained_blocked) | set(retained_scope)))
+            retained_dependencies = retained_blocked | retained_scope
+            retained = tuple(sorted(retained_dependencies))
             unmanaged = tuple(sorted(appearance_quarters - set(managed_quarters)))
             quarter_projections = self._project_quarters(facts, projection_labels)
             years = self._project_years(quarter_projections)
@@ -218,9 +221,6 @@ class UnifiedSiteBuilder:
                 previous,
                 current,
                 available_quarters=tuple(item.quarter for item in quarter_projections),
-                requested_quarters=(
-                    None if quarter is None or public_scope_changed else (quarter.label,)
-                ),
             )
             dirty = replace(
                 dirty,
@@ -235,7 +235,7 @@ class UnifiedSiteBuilder:
                 archive,
                 sources,
                 changelog=changelog,
-                retained=retained,
+                retained_dependencies=retained_dependencies,
                 previous=previous,
                 dirty=dirty,
                 public_scope_changed=public_scope_changed,
@@ -336,118 +336,85 @@ class UnifiedSiteBuilder:
         )
 
     def _retained_quarters(
-        self, previous: BuildState | None, blocked: tuple[str, ...]
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Separate blocked quarters with a usable last-good tree from omissions."""
-        if previous is None:
-            return (), tuple(sorted(blocked))
-        retained: list[str] = []
+        self, previous: BuildState | None, labels: tuple[str, ...], *, required: bool = False
+    ) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
+        """Verify each retained package against both disk and the prior build state."""
+        retained: dict[str, tuple[str, ...]] = {}
         omitted: list[str] = []
-        for label in sorted(blocked):
-            if self._retained_quarter_is_complete(previous, label):
-                retained.append(label)
-            else:
+        verified: dict[str, ArtifactIdentity] = {}
+
+        def read(relative: str) -> bytes:
+            try:
+                content = (self.site_directory / relative).read_bytes()
+            except OSError as error:
+                raise BuildError(f"previous artifact is unavailable: {relative}") from error
+            actual = hashlib.sha256(content).hexdigest(), len(content)
+            if previous is None or actual != (
+                previous.artifacts.get(relative), previous.artifact_sizes.get(relative)
+            ):
+                raise BuildError(f"previous artifact does not match build state: {relative}")
+            verified[relative] = actual
+            return content
+
+        def identity(relative: str) -> ArtifactIdentity:
+            if relative not in verified:
+                read(relative)
+            return verified[relative]
+
+        for label in sorted(labels):
+            recorded = previous is not None and label in previous.quarters
+            _, _, manifest_path = quarter_paths(label)
+            old_manifest = self.site_directory / f"data/offline/{label}.json"
+            if not recorded and not any(
+                (self.site_directory / relative).exists() for relative in quarter_paths(label)
+            ) and not old_manifest.is_file():
                 omitted.append(label)
-        return tuple(retained), tuple(omitted)
-
-    def _retained_quarter_is_complete(
-        self, previous: BuildState, label: str
-    ) -> bool:
-        """Require the complete last-good dependency closure before retaining it."""
-        if label not in previous.quarters:
-            return False
-        page_path, data_path, manifest_path = quarter_paths(label)
-        for relative in (page_path, data_path, manifest_path):
-            path = self.site_directory / Path(relative)
-            expected_size = previous.artifact_sizes.get(relative)
-            if (
-                relative not in previous.artifacts
-                or expected_size is None
-                or not path.is_file()
-            ):
-                return False
+                continue
             try:
-                if path.stat().st_size != expected_size:
-                    return False
-            except OSError:
-                return False
+                if not recorded:
+                    raise BuildError("previous build state is missing for this quarter")
+                if (
+                    not (self.site_directory / manifest_path).is_file()
+                    and old_manifest.is_file()
+                ):
+                    raise BuildError("older offline package requires a rebuild from complete facts")
+                paths = validate_quarter_package(label, read, identity)
+                self._check_retained_indexes(label, read)
+            except BuildError as error:
+                if required:
+                    raise BuildError(
+                        f"cannot retain quarter {label}: {error}; previous site kept"
+                    ) from error
+                omitted.append(label)
+            else:
+                retained[label] = paths
+        return retained, tuple(omitted)
 
-        quarter = _read_required_site_json(self.site_directory / data_path)
-        manifest = _read_required_site_json(self.site_directory / manifest_path)
-        archive = _read_required_site_json(
-            self.site_directory / ARCHIVE_INDEX
-        )
-        year = _read_required_site_json(
-            self.site_directory / year_catalog_path(int(label[:4]))
-        )
-        if None in (quarter, manifest, archive, year):
-            return False
-        assert quarter is not None
-        assert manifest is not None
-        assert archive is not None
-        assert year is not None
+    @staticmethod
+    def _check_retained_indexes(label: str, read: Callable[[str], bytes]) -> None:
+        def read_json(relative: str) -> dict[str, object]:
+            try:
+                value = json.loads(read(relative))
+            except (UnicodeError, ValueError) as error:
+                raise BuildError(f"previous metadata is invalid: {relative}") from error
+            if not isinstance(value, dict):
+                raise BuildError(f"previous metadata is invalid: {relative}")
+            return value
 
-        archive_entries = archive.get("quarters")
-        year_records = year.get("records")
-        if not isinstance(archive_entries, list) or not isinstance(year_records, list):
-            return False
-        if not any(
-            isinstance(item, dict) and item.get("quarter") == label
-            for item in archive_entries
+        _, data_path, _ = quarter_paths(label)
+        archive_entries = read_json(ARCHIVE_INDEX).get("quarters")
+        if not isinstance(archive_entries, list) or not any(
+            isinstance(item, dict) and item.get("quarter") == label for item in archive_entries
         ):
-            return False
-        retained_records = tuple(
-            item
-            for item in year_records
-            if isinstance(item, dict) and item.get("quarter") == label
+            raise BuildError("previous archive index is missing this quarter")
+        year_records = read_json(year_catalog_path(int(label[:4]))).get("records")
+        if not isinstance(year_records, list):
+            raise BuildError("previous year catalog is invalid")
+        retained_count = sum(
+            isinstance(item, dict) and item.get("quarter") == label for item in year_records
         )
-        if len(retained_records) != len(quarter_items(quarter)):
-            return False
-
-        resources = manifest.get("resources")
-        if manifest.get("quarter") != label or not isinstance(resources, list):
-            return False
-        cover_resources: dict[str, Mapping[str, object]] = {}
-        for item in resources:
-            if not isinstance(item, dict):
-                return False
-            relative = item.get("url")
-            if isinstance(relative, str) and relative.startswith("covers/"):
-                cover_resources[relative] = item
-        try:
-            expected_covers = quarter_cover_dependencies(
-                label,
-                (self.site_directory / page_path).read_bytes(),
-                quarter,
-            )
-        except (OSError, BuildError):
-            return False
-        if any(
-            ORIGINAL_COVER_PATH.fullmatch(relative) is None
-            and PREVIEW_PATH.fullmatch(relative) is None
-            for relative in expected_covers
-        ) or expected_covers != set(cover_resources):
-            return False
-        for relative, item in cover_resources.items():
-            path = self.site_directory / Path(relative)
-            content_hash = item.get("content_hash")
-            size = item.get("size_bytes")
-            if (
-                not isinstance(content_hash, str)
-                or not isinstance(size, int)
-                or isinstance(size, bool)
-                or size < 0
-                or previous.artifacts.get(relative) != content_hash
-                or previous.artifact_sizes.get(relative) != size
-                or not path.is_file()
-            ):
-                return False
-            try:
-                if path.stat().st_size != size:
-                    return False
-            except OSError:
-                return False
-        return True
+        if retained_count != len(quarter_items(read_json(data_path))):
+            raise BuildError("previous year catalog does not match quarter data")
 
     def _merge_retained_indexes(
         self,
@@ -579,7 +546,7 @@ class UnifiedSiteBuilder:
         sources: Mapping[str, bytes],
         *,
         changelog: ChangelogDocument,
-        retained: tuple[str, ...],
+        retained_dependencies: Mapping[str, tuple[str, ...]],
         previous: BuildState | None,
         dirty: DirtySet,
         public_scope_changed: bool,
@@ -627,32 +594,36 @@ class UnifiedSiteBuilder:
                 lambda path=path: sources[path],
                 dirty.shared_dirty,
             )
-        revisions = {
-            path: specs[path].content_hash or ""
-            for path in APP_ASSETS
-        }
+        asset_paths = []
+        for logical in APP_ASSETS:
+            content = sources[logical]
+            digest = hashlib.sha256(content).hexdigest()
+            path = app_asset_path(logical, digest)
+            specs[path] = ArtifactSpec(path, digest, len(content), "shared", content)
+            asset_paths.append(path)
+        app_assets = tuple(asset_paths)
         generated(
             ROOT_PAGE,
             "root",
-            lambda: _root_html(revisions),
+            lambda: _root_html(app_assets),
             dirty.shared_dirty,
         )
         generated(
             ARCHIVE_PAGE,
             "archive-shell",
-            lambda: _archive_html(revisions),
+            lambda: _archive_html(app_assets),
             dirty.shared_dirty,
         )
         generated(
             SETTINGS_PAGE,
             "shared-shell",
-            lambda: _settings_html(revisions, changelog, __version__),
+            lambda: _settings_html(app_assets, changelog, __version__),
             dirty.shared_dirty,
         )
 
         @cache
         def shell_manifest() -> dict[str, object]:
-            return pwa_shell_manifest(specs)
+            return pwa_shell_manifest(specs, app_assets)
 
         generated(
             SHELL_MANIFEST,
@@ -710,7 +681,7 @@ class UnifiedSiteBuilder:
                 "quarter-html",
                 lambda quarter=quarter: _quarter_html(
                     quarter,
-                    revisions,
+                    app_assets,
                     available_quarters,
                     data_revision=specs[data_path].content_hash or "",
                 ),
@@ -770,31 +741,21 @@ class UnifiedSiteBuilder:
             generated(
                 manifest_path,
                 "offline-manifest",
-                lambda quarter=quarter: offline_manifest_bytes(quarter, specs),
+                lambda quarter=quarter: offline_manifest_bytes(quarter, specs, app_assets),
                 page_dirty,
             )
-        for label in retained:
-            page_path, data_path, manifest_path = quarter_paths(label)
-            for relative in (page_path, data_path, manifest_path):
-                if relative in specs:
-                    continue
-                specs[relative] = _reused_spec(
-                    relative,
-                    previous_artifacts,
-                    previous_sizes,
-                )
-            manifest = _read_site_json(self.site_directory / manifest_path)
-            for resource in manifest.get("resources", []):
-                relative = resource.get("url")
-                if not isinstance(relative, str) or not relative.startswith("covers/"):
-                    continue
-                if relative in specs and specs[relative].content_hash != resource.get("content_hash"):
-                    raise BuildError("retained cover conflicts with current output; previous site kept")
-                if relative not in specs:
-                    specs[relative] = _reused_spec(
-                        relative,
-                        previous_artifacts,
-                        previous_sizes,
+        for label, paths in retained_dependencies.items():
+            for relative in paths:
+                prior = _reused_spec(relative, previous_artifacts, previous_sizes)
+                current = specs.get(relative)
+                if current is None:
+                    specs[relative] = prior
+                elif (current.content_hash, current.size_bytes) != (
+                    prior.content_hash, prior.size_bytes
+                ):
+                    raise BuildError(
+                        f"retained quarter {label} resource conflicts with current output: "
+                        f"{relative}; previous site kept"
                     )
         return ArtifactPlan(specs)
 
@@ -903,7 +864,7 @@ class SiteBuildRun:
         self.errors = errors
 
 
-def _root_html(revisions: Mapping[str, str]) -> bytes:
+def _root_html(app_assets: tuple[str, ...]) -> bytes:
     body = (
         '<main id="main-content" tabindex="-1" class="root-entry" data-root-loading><p class="archive-intro__code">'
         'ARCHIVE / LATEST</p><h1>正在打开最新季度…</h1></main>'
@@ -915,12 +876,8 @@ def _root_html(revisions: Mapping[str, str]) -> bytes:
     return _page(
         "Bangumi Side B｜MyKr",
         body,
-        "assets/app.css",
-        "assets/app.js",
-        "assets/pwa.js",
-        "manifest.webmanifest",
-        "icons/favicon.svg",
-        revisions,
+        "",
+        app_assets,
         data_attrs={
             "data-page": "root",
             "data-archive-index-url": "data/archive-index.json",
@@ -928,7 +885,7 @@ def _root_html(revisions: Mapping[str, str]) -> bytes:
     )
 
 
-def _archive_html(revisions: Mapping[str, str]) -> bytes:
+def _archive_html(app_assets: tuple[str, ...]) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "ARCHIVE")
         + '<main id="main-content" tabindex="-1" class="archive-page" data-archive-app data-page="archive" data-workspace-mode="scope" data-view-mode="grid" '
@@ -997,19 +954,15 @@ def _archive_html(revisions: Mapping[str, str]) -> bytes:
     return _page(
         "Archive · Bangumi Side B｜MyKr",
         body,
-        "../assets/app.css",
-        "../assets/app.js",
-        "../assets/pwa.js",
-        "../manifest.webmanifest",
-        "../icons/favicon.svg",
-        revisions,
+        "../",
+        app_assets,
         body_class="season-archive",
         data_attrs={"data-page": "archive"},
     )
 
 
 def _settings_html(
-    revisions: Mapping[str, str], changelog: ChangelogDocument, app_version: str
+    app_assets: tuple[str, ...], changelog: ChangelogDocument, app_version: str
 ) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "SETTINGS")
@@ -1050,12 +1003,8 @@ def _settings_html(
     return _page(
         "Settings · Bangumi Side B｜MyKr",
         body,
-        "../assets/app.css",
-        "../assets/app.js",
-        "../assets/pwa.js",
-        "../manifest.webmanifest",
-        "../icons/favicon.svg",
-        revisions,
+        "../",
+        app_assets,
         body_class="season-archive",
         data_attrs={"data-page": "settings"},
     )
@@ -1192,7 +1141,7 @@ def _quarter_navigation(current: str, available: tuple[str, ...]) -> str:
 
 def _quarter_html(
     quarter: QuarterProjection,
-    revisions: Mapping[str, str],
+    app_assets: tuple[str, ...],
     available_quarters: tuple[str, ...] = (),
     *,
     data_revision: str,
@@ -1272,12 +1221,8 @@ def _quarter_html(
     return _page(
         f"{quarter.quarter} · Bangumi Side B｜MyKr",
         body,
-        "../assets/app.css",
-        "../assets/app.js",
-        "../assets/pwa.js",
-        "../manifest.webmanifest",
-        "../icons/favicon.svg",
-        revisions,
+        "../",
+        app_assets,
         body_class=f"season-{quarter.quarter[-2:]}",
         data_attrs={"data-page": "quarter"},
     )
@@ -1476,16 +1421,13 @@ def _site_header(
 def _page(
     title: str,
     body: str,
-    css_href: str,
-    js_href: str,
-    pwa_href: str,
-    manifest_href: str,
-    favicon_href: str,
-    revisions: Mapping[str, str],
+    prefix: str,
+    app_assets: tuple[str, ...],
     *,
     body_class: str = "",
     data_attrs: Mapping[str, str] | None = None,
 ) -> bytes:
+    css_href, js_href, pwa_href = (prefix + path for path in app_assets)
     attributes = "".join(
         f' {key}="{html.escape(value, quote=True)}"'
         for key, value in (data_attrs or {}).items()
@@ -1496,12 +1438,12 @@ def _page(
         '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
         f'<meta name="theme-color" content="{_THEME_COLOR}">'
         f"<title>{html.escape(title)}</title>"
-        f'<link rel="manifest" href="{manifest_href}">'
-        f'<link rel="icon" href="{favicon_href}" type="image/svg+xml">'
+        f'<link rel="manifest" href="{prefix}manifest.webmanifest">'
+        f'<link rel="icon" href="{prefix}icons/favicon.svg" type="image/svg+xml">'
         '<script>(function(){try{var mode=localStorage.getItem("bsb-browse-view-mode");'
         'if(mode==="grid"||mode==="list")document.documentElement.dataset.browseViewMode=mode;'
         '}catch(_){}})();</script>'
-        f'<link rel="stylesheet" href="{_revision_href(css_href, revisions["assets/app.css"])}"></head>'
+        f'<link rel="stylesheet" href="{css_href}"></head>'
         f"<body{class_attr}{attributes}>"
         '<a class="skip-link" href="#main-content">跳到主要内容</a>'
         '<aside class="pwa-update-notice" data-pwa-update-notice hidden aria-live="polite">'
@@ -1512,15 +1454,11 @@ def _page(
         '<span class="pwa-update-notice__status" data-quarter-update-status role="status"></span></div>'
         '</aside>'
         f"{body}"
-        f'<script src="{_revision_href(js_href, revisions["assets/app.js"])}" defer></script>'
-        f'<script src="{_revision_href(pwa_href, revisions["assets/pwa.js"])}" defer></script>'
+        f'<script src="{js_href}" defer></script>'
+        f'<script src="{pwa_href}" defer></script>'
         "</body></html>"
     )
     return content.encode("utf-8")
-
-
-def _revision_href(path: str, revision: str) -> str:
-    return f"{path}?v={revision}"
 
 
 def _blocked_quarters(facts: ArchiveFacts) -> tuple[str, ...]:
@@ -1563,11 +1501,6 @@ def _read_site_json(path: Path) -> dict[str, object]:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
-
-
-def _read_required_site_json(path: Path) -> dict[str, object] | None:
-    value = _read_site_json(path)
-    return value or None
 
 
 def _reused_spec(

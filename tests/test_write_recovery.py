@@ -233,7 +233,7 @@ Writer._commit_state = after
             thread.start()
             try:
                 for name in expected:
-                    if expected[name] != old[name]:
+                    if name in mixed and expected[name] != old.get(name):
                         url = f"http://127.0.0.1:{server.server_port}/bangumi-side-b/{name}"
                         with urlopen(url, timeout=5) as response:
                             assert (
@@ -281,14 +281,15 @@ def test_windows_open_handle_blocks_replace_until_released(project):
     site = project / "dist/site"
     css = project / "static/css/site.css"
     css.write_bytes(css.read_bytes() + b"/* windows file lock */")
-    target = site / "assets/app.css"
+    target = next((site / "assets").glob("app.*.css"))
     old = target.read_bytes()
     with target.open("rb"):
         with pytest.raises(SystemExit):
             main(["build", "--all"])
         assert target.read_bytes() == old
     assert main(["build", "--all"]) == 0
-    assert target.read_bytes() != old
+    assert not target.exists()
+    assert next((site / "assets").glob("app.*.css")).read_bytes() != old
     validate_build_state(site, project / "workspace")
 
 
@@ -408,7 +409,7 @@ def test_cli_prepare_nested_build_and_stale_publish_rejected(project, monkeypatc
     prepared = project / "workspace/state/prepared-release.json"
     original = prepared.read_bytes()
     site = project / "dist/site"
-    (site / "assets/app.css").write_bytes(b"other build")
+    next((site / "assets").glob("app.*.css")).write_bytes(b"other build")
     with pytest.raises(SystemExit):
         main(["release", "publish"])
     assert prepared.read_bytes() == original

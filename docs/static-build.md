@@ -17,11 +17,11 @@ dist/site/
 ├─ YYYY-MM/index.html
 ├─ archive/index.html
 ├─ settings/index.html
-├─ assets/app.css
-├─ assets/app.js
+├─ assets/{app.<SHA256>.css,app.<SHA256>.js,pwa.<SHA256>.js}
+├─ sw-v2.js
 ├─ covers/<ID>.webp
 ├─ covers/previews/<identity>.webp
-└─ data/{archive-index.json,catalog/,quarters/,offline/}
+└─ data/{archive-index.json,catalog/,quarters/,offline-v2/,pwa-shell-v2.json}
 ```
 
 ## Archive initial document
@@ -93,7 +93,9 @@ plus all original covers with their actual hashes/sizes.
 `sync` invokes the same incremental builder only after a successful facts/covers
 commit. Incomplete facts or relevant unresolved REVIEW retain only that quarter's
 last-known-good artifacts; they do not freeze healthy quarters. A blocked quarter
-without a usable previous tree is omitted with a warning. Complete facts with
+that has never been published locally is omitted with a warning. A recorded
+quarter with an unverifiable previous tree stops the build before replacement.
+Restore a verified copy or rebuild from complete facts. Complete facts with
 missing covers may build with warnings. `bgmb release publish` is a later explicit
 release operation and never calls `sync` or `build`.
 
@@ -113,7 +115,8 @@ Worker on their reuse path.
 | Full build | Materialized bytes and references within the generated tree. |
 | Dirty artifacts | Newly materialized bytes, planned hashes and sizes for reused dependencies, and the quarter's page and data when its manifest changes. |
 | Scoped final check | Generated sources plus the existence and known sizes of the planned files. |
-| Release candidate | Actual paths, SHA-256 and sizes across the file tree, checked against build state and bound to the source commit. |
+| Retained package | The previous page, JSON, manifest, public indexes and each listed resource against the previous build state and actual bytes. |
+| Release candidate | Actual paths, SHA-256 and sizes across the tree. The shell and every indexed quarter must match those bytes, including their HTML and worker bindings. |
 
 Both byte-based build checks verify the quarter data hash and package revision.
 They reject missing dependencies, non-local resource paths, and mismatched
@@ -121,6 +124,29 @@ hashes or sizes. Shell validation also checks the ordered resource list and the
 revision derived from it. Build validation and test entry points are in
 [site validation](../src/bgm_side_b/build/site_validation.py) and
 [builder integration tests](../tests/test_site_builder.py).
+
+## Shared resources across builds
+
+Root, Archive and Settings use the current CSS, application script and PWA script.
+Each filename contains the SHA-256 of its bytes. An offline quarter records the
+exact three paths used in that quarter's HTML. Identical bytes for a given asset
+reuse one file. The writer retains paths used by the current shell, current
+quarters or verified retained quarters. When the last reference disappears, the
+ordinary recoverable patch removes the old file. The quarter data and cover URL
+contracts keep their revision query parameters. A shared original cover at a
+conflicting physical path still causes the patch to stop.
+
+A blocked quarter is eligible for retention only while its actual files match
+its v2 manifest and build state. A healthy build with no retained work and no
+changes preserves the metadata-only fast path. A retained build reads only the
+covered dependencies with shared hashes checked once per retention pass. Whole
+tree validation is performed for a full materialized build or release candidate.
+
+0.10.0 can rebuild a complete v1 tree from local facts through the ordinary
+writer. A recorded blocked quarter with only a v1 package requires a verified v2
+backup or complete facts. The build keeps the existing tree in place and reports
+the affected quarter if it cannot verify a retained package. See the
+[upgrade steps](项目源文件/RUNBOOK.md#离线协议-v2-升级).
 
 ## Local preview
 

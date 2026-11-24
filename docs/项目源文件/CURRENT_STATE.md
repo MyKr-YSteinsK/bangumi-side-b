@@ -1,8 +1,30 @@
 # Bangumi Side B 当前状态
 
-观察日为 2026-11-24。应用版本 `0.9.2`，处于 Production 维护。Plan-75 从 `50f1db6b8c57c15c7da1e78a29506353d2c037ce` 开始，当时本机 `main`、配置上游 `origin/main` 和实际远端源码 HEAD 一致。[Plan-75 · Issue #3](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/3)
+观察日为 2026-11-25。应用版本 `0.10.0`，处于 Production 维护。Plan-76 R1 从 `7fa9183479b465020d34114199a71431ac3054fb` 开始，当时本机 `main`、配置上游和远端源码 HEAD 一致。[Plan-76 R1 · Issue #4](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/4)
+
+## Plan-76 R1 保留季度与公共资源
+
+用 0.9.2 源码、合成四月与七月、loopback 和临时 Git remote 复现。四月 facts/covers 受阻且无 REVIEW，七月健康。无公共资源改动时构建写入为零。随后逐次改 CSS、主脚本与 PWA 脚本，三个文件都保持原大小，保留清单仍记录原 SHA-256。第一次 CSS 改动把同为 95,975 字节的文件从摘要 `d2f10cbf…` 换成 `de9dc130…`，旧页仍带原查询参数，文件路径供给的是新字节。旧浏览器已经完整下载的四月能断网打开，新浏览器首次下载四月得到“资源哈希校验失败”和 `INCOMPLETE`。当时 `status`、`doctor --local`、候选树与 build state 对照均通过。资料审计只认七月为可发布事实，仍未阻拦通过保留树公开四月，实际 prepare/publish 都接受了该候选并写入临时远端。
+
+在原路径上拒绝冲突可以保护上次树，但会挡住健康季度。重渲染保留页需要从可信的历史投影恢复页面和全部资源关系，并使旧页依赖新脚本。实现选择为三个公共文件使用真实 SHA-256 路径，复用每季已经验证过的页面和清单。当同一文件仍被引用时保留，最后一个引用消失时由原 writer 回收。原封面仍使用现有物理路径，如旧季度与新事实需要不同字节，构建会报告季度与路径并保留现场。[静态构建](../static-build.md#shared-resources-across-builds)
+
+| 检查 | 结果 |
+| --- | --- |
+| 新版 A → B → C | 四月与七月分别保留 A、B 的页面和清单，十月切换 C。三个同长度 CSS 版本同时存在。带同一历史前提的全范围与单季构建逐文件 SHA-256 一致。恢复四月、七月后旧资源被回收，最终仅保留一组公共资源，整体与全量构建一致。 |
+| 导出与候选绑定 | 同长度内容改变、删除清单、无引用文件和 HTML 数据绑定改变，即使 build state 已记录实际树也会被完整校验拒绝。临时 prepare/publish 成功发布闭合的保留树。公开保留季度出现 REVIEW 时，资料审计仍可认定健康季可发布，prepare 的公开季度 REVIEW 门会拦截。篡改旧 CSS 后快速 `status` 显示 valid，完整 doctor 显示 stale，prepare 和 publish 均拒绝。临时远端仍指向之前有效提交。 |
+| v1 派生树升级 | 将真实复现产生的不一致 v1 树交给 v2。四月受阻时拒绝构建，站点和 build state 保留原字节。合成事实完整后，正常离线 build 删除 7 个旧路径，写 14 个文件，数据库字节相同。doctor 通过，重跑写 0 项。 |
+| v1 浏览器到 v2 | 同一个 Chromium 配置先用 v1 worker 下载七月，再访问重建后的站点。新版等待用户刷新，v1 活动包未被当作 v2 的 `COMPLETE`。刷新后重新下载成功。检查到两组缓存仍各自保有 `COMPLETE`。 |
+| v2 浏览器 A → B → C | Chromium 和 WebKit 均首次下载保留的四月，七月的 B 包校验失败时保留七月 A。Chromium 断网打开 A 的季度页，WebKit 断网在 Archive 本机范围验证 A 的资料。恢复后续传 B，显式打开 C 的线上页面并核对资源，随后安装 C 离线包和应用壳。GC 保留仍被引用的 A 与 C，在支持 Web Locks 时回收无引用 B。 |
+
+本机验证使用 Windows、Python 3.14.6、SQLite 3.50.4、Pillow 11.3.0、libwebp 1.5.0 和 Playwright 1.61.0。Ruff、454 项非浏览器、21 项 Chromium 发布冒烟、3 项新增浏览器检查均通过。构建和恢复回归覆盖文件缺损、写入中断、重复恢复、零写入与 mtime。浏览器回归另注入响应损坏、网络暂停和 `QuotaExceededError`，核对旧包保留、续传与缓存复用。
+
+PWA 主测试文件首轮通过 81 项中的 77 项。余下四项的测试数据仍使用旧 CSS 文件名、缺少 v2 核心资源，或要求配额恢复后再次请求已缓存数据。修订后这四项和损坏响应对照共五项通过。早期并行复跑还发现 Windows 的浏览器测试站可能绑定同一端口，改用独占绑定后冒烟与定向回归通过。
+
+版本升至 0.10.0，因为公共文件名、`data/offline-v2/`、`data/pwa-shell-v2.json`、`sw-v2.js` 及浏览器缓存命名空间形成 v2 协议边界。使用同一站点和 SQLite 的升级步骤见 [D-026](DECISIONS.md) 与 [运行手册](RUNBOOK.md#离线协议-v2-升级)。本机实验使用隔离合成资料和临时远端。生产 Pages、实际安装的 Safari/PWA 和预览多请求的站点代际隔离需要独立验证。
 
 ## Plan-75 站点产物与校验
+
+该批从 `50f1db6` 开始，完成于 `7fa9183`。[Plan-75 · Issue #3](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/3)
 
 `UnifiedSiteBuilder` 继续选定构建范围和保留季度。路径、离线清单、WebP 预览、构建校验可以独立检查，writer 仍负责实际替换和恢复。发布候选继续以磁盘上的真实文件计算身份，`status` 保留轻量检查。[静态构建](../static-build.md#artifact-planning-and-validation) · [发布说明](../publish.md)
 
@@ -22,7 +44,7 @@ Plan-73 的备份、状态提交和写锁继续生效。独立子进程的中断
 
 本机 Ruff、447 项非浏览器测试和 21 项 Chromium release smoke 均通过。
 
-升级为补丁版的原因是季度导航、保留季度恢复及错误清单处理发生可观察变化。在同一候选源码上恢复正式版本和更新日志后，15 步均只额外改变 `settings/index.html`、`data/pwa-shell.json` 和 `sw.js` 的字节。生产数据与已发布页面见原观察。公共静态资源跨代共存的限制见[升级路线](升级路线与技术审查.md#3-静态构建产物协议与发布证据)。
+升级为补丁版的原因是季度导航、保留季度恢复及错误清单处理发生可观察变化。在同一候选源码上恢复正式版本和更新日志后，15 步均只额外改变 `settings/index.html`、`data/pwa-shell.json` 和 `sw.js` 的字节。生产数据与已发布页面见原观察。该批发现的公共静态资源跨代冲突已在 Plan-76 R1 处理。
 
 ## Plan-74 同步准入与季度写入
 

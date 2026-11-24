@@ -2,9 +2,9 @@
 "use strict";
 
 const BSB_SHELL_REVISION = "__BSB_SHELL_REVISION__";
-const CONTENT_CACHE = "bsb-content-v1";
-const RUNTIME_CACHE = "bsb-runtime-v1";
-const META_CACHE = "bsb-meta-v1";
+const CONTENT_CACHE = "bsb-content-v2";
+const RUNTIME_CACHE = "bsb-runtime-v2";
+const META_CACHE = "bsb-meta-v2";
 const CONTENT_PATH = "__bsb_content__/";
 const META_PATH = "__bsb_meta__/";
 const SHELL_META = "shell.json";
@@ -12,6 +12,9 @@ const PENDING_SHELL_META = `shell-pending-${BSB_SHELL_REVISION}.json`;
 const CONTENT_MAINTENANCE_LOCK_NAME = "bsb-pwa-content-maintenance";
 const QUARTER_UPDATE_PARAM = "__bsb_update";
 const QUARTER_APP_UPDATE_PARAM = "__bsb_app_update";
+const OFFLINE_SCHEMA = 2;
+const CORE_ASSET = /^assets\/(app|pwa)\.([a-f0-9]{64})\.(css|js)$/;
+const CORE_NAMES = ["app.css", "app.js", "pwa.js"];
 const HEX_64 = /^[a-f0-9]{64}$/;
 
 function scopeUrl(relative = "") {
@@ -111,11 +114,14 @@ function safeResource(value) {
 }
 
 function validateManifest(value, expectedQuarter = null) {
-  if (!value || typeof value !== "object" || !Array.isArray(value.resources)) {
+  if (
+    !value || typeof value !== "object"
+    || value.schema !== OFFLINE_SCHEMA || !Array.isArray(value.resources)
+  ) {
     throw new Error("invalid manifest");
   }
   if (expectedQuarter === null) {
-    if (value.schema !== 1 || value.revision !== BSB_SHELL_REVISION) {
+    if (value.revision !== BSB_SHELL_REVISION) {
       throw new Error("shell revision mismatch");
     }
   } else if (
@@ -139,6 +145,7 @@ function validateManifest(value, expectedQuarter = null) {
     seen.add(resource.url);
     return resource;
   });
+  if (!coreResources({ resources })) throw new Error("invalid core asset manifest");
   return { ...value, resources };
 }
 
@@ -196,7 +203,7 @@ async function ensureContent(resource) {
 }
 
 async function installShell() {
-  const manifest = validateManifest(await fetchJson("data/pwa-shell.json"));
+  const manifest = validateManifest(await fetchJson("data/pwa-shell-v2.json"));
   await withContentReferenceLease(async () => {
     await Promise.all(manifest.resources.map(ensureContent));
     await writeMeta(PENDING_SHELL_META, manifest);
@@ -336,8 +343,8 @@ function quarterDataRevisionInHtml(value, quarter) {
   return parsed.searchParams.get("v");
 }
 
-function onlinePageRequest(quarter, revision) {
-  return new Request(scopeUrl(`${quarter}/index.html?__bsb_online=${revision}`));
+function onlinePageRequest(quarter, pageHash) {
+  return new Request(scopeUrl(`${quarter}/index.html?__bsb_online=${pageHash}`));
 }
 
 function clientPinMetaName(clientId) {
@@ -394,14 +401,26 @@ async function fetchVerifiedResource(resource) {
   return verifiedResponse(response, resource);
 }
 
-function pageReferencesResource(html, path, hash) {
-  return html.includes(`${path}?v=${hash}`);
+function coreAssetIdentity(path) {
+  const match = CORE_ASSET.exec(path);
+  if (!match) return null;
+  const name = `${match[1]}.${match[3]}`;
+  return CORE_NAMES.includes(name) ? { name, hash: match[2] } : null;
+}
+
+function coreResources(manifest) {
+  const resources = manifest.resources.filter((entry) => entry.url.startsWith("assets/"));
+  if (resources.length !== CORE_NAMES.length || resources.some((entry, i) => {
+    const identity = coreAssetIdentity(entry.url);
+    return identity?.name !== CORE_NAMES[i] || identity.hash !== entry.content_hash;
+  })) return null;
+  return resources;
 }
 
 async function prepareOnlineQuarterPage(quarter, expectedRevision = null) {
   if (!quarterLabel(quarter)) return null;
   const manifest = validateManifest(
-    await fetchJson(`data/offline/${quarter}.json`),
+    await fetchJson(`data/offline-v2/${quarter}.json`),
     quarter,
   );
   if (expectedRevision && manifest.data_revision !== expectedRevision) return null;
@@ -412,9 +431,8 @@ async function prepareOnlineQuarterPage(quarter, expectedRevision = null) {
     || !dataResource
     || manifest.data_revision !== dataResource.content_hash
   ) return null;
-  const criticalPaths = ["assets/app.css", "assets/app.js", "assets/pwa.js"];
-  const criticalResources = criticalPaths.map((path) => resourceForPath(manifest, path));
-  if (criticalResources.some((resource) => !resource)) return null;
+  const criticalResources = coreResources(manifest);
+  if (!criticalResources) return null;
 
   const [page, data, ...critical] = await Promise.all([
     fetchVerifiedResource(pageResource),
@@ -423,20 +441,16 @@ async function prepareOnlineQuarterPage(quarter, expectedRevision = null) {
   ]);
   const pageText = await page.clone().text();
   if (quarterDataRevisionInHtml(pageText, quarter) !== manifest.data_revision) return null;
-  if (criticalResources.some((resource) => !pageReferencesResource(
-    pageText,
-    resource.url,
-    resource.content_hash,
-  ))) return null;
+  if (criticalResources.some(({ url }) => !pageText.includes(`"../${url}"`))) return null;
 
   const runtime = await caches.open(RUNTIME_CACHE);
   const cacheable = [
     [new Request(scopeUrl(`${dataResource.url}?v=${dataResource.content_hash}`)), data],
     ...criticalResources.map((resource, index) => [
-      new Request(scopeUrl(`${resource.url}?v=${resource.content_hash}`)),
+      new Request(scopeUrl(resource.url)),
       critical[index],
     ]),
-    [onlinePageRequest(quarter, manifest.data_revision), page],
+    [onlinePageRequest(quarter, pageResource.content_hash), page],
   ];
   for (const [request, response] of cacheable) {
     await runtime.put(request, response.clone());
@@ -508,7 +522,7 @@ async function transferQuarterClientPin(
 async function pinnedQuarterPage(clientId, resultingClientId, quarter) {
   const pin = await readQuarterClientPin(clientId, quarter);
   if (!pin) return null;
-  const key = onlinePageRequest(quarter, pin.data_revision);
+  const key = onlinePageRequest(quarter, pin.page_hash);
   const runtime = await caches.open(RUNTIME_CACHE);
   let response = await runtime.match(key);
   if (response) {
@@ -532,7 +546,9 @@ async function pinnedQuarterPage(clientId, resultingClientId, quarter) {
   }
   try {
     const candidate = await prepareOnlineQuarterPage(quarter, pin.data_revision);
-    if (!candidate) throw new Error("pinned online page is no longer available");
+    if (!candidate || candidate.pageResource.content_hash !== pin.page_hash) {
+      throw new Error("pinned online page is no longer available");
+    }
     await transferQuarterClientPin(
       clientId,
       resultingClientId,
@@ -585,7 +601,7 @@ async function quarterFreshnessMessage(quarter, pageRevision) {
   const snapshot = await quarterSnapshot(quarter);
   if (!snapshot) return null;
   const manifest = validateManifest(
-    await fetchJson(`data/offline/${quarter}.json`),
+    await fetchJson(`data/offline-v2/${quarter}.json`),
     quarter,
   );
   const dataResource = resourceForPath(manifest, `data/quarters/${quarter}.json`);
@@ -647,12 +663,13 @@ async function rememberRuntime(request, response) {
 
 async function versionedResponse(request) {
   const url = new URL(request.url);
-  const expected = url.searchParams.get("v");
   const path = physicalPath(url.href);
-  if (
+  const asset = coreAssetIdentity(path);
+  const expected = asset?.hash || url.searchParams.get("v");
+  if (!asset && (
     !HEX_64.test(expected || "")
-    || !path.match(/^(assets\/|covers\/|data\/quarters\/\d{4}-(?:01|04|07|10)\.json$)/)
-  ) return null;
+    || !path.match(/^(covers\/|data\/quarters\/\d{4}-(?:01|04|07|10)\.json$)/)
+  )) return null;
   const authorized = await authorizedResource(path, expected);
   if (authorized) {
     const cached = await contentFor(authorized);

@@ -1,8 +1,32 @@
 # Bangumi Side B 当前状态
 
-观察日为 2026-11-24。应用版本 `0.9.1`，处于 Production 维护。Plan-74 从 `4fbda787966a0f9d1175b6acb86c38136037abb9` 开始，本机 `main`、配置上游 `origin/main` 和实际远端源码 HEAD 当时一致。[Plan-74 · Issue #2](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/2)
+观察日为 2026-11-24。应用版本 `0.9.2`，处于 Production 维护。Plan-75 从 `50f1db6b8c57c15c7da1e78a29506353d2c037ce` 开始，当时本机 `main`、配置上游 `origin/main` 和实际远端源码 HEAD 一致。[Plan-75 · Issue #3](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/3)
+
+## Plan-75 站点产物与校验
+
+`UnifiedSiteBuilder` 继续选定构建范围和保留季度。路径、离线清单、WebP 预览、构建校验可以独立检查，writer 仍负责实际替换和恢复。发布候选继续以磁盘上的真实文件计算身份，`status` 保留轻量检查。[静态构建](../static-build.md#artifact-planning-and-validation) · [发布说明](../publish.md)
+
+以 Windows、Python 3.14.6、SQLite 3.50.4、Pillow 11.3.0 和 libwebp 1.5.0 做隔离对照。固定合成 SQLite 的构建事实、配置、封面、静态源和 0.9.1 的版本及更新日志，通过 CLI 回放 15 个检查点。比较每一步的相对路径、SHA-256、构建报告及候选身份，去掉报告耗时。各步路径集合一致，其中 11 步的字节、报告和候选身份一致。其余 4 步的内容差异来自季度选择器和旧预览依赖修复：
+
+| 场景 | 观察值 |
+| --- | --- |
+| 初次全量与无变化重跑 | 初次生成 25 个文件。重跑写 0 项，SHA-256 和 mtime 相同。回归拦截了站点扫描、原封面读取和 HTML/JSON 产物重渲染。 |
+| 只改七月剧场版评分；更换续播作品原封面 | 评分仅写 5 项，读取原封面 0 次。原封面改变写 9 项，复制 1 张原封面。两步均与各自全量构建一致。 |
+| 四月受阻时更新预览规则；四月恢复 | 受阻期间四月保留旧页面、清单与旧预览，七月使用新预览。四月恢复时，旧实现移掉预览后仍引用它。现行实现额外写四月页面与清单，清单改用仍存在的新预览。四月数据摘要维持原值，结果与全量一致。 |
+| 新增 2027-01；移出该季 | 单季度命令新增时补写已有季度的页面和清单，合计写 9 项。移出时写 5 项、删 4 项。现行两步均与全量生成结果一致，已有季度事实 JSON 保持原字节。 |
+| 丢失七月 JSON；build state 损坏 | 前者定向写 1 项，读取原封面 0 次。后者全量重写 24 项。两次恢复的站点均与此前正确树字节一致。 |
+
+错误清单的故障注入显示，基线全量会接受错误 `data_revision`，全量和增量都可能接受错误包 `revision`。现行两个构建路径均拒绝这些不一致，新增回归也检查了错误的资源哈希、大小、非本地路径和旧站点保护。[构建回归](../../tests/test_site_builder.py)
+
+Plan-73 的备份、状态提交和写锁继续生效。独立子进程的中断测试覆盖文件替换前后、状态提交前后、恢复中再次中断及其间用户改动造成的第三种内容冲突。Windows 文件占用释放后可重建。临时远端验证 prepare 的嵌套 build、候选同长度改写与增删、过期状态和源码/远端绑定拒绝。[中断回归](../../tests/test_write_recovery.py) · [发布回归](../../tests/test_release_workflow.py)
+
+本机 Ruff、447 项非浏览器测试和 21 项 Chromium release smoke 均通过。
+
+升级为补丁版的原因是季度导航、保留季度恢复及错误清单处理发生可观察变化。在同一候选源码上恢复正式版本和更新日志后，15 步均只额外改变 `settings/index.html`、`data/pwa-shell.json` 和 `sw.js` 的字节。生产数据与已发布页面见原观察。公共静态资源跨代共存的限制见[升级路线](升级路线与技术审查.md#3-静态构建产物协议与发布证据)。
 
 ## Plan-74 同步准入与季度写入
+
+该批源码起点为 `4fbda787966a0f9d1175b6acb86c38136037abb9`，完成于 `50f1db6`。[Plan-74 · Issue #2](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/2)
 
 原先 `_sync_quarter` 同时取单作品证据、做准入判断，并在四处重复处理自动排除写入。[单候选评估](../../src/bgm_side_b/sync_candidate.py)现在读取 canonical detail，按需获取边界正片证据，调用已有的 `admit_subject`，返回裁决、可复用的集数结果和拟记录的自动排除证据。[季度编排](../../src/bgm_side_b/sync.py)负责候选计数、错误和 REVIEW 去向、受保护的自动排除事务、季度事实、封面及相邻季度续播。自动排除仍可先于整季事实独立提交，报告只记录成功写入的新增事件。
 

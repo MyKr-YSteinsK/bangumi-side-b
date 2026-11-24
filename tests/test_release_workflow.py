@@ -120,16 +120,54 @@ def test_prepare_publish_replaces_exact_tree_and_increments_serial(
     _assert_tree_matches(root / "dist" / "site", published)
 
 
+@pytest.mark.parametrize("mutation", ["same-length", "added-file", "missing-file"])
 def test_publish_rejects_tree_mutation_before_writer_runs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
-    root, _ = create_release_project(tmp_path)
+    root, remote = create_release_project(tmp_path)
     monkeypatch.setattr(workflow, "validate_release_origin", lambda _: "fixture")
-    workflow.prepare_release(root)
-    target = root / "dist" / "site" / "index.html"
-    target.write_text(target.read_text("utf-8") + "\nmutation\n", "utf-8")
+    prepared = workflow.prepare_release(root)
+    before = prepared.state_path.read_bytes()
+    site = root / "dist/site"
+    target = site / "index.html"
+    if mutation == "same-length":
+        content = target.read_bytes()
+        target.write_bytes(content[:-1] + (b"X" if content[-1:] != b"X" else b"Y"))
+        # The fast status only compares selected file sizes.
+        assert workflow.local_status(root).site_status == "valid"
+    elif mutation == "added-file":
+        (site / "extra.txt").write_bytes(b"fixture")
+    else:
+        (site / "icons/pwa-192.png").unlink()
     with pytest.raises(WorkflowError, match="dist/site"):
         workflow.publish_prepared_release(root)
+    assert prepared.state_path.read_bytes() == before
+    assert not _remote_branch_exists(root, remote, "gh-pages")
+
+
+def test_publish_rejects_prepared_state_from_previous_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, remote = create_release_project(tmp_path)
+    monkeypatch.setattr(workflow, "validate_release_origin", lambda _: "fixture")
+    prepared = workflow.prepare_release(root)
+    saved = json.loads(prepared.state_path.read_bytes())
+    candidate = workflow.validate_site(
+        root / "dist/site", source_commit=git(root, "rev-parse", "HEAD")
+    )
+    assert saved["source_commit"] == candidate.identity.source_commit
+    assert saved["candidate_content_hash"] == candidate.identity.content_hash
+    assert saved["artifact_count"] == candidate.identity.artifact_count
+    assert saved["total_bytes"] == candidate.identity.total_bytes
+    assert saved["public_quarters"] == list(candidate.public_quarters)
+    assert saved["remote_gh_pages_commit"] is None
+    _commit_and_push_source_change(root)
+
+    with pytest.raises(WorkflowError, match="prepared release"):
+        workflow.publish_prepared_release(root)
+
+    assert json.loads(prepared.state_path.read_bytes()) == saved
+    assert not _remote_branch_exists(root, remote, "gh-pages")
 
 
 def test_publish_rejects_remote_race_without_retry(

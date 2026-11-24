@@ -63,7 +63,11 @@ not the quarter JSON's facts `data_revision`.
 The site is updated incrementally. `workspace/build-state.json` stores only
 deterministic shared, quarter, year, archive, artifact hashes/sizes, and quarter
 status. A changed quarter dirties its page/data/offline manifest, the owning year
-catalog, and the archive index. Missing or corrupt state triggers one safe full
+catalog, and the archive index. When the public quarter list changes, all
+eligible quarter pages and their offline manifests refresh so navigation
+matches the new list. The quarter JSON stays byte-identical for quarters with
+the same facts. A scoped build still updates this shared navigation when the
+public list changes. Missing or corrupt state triggers one safe full
 convergence. With usable state, the planner uses metadata and cheap `stat` checks;
 an identical second build does not read cover bytes, regenerate unchanged HTML or
 JSON, compare every output byte, or scan the whole site. The writer stages only
@@ -79,6 +83,8 @@ recorded hash/size and existence/size checks without reading canonical covers.
 Missing or size-invalid previews are regenerated. Stale original and preview
 covers are removed only when no current or retained quarter references them.
 Retained quarter pages keep their own rule identity and both cover dependencies.
+A quarter that returns to the current scope regenerates its page and manifest
+against the current asset and preview rules before obsolete previews are removed.
 A changed original that conflicts with a retained quarter's physical cover fails
 before mutation, preserving the previous site. Newly generated previews must
 decode safely, and each offline manifest must include all page preview dependencies
@@ -90,6 +96,31 @@ last-known-good artifacts; they do not freeze healthy quarters. A blocked quarte
 without a usable previous tree is omitted with a warning. Complete facts with
 missing covers may build with warnings. `bgmb release publish` is a later explicit
 release operation and never calls `sync` or `build`.
+
+## Artifact planning and validation
+
+The [builder](../src/bgm_side_b/build/site_builder.py) reads facts, chooses the
+dirty and retained scopes, and hands an `ArtifactPlan` to the
+[writer](../src/bgm_side_b/build/writer.py). [Path rules](../src/bgm_side_b/build/site_paths.py)
+define core site files and the page, data and manifest paths for a quarter.
+[Manifest generation](../src/bgm_side_b/build/site_manifests.py) uses the planned
+file identities. The page and offline manifest both take `data_revision` from
+the planned quarter JSON. A healthy no-op leaves both manifests and the Service
+Worker on their reuse path.
+
+| Check | Evidence it uses |
+| --- | --- |
+| Full build | Materialized bytes and references within the generated tree. |
+| Dirty artifacts | Newly materialized bytes, planned hashes and sizes for reused dependencies, and the quarter's page and data when its manifest changes. |
+| Scoped final check | Generated sources plus the existence and known sizes of the planned files. |
+| Release candidate | Actual paths, SHA-256 and sizes across the file tree, checked against build state and bound to the source commit. |
+
+Both byte-based build checks verify the quarter data hash and package revision.
+They reject missing dependencies, non-local resource paths, and mismatched
+hashes or sizes. Shell validation also checks the ordered resource list and the
+revision derived from it. Build validation and test entry points are in
+[site validation](../src/bgm_side_b/build/site_validation.py) and
+[builder integration tests](../tests/test_site_builder.py).
 
 ## Local preview
 

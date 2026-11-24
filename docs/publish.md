@@ -29,6 +29,10 @@ CLI 为 prepare 和 publish 各自持有整个工作区写锁，覆盖嵌套构�
 替代真实文件树。prepared state 的 source/content/remote identity 必须是严格的小写 Git
 hex，公开季度必须是排序唯一的合法季度列表，报告路径必须是项目内相对路径。
 
+完整校验会重新读取实际文件，拒绝同长度内容更改、额外文件、缺失文件和待恢复站点。
+回归使用临时远端覆盖上述变化、过期的源码或远端绑定，以及发布后实际文件树。见
+[发布流程测试](../tests/test_release_workflow.py)和[中断恢复测试](../tests/test_write_recovery.py)。
+
 构建和正式候选验证完成后，`release prepare` 将 `dist/site` 复制到临时 staging，再验证复制的
 候选并执行发布 dry-run。这个 dry-run 阶段不修改正式 `dist/site` 或远端，但会写入本地
 dry-run report。
@@ -64,6 +68,7 @@ bgmb doctor --local
 bgmb doctor
 ```
 
-`status` 不访问网络；`doctor --local` 也只读本地，普通 `doctor` 才刷新 `origin/main` 和
+`status` 使用 build state、索引与必需文件的大小快速判断，可能显示同长度内容已被改动的
+站点为 `valid`。`doctor --local` 只读本地并进行完整候选校验。普通 `doctor` 还查询 `origin/main` 和
 `gh-pages`。build state、dry-run report 和 prepared state 均为 workspace 内的本地派生状态，
 不提交 Git。

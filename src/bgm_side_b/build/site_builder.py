@@ -6,19 +6,13 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import posixpath
-import re
-import warnings
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
-from io import BytesIO
+from functools import cache
 from pathlib import Path
 from time import monotonic
-
-import PIL
-from PIL import Image, ImageOps, features
 
 from bgm_side_b import __version__
 from bgm_side_b.build.changelog import (
@@ -30,6 +24,15 @@ from bgm_side_b.build.changelog import (
     group_releases_for_settings,
     load_changelog,
 )
+from bgm_side_b.build.cover_preview import (
+    COVER_PREVIEW_RULE,
+    ORIGINAL_COVER_PATH,
+    PREVIEW_PATH,
+    cover_preview_bytes,
+    cover_preview_path,
+    cover_preview_rule_id,
+)
+from bgm_side_b.build.errors import BuildBlocked, BuildError
 from bgm_side_b.build.fingerprint import (
     BuildState,
     DirtySet,
@@ -38,6 +41,25 @@ from bgm_side_b.build.fingerprint import (
     fingerprint,
     read_build_state,
     shared_fingerprint,
+)
+from bgm_side_b.build.site_manifests import (
+    offline_manifest_bytes,
+    pwa_shell_manifest,
+    service_worker_bytes,
+)
+from bgm_side_b.build.site_paths import (
+    APP_ASSETS,
+    ARCHIVE_INDEX,
+    ARCHIVE_PAGE,
+    PWA_SOURCE_PATHS,
+    ROOT_PAGE,
+    SERVICE_WORKER,
+    SETTINGS_PAGE,
+    SHELL_MANIFEST,
+    SHELL_STATIC_PATHS,
+    original_cover_path,
+    quarter_paths,
+    year_catalog_path,
 )
 from bgm_side_b.build.site_projection import (
     PROJECTION_VERSION,
@@ -53,6 +75,14 @@ from bgm_side_b.build.site_projection import (
     project_quarter,
     project_year,
 )
+from bgm_side_b.build.site_validation import (
+    quarter_cover_dependencies,
+    quarter_items,
+    validate_dirty_artifacts,
+    validate_full_site,
+    validate_plan,
+    validate_scoped_site,
+)
 from bgm_side_b.build.writer import (
     ArtifactPlan,
     ArtifactSpec,
@@ -64,60 +94,9 @@ from bgm_side_b.build.writer import (
 from bgm_side_b.config import TagRules
 from bgm_side_b.database import Database
 from bgm_side_b.domain import Quarter
-from bgm_side_b.media import MAX_COVER_EDGE, MAX_IMAGE_BYTES
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
 
-
-class BuildError(RuntimeError):
-    """Raised when a complete offline site cannot be produced safely."""
-
-
-class BuildBlocked(BuildError):
-    """Raised when a filesystem lock prevents an atomic site patch."""
-
-
-_HREF_RE = re.compile(r"(?:href|src)=\"([^\"]+)\"")
-_HEX_64 = re.compile(r"[0-9a-f]{64}")
-_COVER_URL = re.compile(r"covers/([1-9][0-9]*)\.webp\?v=([0-9a-f]{64})")
-_PREVIEW_PATH = re.compile(r"covers/previews/[0-9a-f]{64}\.webp")
-_COVER_PREVIEW_RULE = {
-    "version": 1,
-    "max_edge": 640,
-    "quality": 78,
-    "method": 6,
-    "exact": True,
-    "resampling": "LANCZOS",
-    "orientation": "exif-transpose",
-    "color": "RGB-or-RGBA-preserve-ICC",
-    "fallback": "original-bytes-small-animated-no-byte-benefit",
-    "pillow": PIL.__version__,
-    "webp": features.version("webp"),
-}
 _THEME_COLOR = "#17201d"
-_PWA_SOURCE_PATHS = {
-    "assets/app.css": "static/css/site.css",
-    "assets/app.js": "static/js/app.js",
-    "assets/pwa.js": "static/js/pwa.js",
-    "manifest.webmanifest": "static/pwa/manifest.webmanifest",
-    "icons/pwa-192.png": "static/icons/pwa-192.png",
-    "icons/pwa-512.png": "static/icons/pwa-512.png",
-    "icons/pwa-maskable-512.png": "static/icons/pwa-maskable-512.png",
-    "icons/favicon.svg": "static/icons/favicon.svg",
-    "sw.js": "static/pwa/sw.js",
-}
-_SHELL_RESOURCE_PATHS = (
-    "index.html",
-    "archive/index.html",
-    "settings/index.html",
-    "assets/app.css",
-    "assets/app.js",
-    "assets/pwa.js",
-    "manifest.webmanifest",
-    "icons/pwa-192.png",
-    "icons/pwa-512.png",
-    "icons/pwa-maskable-512.png",
-    "icons/favicon.svg",
-)
 
 
 class UnifiedSiteBuilder:
@@ -190,9 +169,13 @@ class UnifiedSiteBuilder:
             blocked = _blocked_quarters(facts)
             eligible = tuple(label for label in managed_quarters if label not in blocked)
             retained_blocked, omitted = self._retained_quarters(previous, blocked)
+            public_scope_changed = (
+                previous is not None
+                and set(eligible).union(retained_blocked) != previous.quarters.keys()
+            )
             projection_labels = eligible
             retained_scope: tuple[str, ...] = ()
-            if quarter is not None and previous is not None:
+            if quarter is not None and previous is not None and not public_scope_changed:
                 target = quarter.label
                 other_eligible = tuple(label for label in eligible if label != target)
                 reusable, missing = self._retained_quarters(previous, other_eligible)
@@ -221,7 +204,7 @@ class UnifiedSiteBuilder:
                     "application_version": __version__,
                     "document": changelog.to_dict(),
                 },
-                cover_preview_rule=_COVER_PREVIEW_RULE,
+                cover_preview_rule=COVER_PREVIEW_RULE,
             )
             quarter_projections, years, archive, current = assign_fingerprints(
                 quarter_projections,
@@ -236,7 +219,7 @@ class UnifiedSiteBuilder:
                 current,
                 available_quarters=tuple(item.quarter for item in quarter_projections),
                 requested_quarters=(
-                    None if quarter is None else (quarter.label,)
+                    None if quarter is None or public_scope_changed else (quarter.label,)
                 ),
             )
             dirty = replace(
@@ -255,8 +238,9 @@ class UnifiedSiteBuilder:
                 retained=retained,
                 previous=previous,
                 dirty=dirty,
+                public_scope_changed=public_scope_changed,
             )
-            _validate_plan_contract(
+            validate_plan(
                 plan,
                 quarter_projections,
                 archive,
@@ -372,12 +356,8 @@ class UnifiedSiteBuilder:
         """Require the complete last-good dependency closure before retaining it."""
         if label not in previous.quarters:
             return False
-        core = (
-            f"{label}/index.html",
-            f"data/quarters/{label}.json",
-            f"data/offline/{label}.json",
-        )
-        for relative in core:
+        page_path, data_path, manifest_path = quarter_paths(label)
+        for relative in (page_path, data_path, manifest_path):
             path = self.site_directory / Path(relative)
             expected_size = previous.artifact_sizes.get(relative)
             if (
@@ -392,17 +372,13 @@ class UnifiedSiteBuilder:
             except OSError:
                 return False
 
-        quarter = _read_required_site_json(
-            self.site_directory / "data" / "quarters" / f"{label}.json"
-        )
-        manifest = _read_required_site_json(
-            self.site_directory / "data" / "offline" / f"{label}.json"
-        )
+        quarter = _read_required_site_json(self.site_directory / data_path)
+        manifest = _read_required_site_json(self.site_directory / manifest_path)
         archive = _read_required_site_json(
-            self.site_directory / "data" / "archive-index.json"
+            self.site_directory / ARCHIVE_INDEX
         )
         year = _read_required_site_json(
-            self.site_directory / "data" / "catalog" / f"{label[:4]}.json"
+            self.site_directory / year_catalog_path(int(label[:4]))
         )
         if None in (quarter, manifest, archive, year):
             return False
@@ -425,7 +401,7 @@ class UnifiedSiteBuilder:
             for item in year_records
             if isinstance(item, dict) and item.get("quarter") == label
         )
-        if len(retained_records) != len(_quarter_items(quarter)):
+        if len(retained_records) != len(quarter_items(quarter)):
             return False
 
         resources = manifest.get("resources")
@@ -438,22 +414,17 @@ class UnifiedSiteBuilder:
             relative = item.get("url")
             if isinstance(relative, str) and relative.startswith("covers/"):
                 cover_resources[relative] = item
-        expected_covers = {
-            cover.split("?", 1)[0]
-            for item in _quarter_items(quarter)
-            if isinstance((cover := item.get("cover_url")), str)
-        }
         try:
-            expected_covers |= _preview_dependencies(
+            expected_covers = quarter_cover_dependencies(
                 label,
-                (self.site_directory / label / "index.html").read_bytes(),
+                (self.site_directory / page_path).read_bytes(),
                 quarter,
             )
         except (OSError, BuildError):
             return False
         if any(
-            re.fullmatch(r"covers/[1-9][0-9]*\.webp", relative) is None
-            and _PREVIEW_PATH.fullmatch(relative) is None
+            ORIGINAL_COVER_PATH.fullmatch(relative) is None
+            and PREVIEW_PATH.fullmatch(relative) is None
             for relative in expected_covers
         ) or expected_covers != set(cover_resources):
             return False
@@ -487,7 +458,7 @@ class UnifiedSiteBuilder:
         """Merge retained last-good index records without reading uncertain facts."""
         if not retained:
             return years, archive
-        old_archive = _read_site_json(self.site_directory / "data" / "archive-index.json")
+        old_archive = _read_site_json(self.site_directory / ARCHIVE_INDEX)
         old_entries = {
             str(item.get("quarter")): item
             for item in old_archive.get("quarters", [])
@@ -585,7 +556,7 @@ class UnifiedSiteBuilder:
 
     def _shared_assets(self) -> dict[str, bytes]:
         assets: dict[str, bytes] = {}
-        for output, source in _PWA_SOURCE_PATHS.items():
+        for output, source in PWA_SOURCE_PATHS.items():
             path = self.root / Path(source)
             try:
                 assets[output] = path.read_bytes()
@@ -611,6 +582,7 @@ class UnifiedSiteBuilder:
         retained: tuple[str, ...],
         previous: BuildState | None,
         dirty: DirtySet,
+        public_scope_changed: bool,
     ) -> ArtifactPlan:
         """Plan only affected artifacts; content is materialized for dirty paths."""
         specs: dict[str, ArtifactSpec] = {}
@@ -648,16 +620,7 @@ class UnifiedSiteBuilder:
                 value,
             )
 
-        for path in (
-            "assets/app.css",
-            "assets/app.js",
-            "assets/pwa.js",
-            "manifest.webmanifest",
-            "icons/pwa-192.png",
-            "icons/pwa-512.png",
-            "icons/pwa-maskable-512.png",
-            "icons/favicon.svg",
-        ):
+        for path in SHELL_STATIC_PATHS:
             generated(
                 path,
                 "shared",
@@ -666,50 +629,54 @@ class UnifiedSiteBuilder:
             )
         revisions = {
             path: specs[path].content_hash or ""
-            for path in ("assets/app.css", "assets/app.js", "assets/pwa.js")
+            for path in APP_ASSETS
         }
         generated(
-            "index.html",
+            ROOT_PAGE,
             "root",
             lambda: _root_html(revisions),
             dirty.shared_dirty,
         )
         generated(
-            "archive/index.html",
+            ARCHIVE_PAGE,
             "archive-shell",
             lambda: _archive_html(revisions),
             dirty.shared_dirty,
         )
         generated(
-            "settings/index.html",
+            SETTINGS_PAGE,
             "shared-shell",
             lambda: _settings_html(revisions, changelog, __version__),
             dirty.shared_dirty,
         )
-        shell = _pwa_shell_bytes(specs)
-        shell_payload = json.loads(shell.decode("utf-8"))
-        shell_revision = str(shell_payload["revision"])
+
+        @cache
+        def shell_manifest() -> dict[str, object]:
+            return pwa_shell_manifest(specs)
+
         generated(
-            "data/pwa-shell.json",
+            SHELL_MANIFEST,
             "pwa-shell",
-            lambda: shell,
+            lambda: json_bytes(shell_manifest()),
             dirty.shared_dirty,
         )
         generated(
-            "sw.js",
+            SERVICE_WORKER,
             "service-worker",
-            lambda: _service_worker_bytes(sources["sw.js"], shell_revision),
+            lambda: service_worker_bytes(
+                sources[SERVICE_WORKER], str(shell_manifest()["revision"])
+            ),
             dirty.shared_dirty,
         )
         generated(
-            "data/archive-index.json",
+            ARCHIVE_INDEX,
             "archive-index",
             lambda: json_bytes(archive.to_dict()),
             dirty.archive_dirty,
         )
         for year in years:
             generated(
-                f"data/catalog/{year.year:04d}.json",
+                year_catalog_path(year.year),
                 "year-catalog",
                 lambda year=year: json_bytes(year.to_dict()),
                 str(year.year) in dirty.dirty_years,
@@ -717,28 +684,37 @@ class UnifiedSiteBuilder:
 
         subject_by_id = {subject.subject_id: subject for subject in facts.subjects}
         quarter_dirty = set(dirty.dirty_quarters)
+        available_quarters = tuple(
+            label
+            for item in archive.quarters
+            if isinstance((label := item.get("quarter")), str)
+        )
         for quarter in quarters:
             label = quarter.quarter
+            page_path, data_path, manifest_path = quarter_paths(label)
+            data_dirty = label in quarter_dirty or dirty.shared_dirty
+            # A retained page can still pin the shared assets or cover rule
+            # from the build before its quarter was blocked.
+            was_retained = (
+                previous is not None and previous.quarter_status.get(label) == "retained"
+            )
+            page_dirty = data_dirty or public_scope_changed or was_retained
             generated(
-                f"{label}/index.html",
+                data_path,
+                "quarter-json",
+                lambda quarter=quarter: json_bytes(quarter.to_dict()),
+                data_dirty,
+            )
+            generated(
+                page_path,
                 "quarter-html",
                 lambda quarter=quarter: _quarter_html(
                     quarter,
                     revisions,
-                    tuple(
-                        str(item.get("quarter"))
-                        for item in archive.quarters
-                        if isinstance(item, Mapping)
-                        and isinstance(item.get("quarter"), str)
-                    ),
+                    available_quarters,
+                    data_revision=specs[data_path].content_hash or "",
                 ),
-                label in quarter_dirty or dirty.shared_dirty,
-            )
-            generated(
-                f"data/quarters/{label}.json",
-                "quarter-json",
-                lambda quarter=quarter: json_bytes(quarter.to_dict()),
-                label in quarter_dirty or dirty.shared_dirty,
+                page_dirty,
             )
             for item in (
                 *quarter.tv_premiere,
@@ -750,7 +726,7 @@ class UnifiedSiteBuilder:
                 subject = subject_by_id.get(item.subject_id)
                 if subject is None or subject.cover is None:
                     continue
-                relative = f"covers/{item.subject_id}.webp"
+                relative = original_cover_path(item.subject_id)
                 if relative in specs:
                     continue
                 cover = subject.cover
@@ -770,7 +746,7 @@ class UnifiedSiteBuilder:
                     "cover",
                     None if reusable else cover.source_path,
                 )
-                preview = _cover_preview_path(item.cover_url)
+                preview = cover_preview_path(item.cover_url)
                 if preview is not None and preview not in specs:
                     target = self.site_directory / preview
                     preview_size = previous_sizes.get(preview)
@@ -784,26 +760,22 @@ class UnifiedSiteBuilder:
                             preview, previous_artifacts, previous_sizes
                         )
                     else:
-                        value = _cover_preview_bytes(
+                        value = cover_preview_bytes(
                             cover.source_path, cover.content_hash, cover.size_bytes
                         )
                         specs[preview] = ArtifactSpec(
                             preview, hashlib.sha256(value).hexdigest(),
                             len(value), "cover-preview", value,
                         )
-            manifest_path = f"data/offline/{label}.json"
             generated(
                 manifest_path,
                 "offline-manifest",
-                lambda quarter=quarter: _offline_manifest_bytes(quarter, specs),
-                label in quarter_dirty or dirty.shared_dirty,
+                lambda quarter=quarter: offline_manifest_bytes(quarter, specs),
+                page_dirty,
             )
         for label in retained:
-            for relative in (
-                f"{label}/index.html",
-                f"data/quarters/{label}.json",
-                f"data/offline/{label}.json",
-            ):
+            page_path, data_path, manifest_path = quarter_paths(label)
+            for relative in (page_path, data_path, manifest_path):
                 if relative in specs:
                     continue
                 specs[relative] = _reused_spec(
@@ -811,9 +783,7 @@ class UnifiedSiteBuilder:
                     previous_artifacts,
                     previous_sizes,
                 )
-            manifest = _read_site_json(
-                self.site_directory / "data" / "offline" / f"{label}.json"
-            )
+            manifest = _read_site_json(self.site_directory / manifest_path)
             for resource in manifest.get("resources", []):
                 relative = resource.get("url")
                 if not isinstance(relative, str) or not relative.startswith("covers/"):
@@ -832,9 +802,9 @@ class UnifiedSiteBuilder:
         self, desired: Mapping[str, bytes], plan: ArtifactPlan
     ) -> None:
         if len(desired) == len(plan.specs):
-            _validate_site_mapping(desired, self.excluded_subject_ids)
+            validate_full_site(desired, self.excluded_subject_ids)
             return
-        _validate_dirty_mapping(
+        validate_dirty_artifacts(
             desired,
             plan,
             self.site_directory,
@@ -850,9 +820,9 @@ class UnifiedSiteBuilder:
                 for path in site.rglob("*")
                 if path.is_file()
             }
-            _validate_site_mapping(mapping, self.excluded_subject_ids)
+            validate_full_site(mapping, self.excluded_subject_ids)
             return
-        _validate_scoped_site(site, plan, self.excluded_subject_ids)
+        validate_scoped_site(site, plan, self.excluded_subject_ids)
 
     def _write_report(
         self,
@@ -933,440 +903,6 @@ class SiteBuildRun:
         self.errors = errors
 
 
-def _validate_site_mapping(
-    mapping: Mapping[str, bytes], excluded_subject_ids: frozenset[int]
-) -> None:
-    required = {
-        "index.html",
-        "archive/index.html",
-        "settings/index.html",
-        "assets/app.css",
-        "assets/app.js",
-        "assets/pwa.js",
-        "manifest.webmanifest",
-        "sw.js",
-        "data/pwa-shell.json",
-        "data/archive-index.json",
-        "icons/pwa-192.png",
-        "icons/pwa-512.png",
-        "icons/pwa-maskable-512.png",
-        "icons/favicon.svg",
-    }
-    missing = sorted(required - set(mapping))
-    if missing:
-        raise BuildError(f"required site artifact is missing: {missing[0]}")
-    if any(
-        item.startswith(("subjects/", "episodes/", "characters/", "persons/"))
-        for item in mapping
-    ):
-        raise BuildError("forbidden detail or entity artifact exists")
-    archive = _load_json(mapping, "data/archive-index.json")
-    _validate_manifest_payload(
-        _load_json(mapping, "manifest.webmanifest")
-    )
-    _validate_pwa_shell_payload(
-        mapping["data/pwa-shell.json"], mapping, ArtifactPlan({}), Path(".")
-    )
-    quarter_labels = {
-        item["quarter"]
-        for item in archive.get("quarters", [])
-        if isinstance(item, dict)
-    }
-    for path, content in mapping.items():
-        if _PREVIEW_PATH.fullmatch(path):
-            _validate_preview_image(content)
-        if path.startswith("data/quarters/") and path.endswith(".json"):
-            payload = _load_json(mapping, path)
-            label = payload.get("quarter")
-            if label not in quarter_labels:
-                raise BuildError("quarter data is not listed in archive index")
-            for item in _quarter_items(payload):
-                subject_id = item.get("subject_id")
-                if subject_id in excluded_subject_ids:
-                    raise BuildError("blacklisted subject appears in site output")
-                cover = item.get("cover_url")
-                if cover:
-                    cover_path = str(cover).split("?", 1)[0]
-                    if cover_path not in mapping:
-                        raise BuildError(f"cover artifact is missing: {cover_path}")
-    for path, content in mapping.items():
-        if path.startswith("data/offline/") and path.endswith(".json"):
-            payload = _load_json(mapping, path)
-            label = payload.get("quarter")
-            if not isinstance(label, str):
-                raise BuildError("offline manifest quarter is invalid")
-            _validate_offline_closure(
-                payload, _load_json(mapping, f"data/quarters/{label}.json"),
-                mapping.get(f"{label}/index.html", b""),
-            )
-            for resource in payload.get("resources", []):
-                if not isinstance(resource, dict):
-                    raise BuildError("offline resource entry is invalid")
-                url = resource.get("url")
-                if not isinstance(url, str) or url.startswith(("http:", "https:", "/")):
-                    raise BuildError("offline manifest contains a non-local URL")
-                if url not in mapping:
-                    raise BuildError(f"offline resource is missing: {url}")
-                expected_hash = resource.get("content_hash")
-                expected_size = resource.get("size_bytes")
-                if expected_hash != hashlib.sha256(mapping[url]).hexdigest():
-                    raise BuildError(f"offline resource hash is invalid: {url}")
-                if expected_size != len(mapping[url]):
-                    raise BuildError(f"offline resource size is invalid: {url}")
-    for path, content in mapping.items():
-        if path.endswith(".html"):
-            for href in _HREF_RE.findall(content.decode("utf-8")):
-                if href.startswith(("https://bgm.tv/subject/", "#", "mailto:")):
-                    continue
-                target = href.split("?", 1)[0].split("#", 1)[0]
-                if not target or target.startswith("/"):
-                    raise BuildError("site HTML contains an unsafe absolute URL")
-                candidate = Path(path).parent / Path(target)
-                normalized = posixpath.normpath(candidate.as_posix())
-                if normalized == ".":
-                    normalized = "index.html"
-                if normalized not in mapping:
-                    raise BuildError(f"site HTML references missing artifact: {target}")
-
-
-def _validate_dirty_mapping(
-    mapping: Mapping[str, bytes],
-    plan: ArtifactPlan,
-    site: Path,
-    excluded_subject_ids: frozenset[int],
-) -> None:
-    """Validate only newly materialized files and their cheap dependencies."""
-    for path, content in mapping.items():
-        spec = plan.specs.get(path)
-        if spec is None:
-            raise BuildError(f"artifact is not in the current plan: {path}")
-        if spec.kind in {"cover", "cover-preview"}:
-            if spec.content_hash != hashlib.sha256(content).hexdigest():
-                raise BuildError(f"cover artifact hash is invalid: {path}")
-            if spec.size_bytes is not None and spec.size_bytes != len(content):
-                raise BuildError(f"cover artifact size is invalid: {path}")
-            if spec.kind == "cover-preview":
-                _validate_preview_image(content)
-        if path.endswith(".html"):
-            _validate_html_links(path, content, plan, site)
-        if path.startswith("data/quarters/") and path.endswith(".json"):
-            _validate_quarter_payload(path, content, plan, site, excluded_subject_ids)
-        if path.startswith("data/catalog/") and path.endswith(".json"):
-            _validate_year_payload(path, content, plan, site)
-        if path == "data/archive-index.json":
-            _validate_archive_payload(content, plan, site)
-        if path.startswith("data/offline/") and path.endswith(".json"):
-            _validate_offline_payload(content, mapping, plan, site)
-        if path == "manifest.webmanifest":
-            _validate_manifest_payload(_load_json({path: content}, path))
-        if path == "data/pwa-shell.json":
-            _validate_pwa_shell_payload(content, mapping, plan, site)
-
-
-def _validate_scoped_site(
-    site: Path, plan: ArtifactPlan, excluded_subject_ids: frozenset[int]
-) -> None:
-    """Check retained artifacts by metadata and dirty artifacts by their sources."""
-    source_bytes = {
-        path: spec.source
-        for path, spec in plan.specs.items()
-        if isinstance(spec.source, bytes)
-    }
-    _validate_dirty_mapping(source_bytes, plan, site, excluded_subject_ids)
-    for relative, spec in plan.specs.items():
-        target = site / Path(relative)
-        if not target.is_file():
-            raise BuildError(f"planned artifact is missing: {relative}")
-        if spec.size_bytes is not None:
-            try:
-                if target.stat().st_size != spec.size_bytes:
-                    raise BuildError(f"planned artifact size is invalid: {relative}")
-            except OSError as error:
-                raise BuildError(f"planned artifact cannot be inspected: {relative}") from error
-
-
-def _validate_html_links(
-    path: str, content: bytes, plan: ArtifactPlan, site: Path
-) -> None:
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise BuildError(f"generated HTML is not UTF-8: {path}") from error
-    for href in _HREF_RE.findall(text):
-        if href.startswith(("https://bgm.tv/subject/", "#", "mailto:")):
-            continue
-        target = href.split("?", 1)[0].split("#", 1)[0]
-        if not target or target.startswith("/"):
-            raise BuildError("site HTML contains an unsafe absolute URL")
-        candidate = Path(path).parent / Path(target)
-        normalized = posixpath.normpath(candidate.as_posix())
-        if normalized == ".":
-            normalized = "index.html"
-        if normalized not in plan.specs and not (site / Path(normalized)).is_file():
-            raise BuildError(f"site HTML references missing artifact: {target}")
-
-
-def _validate_quarter_payload(
-    path: str,
-    content: bytes,
-    plan: ArtifactPlan,
-    site: Path,
-    excluded_subject_ids: frozenset[int],
-) -> None:
-    payload = _load_json({path: content}, path)
-    expected = Path(path).stem
-    if payload.get("quarter") != expected:
-        raise BuildError(f"quarter payload label is invalid: {path}")
-    movie = payload.get("movie")
-    if isinstance(movie, dict) and movie.get("continuing"):
-        raise BuildError(f"movie continuing appearance in {path}")
-    for item in _quarter_items(payload):
-        subject_id = item.get("subject_id")
-        if subject_id in excluded_subject_ids:
-            raise BuildError("blacklisted subject appears in site output")
-        cover = item.get("cover_url")
-        if isinstance(cover, str):
-            relative = cover.split("?", 1)[0]
-            if relative not in plan.specs and not (site / Path(relative)).is_file():
-                raise BuildError(f"cover artifact is missing: {relative}")
-
-
-def _validate_year_payload(
-    path: str, content: bytes, plan: ArtifactPlan, site: Path
-) -> None:
-    payload = _load_json({path: content}, path)
-    records = payload.get("records", [])
-    if not isinstance(records, list):
-        raise BuildError(f"year catalog records are invalid: {path}")
-    for item in records:
-        if not isinstance(item, dict):
-            raise BuildError(f"year catalog record is invalid: {path}")
-        quarter = item.get("quarter")
-        if isinstance(quarter, str):
-            target = f"data/quarters/{quarter}.json"
-            if target not in plan.specs and not (site / Path(target)).is_file():
-                raise BuildError(f"year catalog references missing quarter: {quarter}")
-
-
-def _validate_archive_payload(
-    content: bytes, plan: ArtifactPlan, site: Path
-) -> None:
-    payload = _load_json({"data/archive-index.json": content}, "data/archive-index.json")
-    quarters = payload.get("quarters", [])
-    if not isinstance(quarters, list):
-        raise BuildError("archive index quarters are invalid")
-    for item in quarters:
-        if not isinstance(item, dict) or not isinstance(item.get("quarter"), str):
-            raise BuildError("archive index entry is invalid")
-        target = f"data/quarters/{item['quarter']}.json"
-        if target not in plan.specs and not (site / Path(target)).is_file():
-            raise BuildError(f"archive index references missing quarter: {item['quarter']}")
-
-
-def _validate_offline_payload(
-    content: bytes,
-    mapping: Mapping[str, bytes],
-    plan: ArtifactPlan,
-    site: Path,
-) -> None:
-    payload = _load_json({"offline.json": content}, "offline.json")
-    quarter = payload.get("quarter")
-    data_revision = payload.get("data_revision")
-    if not isinstance(quarter, str) or not re.fullmatch(r"[0-9]{4}-(?:01|04|07|10)", quarter):
-        raise BuildError("offline manifest quarter is invalid")
-    if not isinstance(data_revision, str) or _HEX_64.fullmatch(data_revision) is None:
-        raise BuildError("offline manifest data revision is invalid")
-    quarter_relative = f"data/quarters/{quarter}.json"
-    quarter_bytes = mapping.get(quarter_relative)
-    if quarter_bytes is None:
-        quarter_path = site / Path(quarter_relative)
-        if not quarter_path.is_file():
-            raise BuildError(f"offline manifest data payload is missing: {quarter}")
-        try:
-            quarter_bytes = quarter_path.read_bytes()
-        except OSError as error:
-            raise BuildError(f"offline manifest data payload is unreadable: {quarter}") from error
-    if hashlib.sha256(quarter_bytes).hexdigest() != data_revision:
-        raise BuildError(f"offline manifest data revision is invalid: {quarter}")
-    page_bytes = mapping.get(f"{quarter}/index.html")
-    if page_bytes is None:
-        try:
-            page_bytes = (site / quarter / "index.html").read_bytes()
-        except OSError as error:
-            raise BuildError("offline manifest page is unavailable") from error
-    _validate_offline_closure(
-        payload, _load_json({"quarter.json": quarter_bytes}, "quarter.json"), page_bytes,
-    )
-    resources = payload.get("resources", [])
-    if not isinstance(resources, list):
-        raise BuildError("offline manifest resources are invalid")
-    for resource in resources:
-        if not isinstance(resource, dict):
-            raise BuildError("offline resource entry is invalid")
-        url = resource.get("url")
-        if not isinstance(url, str) or url.startswith(("http:", "https:", "/")):
-            raise BuildError("offline manifest contains a non-local URL")
-        if url in mapping:
-            data = mapping[url]
-            if resource.get("content_hash") != hashlib.sha256(data).hexdigest():
-                raise BuildError(f"offline resource hash is invalid: {url}")
-            if resource.get("size_bytes") != len(data):
-                raise BuildError(f"offline resource size is invalid: {url}")
-            continue
-        spec = plan.specs.get(url)
-        target = site / Path(url)
-        if spec is None and not target.is_file():
-            raise BuildError(f"offline resource is missing: {url}")
-        expected_hash = spec.content_hash if spec is not None else None
-        expected_size = spec.size_bytes if spec is not None else None
-        if expected_hash is not None and resource.get("content_hash") != expected_hash:
-            raise BuildError(f"offline resource hash is invalid: {url}")
-        if expected_size is not None and resource.get("size_bytes") != expected_size:
-            raise BuildError(f"offline resource size is invalid: {url}")
-
-
-def _validate_manifest_payload(payload: Mapping[str, object]) -> None:
-    for key in ("id", "start_url", "scope"):
-        if payload.get(key) != "./":
-            raise BuildError(f"web app manifest {key} must be relative to site scope")
-    if payload.get("display") != "standalone":
-        raise BuildError("web app manifest display is invalid")
-    icons = payload.get("icons")
-    if not isinstance(icons, list) or len(icons) < 3:
-        raise BuildError("web app manifest icons are invalid")
-    if not any(
-        isinstance(icon, dict) and icon.get("purpose") == "maskable"
-        for icon in icons
-    ):
-        raise BuildError("web app manifest maskable icon is missing")
-    for icon in icons:
-        if not isinstance(icon, dict):
-            raise BuildError("web app manifest icon is invalid")
-        source = icon.get("src")
-        if not isinstance(source, str) or source.startswith(("/", "http:", "https:")):
-            raise BuildError("web app manifest icon URL is unsafe")
-
-
-def _validate_pwa_shell_payload(
-    content: bytes,
-    mapping: Mapping[str, bytes],
-    plan: ArtifactPlan,
-    site: Path,
-) -> None:
-    payload = _load_json({"pwa-shell.json": content}, "pwa-shell.json")
-    resources = payload.get("resources")
-    if payload.get("schema") != 1 or not isinstance(resources, list):
-        raise BuildError("PWA shell manifest is invalid")
-    if [item.get("url") for item in resources if isinstance(item, dict)] != list(
-        _SHELL_RESOURCE_PATHS
-    ):
-        raise BuildError("PWA shell resources are invalid")
-    expected_revision = fingerprint(
-        [
-            (item.get("url"), item.get("content_hash"), item.get("size_bytes"))
-            for item in resources
-            if isinstance(item, dict)
-        ]
-    )
-    if payload.get("revision") != expected_revision:
-        raise BuildError("PWA shell revision is invalid")
-    for item in resources:
-        if not isinstance(item, dict):
-            raise BuildError("PWA shell resource is invalid")
-        relative = item.get("url")
-        if not isinstance(relative, str):
-            raise BuildError("PWA shell resource URL is invalid")
-        if relative in mapping:
-            expected_hash = hashlib.sha256(mapping[relative]).hexdigest()
-            expected_size = len(mapping[relative])
-        else:
-            spec = plan.specs.get(relative)
-            target = site / Path(relative)
-            if spec is None and not target.is_file():
-                raise BuildError(f"PWA shell resource is missing: {relative}")
-            expected_hash = spec.content_hash if spec is not None else None
-            expected_size = spec.size_bytes if spec is not None else None
-        if expected_hash is not None and item.get("content_hash") != expected_hash:
-            raise BuildError(f"PWA shell resource hash is invalid: {relative}")
-        if expected_size is not None and item.get("size_bytes") != expected_size:
-            raise BuildError(f"PWA shell resource size is invalid: {relative}")
-
-
-def _validate_plan_contract(
-    plan: ArtifactPlan,
-    quarters: tuple[QuarterProjection, ...],
-    archive: ArchiveIndexProjection,
-    excluded_subject_ids: frozenset[int],
-) -> None:
-    required = {
-        "index.html",
-        "archive/index.html",
-        "settings/index.html",
-        "assets/app.css",
-        "assets/app.js",
-        "assets/pwa.js",
-        "manifest.webmanifest",
-        "sw.js",
-        "data/pwa-shell.json",
-        "data/archive-index.json",
-        "icons/pwa-192.png",
-        "icons/pwa-512.png",
-        "icons/pwa-maskable-512.png",
-        "icons/favicon.svg",
-    }
-    missing = sorted(required - set(plan.specs))
-    if missing:
-        raise BuildError(f"required site artifact is missing: {missing[0]}")
-    if any(
-        path.startswith(("subjects/", "episodes/", "characters/", "persons/"))
-        for path in plan.specs
-    ):
-        raise BuildError("forbidden detail or entity artifact exists")
-    archive_labels = {
-        str(item.get("quarter"))
-        for item in archive.quarters
-        if isinstance(item, dict)
-    }
-    for quarter in quarters:
-        if quarter.quarter not in archive_labels:
-            raise BuildError(f"quarter is not listed in archive index: {quarter.quarter}")
-        if any(
-            item.subject_id in excluded_subject_ids
-            for group in (
-                quarter.tv_premiere,
-                quarter.tv_continuing,
-                quarter.movie_premiere,
-            )
-            for item in group
-        ):
-            raise BuildError("blacklisted subject appears in site output")
-        if quarter.movie_premiere and any(
-            item.appearance_kind == "continuing" for item in quarter.movie_premiere
-        ):
-            raise BuildError(f"movie continuing appearance in {quarter.quarter}")
-
-
-def _load_json(mapping: Mapping[str, bytes], path: str) -> dict[str, object]:
-    try:
-        value = json.loads(mapping[path].decode("utf-8"))
-    except (KeyError, UnicodeError, json.JSONDecodeError) as error:
-        raise BuildError(f"invalid JSON artifact: {path}") from error
-    if not isinstance(value, dict):
-        raise BuildError(f"JSON artifact must be an object: {path}")
-    return value
-
-
-def _quarter_items(payload: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
-    values: list[Mapping[str, object]] = []
-    for group in (payload.get("tv"), payload.get("movie")):
-        if not isinstance(group, dict):
-            continue
-        for records in group.values():
-            if isinstance(records, list):
-                values.extend(item for item in records if isinstance(item, dict))
-    return tuple(values)
-
-
 def _root_html(revisions: Mapping[str, str]) -> bytes:
     body = (
         '<main id="main-content" tabindex="-1" class="root-entry" data-root-loading><p class="archive-intro__code">'
@@ -1396,7 +932,7 @@ def _archive_html(revisions: Mapping[str, str]) -> bytes:
     body = (
         _site_header("../index.html", "../archive/index.html", "../settings/index.html", "ARCHIVE")
         + '<main id="main-content" tabindex="-1" class="archive-page" data-archive-app data-page="archive" data-workspace-mode="scope" data-view-mode="grid" '
-        f'data-archive-index-url="../data/archive-index.json" data-site-root="../" data-cover-preview-rule="{_cover_preview_rule_id()}" aria-busy="true">'
+        f'data-archive-index-url="../data/archive-index.json" data-site-root="../" data-cover-preview-rule="{cover_preview_rule_id()}" aria-busy="true">'
         '<section class="archive-intro">'
         '<p class="archive-intro__code">ARCHIVE / INDEX</p>'
         '<div><h1>播出档案</h1><p class="archive-intro__summary">'
@@ -1658,9 +1194,10 @@ def _quarter_html(
     quarter: QuarterProjection,
     revisions: Mapping[str, str],
     available_quarters: tuple[str, ...] = (),
+    *,
+    data_revision: str,
 ) -> bytes:
     label = html.escape(quarter.quarter)
-    data_revision = hashlib.sha256(json_bytes(quarter.to_dict())).hexdigest()
     sections = (
         (
             "tv",
@@ -1697,7 +1234,7 @@ def _quarter_html(
         )
         + f'<main id="main-content" tabindex="-1" class="quarter-page season-{html.escape(quarter.quarter[-2:])}" '
         f'data-archive-app data-page="quarter" data-quarter="{label}" data-workspace-mode="scope" data-view-mode="grid" '
-        f'data-data-url="../data/quarters/{label}.json?v={data_revision}" data-site-root="../" data-cover-preview-rule="{_cover_preview_rule_id()}" '
+        f'data-data-url="../data/quarters/{label}.json?v={data_revision}" data-site-root="../" data-cover-preview-rule="{cover_preview_rule_id()}" '
         f'data-count-tv="{counts["tv"]}" data-count-movie="{counts["movie"]}" '
         f'data-count-premiere="{counts["premiere"]}" data-count-continuing="{counts["continuing"]}">'
         '<section class="archive-intro archive-intro--quarter">'
@@ -1744,10 +1281,6 @@ def _quarter_html(
         body_class=f"season-{quarter.quarter[-2:]}",
         data_attrs={"data-page": "quarter"},
     )
-
-
-def _quarter_data_revision(quarter: QuarterProjection) -> str:
-    return hashlib.sha256(json_bytes(quarter.to_dict())).hexdigest()
 
 
 def _default_display_records(
@@ -1885,112 +1418,11 @@ def _subject_row(item: SubjectProjection | Mapping[str, object], sequence: int) 
     )
 
 
-def _cover_preview_rule_id() -> str:
-    return fingerprint(_COVER_PREVIEW_RULE)
-
-
-def _cover_preview_path(cover: object, *, rule: str | None = None) -> str | None:
-    match = _COVER_URL.fullmatch(cover) if isinstance(cover, str) else None
-    if match is None:
-        return None
-    identity = hashlib.sha256(f"{rule or _cover_preview_rule_id()}\n{match[2]}".encode("ascii")).hexdigest()
-    return f"covers/previews/{identity}.webp"
-
-
-def _validate_preview_image(content: bytes) -> None:
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(BytesIO(content)) as image:
-                if image.format != "WEBP" or min(image.size) <= 0 or max(image.size) > MAX_COVER_EDGE:
-                    raise BuildError("preview source is not a bounded verified WebP")
-                image.load()
-    except (OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
-        raise BuildError("preview image cannot be safely decoded") from error
-
-
-def _cover_preview_bytes(source: Path, content_hash: str, size_bytes: int) -> bytes:
-    if size_bytes <= 0 or size_bytes > MAX_IMAGE_BYTES:
-        raise BuildError("preview source exceeds the cover byte limit")
-    try:
-        with source.open("rb") as stream:
-            content = stream.read(MAX_IMAGE_BYTES + 1)
-    except OSError as error:
-        raise BuildError("preview source is unavailable") from error
-    if len(content) != size_bytes or hashlib.sha256(content).hexdigest() != content_hash:
-        raise BuildError("preview source identity is invalid")
-    _validate_preview_image(content)
-    try:
-        with Image.open(BytesIO(content)) as source_image:
-            edge = int(_COVER_PREVIEW_RULE["max_edge"])
-            if max(source_image.size) <= edge or source_image.is_animated:
-                return content
-            source_image.load()
-            image = ImageOps.exif_transpose(source_image)
-            image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
-            image.thumbnail((edge, edge), Image.Resampling.LANCZOS)
-            output = BytesIO()
-            image.save(
-                output, format="WEBP", quality=int(_COVER_PREVIEW_RULE["quality"]),
-                method=int(_COVER_PREVIEW_RULE["method"]),
-                exact=bool(_COVER_PREVIEW_RULE["exact"]),
-                icc_profile=source_image.info.get("icc_profile", b""),
-            )
-            preview = output.getvalue()
-    except (OSError, ValueError) as error:
-        raise BuildError("preview encoding failed") from error
-    _validate_preview_image(preview)
-    return preview if len(preview) < len(content) else content
-
-
-def _preview_dependencies(label: str, page: bytes, quarter: Mapping[str, object]) -> set[str]:
-    previews: set[str] = set()
-    try:
-        references = _HREF_RE.findall(page.decode("utf-8"))
-    except UnicodeDecodeError as error:
-        raise BuildError("offline page is not UTF-8") from error
-    rule_match = re.search(r'data-cover-preview-rule="([0-9a-f]{64})"', page.decode("utf-8"))
-    expected = {
-        _cover_preview_path(item.get("cover_url"), rule=rule_match[1])
-        for item in _quarter_items(quarter)
-    } if rule_match is not None else set()
-    for reference in references:
-        path = posixpath.normpath(f"{label}/{reference.split('?', 1)[0]}")
-        if not path.startswith("covers/previews/"):
-            continue
-        if _PREVIEW_PATH.fullmatch(path) is None or path not in expected:
-            raise BuildError("preview dependency does not match the quarter source")
-        previews.add(path)
-    return previews
-
-
-def _validate_offline_closure(payload: Mapping[str, object], quarter: Mapping[str, object], page: bytes) -> None:
-    label = payload.get("quarter")
-    if not isinstance(label, str) or not page:
-        raise BuildError("offline page dependency is missing")
-    required = {
-        f"{label}/index.html", f"data/quarters/{label}.json",
-        "assets/app.css", "assets/app.js", "assets/pwa.js",
-        *(
-            cover.split("?", 1)[0]
-            for item in _quarter_items(quarter)
-            if isinstance((cover := item.get("cover_url")), str)
-        ),
-        *_preview_dependencies(label, page, quarter),
-    }
-    resources = payload.get("resources", [])
-    supplied = {
-        item.get("url") for item in resources if isinstance(item, dict)
-    } if isinstance(resources, list) else set()
-    if not required.issubset(supplied):
-        raise BuildError("offline manifest omits a page or cover dependency")
-
-
 def _cover_markup(cover: object, sequence: int, subject_id: int) -> str:
     if not cover:
         return '<span class="subject-row__cover subject-row__cover--missing" aria-label="缺少封面"><span>ARCHIVE</span></span>'
     original = str(cover)
-    path = _cover_preview_path(original) or original
+    path = cover_preview_path(original) or original
     fallback = (
         f' data-cover-fallback="../{html.escape(original, quote=True)}"'
         if path != original else ""
@@ -2150,98 +1582,6 @@ def _reused_spec(
         "retained",
         None,
     )
-
-
-def _offline_manifest_bytes(
-    quarter: QuarterProjection, specs: Mapping[str, ArtifactSpec]
-) -> bytes:
-    label = quarter.quarter
-    data_revision = _quarter_data_revision(quarter)
-    required = [
-        f"{label}/index.html",
-        f"data/quarters/{label}.json",
-        "assets/app.css",
-        "assets/app.js",
-        "assets/pwa.js",
-    ]
-    required.extend(
-        sorted(
-            {
-                item.cover_url.split("?", 1)[0]
-                for group in (
-                    quarter.tv_premiere,
-                    quarter.tv_continuing,
-                    quarter.movie_premiere,
-                )
-                for item in group
-                if item.cover_url
-            }
-        )
-    )
-    required.extend(sorted({
-        preview
-        for group in (quarter.tv_premiere, quarter.tv_continuing, quarter.movie_premiere)
-        for item in group
-        if (preview := _cover_preview_path(item.cover_url)) is not None
-    }))
-    resources: list[dict[str, object]] = []
-    for relative in required:
-        spec = specs.get(relative)
-        if spec is None or spec.content_hash is None or spec.size_bytes is None:
-            raise ProjectionError(f"offline resource metadata is missing: {relative}")
-        resources.append(
-            {
-                "url": relative,
-                "content_hash": spec.content_hash,
-                "size_bytes": spec.size_bytes,
-            }
-        )
-    return json_bytes(
-        {
-            "quarter": label,
-            "revision": fingerprint(
-                {
-                    "quarter": label,
-                    "data_revision": data_revision,
-                    "resources": [
-                        (item["url"], item["content_hash"], item["size_bytes"])
-                        for item in resources
-                    ],
-                }
-            ),
-            "data_revision": data_revision,
-            "resources": resources,
-        }
-    )
-
-
-def _pwa_shell_bytes(specs: Mapping[str, ArtifactSpec]) -> bytes:
-    resources: list[dict[str, object]] = []
-    for relative in _SHELL_RESOURCE_PATHS:
-        spec = specs.get(relative)
-        if spec is None or spec.content_hash is None or spec.size_bytes is None:
-            raise ProjectionError(f"PWA shell resource metadata is missing: {relative}")
-        resources.append(
-            {
-                "url": relative,
-                "content_hash": spec.content_hash,
-                "size_bytes": spec.size_bytes,
-            }
-        )
-    revision = fingerprint(
-        [
-            (item["url"], item["content_hash"], item["size_bytes"])
-            for item in resources
-        ]
-    )
-    return json_bytes({"schema": 1, "revision": revision, "resources": resources})
-
-
-def _service_worker_bytes(source: bytes, shell_revision: str) -> bytes:
-    token = b"__BSB_SHELL_REVISION__"
-    if source.count(token) != 1:
-        raise ProjectionError("service worker shell revision token is invalid")
-    return source.replace(token, shell_revision.encode("ascii"))
 
 
 __all__ = [

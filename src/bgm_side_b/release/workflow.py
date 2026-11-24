@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from bgm_side_b import __version__
 from bgm_side_b.archive_config import load_archive_sync_settings
 from bgm_side_b.build.recovery import pending_patches
+from bgm_side_b.build.site_paths import ARCHIVE_INDEX, CORE_SITE_PATHS, quarter_paths
 from bgm_side_b.config import load_tag_rules
 from bgm_side_b.database import Database, DatabaseError
 from bgm_side_b.progress import NullProgressReporter, ProgressReporter
@@ -50,18 +51,6 @@ _GIT_SHA = re.compile(r"[0-9a-f]{40}")
 _CONTENT_SHA = re.compile(r"[0-9a-f]{64}")
 _PUBLIC_QUARTER = re.compile(r"\d{4}-(?:01|04|07|10)")
 _BUILD_STATE_SCHEMA = 1
-_STATUS_REQUIRED_FILES = (
-    "index.html",
-    "archive/index.html",
-    "settings/index.html",
-    "assets/app.css",
-    "assets/app.js",
-    "assets/pwa.js",
-    "manifest.webmanifest",
-    "sw.js",
-    "data/archive-index.json",
-    "data/pwa-shell.json",
-)
 
 
 @dataclass(frozen=True)
@@ -425,11 +414,11 @@ def _quick_site_status(
             or not (site / PurePosixPath(relative)).is_file()
             or (site / PurePosixPath(relative)).stat().st_size
             != normalized[relative][1]
-            for relative in _STATUS_REQUIRED_FILES
+            for relative in CORE_SITE_PATHS
         ):
             raise ValueError
         archive = json.loads(
-            (site / "data" / "archive-index.json").read_text("utf-8")
+            (site / ARCHIVE_INDEX).read_text("utf-8")
         )
         quarter_rows = archive.get("quarters") if isinstance(archive, dict) else None
         if not isinstance(quarter_rows, list):
@@ -443,11 +432,7 @@ def _quick_site_status(
                     and re.fullmatch(_PUBLIC_QUARTER, str(item.get("quarter", "")))
                     and all(
                         relative in normalized
-                        for relative in (
-                            f"{item['quarter']}/index.html",
-                            f"data/quarters/{item['quarter']}.json",
-                            f"data/offline/{item['quarter']}.json",
-                        )
+                        for relative in quarter_paths(item["quarter"])
                     )
                 }
             )

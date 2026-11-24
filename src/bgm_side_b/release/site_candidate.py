@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from bgm_side_b.build.recovery import pending_patches
+from bgm_side_b.build.site_paths import ARCHIVE_INDEX, CORE_SITE_PATHS, quarter_paths
 
 
 class SiteCandidateError(ValueError):
@@ -44,18 +45,6 @@ class SiteCandidate:
     files: tuple[str, ...]
 
 
-_REQUIRED_FILES = (
-    "index.html",
-    "archive/index.html",
-    "settings/index.html",
-    "assets/app.css",
-    "assets/app.js",
-    "assets/pwa.js",
-    "manifest.webmanifest",
-    "sw.js",
-    "data/archive-index.json",
-    "data/pwa-shell.json",
-)
 _FORBIDDEN_PARTS = frozenset(
     {"workspace", "reports", "backups", ".git", ".venv", "__pycache__"}
 )
@@ -104,9 +93,7 @@ def validate_site(site_root: Path, *, source_commit: str = "") -> SiteCandidate:
         content_hash.update(str(size).encode("ascii"))
         content_hash.update(b"\n")
 
-    missing = [
-        relative for relative in _REQUIRED_FILES if relative not in relative_files
-    ]
+    missing = [path for path in CORE_SITE_PATHS if path not in relative_files]
     if missing:
         raise SiteCandidateError("formal site is missing required artifacts")
     quarters = _public_quarters(root, set(relative_files))
@@ -164,7 +151,7 @@ def candidate_content_hash(site_root: Path) -> str:
 
 def _public_quarters(root: Path, files: set[str]) -> tuple[str, ...]:
     try:
-        archive = json.loads((root / "data" / "archive-index.json").read_text("utf-8"))
+        archive = json.loads((root / ARCHIVE_INDEX).read_text("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SiteCandidateError("archive index is invalid") from error
     values = archive.get("quarters") if isinstance(archive, dict) else None
@@ -177,11 +164,7 @@ def _public_quarters(root: Path, files: set[str]) -> tuple[str, ...]:
         quarter = item["quarter"]
         if not re.fullmatch(r"\d{4}-(?:01|04|07|10)", quarter):
             raise SiteCandidateError("archive index quarter is invalid")
-        if (
-            f"{quarter}/index.html" in files
-            and f"data/quarters/{quarter}.json" in files
-            and f"data/offline/{quarter}.json" in files
-        ):
+        if all(path in files for path in quarter_paths(quarter)):
             quarters.append(quarter)
     return tuple(sorted(set(quarters)))
 

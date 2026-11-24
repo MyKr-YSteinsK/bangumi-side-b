@@ -296,8 +296,8 @@ def test_browse_previews_keep_original_detail_and_bounded_fallback(
     quarter = json.loads((site / "data/quarters/2026-07.json").read_text("utf-8"))
     original = quarter["tv"]["continuing"][0]["cover_url"]
     markup = (site / "2026-07/index.html").read_text("utf-8")
-    from bgm_side_b.build.site_builder import _cover_preview_path
-    preview = _cover_preview_path(original)
+    from bgm_side_b.build.cover_preview import cover_preview_path
+    preview = cover_preview_path(original)
     assert preview is not None and preview in markup
     context = preview_browser.new_context(
         service_workers="block", viewport={"width": 390, "height": 844},

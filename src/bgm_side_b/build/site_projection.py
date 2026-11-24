@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from unicodedata import normalize
 
+from bgm_side_b.build.site_paths import original_cover_path
 from bgm_side_b.config import TagRules
 from bgm_side_b.database import Database
 from bgm_side_b.domain import Quarter
@@ -597,7 +598,7 @@ def _verified_cover(
         warnings.append(f"subject {subject.subject_id} has an invalid cover")
         return None, None
     return (
-        f"covers/{subject.subject_id}.webp?v={cover.content_hash}",
+        f"{original_cover_path(subject.subject_id)}?v={cover.content_hash}",
         cover.content_hash,
     )
 

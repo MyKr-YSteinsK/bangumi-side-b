@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from playwright.sync_api import Browser, Page, sync_playwright
 
-from bgm_side_b.build import site_builder
+from bgm_side_b.build import cover_preview, site_builder
 from bgm_side_b.repository import SubjectRepository
 from tests.test_site_builder import (
     _build_fixture,
@@ -350,12 +350,12 @@ def test_preview_package_failure_preserves_active_offline_and_reference_safe_gc(
     assert old["status"] == "COMPLETE" and old["staging"] is None
     quarter = json.loads((site / "data/quarters/2026-07.json").read_text("utf-8"))
     original = quarter["tv"]["continuing"][0]["cover_url"]
-    old_path = site_builder._cover_preview_path(original)
+    old_path = cover_preview.cover_preview_path(original)
     old_resource = next(r for r in old["active"]["resources"] if r["url"] == old_path)
-    monkeypatch.setitem(site_builder._COVER_PREVIEW_RULE, "quality", 79)
+    monkeypatch.setitem(cover_preview.COVER_PREVIEW_RULE, "quality", 79)
     builder.build()
     current = json.loads((site / "data/offline/2026-07.json").read_text("utf-8"))
-    new_path = site_builder._cover_preview_path(original)
+    new_path = cover_preview.cover_preview_path(original)
     new_resource = next(r for r in current["resources"] if r["url"] == new_path)
     assert current["data_revision"] == old["active"]["data_revision"]
     assert current["revision"] != old["active"]["revision"]
@@ -4123,7 +4123,7 @@ def test_verified_quarter_shows_old_first_and_explicitly_loads_coherent_online_u
         item for item in old_payload["tv"]["continuing"]
         if item["subject_id"] == 101
     )
-    old_preview_path = site_builder._cover_preview_path(old_item["cover_url"])
+    old_preview_path = cover_preview.cover_preview_path(old_item["cover_url"])
     assert old_preview_path is not None
     old_preview_resource = next(
         item for item in old_state["active"]["resources"]
@@ -4199,7 +4199,7 @@ def test_verified_quarter_shows_old_first_and_explicitly_loads_coherent_online_u
         item for item in new_payload["tv"]["continuing"]
         if item["subject_id"] == 101
     )
-    new_preview_path = site_builder._cover_preview_path(new_item["cover_url"])
+    new_preview_path = cover_preview.cover_preview_path(new_item["cover_url"])
     assert new_preview_path is not None and new_preview_path != old_preview_path
     new_preview_resource = next(
         item for item in new_manifest["resources"]

@@ -14,7 +14,7 @@ python -m venv .venv
 .venv/Scripts/python.exe -m bgm_side_b --help
 ```
 
-- 应用版本由 `src/bgm_side_b/_version.py` 和 `pyproject.toml` 共同确定。`CHANGELOG.md` 参与构建 Settings 更新记录。纯内部重构和交接文档整理无需例行改版本。
+- 应用版本由 `src/bgm_side_b/_version.py` 和 `pyproject.toml` 共同确定。`CHANGELOG.md` 参与构建 Settings 更新记录。纯内部重构和交接文档整理无需例行改版本。本机源码版本调整后，可以用 `python -m pip install --no-deps -e .` 刷新已有开发环境的包元数据。
 - 可选择测试所需浏览器。已用 `python -m playwright install --list` 核对本机 Chromium、WebKit 存在。新环境安装使用 `python -m playwright install chromium webkit`，Linux 系统依赖按 CI 工作流处理。
 
 ## 数据和输出位置
@@ -64,6 +64,7 @@ python -m pytest -m release_smoke -q
 ```
 
 - 重验同步职责变更可先运行 `python -m pytest tests/test_admission.py tests/test_archive_sync.py tests/test_sync_replay.py tests/test_write_recovery.py -q`。其中 `test_cli_sync_replay` 在临时根目录走真实 CLI、SQLite 和构建，用合成 API 提供输入。跨版本对照可让两份源码各调用一次同一测试模块的 `replay(root, monkeypatch)`，分别给空目录，保持 fixture、静态资源、配置和更新日志字节一致，再逐步比较返回的映射。
+- 构建变更优先跑 `tests/test_site_builder.py`、`tests/test_build_fingerprint.py`、`tests/test_incremental_writer.py` 和 `tests/test_sync_build_integration.py`。比较全量与增量时，固定版本、更新日志、静态字节、Pillow/libwebp、合成 SQLite 和封面。需要保留季度的两次实验应从相同的上次可用树与 build state 开始。中断与实际候选绑定另见 `tests/test_write_recovery.py`、`tests/test_unified_release.py` 和 `tests/test_release_workflow.py`。
 - 默认 CI 跑 Python 3.11 的 Linux/Windows 非浏览器测试与 Linux Chromium release smoke。手动 Deep regression 才会跑完整 Chromium 和 WebKit 集。源码与工作流位于 `.github/workflows/`。回归依赖 fixtures、loopback HTTP 和临时 Git 仓库。需要避免 Windows 历史临时目录权限问题时，给 pytest 的 `--basetemp` 指定 `workspace/tmp/` 下本次未使用的目录。
 - 事实变更跑候选发现、规则、REVIEW、事务和增量构建用例。重点检查重复执行、失败中断和目标/全局影响。本地构建或 PWA 改动查候选文件树、离线资源闭包、完整包替换及老数据/应用组合。真机、真实弱网、真实 Bangumi 与生产 Pages 按任务授权分别验收。
 - 确认当前工作树和配置的上游再提交。只把授权的改动暂存，查询实际远端 ref 核对推送结果。正式 Plan 默认按获授权 Issue 交接，保留既有编号和可追溯证据。私有正文不进公开 Issue 或 Git。复杂依赖和下一步记入 [当前状态](CURRENT_STATE.md)。

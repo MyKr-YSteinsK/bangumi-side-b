@@ -16,7 +16,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from bgm_side_b import __version__
-from bgm_side_b.build import site_builder
+from bgm_side_b.build import cover_preview, site_builder
 from bgm_side_b.build.site_builder import (
     BuildError,
     UnifiedSiteBuilder,
@@ -221,7 +221,7 @@ def test_preview_preserves_alpha_and_exif_orientation(tmp_path: Path) -> None:
     body = output.getvalue()
     source = tmp_path / "portrait.webp"
     source.write_bytes(body)
-    preview = site_builder._cover_preview_bytes(
+    preview = cover_preview.cover_preview_bytes(
         source, hashlib.sha256(body).hexdigest(), len(body)
     )
     assert len(preview) < len(body)
@@ -242,7 +242,7 @@ def test_preview_rejects_unverified_format_and_oversized_dimensions(
     source = tmp_path / "invalid.webp"
     source.write_bytes(body)
     with pytest.raises(BuildError):
-        site_builder._cover_preview_bytes(
+        cover_preview.cover_preview_bytes(
             source, hashlib.sha256(body).hexdigest(), len(body)
         )
 
@@ -270,9 +270,9 @@ def test_cover_previews_include_originals_repair_and_reuse_without_reads(
     urls = {item["subject_id"]: item["cover_url"]
             for item in (*quarter["tv"]["premiere"], *quarter["tv"]["continuing"])}
     large = next(r for r in previews
-                 if r["url"] == site_builder._cover_preview_path(urls[101]))
+                 if r["url"] == cover_preview.cover_preview_path(urls[101]))
     small = next(r for r in previews
-                 if r["url"] == site_builder._cover_preview_path(urls[303]))
+                 if r["url"] == cover_preview.cover_preview_path(urls[303]))
     with Image.open(site / large["url"]) as image:
         assert image.size == (427, 640)
     assert (site / small["url"]).read_bytes() == (site / "covers/303.webp").read_bytes()
@@ -290,7 +290,7 @@ def test_cover_previews_include_originals_repair_and_reuse_without_reads(
                   if p.is_file()}
     def forbidden(*args: object) -> bytes:
         raise AssertionError("unchanged cover was regenerated")
-    monkeypatch.setattr(site_builder, "_cover_preview_bytes", forbidden)
+    monkeypatch.setattr(site_builder, "cover_preview_bytes", forbidden)
     original_open = Path.open
     def checked_open(path: Path, *args: object, **kwargs: object):
         if path.parent == tmp_path / "workspace/covers":
@@ -311,20 +311,22 @@ def test_preview_rule_changes_package_not_data_and_keeps_retained_closure(
     site = tmp_path / "dist/site"
     old_package = json.loads((site / "data/offline/2026-07.json").read_text("utf-8"))
     old_april = (site / "2026-04/index.html").read_bytes()
+    old_april_data = (site / "data/quarters/2026-04.json").read_bytes()
     old_data = (site / "data/quarters/2026-07.json").read_bytes()
     old_quarter = json.loads(old_data)
     original_url = old_quarter["tv"]["continuing"][0]["cover_url"]
-    old_preview = site_builder._cover_preview_path(original_url)
+    old_preview = cover_preview.cover_preview_path(original_url)
     repository = SubjectRepository(database)
-    now = datetime.now(UTC).isoformat()
+    april_state = repository.get_sync_state(Quarter(2026, 4))
+    assert april_state is not None
     with repository.transaction() as connection:
-        repository.write_sync_state(connection, QuarterSyncState(
-            Quarter(2026, 4), "incomplete", "complete", 1, 0, now, now,
-        ))
-    monkeypatch.setitem(site_builder._COVER_PREVIEW_RULE, "quality", 79)
+        repository.write_sync_state(
+            connection, replace(april_state, facts_status="incomplete")
+        )
+    monkeypatch.setitem(cover_preview.COVER_PREVIEW_RULE, "quality", 79)
     run = builder.build()
     package = json.loads((site / "data/offline/2026-07.json").read_text("utf-8"))
-    new_preview = site_builder._cover_preview_path(original_url)
+    new_preview = cover_preview.cover_preview_path(original_url)
     assert package["data_revision"] == old_package["data_revision"]
     assert package["revision"] != old_package["revision"]
     assert new_preview != old_preview
@@ -339,6 +341,17 @@ def test_preview_rule_changes_package_not_data_and_keeps_retained_closure(
         body = (site / resource["url"]).read_bytes()
         assert hashlib.sha256(body).hexdigest() == resource["content_hash"]
         assert len(body) == resource["size_bytes"]
+    with repository.transaction() as connection:
+        repository.write_sync_state(connection, april_state)
+    recovered = builder.build()
+    assert old_preview in recovered.patch.deleted
+    assert "2026-04/index.html" in recovered.patch.written
+    assert (site / "data/quarters/2026-04.json").read_bytes() == old_april_data
+    assert new_preview.encode("ascii") in (site / "2026-04/index.html").read_bytes()
+    refreshed = json.loads((site / "data/offline/2026-04.json").read_bytes())
+    assert refreshed["data_revision"] == retained["data_revision"]
+    assert refreshed["revision"] != retained["revision"]
+    assert new_preview in {entry["url"] for entry in refreshed["resources"]}
 
 
 @pytest.mark.parametrize("failure", ["omitted-resource", "bad-preview", "bad-source"])
@@ -351,17 +364,17 @@ def test_preview_failure_never_replaces_last_good(
     previous = {p.relative_to(site): p.read_bytes() for p in site.rglob("*")
                 if p.is_file()}
     state = builder.state_path.read_bytes()
-    monkeypatch.setitem(site_builder._COVER_PREVIEW_RULE, "quality", 79)
+    monkeypatch.setitem(cover_preview.COVER_PREVIEW_RULE, "quality", 79)
     if failure == "omitted-resource":
-        original = site_builder._offline_manifest_bytes
+        original = site_builder.offline_manifest_bytes
         def omitted(*args: object) -> bytes:
             manifest = json.loads(original(*args))
             manifest["resources"] = [r for r in manifest["resources"]
                                      if "/previews/" not in r["url"]]
             return site_builder.json_bytes(manifest)
-        monkeypatch.setattr(site_builder, "_offline_manifest_bytes", omitted)
+        monkeypatch.setattr(site_builder, "offline_manifest_bytes", omitted)
     elif failure == "bad-preview":
-        monkeypatch.setattr(site_builder, "_cover_preview_bytes", lambda *args: b"bad")
+        monkeypatch.setattr(site_builder, "cover_preview_bytes", lambda *args: b"bad")
     else:
         cover = tmp_path / "workspace/covers/101.webp"
         cover.write_bytes(b"X" * cover.stat().st_size)
@@ -458,7 +471,7 @@ def test_build_all_writes_one_site_and_second_run_skips(tmp_path: Path) -> None:
     assert 'id="settings-app-title"' in settings_html
     assert "<dd>MyKr</dd>" in settings_html
     cover_url = july["tv"]["continuing"][0]["cover_url"]
-    preview_path = site_builder._cover_preview_path(cover_url)
+    preview_path = cover_preview.cover_preview_path(cover_url)
     assert preview_path is not None
     assert f'src="../{preview_path}"' in july_html
     assert f'data-cover-fallback="../{cover_url}"' in july_html
@@ -974,7 +987,10 @@ def test_quarter_static_rows_match_default_runtime_order() -> None:
         "manifest.webmanifest": "manifest",
         "icons/favicon.svg": "favicon",
     }
-    page = _quarter_html(quarter, revisions).decode("utf-8")
+    data = site_builder.json_bytes(quarter.to_dict())
+    page = _quarter_html(
+        quarter, revisions, data_revision=hashlib.sha256(data).hexdigest()
+    ).decode("utf-8")
     tv_section = page.split('data-list-section="tv"', 1)[1].split(
         'data-list-section="movie"', 1
     )[0]
@@ -1268,6 +1284,22 @@ def test_noop_build_does_not_read_cover_bytes_or_scan_site(
 
     monkeypatch.setattr(Path, "read_bytes", fail_cover_read)
     monkeypatch.setattr(Path, "rglob", fail_site_scan)
+
+    def fail_render(*args: object, **kwargs: object) -> bytes:
+        raise AssertionError("no-op build rendered an unchanged artifact")
+
+    for producer in (
+        "_root_html", "_archive_html", "_settings_html", "_quarter_html",
+        "pwa_shell_manifest", "offline_manifest_bytes",
+    ):
+        monkeypatch.setattr(site_builder, producer, fail_render)
+    encode = site_builder.json_bytes
+
+    def encode_report(value: object) -> bytes:
+        assert isinstance(value, dict) and "written_artifacts_count" in value
+        return encode(value)
+
+    monkeypatch.setattr(site_builder, "json_bytes", encode_report)
     run = builder.build()
     assert run.patch.written == ()
     assert run.patch.deleted == ()
@@ -1361,6 +1393,23 @@ def test_missing_artifact_triggers_targeted_repair_without_cover_read(
     assert run.patch.cover_files_read == 0
 
 
+@pytest.mark.parametrize("path", ["sw.js", "data/pwa-shell.json"])
+def test_missing_shell_file_is_repaired_independently(
+    tmp_path: Path, path: str
+) -> None:
+    builder, _ = _build_fixture(tmp_path)
+    builder.build()
+    target = builder.site_directory / path
+    original = target.read_bytes()
+    target.unlink()
+
+    run = builder.build()
+
+    assert run.patch.written == (path,)
+    assert target.read_bytes() == original
+    assert run.patch.cover_files_read == 0
+
+
 def test_corrupt_build_state_uses_full_safe_convergence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1427,3 +1476,102 @@ def test_narrow_build_projects_only_requested_quarter_when_last_good_exists(
     monkeypatch.setattr(builder, "_project_quarters", spy)
     builder.build(Quarter(2026, 7))
     assert seen == [("2026-07",)]
+
+
+def test_public_scope_change_updates_navigation_and_packages(tmp_path: Path) -> None:
+    builder, database = _build_fixture(tmp_path)
+    builder.build()
+    site = builder.site_directory
+    quarter = Quarter(2027, 1)
+    repository = SubjectRepository(database)
+    with repository.transaction() as connection:
+        repository.replace_subject_snapshot(
+            connection, _subject(404, MediaFormat.TV, quarter)
+        )
+        repository.write_sync_state(
+            connection, QuarterSyncState(
+                quarter, "complete", "complete", 1, 1, "2027-01-02", "2027-01-02"
+            ),
+        )
+    existing_labels = ("2026-04", "2026-07")
+    original = {
+        label: json.loads((site / f"data/offline/{label}.json").read_bytes())
+        for label in existing_labels
+    }
+
+    added = builder.build(quarter)
+
+    for label in existing_labels:
+        page_path = f"{label}/index.html"
+        manifest_path = f"data/offline/{label}.json"
+        assert {page_path, manifest_path}.issubset(added.patch.written)
+        assert f"data/quarters/{label}.json" not in added.patch.written
+        assert b'href="../2027-01/index.html"' in (site / page_path).read_bytes()
+        manifest = json.loads((site / manifest_path).read_bytes())
+        assert manifest["data_revision"] == original[label]["data_revision"]
+        assert manifest["revision"] != original[label]["revision"]
+
+    with repository.transaction() as connection:
+        connection.execute("DELETE FROM sync_states WHERE year = 2027")
+    removed = builder.build()
+    assert "2027-01/index.html" in removed.patch.deleted
+    assert "data/catalog/2027.json" in removed.patch.deleted
+    assert added.patch.cover_files_read == removed.patch.cover_files_read == 0
+    for label in existing_labels:
+        assert b'href="../2027-01/index.html"' not in (
+            site / f"{label}/index.html"
+        ).read_bytes()
+        assert json.loads((site / f"data/offline/{label}.json").read_bytes()) == (
+            original[label]
+        )
+
+
+@pytest.mark.parametrize("incremental", [False, True], ids=["full", "incremental"])
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("data_revision", "offline manifest data revision is invalid"),
+        ("revision", "offline manifest revision is invalid"),
+        ("content_hash", "offline resource hash is invalid"),
+        ("size_bytes", "offline resource size is invalid"),
+        ("url", "offline manifest contains a non-local URL"),
+    ],
+)
+def test_invalid_offline_manifest_fails_before_replacing_site(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    incremental: bool, fault: str, message: str,
+) -> None:
+    builder, database = _build_fixture(tmp_path)
+    site = builder.site_directory
+    previous = {}
+    state = None
+    if incremental:
+        builder.build()
+        previous = {p: p.read_bytes() for p in site.rglob("*") if p.is_file()}
+        state = builder.state_path.read_bytes()
+        repository = SubjectRepository(database)
+        movie = repository.get_subject_facts(202)
+        assert movie is not None
+        updated = replace(movie, subject=replace(movie.subject, rating_score=9))
+        with repository.transaction() as connection:
+            repository.replace_subject_snapshot(connection, updated)
+    generate = site_builder.offline_manifest_bytes
+
+    def damaged(*args: object) -> bytes:
+        payload = json.loads(generate(*args))
+        target = payload if fault in {"data_revision", "revision"} else (
+            payload["resources"][0]
+        )
+        target[fault] = {"size_bytes": 0, "url": "/outside.html"}.get(fault, "0" * 64)
+        return site_builder.json_bytes(payload)
+
+    monkeypatch.setattr(site_builder, "offline_manifest_bytes", damaged)
+    with pytest.raises(BuildError, match="staged output validation failed") as failure:
+        builder.build()
+
+    assert message in str(failure.value.__cause__.__cause__)
+    assert previous == {p: p.read_bytes() for p in site.rglob("*") if p.is_file()}
+    if state is None:
+        assert not builder.state_path.exists()
+    else:
+        assert builder.state_path.read_bytes() == state

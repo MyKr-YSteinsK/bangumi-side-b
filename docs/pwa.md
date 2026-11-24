@@ -21,11 +21,12 @@ The default precache is the minimum application shell:
 
 - root, Archive, and Settings shells;
 - shared CSS and JavaScript;
-- the web app manifest and required icons;
-- only the minimum navigation data required to enter the site.
+- the web app manifest and required icons.
 
-It must not precache every year catalog, quarter JSON file, cover, or historical
-quarter. While browsing online, the runtime cache may retain visited quarter
+The builder records those resources in order in `data/pwa-shell.json`. The
+shell revision covers their paths, hashes and sizes. The builder injects that
+revision into `sw.js` so the worker can check the matching shell.
+While browsing online, the runtime cache may retain visited quarter
 pages, quarter JSON, year catalogs, covers, and the archive index. Online use is
 available immediately and is never gated on downloading a complete archive.
 
@@ -36,6 +37,12 @@ quarter. A quarter download contains the quarter page, quarter detail JSON,
 quarter-owned covers, shared shell dependencies, and the manifest itself. Movie
 and continuing records are included whenever they are present in that quarter's
 payload.
+
+The generated resource list orders the page and detail JSON first, then shared
+CSS and scripts, sorted original covers, and sorted previews. Each entry records
+the actual file's SHA-256 and size. `data_revision` identifies the quarter JSON.
+The package `revision` also covers the ordered resource list, so navigation and
+preview updates can refresh the package while the facts stay the same.
 
 Settings may create queues for the current quarter, one year, a year range, or
 all available quarters. These choices only expand to a newest-to-oldest quarter

@@ -116,6 +116,12 @@ package manifests, shell manifest, and worker that refer to it. The quarter
 JSON and its `data_revision` stay identical when the facts stay identical.
 Retained quarters continue to use their recorded script.
 
+Archive pages create cards and compute preview URLs for the current result page.
+Revisited cards are reused within the loaded catalog or verified local snapshot.
+The generated Archive shell, annual catalogs and quarter projections supply the
+same fields and keep the same paths. Timing probes run from the test directory
+against isolated generated trees and are outside the site inputs.
+
 | Check | Evidence it uses |
 | --- | --- |
 | Full build | Materialized bytes and references within the generated tree. |

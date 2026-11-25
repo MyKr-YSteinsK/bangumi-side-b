@@ -81,6 +81,19 @@ python -m pytest -m release_smoke -q
 - 事实变更跑候选发现、规则、REVIEW、事务和增量构建用例。重点检查重复执行、失败中断和目标/全局影响。本地构建或 PWA 改动查候选文件树、离线资源闭包、完整包替换及老数据/应用组合。真机、真实弱网、真实 Bangumi 与生产 Pages 按任务授权分别验收。
 - 确认当前工作树和配置的上游再提交。只把授权的改动暂存，查询实际远端 ref 核对推送结果。正式 Plan 默认按获授权 Issue 交接，保留既有编号和可追溯证据。私有正文不进公开 Issue 或 Git。复杂依赖和下一步记入 [当前状态](CURRENT_STATE.md)。
 
+### 重测 Archive 浏览性能
+
+在项目根目录运行。将对照版本从 `git archive <commit>` 解包到 `workspace/tmp/`，取其中的 `static/js/app.js`。只测当前源码时可省略 `--baseline-script`。输出目录每次用新名称。
+
+```powershell
+python -m tests.bench_browse --output workspace/tmp/browse-online --baseline-script workspace/tmp/browse-baseline/static/js/app.js --engine chromium --samples 5
+python -m tests.bench_browse --output workspace/tmp/browse-local --baseline-script workspace/tmp/browse-baseline/static/js/app.js --engine chromium --engine webkit --offline-only --samples 5
+```
+
+脚本从同一批合成 SQLite 事实、封面和当前构建输入分别生成并校验 v2 站点。所有请求走 loopback。线上模式使用全新浏览器上下文并阻止 worker，另测新浏览器进程及同上下文二次导航。基线与新版交替采样。按需要用 `--scenario` 选子场景，`--engine webkit` 对照另一引擎。两条命令可依次运行，测量期间避免同时运行其他浏览器和构建任务。
+
+开启新样本先核对选中范围和首批真实播出记录。读 `measurements.json` 的壳、可用结果、首个可见已载封面、用户操作时间、资源和应用工作计数。`ready.frame` 是真实非空结果、`aria-busy=false`、可操作搜索及画面更新机会的观测。封面在短视口或压力样本中可能没有时间样本，应单列可观察次数。`readJson` 包含响应体读取和解码。各数据路径的 Resource Timing 单独判断串并行和实际字节。离线模式先下载两个季度，在已打开页面断开网络后切换到仅本机，记录校验耗时、覆盖和无远程补齐。真实设备和生产网络会有不同结果。
+
 ## 专项文档与代码入口
 
 - 领域证据与裁决由 [日本范围规则](../country-filter.md)、[API 字段记录](../api-field-notes.md) 及 `discovery.py`、`admission.py`、`sync_candidate.py`、`rules.py`、`sync.py`、`adjudication.py` 维护。

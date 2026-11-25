@@ -235,3 +235,69 @@ def test_archive_late_quarter_detail_cannot_replace_a_newer_cached_payload(
         continuing.click()
         expect(detail).to_contain_text("Second response")
         assert page.evaluate("window.quarterBodiesRead") == 2
+
+
+def test_archive_creates_rows_by_page_and_reuses_visited_nodes(
+    route_page: Page, tmp_path: Path,
+) -> None:
+    builder, _ = _build_fixture(
+        tmp_path, include_same_quarter_tv=True, extra_same_quarter_tv=26,
+    )
+    builder.build()
+    page = route_page
+    page.add_init_script("""(() => {
+      window.articlesCreated = 0;
+      const create = Document.prototype.createElement;
+      Document.prototype.createElement = function(tag, ...args) {
+        if (tag === 'article') window.articlesCreated += 1;
+        return create.call(this, tag, ...args);
+      };
+    })();""")
+    with _archive_catalog_server(builder.site_directory, {}) as server:
+        page.goto(f"{server}/archive/index.html?year=2026")
+        _wait_archive_scope(page, "YEAR / 2026")
+        rows = page.locator("[data-list-sections] .subject-row")
+        expect(rows).to_have_count(20)
+        assert page.evaluate("window.articlesCreated") == 20
+        expect(page.locator("[data-filter-panel] fieldset")).to_have_count(0)
+        row_keys = "nodes => nodes.map(node => node.dataset.recordKey)"
+        first_page = rows.evaluate_all(row_keys)
+        rows.first.evaluate("node => { window.firstPageRow = node; }")
+
+        page.locator('[data-pager] [aria-label="第 2 页"]').last.click()
+        expect(page.locator("[data-pager] [aria-current=page]")).to_have_text("02")
+        second_count = rows.count()
+        assert 0 < second_count < 20
+        assert page.evaluate("window.articlesCreated") == 20 + second_count
+        page.evaluate("history.back()")
+        expect(page.locator("[data-pager] [aria-current=page]")).to_have_text("01")
+        assert rows.evaluate_all(row_keys) == first_page
+        assert rows.first.evaluate("node => node === window.firstPageRow")
+        assert page.evaluate("window.articlesCreated") == 20 + second_count
+        page.locator("[data-filter-toggle]").click()
+        expect(page.locator('[data-filter-value="continuing"]')).to_be_attached()
+
+
+def test_archive_refreshes_row_data_when_occurrence_keys_are_unchanged(
+    route_page: Page, routing_site: Path,
+) -> None:
+    page = route_page
+    catalog_path = routing_site / "data/catalog/2026.json"
+    with _archive_catalog_server(routing_site, {}) as server:
+        page.goto(f"{server}/archive/index.html?year=2026")
+        _wait_archive_scope(page, "YEAR / 2026")
+        title = page.locator(
+            '[data-subject-id="101"][data-quarter="2026-04"] .subject-row__title'
+        )
+        expect(title).to_have_text("中文 101")
+        catalog = json.loads(catalog_path.read_bytes())
+        for record in catalog["records"]:
+            if record["id"] == 101 and record["quarter"] == "2026-04":
+                record["preferred_title"] = "Updated catalog title"
+        catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        page.locator('[data-scope-choice="range"]').click()
+        page.locator("[data-archive-from]").fill("2026")
+        page.locator("[data-archive-to]").fill("2026")
+        page.locator("[data-range-apply]").click()
+        _wait_archive_scope(page, "RANGE / 2026—2026")
+        expect(title).to_have_text("Updated catalog title")

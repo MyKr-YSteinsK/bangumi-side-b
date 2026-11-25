@@ -2307,12 +2307,10 @@
   const initialArchivePageSize = state.pageSize;
   let index = null;
   let records = [];
-  let rows = [];
-  let listSignature = "";
-  let signatureRecords = null;
-  let listSections = new Map();
-  let rowByKey = new Map();
-  let recordByKey = new Map();
+  const listSections = new Map();
+  const rowByKey = new Map();
+  const recordByKey = new Map();
+  const eagerRowKeys = new Set();
   // state.scope is the requested scope. The loaded scope names the records
   // that actually belong to it, even while another scope is pending.
   const scopeLoad = { intent: 0, phase: "idle", loaded: null };
@@ -2977,9 +2975,7 @@
     else if (state.scope.kind !== "local") setTab("year");
     scopeLoad.phase = "failed";
     setScopeRecords(null, { records: [] });
-    selectors.list?.replaceChildren();
-    listSignature = "";
-    signatureRecords = null;
+    clearListSections();
     if (selectors.summary) selectors.summary.textContent = "DATA UNAVAILABLE · 年度档案目录不可用";
     if (selectors.scopePanel) {
       selectors.scopePanel.hidden = false;
@@ -3041,7 +3037,7 @@
       const image = document.createElement("img");
       image.width = 52;
       image.height = 74;
-      image.loading = sequence <= 10 ? "eager" : "lazy";
+      image.loading = eagerRowKeys.has(record.key) ? "eager" : "lazy";
       image.decoding = "async";
       image.alt = "";
       archive.browseCoverPath(root, coverPath).catch(() => coverPath).then((preview) => {
@@ -3108,81 +3104,65 @@
     return article;
   }
 
-  function buildLists(result) {
+  function clearListSections() {
+    selectors.list?.replaceChildren();
+    listSections.clear();
+  }
+
+  function renderListSections(result) {
     if (!selectors.list) return;
-    if (records !== signatureRecords) {
-      const signature = records.map((record) => record.key).join("\u0000");
-      if (signature !== listSignature) {
-        selectors.list.replaceChildren();
-        listSections = new Map();
-        rowByKey = new Map();
-        const groups = [
-          ["tv", "all", "电视节目"],
-          ["movie", "premiere", "剧场版"],
-        ];
-        groups.forEach(([media, appearance, title]) => {
-          const sectionRecords = records.filter((record) => (
-            record.media === (media === "movie" ? "MOVIE" : "TV")
-            && (appearance === "all" || record.appearance === appearance)
-          ));
-          const section = document.createElement("section");
-          section.className = "result-section";
-          section.dataset.listSection = media;
-          section.dataset.appearanceSection = appearance;
-          const header = document.createElement("header");
-          header.className = "result-section__header";
-          const code = document.createElement("p");
-          code.className = "result-section__code";
-          code.textContent = `${media.toUpperCase()} / ${appearance.toUpperCase()}`;
-          const heading = document.createElement("h2");
-          heading.textContent = title;
-          const counter = document.createElement("span");
-          counter.dataset.sectionCount = "true";
-          header.append(code, heading, counter);
-          const list = document.createElement("div");
-          list.className = "result-list";
-          sectionRecords.forEach((record, index) => {
-            const row = createRow(record, index + 1);
-            rowByKey.set(record.key, row);
-            list.append(row);
-          });
-          section.append(header, list);
-          selectors.list.append(section);
-          listSections.set(media, { section, list });
-        });
-        rows = [...rowByKey.values()];
-        listSignature = signature;
+    if (!listSections.size) {
+      for (const [media, appearance, title] of [
+        ["tv", "all", "电视节目"], ["movie", "premiere", "剧场版"],
+      ]) {
+        const section = document.createElement("section");
+        section.className = "result-section";
+        section.dataset.listSection = media;
+        section.dataset.appearanceSection = appearance;
+        const header = document.createElement("header");
+        header.className = "result-section__header";
+        const code = document.createElement("p");
+        code.className = "result-section__code";
+        code.textContent = `${media.toUpperCase()} / ${appearance.toUpperCase()}`;
+        const heading = document.createElement("h2");
+        heading.textContent = title;
+        const counter = document.createElement("span");
+        counter.dataset.sectionCount = "true";
+        header.append(code, heading, counter);
+        const list = document.createElement("div");
+        list.className = "result-list";
+        section.append(header, list);
+        selectors.list.append(section);
+        listSections.set(media, { section, list, counter });
       }
-      signatureRecords = records;
     }
-    const positions = new Map(result.all.map((record, index) => [record.key, index + 1]));
-    const visibleRecords = result.pageRecords;
+    const offset = (result.page - 1) * state.pageSize;
     const motionGroups = [];
-    for (const [media, group] of listSections) {
-      const sectionMedia = media === "movie" ? "MOVIE" : "TV";
-      const matching = result.all.filter((record) => record.media === sectionMedia);
-      const pageRows = visibleRecords
-        .filter((record) => record.media === sectionMedia)
-        .map((record) => rowByKey.get(record.key))
-        .filter(Boolean);
-      motionGroups.push(pageRows);
-      archive.reconcileChildren(group.list, pageRows);
-      const count = matching.length;
-      const hidden = state.media !== media || count === 0;
-      if (group.section.hidden !== hidden) group.section.hidden = hidden;
-      const counter = group.section.querySelector("[data-section-count]");
-      const countText = String(count).padStart(2, "0");
-      if (counter && counter.textContent !== countText) counter.textContent = countText;
-      for (const record of visibleRecords) {
-        if (record.media !== sectionMedia) continue;
-        const row = rowByKey.get(record.key);
-        if (!row) continue;
-        if (row.hidden) row.hidden = false;
-        updateRowSelection(record.key, record.key === state.selectedOccurrence);
-        const sequence = row.querySelector(".subject-row__sequence");
-        const number = String(positions.get(record.key) || 0).padStart(3, "0");
-        if (sequence && sequence.textContent !== number) sequence.textContent = number;
+    for (const [media, { section, list, counter }] of listSections) {
+      const active = state.media === media;
+      const pageRows = [];
+      if (active) {
+        for (const [index, record] of result.pageRecords.entries()) {
+          if (media === "movie" && record.appearance !== "premiere") continue;
+          const rank = offset + index + 1;
+          let row = rowByKey.get(record.key);
+          if (!row) {
+            row = createRow(record, rank);
+            rowByKey.set(record.key, row);
+          }
+          updateRowSelection(record.key, record.key === state.selectedOccurrence);
+          const sequence = row.querySelector(".subject-row__sequence");
+          const number = String(rank).padStart(3, "0");
+          if (sequence.textContent !== number) sequence.textContent = number;
+          pageRows.push(row);
+        }
       }
+      archive.reconcileChildren(list, pageRows);
+      motionGroups.push(pageRows);
+      const count = active ? result.total : 0;
+      if (section.hidden !== (count === 0)) section.hidden = count === 0;
+      const countText = String(count).padStart(2, "0");
+      if (counter.textContent !== countText) counter.textContent = countText;
     }
     archive.setResultMotionGroups(root, motionGroups);
   }
@@ -3306,7 +3286,7 @@
   }
 
   function focusRecordTrigger(recordKey) {
-    rows.find((row) => row.dataset.recordKey === recordKey)
+    rowByKey.get(recordKey)
       ?.querySelector("[data-open-subject]")?.focus({ preventScroll: true });
   }
 
@@ -3318,7 +3298,7 @@
   }
 
   function renderRows(result) {
-    buildLists(result);
+    renderListSections(result);
     if (selectors.summary) {
       const total = records.filter(
         (record) => record.media === (state.media === "movie" ? "MOVIE" : "TV"),
@@ -3759,7 +3739,7 @@
   }
 
   function renderFilterPanel() {
-    if (!selectors.filterPanel) return;
+    if (!selectors.filterPanel || state.workspaceMode !== "filter") return;
     const panelFilters = state.draftFilters || state.filters;
     const panelState = { ...state, filters: panelFilters };
     const options = archive.filterOptionMetadata(records, panelState);
@@ -4070,7 +4050,20 @@
   function setScopeRecords(scope, { records: nextRecords, coverage = null, issue = "" }) {
     scopeLoad.loaded = scope;
     records = nextRecords;
-    recordByKey = new Map(records.map((record) => [record.key, record]));
+    // Visited rows are reusable only within the same record snapshot. A fresh
+    // catalog can carry different titles or covers for the same occurrence.
+    rowByKey.clear();
+    recordByKey.clear();
+    eagerRowKeys.clear();
+    const eagerLeft = { TV: 10, MOVIE: 10 };
+    for (const record of records) {
+      recordByKey.set(record.key, record);
+      if (eagerLeft[record.media] > 0
+        && (record.media !== "MOVIE" || record.appearance === "premiere")) {
+        eagerRowKeys.add(record.key);
+        eagerLeft[record.media] -= 1;
+      }
+    }
     localCoverage = coverage;
     localIssue = issue;
   }
@@ -4089,12 +4082,7 @@
       // Local verification starts without rows from any online catalog.
       // Back must reload that catalog if its rows have been discarded.
       setScopeRecords(null, { records: [] });
-      selectors.list?.replaceChildren();
-      rows = [];
-      rowByKey = new Map();
-      listSections = new Map();
-      listSignature = "";
-      signatureRecords = null;
+      clearListSections();
     }
     applyScope(kind, normalized);
     if (push) writeArchiveUrl();

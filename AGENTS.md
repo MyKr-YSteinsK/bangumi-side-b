@@ -4,7 +4,7 @@ Bangumi Side B（`MyKr-YSteinsK/bangumi-side-b`，CLI `bgmb`）是本地优先�
 
 ## 接手入口
 
-- 确认工作区是 `MyKr-YSteinsK/bangumi-side-b` 的仓库根，核对实际分支、工作树和上游。保护用户已有改动。先读 [项目说明](docs/项目源文件/PROJECT_BRIEF.md) 和 [当前状态](docs/项目源文件/CURRENT_STATE.md)，再按任务查阅 [长期决定](docs/项目源文件/DECISIONS.md) 和 [运行手册](docs/项目源文件/RUNBOOK.md#验证与接续)。
+- 确认工作区是 `MyKr-YSteinsK/bangumi-side-b` 的仓库根，核对实际分支、工作树和上游。保护用户已有改动。先读 [项目说明](docs/项目源文件/PROJECT_BRIEF.md) 和 [当前状态](docs/项目源文件/CURRENT_STATE.md)，再按任务查阅 [长期决定](docs/项目源文件/DECISIONS.md) 和 [运行手册](docs/项目源文件/RUNBOOK.md)。
 - [升级审查](docs/项目源文件/升级路线与技术审查.md) 记录 D-025 已接受的升级方向、分批顺序和仍需验证的技术选择。[历史摘要](docs/archive/README.md) 供追溯。
 - 普通任务可以直接在 Codex 处理。正式 Plan 核对仓库与任务编号，优先读取获授权的 GitHub Issue 完整正文。受限或无法读取时采用可读且获授权的替代正文。以当前授权和可观察的验收为准。[任务恢复与交接](docs/项目源文件/RUNBOOK.md#任务恢复与交接)
 
@@ -20,4 +20,4 @@ Bangumi Side B（`MyKr-YSteinsK/bangumi-side-b`，CLI `bgmb`）是本地优先�
 
 - 源码同步走当前源码分支。获批准的正式 Plan 有 tracked 变更时，完成必要验证与最终提交后，普通推送一次到配置的上游并核对实际远端 HEAD。获准的 live-data 验证及相关 review、audit、回归须在该次推送前完成。以本地和远端 HEAD 一致作为交付完成依据。推送失败时保留本地提交并报告交付受阻。无 tracked 改动无需提交或推送。
 - 保留 Git 历史。禁止强推、改写历史、擅自修改远端或重置本机发布分支。
-- Pages 和真机验收各按当前任务授权。先核对推送的部署副作用。`release prepare` 可只读访问 Git 远端并离线构建和校验候选。`release publish` 只向官方 origin 的 `gh-pages` 普通推送绑定该候选的 release commit，期间禁止 sync 或 build。[发布说明](docs/publish.md)
+- Pages 独立授权。真机验收按当前任务授权。先核对推送的部署副作用。`release prepare` 可只读访问 Git 远端并离线构建和校验候选。`release publish` 只向官方 origin 的 `gh-pages` 普通推送绑定该候选的 release commit，期间禁止 sync 或 build。[发布说明](docs/publish.md)

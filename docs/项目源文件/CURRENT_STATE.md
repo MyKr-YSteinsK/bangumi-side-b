@@ -1,8 +1,19 @@
 # Bangumi Side B 当前状态
 
-观察日为 2026-11-25。源码应用版本 `0.10.3`，处于 Production 维护。Plan-79 开始时，本机 `main`、配置上游和实际远端源码 HEAD 均为 `2e3a59fdbbb097e18b38036f871e95a79376773f`。[Plan-79 · Issue #7](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/7)
+观察日为 2026-11-25。源码应用版本 `0.10.3`，处于 Production 维护。Plan-80 开始时，本机 `main`、配置上游和实际远端源码 HEAD 均为 `654725626bac6d7cdf4c0c0c61ddbf907717bf17`。观察到的生产 `gh-pages` 为 `d413753495992b4202290ddddd09a9153dfd209a`。[Plan-80 · Issue #8](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/8)
+
+## Plan-80 项目规范与接手
+
+对照工作流资产仓库 `f50e2b1682af21842a730f20c8533cbc3372a72f` 的孵化器 01–06 和模型推荐正文，更新了仓库根接手、关键取舍、跨任务恢复和 GPT 项目版本同步。常规 Codex 维护可直接推进。影响弱网或 PWA 路线的候选先核对证据与授权。项目所有者按同一源码提交替换指令和附件，并用新对话核实生效。[运行手册](RUNBOOK.md#任务恢复与交接) · [同版同步清单](00-START_HERE.md#gpt-项目同步清单)
+
+两种接手路径用只读演练核对。Codex 从根入口恢复目标、实际版本、Issue 正文、权限和验证方法。GPT Project 从待同步指令和清单恢复同版资料。基线附件与新附件的观察日期及应用版本相同，演练用来源提交和 Plan-80 小节识别旧版。本机分支、用户改动、数据和生成物由 Codex 实查。项目设置由所有者同步。
+
+- 常规修复以 Archive 详情 503 后的返回焦点为例。可复用 Plan-79 的同源故障和回归入口。若收到实际修复授权，Codex 可直接用隔离 fixture 做定向复现和验收。
+- 弱网候选比较保留 Root 索引确认与尝试同代指针提前选季。Plan-78 的 Archive 模拟延迟测量提供测试方法，Root 的最新季度身份还需证据。若后续获授权，先用合成当前及旧应用壳分别重放索引变更、503 和离线。只有提前选择能确认同代最新季度、保全离线回退且减少等待，才继续比较；收益不足则保留现路径，身份或回退错误则停止相应候选。
 
 ## Plan-79 详情等待与失败时返回结果
+
+该批从 `2e3a59fdbbb097e18b38036f871e95a79376773f` 开始，源码交付于 `654725626bac6d7cdf4c0c0c61ddbf907717bf17`。该提交的 Linux、Windows 和 Chromium CI 已通过。[Plan-79 · Issue #7](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/7) · [该提交的 CI](https://github.com/MyKr-YSteinsK/bangumi-side-b/actions/runs/45574120702)
 
 从合成 SQLite 和封面生成 `0.10.2` 的 v2 站点。Chromium、WebKit 用真实的同源季度请求复现了等待和 404 详情中没有返回按钮。新版在选中作品时立即显示原有详情顶栏。等待转为成功或 503 时只替换详情内容和状态文字。按钮节点、键盘焦点和位置保持一致，手机模拟触控目标至少 44×44 CSS 像素。
 

@@ -2279,6 +2279,9 @@
   const MAX_ARCHIVE_PAGE = 1000000;
   const ARCHIVE_HASH_PATTERN = /^#bgm-([1-9]\d{0,15})$/;
   const ARCHIVE_OCCURRENCE_PATTERN = /^\d{4}-(?:01|04|07|10)\.(?:premiere|continuing)$/;
+  const ARCHIVE_FILTER_PARAMETERS = {
+    sources: "source", tags: "tag", sections: "section",
+  };
 
   const selectors = {
     quarter: root.querySelector("[data-archive-quarter-selector]"),
@@ -2310,16 +2313,14 @@
   let listSections = new Map();
   let rowByKey = new Map();
   let recordByKey = new Map();
-  let loadedScope = null;
+  // state.scope is the requested scope. The loaded scope names the records
+  // that actually belong to it, even while another scope is pending.
+  const scopeLoad = { intent: 0, phase: "idle", loaded: null };
   const detailByQuarter = new Map();
   let localCoverage = null;
   let localIssue = "";
   let indexPromise = null;
   let detailRequest = 0;
-  let scopeIntent = 0;
-  let scopePending = false;
-  let loadError = false;
-  let pendingScopeTab = null;
   let closeSortPopover = () => {};
   let yearControl = null;
   let pageSizeControl = null;
@@ -2357,64 +2358,132 @@
     return ARCHIVE_OCCURRENCE_PATTERN.test(token) ? token : "";
   }
 
-  function archiveUrlForState({ record = null, hashId = null, occurrence = "" } = {}) {
-    const url = new URL(window.location.href);
+  function validArchiveSort(sort) {
+    return Object.prototype.hasOwnProperty.call(archive.SORTS, sort);
+  }
+
+  function validArchiveFilterValue(value) {
+    return Array.from(value).length <= MAX_ARCHIVE_FILTER_VALUE_LENGTH
+      && !/[\u0000-\u001f\u007f]/.test(value);
+  }
+
+  // The codecs take an explicit URL and applied values. History and selection
+  // stay in the controller, and media availability is checked once data loads.
+  function archiveUrlForState(url, applied, { pageSizeExplicit, subjectId, occurrence }) {
+    const result = new URL(url);
     const params = new URLSearchParams();
-    if (state.scope.kind === "year" && /^\d{4}$/.test(String(state.scope.value))) {
-      params.set("year", String(state.scope.value));
-    } else if (state.scope.kind === "range") {
-      const range = state.scope.value;
+    if (applied.scope.kind === "year" && /^\d{4}$/.test(String(applied.scope.value))) {
+      params.set("year", String(applied.scope.value));
+    } else if (applied.scope.kind === "range") {
+      const range = applied.scope.value;
       if (/^\d{4}$/.test(String(range?.from)) && /^\d{4}$/.test(String(range?.to))) {
         params.set("from", String(range.from));
         params.set("to", String(range.to));
       }
-    } else if (state.scope.kind === "local") {
+    } else if (applied.scope.kind === "local") {
       params.set("local", "1");
     }
 
-    const query = boundedArchiveText(state.query, MAX_ARCHIVE_QUERY_LENGTH);
+    const query = boundedArchiveText(applied.query, MAX_ARCHIVE_QUERY_LENGTH);
     if (query) params.set("q", query);
-    if (state.media === "movie") params.set("media", "movie");
-    if (archive.SORTS[state.sort] && state.sort !== "score-desc") {
-      params.set("sort", state.sort);
+    if (applied.media === "movie") params.set("media", "movie");
+    if (validArchiveSort(applied.sort) && applied.sort !== "score-desc") {
+      params.set("sort", applied.sort);
     }
     let remainingFilterValues = MAX_ARCHIVE_FILTER_VALUES;
-    for (const [group, parameter] of [
-      ["sources", "source"],
-      ["tags", "tag"],
-      ["sections", "section"],
-    ]) {
-      const values = [...new Set(state.filters[group] || [])]
-        .filter((value) => {
-          const text = String(value);
-          return text && Array.from(text).length <= MAX_ARCHIVE_FILTER_VALUE_LENGTH
-            && !/[\u0000-\u001f\u007f]/.test(text);
-        })
+    for (const [group, parameter] of Object.entries(ARCHIVE_FILTER_PARAMETERS)) {
+      const values = [...new Set(applied.filters[group] || [])]
+        .filter((value) => String(value) && validArchiveFilterValue(String(value)))
         .sort()
         .slice(0, remainingFilterValues);
       values.forEach((value) => params.append(parameter, String(value)));
       remainingFilterValues -= values.length;
     }
-    const page = Math.floor(Number(state.page));
+    const page = Math.floor(Number(applied.page));
     if (Number.isFinite(page) && page > 1 && page <= MAX_ARCHIVE_PAGE) {
       params.set("page", String(page));
     }
-    const pageSize = Number(state.pageSize);
+    const pageSize = Number(applied.pageSize);
     if (archive.PAGE_SIZES.includes(pageSize)
-      && (pageSize !== DEFAULT_ARCHIVE_PAGE_SIZE || pageSizeUrlExplicit)) {
+      && (pageSize !== DEFAULT_ARCHIVE_PAGE_SIZE || pageSizeExplicit)) {
       params.set("size", String(pageSize));
     }
 
-    const selectedOccurrence = record ? occurrenceToken(record) : occurrence;
-    if (selectedOccurrence && ARCHIVE_OCCURRENCE_PATTERN.test(selectedOccurrence)) {
-      params.set("occ", selectedOccurrence);
+    if (occurrence && ARCHIVE_OCCURRENCE_PATTERN.test(occurrence)) {
+      params.set("occ", occurrence);
     }
-    url.search = params.toString();
-    const selectedId = record ? Number(record.id) : Number(hashId);
-    url.hash = Number.isSafeInteger(selectedId) && selectedId > 0
+    result.search = params.toString();
+    const selectedId = Number(subjectId);
+    result.hash = Number.isSafeInteger(selectedId) && selectedId > 0
       ? `#bgm-${selectedId}`
       : "";
-    return url;
+    return result.search.length <= MAX_ARCHIVE_SEARCH_LENGTH ? result : null;
+  }
+
+  function decodeArchiveAppliedState(url, preferredPageSize) {
+    const params = url.searchParams;
+    const withinLimit = url.search.length <= MAX_ARCHIVE_SEARCH_LENGTH;
+    const only = (name) => withinLimit ? singleUrlParameter(params, name) : null;
+    const sort = only("sort");
+    const page = only("page");
+    const size = only("size");
+    const pageSizeExplicit = size !== null && archive.PAGE_SIZES.includes(Number(size));
+    const pageSize = pageSizeExplicit
+      ? Number(size)
+      : withinLimit && params.has("size") ? DEFAULT_ARCHIVE_PAGE_SIZE : preferredPageSize;
+    const filters = { sources: [], tags: [], sections: [] };
+    if (withinLimit) {
+      const entries = Object.entries(ARCHIVE_FILTER_PARAMETERS);
+      const count = entries.reduce((total, [, name]) => total + params.getAll(name).length, 0);
+      if (count <= MAX_ARCHIVE_FILTER_VALUES) {
+        for (const [group, name] of entries) {
+          filters[group] = [...new Set(params.getAll(name).filter(validArchiveFilterValue))].sort();
+        }
+      }
+    }
+    return {
+      applied: {
+        query: boundedArchiveText(only("q"), MAX_ARCHIVE_QUERY_LENGTH),
+        media: only("media") === "movie" ? "movie" : "tv",
+        sort: validArchiveSort(sort) ? sort : "score-desc",
+        page: page && /^\d{1,7}$/.test(page) && Number(page) <= MAX_ARCHIVE_PAGE
+          ? Number(page)
+          : 1,
+        pageSize,
+        filters,
+      },
+      pageSizeExplicit,
+    };
+  }
+
+  function decodeArchiveDetail(url) {
+    const hash = url.hash.match(ARCHIVE_HASH_PATTERN);
+    const token = url.search.length <= MAX_ARCHIVE_SEARCH_LENGTH
+      ? singleUrlParameter(url.searchParams, "occ")
+      : "";
+    return {
+      subjectId: hash ? Number(hash[1]) : null,
+      occurrence: token && ARCHIVE_OCCURRENCE_PATTERN.test(token) ? token : "",
+    };
+  }
+
+  function decodeArchiveScope(url, archiveIndex) {
+    const params = url.searchParams;
+    if (url.search.length <= MAX_ARCHIVE_SEARCH_LENGTH
+      && singleUrlParameter(params, "local") === "1") return { kind: "local", value: "" };
+    const year = singleUrlParameter(params, "year");
+    if (year && (archiveIndex?.years || []).map(String).includes(year)) {
+      return { kind: "year", value: year };
+    }
+    const from = singleUrlParameter(params, "from");
+    const to = singleUrlParameter(params, "to");
+    if (/^\d{4}$/.test(from || "") && /^\d{4}$/.test(to || "")) {
+      return { kind: "range", value: normalRange(from, to) };
+    }
+    const years = archiveIndex?.years || [];
+    const latest = String(archiveIndex?.latest_quarter || "").slice(0, 4)
+      || (years.length ? String(Math.max(...years)) : "");
+    return { kind: "year", value: latest };
   }
 
   function writeArchiveUrl({
@@ -2425,8 +2494,12 @@
     detailEntry = false,
   } = {}) {
     if (!locationStateReady) return false;
-    const url = archiveUrlForState({ record, hashId, occurrence });
-    if (url.search.length > MAX_ARCHIVE_SEARCH_LENGTH) return false;
+    const url = archiveUrlForState(window.location.href, state, {
+      pageSizeExplicit: pageSizeUrlExplicit,
+      subjectId: record ? record.id : hashId,
+      occurrence: record ? occurrenceToken(record) : occurrence,
+    });
+    if (!url) return false;
     if (!replace && url.href === window.location.href) return false;
     const historyState = record && detailEntry
       ? { bsbDetailEntry: true, bsbDetailKey: record.key }
@@ -2467,61 +2540,12 @@
     });
   }
 
-  function setScopeUrl(kind, value, replace = false) {
-    state.scope = { kind, value };
-    writeArchiveUrl({ replace });
-  }
-
-  function readOccurrenceParameter() {
-    if (window.location.search.length > MAX_ARCHIVE_SEARCH_LENGTH) return "";
-    const params = new URLSearchParams(window.location.search);
-    const value = singleUrlParameter(params, "occ");
-    return value && ARCHIVE_OCCURRENCE_PATTERN.test(value) ? value : "";
-  }
-
-  function restoreAppliedStateFromUrl() {
-    const params = new URLSearchParams(window.location.search);
-    const searchWithinLimit = window.location.search.length <= MAX_ARCHIVE_SEARCH_LENGTH;
-    const only = (name) => searchWithinLimit ? singleUrlParameter(params, name) : null;
-    const query = only("q");
-    const media = only("media");
-    const sort = only("sort");
-    const page = only("page");
-    const pageSize = only("size");
-
+  function restoreAppliedState(url) {
+    const { applied, pageSizeExplicit } = decodeArchiveAppliedState(url, initialArchivePageSize);
     clearSelection(false);
-    state.query = query === null ? "" : boundedArchiveText(query, MAX_ARCHIVE_QUERY_LENGTH);
-    state.media = media === "movie" ? "movie" : "tv";
-    state.sort = archive.SORTS[sort] ? sort : "score-desc";
-    state.page = page && /^\d{1,7}$/.test(page) && Number(page) <= MAX_ARCHIVE_PAGE
-      ? Number(page)
-      : 1;
-    const validPageSize = pageSize !== null
-      && archive.PAGE_SIZES.includes(Number(pageSize));
-    pageSizeUrlExplicit = validPageSize;
-    state.pageSize = pageSize === null
-      ? (searchWithinLimit && params.has("size")
-        ? DEFAULT_ARCHIVE_PAGE_SIZE
-        : initialArchivePageSize)
-      : validPageSize
-        ? Number(pageSize)
-        : DEFAULT_ARCHIVE_PAGE_SIZE;
-
-    const available = archive.availableFilterValues(records, state.media);
-    const filterParameters = { sources: "source", tags: "tag", sections: "section" };
-    const filterCount = Object.values(filterParameters)
-      .reduce((count, name) => count + (searchWithinLimit ? params.getAll(name).length : 0), 0);
-    state.filters = { sources: [], tags: [], sections: [] };
-    if (filterCount <= MAX_ARCHIVE_FILTER_VALUES) {
-      for (const [group, parameter] of Object.entries(filterParameters)) {
-        const values = searchWithinLimit ? params.getAll(parameter) : [];
-        state.filters[group] = [...new Set(values.filter((value) => (
-          Array.from(value).length <= MAX_ARCHIVE_FILTER_VALUE_LENGTH
-          && !/[\u0000-\u001f\u007f]/.test(value)
-          && available[group].includes(value)
-        )))].sort();
-      }
-    }
+    Object.assign(state, applied);
+    pageSizeUrlExplicit = pageSizeExplicit;
+    archive.normalizeFiltersForMedia(state, records);
     state.draftFilters = null;
     if (selectors.search) selectors.search.value = state.query;
     pageSizeControl?.setValue(String(state.pageSize));
@@ -2529,24 +2553,7 @@
   }
 
   function scopeFromLocation() {
-    const params = new URLSearchParams(window.location.search);
-    if (window.location.search.length <= MAX_ARCHIVE_SEARCH_LENGTH
-      && singleUrlParameter(params, "local") === "1") return { kind: "local", value: "" };
-    const year = singleUrlParameter(params, "year");
-    if (year && (index?.years || []).map(String).includes(year)) {
-      return { kind: "year", value: year };
-    }
-    const from = singleUrlParameter(params, "from");
-    const to = singleUrlParameter(params, "to");
-    const range = /^\d{4}$/.test(from || "") && /^\d{4}$/.test(to || "")
-      ? normalRange(from, to)
-      : null;
-    if (from !== null && to !== null && range) {
-      return { kind: "range", value: range };
-    }
-    const latest = String(index?.latest_quarter || "").slice(0, 4)
-      || String(Math.max(...(index?.years || [0])));
-    return { kind: "year", value: latest };
+    return decodeArchiveScope(new URL(window.location.href), index);
   }
 
   function sameScope(left, right) {
@@ -2560,16 +2567,26 @@
 
   function scopeLabel(kind, value) {
     if (kind === "local") return "LOCAL / 仅本机可用";
+    if (kind === "year" && !value) return "YEAR";
     return kind === "range"
       ? `RANGE / ${value.from}—${value.to}`
       : `YEAR / ${value}`;
   }
 
+  function beginScopeIntent(phase = "idle") {
+    scopeLoad.phase = phase;
+    return ++scopeLoad.intent;
+  }
+
+  function activeScopeMatchesRecords() {
+    return scopeLoad.phase === "idle" && sameScope(scopeLoad.loaded, state.scope);
+  }
+
   function updateScopeAvailability() {
-    const loaded = !scopePending && !loadError
-      && !(state.scope.kind === "local" && localIssue)
-      && sameScope(loadedScope, state.scope);
-    const busy = !loadError && (scopePending || (!index && state.scope.kind !== "local"));
+    const pending = scopeLoad.phase === "pending";
+    const failed = scopeLoad.phase === "failed";
+    const loaded = activeScopeMatchesRecords() && !(state.scope.kind === "local" && localIssue);
+    const busy = !failed && (pending || (!index && state.scope.kind !== "local"));
     const masterPane = root.querySelector(".master-pane");
     if (masterPane) masterPane.inert = !loaded;
     if (masterPane) masterPane.setAttribute("aria-busy", String(busy));
@@ -2584,9 +2601,9 @@
       selectors.scopePanel.setAttribute("aria-busy", String(busy));
     }
     if (selectors.pending) {
-      selectors.pending.hidden = !busy || loadError || loadedScope !== null;
+      selectors.pending.hidden = !busy || scopeLoad.loaded !== null;
     }
-    if (scopePending) root.dataset.scopePending = "true";
+    if (pending) root.dataset.scopePending = "true";
     else delete root.dataset.scopePending;
   }
 
@@ -2610,46 +2627,33 @@
   }
 
   async function restoreArchiveLocation(routeOptions = {}) {
+    const intent = beginScopeIntent();
     let location = scopeFromLocation();
-    if (location.kind === "local") {
-      if (sameScope(loadedScope, location)) {
-        if (!scopePending && !loadError && sameScope(state.scope, location)) {
-          await restoreLoadedArchiveLocation(routeOptions);
-          return;
-        }
-      }
-      if (state.scope.kind === "local" && scopePending) return;
-      await setScope(location.kind, location.value, false, routeOptions);
-      return;
-    }
-    if (!index) {
+    if (location.kind !== "local" && !index) {
+      scopeLoad.phase = "pending";
+      updateScopeAvailability();
       try {
         await ensureArchiveIndex();
       } catch {
-        showArchiveIndexUnavailable(location);
+        if (intent === scopeLoad.intent) showArchiveIndexUnavailable(location);
         return;
       }
+      if (intent !== scopeLoad.intent) return;
+      scopeLoad.phase = "idle";
       location = scopeFromLocation();
     }
-    if (sameScope(loadedScope, location)) {
-      if (!sameScope(state.scope, location)) {
-        scopeIntent += 1;
-        scopePending = false;
-        loadError = false;
-        applyScope(location.kind, location.value);
-        updateScopeAvailability();
-      }
-      if (scopePending || loadError) return;
-      if (sameScope(state.scope, location)) {
-        await restoreLoadedArchiveLocation(routeOptions);
-        return;
-      }
+    if (sameScope(scopeLoad.loaded, location)
+      && (location.kind !== "local" || sameScope(state.scope, location))) {
+      if (!sameScope(state.scope, location)) applyScope(location.kind, location.value);
+      updateScopeAvailability();
+      restoreLoadedArchiveLocation(routeOptions);
+      return;
     }
-    await setScope(location.kind, location.value, false, routeOptions);
+    await setScope(location.kind, location.value, { ...routeOptions, push: false });
   }
 
-  async function restoreLoadedArchiveLocation(routeOptions = {}) {
-    restoreAppliedStateFromUrl();
+  function restoreLoadedArchiveLocation(routeOptions = {}) {
+    restoreAppliedState(new URL(window.location.href));
     renderFilterPanel();
     render();
     archive.releaseBrowsePrepaint(root, state.viewMode);
@@ -2657,17 +2661,17 @@
       entrancePlayed = true;
       archive.playEntranceStagger(root);
     }
-    await openHash(routeOptions);
-    const hash = window.location.hash.match(ARCHIVE_HASH_PATTERN);
-    const selected = state.selectedOccurrence
-      ? recordByKey.get(state.selectedOccurrence)
-      : null;
+    // Selection updates synchronously. Its detail request renders later and
+    // has no say over the history entry this navigation belongs to.
+    openHash(routeOptions);
     if (!routeOptions.preserveHistory) {
+      const detail = decodeArchiveDetail(new URL(window.location.href));
+      const selected = recordByKey.get(state.selectedOccurrence);
       writeArchiveUrl({
         replace: true,
         record: selected,
-        hashId: selected ? null : (hash ? Number(hash[1]) : null),
-        occurrence: selected ? "" : readOccurrenceParameter(),
+        hashId: detail.subjectId,
+        occurrence: detail.occurrence,
         detailEntry: Boolean(selected && window.history.state?.bsbDetailEntry),
       });
     }
@@ -2686,57 +2690,35 @@
     }
   }
 
-  function chooseScopeTab(kind) {
+  async function chooseScopeTab(kind) {
     closeSortPopover();
     setTab(kind);
     if (kind === "local") {
-      pendingScopeTab = null;
       void setScope("local", "");
       return;
     }
+    const showRangePrompt = !index || scopeLoad.phase !== "idle";
+    const intent = beginScopeIntent(index ? "idle" : "pending");
+    if (kind === "quarter") state.scope = { kind, value: "" };
     if (!index) {
-      pendingScopeTab = kind;
-      scopeIntent += 1;
-      if (kind === "quarter") {
-        state.scope = { kind: "quarter", value: "" };
-        scopePending = false;
-        loadError = false;
-        updateScopeAvailability();
-        return;
-      }
-      scopePending = true;
       updateScopeAvailability();
-      void ensureArchiveIndex().then(() => {
-        if (pendingScopeTab !== kind) return;
-        pendingScopeTab = null;
-        if (kind === "year") {
-          const location = scopeFromLocation();
-          const value = location.kind === "year"
-            ? location.value
-            : String(index.latest_quarter || "").slice(0, 4);
-          void setScope("year", value);
-          return;
-        }
-        showRangeSelector();
-      }).catch(() => {
-        if (pendingScopeTab !== kind) return;
-        pendingScopeTab = null;
-        if (state.scope.kind === "local" && sameScope(loadedScope, state.scope)) {
-          scopePending = false;
+      try {
+        await ensureArchiveIndex();
+      } catch {
+        if (intent !== scopeLoad.intent) return;
+        if (state.scope.kind === "local" && sameScope(scopeLoad.loaded, state.scope)) {
+          scopeLoad.phase = "idle";
           setTab("local");
           updateScopeAvailability();
         } else {
           showArchiveIndexUnavailable();
         }
-      });
-      return;
+        return;
+      }
+      if (intent !== scopeLoad.intent) return;
+      scopeLoad.phase = "idle";
     }
-    pendingScopeTab = null;
     if (kind === "quarter") {
-      scopeIntent += 1;
-      scopePending = false;
-      loadError = false;
-      state.scope = { kind: "quarter", value: "" };
       updateScopeAvailability();
       return;
     }
@@ -2750,16 +2732,10 @@
       return;
     }
 
-    showRangeSelector();
+    showRangeSelector(showRangePrompt);
   }
 
-  function showRangeSelector() {
-    const abandonedCurrentLoad = scopePending || loadError;
-    if (abandonedCurrentLoad) {
-      scopeIntent += 1;
-      scopePending = false;
-      loadError = false;
-    }
+  function showRangeSelector(showPrompt) {
     const location = scopeFromLocation();
     const currentYear = state.scope.kind === "year" && state.scope.value
       ? state.scope.value
@@ -2771,7 +2747,7 @@
     const to = root.querySelector("[data-archive-to]");
     if (from && !from.value) from.value = String(initialRange?.from ?? currentYear);
     if (to && !to.value) to.value = String(initialRange?.to ?? currentYear);
-    if (abandonedCurrentLoad && selectors.summary) {
+    if (showPrompt && selectors.summary) {
       selectors.summary.textContent = "选择起止年份并显示范围目录。";
       if (selectors.scopePanel) {
         selectors.scopePanel.hidden = false;
@@ -2792,7 +2768,6 @@
       window.setTimeout(() => {
         if (pendingPopstateHashchange === pending) pendingPopstateHashchange = null;
       }, 0);
-      if (!index) pendingScopeTab = null;
       void restoreArchiveLocation({
         suppressFocusAndScroll: filterClosed,
         preserveHistory: filterClosed,
@@ -3000,12 +2975,8 @@
   function showArchiveIndexUnavailable(location = null) {
     if (location && location.kind !== "local") applyScope(location.kind, location.value);
     else if (state.scope.kind !== "local") setTab("year");
-    scopeIntent += 1;
-    scopePending = false;
-    loadError = true;
-    records = [];
-    recordByKey = new Map();
-    loadedScope = null;
+    scopeLoad.phase = "failed";
+    setScopeRecords(null, { records: [] });
     selectors.list?.replaceChildren();
     listSignature = "";
     signatureRecords = null;
@@ -3017,24 +2988,12 @@
     updateScopeAvailability();
   }
 
-  async function loadDetailRecord(record) {
-    if (state.scope.kind === "local") {
-      const snapshotRecord = recordByKey.get(record.key);
-      if (!snapshotRecord) throw new Error("verified local record unavailable");
-      return snapshotRecord;
-    }
-    let quarterRecords = detailByQuarter.get(record.quarter);
-    if (!quarterRecords) {
-      const response = await fetch(`../data/quarters/${record.quarter}.json`, {
-        credentials: "same-origin",
-      });
-      if (!response.ok) throw new Error("quarter detail unavailable");
-      quarterRecords = archive.recordsFromQuarter(await response.json());
-      detailByQuarter.set(record.quarter, quarterRecords);
-    }
-    const detail = quarterRecords.find((item) => item.key === record.key);
-    if (!detail) throw new Error("quarter detail record unavailable");
-    return detail;
+  async function loadQuarterDetails(quarter) {
+    const response = await fetch(`../data/quarters/${quarter}.json`, {
+      credentials: "same-origin",
+    });
+    if (!response.ok) throw new Error("quarter detail unavailable");
+    return archive.recordsFromQuarter(await response.json());
   }
 
   function yearsForScope(kind, value) {
@@ -3482,7 +3441,7 @@
   }
 
   function render() {
-    if (scopePending || loadError) return;
+    if (!activeScopeMatchesRecords()) return;
     root.dataset.viewMode = state.viewMode;
     const result = archive.applyPipeline(records, state);
     state.page = result.page;
@@ -3507,14 +3466,14 @@
   }
 
   function renderSearchResults() {
-    if (!selectors.search || state.query === selectors.search.value) return;
+    if (!activeScopeMatchesRecords()
+      || !selectors.search || state.query === selectors.search.value) return;
     const previousSelection = state.selectedOccurrence;
     state.query = boundedArchiveText(selectors.search.value, MAX_ARCHIVE_QUERY_LENGTH);
     if (selectors.search.value !== state.query) selectors.search.value = state.query;
     state.page = 1;
     clearSelection(false);
     if (previousSelection) updateRowSelection(previousSelection, false);
-    if (scopePending || loadError) return;
     const result = archive.applyPipeline(records, state);
     state.page = result.page;
     renderRows(result);
@@ -3616,12 +3575,10 @@
     dialog.showModal();
   }
 
-  async function selectRecord(record, replace = false, writeHistory = true) {
+  function selectRecord(record, replace = false, writeHistory = true) {
     if (
       !record
-      || scopePending
-      || loadError
-      || !sameScope(loadedScope, state.scope)
+      || !activeScopeMatchesRecords()
       || !recordByKey.has(record.key)
     ) return;
     if (window.innerWidth < 768 && state.workspaceMode !== "detail") {
@@ -3659,16 +3616,29 @@
       updateRowSelection(record.key, true);
       renderWorkspaceVisibility();
     }
+    void populateSelectedDetail(record, request);
+  }
+
+  async function populateSelectedDetail(record, request) {
+    const isCurrent = () => request === detailRequest
+      && state.selectedOccurrence === record.key && activeScopeMatchesRecords();
     try {
-      const detail = await loadDetailRecord(record);
-      if (request !== detailRequest || state.selectedOccurrence !== record.key) return;
+      let detail = recordByKey.get(record.key);
+      if (state.scope.kind !== "local") {
+        const quarterRecords = detailByQuarter.get(record.quarter)
+          || await loadQuarterDetails(record.quarter);
+        if (!isCurrent()) return;
+        detailByQuarter.set(record.quarter, quarterRecords);
+        detail = quarterRecords.find((item) => item.key === record.key);
+      }
+      if (!detail) throw new Error("quarter detail record unavailable");
       if (selectors.detailPanel) {
         selectors.detailPanel.innerHTML = detailHtml(detail);
         selectors.detailPanel.querySelector("[data-detail-close]")?.addEventListener("click", () => closeDetail(record.key));
         selectors.detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(detail));
       }
     } catch {
-      if (request !== detailRequest || state.selectedOccurrence !== record.key) return;
+      if (!isCurrent()) return;
       if (selectors.detailPanel) {
         selectors.detailPanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>当前资料详情未完整生成</h2><p>建议重新 build。</p>';
       }
@@ -3704,48 +3674,38 @@
     }) || null;
   }
 
-  async function openHash({ suppressFocusAndScroll = false, preserveHistory = false } = {}) {
-    if (scopePending || loadError || !sameScope(loadedScope, state.scope)) return;
-    const match = window.location.hash.match(ARCHIVE_HASH_PATTERN);
-    if (!match) {
-      if (!match && state.selectedOccurrence !== null) {
+  function openHash({ suppressFocusAndScroll = false, preserveHistory = false } = {}) {
+    if (!activeScopeMatchesRecords()) return;
+    const { subjectId, occurrence } = decodeArchiveDetail(new URL(window.location.href));
+    if (subjectId === null) {
+      if (state.selectedOccurrence !== null) {
         const previousKey = state.selectedOccurrence;
         clearSelection(false);
         updateRowSelection(previousKey, false);
         renderWorkspaceVisibility();
-        if (!suppressFocusAndScroll) {
-          focusRecordTrigger(previousKey);
-          restoreListScroll();
-        }
+        if (!suppressFocusAndScroll) focusRecordTrigger(previousKey);
       }
-      if (!match && state.selectedOccurrence === null && !suppressFocusAndScroll) {
-        restoreListScroll();
-      }
+      if (!suppressFocusAndScroll) restoreListScroll();
       return;
     }
-    const requestedOccurrence = readOccurrenceParameter();
-    if (!records.length && !requestedOccurrence) return;
-    if (!records.length && requestedOccurrence) {
-      showUnavailableArchiveOccurrence(Number(match[1]), requestedOccurrence);
-      return;
-    }
-    const [requestedQuarter, requestedAppearance] = requestedOccurrence.split(".");
-    const exactRecord = requestedOccurrence
-      ? records.find((record) => Number(record.id) === Number(match[1])
+    if (!records.length && !occurrence) return;
+    const [requestedQuarter, requestedAppearance] = occurrence.split(".");
+    const exactRecord = occurrence
+      ? records.find((record) => Number(record.id) === subjectId
         && record.quarter === requestedQuarter
         && record.appearance === requestedAppearance)
       : null;
-    if (requestedOccurrence && !exactRecord) {
-      showUnavailableArchiveOccurrence(Number(match[1]), requestedOccurrence);
+    if (occurrence && !exactRecord) {
+      showUnavailableArchiveOccurrence(subjectId, occurrence);
       return;
     }
     const historyKey = state.scope.kind === "local"
       ? window.history.state?.bsbDetailKey
       : null;
     const historyRecord = historyKey ? recordByKey.get(historyKey) : null;
-    const candidate = exactRecord || (historyRecord?.id === Number(match[1])
+    const candidate = exactRecord || (historyRecord?.id === subjectId
       ? historyRecord
-      : archive.selectedRecord(records, Number(match[1])));
+      : archive.selectedRecord(records, subjectId));
     if (!candidate) {
       if (preserveHistory) {
         const previousKey = state.selectedOccurrence;
@@ -3762,7 +3722,7 @@
     const result = archive.applyPipeline(records, state);
     const position = result.all.findIndex((record) => record.key === candidate.key);
     if (position >= 0) state.page = Math.floor(position / state.pageSize) + 1;
-    await selectRecord(candidate, true, !preserveHistory);
+    selectRecord(candidate, true, !preserveHistory);
   }
 
   function showUnavailableArchiveOccurrence(subjectId, occurrence) {
@@ -4107,7 +4067,15 @@
     bindDetailGesture();
   }
 
-  async function setScope(kind, value, push = true, routeOptions = {}) {
+  function setScopeRecords(scope, { records: nextRecords, coverage = null, issue = "" }) {
+    scopeLoad.loaded = scope;
+    records = nextRecords;
+    recordByKey = new Map(records.map((record) => [record.key, record]));
+    localCoverage = coverage;
+    localIssue = issue;
+  }
+
+  async function setScope(kind, value, { push = true, ...routeOptions } = {}) {
     if (kind !== "local" && !index) return;
     const normalized = kind === "local"
       ? ""
@@ -4115,14 +4083,12 @@
         ? normalRange(value.from, value.to)
         : String(value);
     if (kind === "range" && !normalized) return;
-    const intent = ++scopeIntent;
-    scopePending = true;
-    loadError = false;
+    const scope = { kind, value: normalized };
+    const intent = beginScopeIntent("pending");
     if (kind === "local") {
-      localCoverage = null;
-      localIssue = "";
-      records = [];
-      recordByKey = new Map();
+      // Local verification starts without rows from any online catalog.
+      // Back must reload that catalog if its rows have been discarded.
+      setScopeRecords(null, { records: [] });
       selectors.list?.replaceChildren();
       rows = [];
       rowByKey = new Map();
@@ -4131,116 +4097,55 @@
       signatureRecords = null;
     }
     applyScope(kind, normalized);
-    if (push) setScopeUrl(kind, normalized);
+    if (push) writeArchiveUrl();
     updateScopeAvailability();
-    if (kind === "quarter") return;
+    renderWorkspaceVisibility();
     if (kind === "local") {
       if (selectors.summary) selectors.summary.textContent = "正在校验本机已下载的季度资料…";
       if (selectors.localStatus) selectors.localStatus.textContent = "正在校验本机已下载的季度资料…";
       if (selectors.scopePanel) {
-        selectors.scopePanel.hidden = false;
         selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">LOCAL SNAPSHOT</p><h2>正在检查本机资料</h2><p class="loading-state">正在验证活动季度的数据完整性…</p>';
       }
-      try {
-        const snapshot = await loadLocalSnapshotRecords();
-        if (intent !== scopeIntent) return;
-        records = snapshot.records;
-        recordByKey = new Map(records.map((record) => [record.key, record]));
-        localCoverage = snapshot.coverage;
-        localIssue = snapshot.issue;
-        loadedScope = { kind, value: normalized };
-        scopePending = false;
-        loadError = false;
-        updateScopeAvailability();
-        await restoreLoadedArchiveLocation(routeOptions);
-      } catch {
-        if (intent !== scopeIntent) return;
-        records = [];
-        recordByKey = new Map();
-        localCoverage = null;
-        localIssue = "无法读取本机离线季度状态，未显示未经验证的资料。";
-        loadedScope = { kind, value: normalized };
-        scopePending = false;
-        loadError = false;
-        updateScopeAvailability();
-        await restoreLoadedArchiveLocation(routeOptions);
-      }
-      return;
-    }
-    if (selectors.summary) selectors.summary.textContent = "正在读取范围目录…";
-    if (selectors.scopePanel) {
-      selectors.scopePanel.hidden = false;
-      if (selectors.detailPanel) selectors.detailPanel.hidden = true;
-      if (selectors.filterPanel) selectors.filterPanel.hidden = true;
-      const label = kind === "range" ? `${normalized.from}—${normalized.to}` : normalized;
-      selectors.scopePanel.innerHTML = `<p class="workspace-panel__code">ARCHIVE SCOPE</p><h2>${esc(label)}</h2><p class="loading-state">正在读取范围目录…</p>`;
-    }
-    try {
-      const nextRecords = await loadCatalogs(yearsForScope(kind, normalized));
-      if (intent !== scopeIntent) return;
-      records = nextRecords;
-      recordByKey = new Map(records.map((record) => [record.key, record]));
-      loadedScope = { kind, value: kind === "range" ? { ...normalized } : normalized };
-      scopePending = false;
-      loadError = false;
-      updateScopeAvailability();
-      await restoreLoadedArchiveLocation(routeOptions);
-    } catch {
-      if (intent !== scopeIntent) return;
-      scopePending = false;
-      loadError = true;
-      updateScopeAvailability();
-      if (selectors.summary) {
-        selectors.summary.textContent = "DATA UNAVAILABLE · 页面资料未完整生成";
-      }
+    } else {
+      if (selectors.summary) selectors.summary.textContent = "正在读取范围目录…";
       if (selectors.scopePanel) {
-        selectors.scopePanel.hidden = false;
-        selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>页面资料未完整生成</h2><p>建议重新 build。</p>';
+        const label = kind === "range" ? `${normalized.from}—${normalized.to}` : normalized;
+        selectors.scopePanel.innerHTML = `<p class="workspace-panel__code">ARCHIVE SCOPE</p><h2>${esc(label)}</h2><p class="loading-state">正在读取范围目录…</p>`;
       }
     }
-  }
 
-  async function load() {
-    root.dataset.viewMode = state.viewMode;
-    bindScopeTabs();
-    bindControls();
-    updateScopeAvailability();
-    if (scopeFromLocation().kind === "local") {
-      await setScope("local", "", false);
-      return;
-    }
+    let snapshot;
     try {
-      await ensureArchiveIndex();
-      if (scopeFromLocation().kind === "local") return;
-      if (pendingScopeTab === "quarter") {
-        pendingScopeTab = null;
-        state.scope = { kind: "quarter", value: "" };
-        scopePending = false;
-        loadError = false;
-        updateScopeAvailability();
-        return;
-      }
-      if (pendingScopeTab === "range") {
-        pendingScopeTab = null;
-        showRangeSelector();
-        return;
-      }
-      if (pendingScopeTab === "year") {
-        pendingScopeTab = null;
-        const location = scopeFromLocation();
-        const value = location.kind === "year"
-          ? location.value
-          : String(index.latest_quarter || "").slice(0, 4);
-        await setScope("year", value);
-        return;
-      }
-      await restoreArchiveLocation();
+      snapshot = kind === "local"
+        ? await loadLocalSnapshotRecords()
+        : { records: await loadCatalogs(yearsForScope(kind, normalized)) };
     } catch {
-      if (scopeFromLocation().kind === "local" || state.scope.kind === "local") return;
-      pendingScopeTab = null;
-      showArchiveIndexUnavailable(scopeFromLocation());
+      if (intent !== scopeLoad.intent) return;
+      if (kind !== "local") {
+        scopeLoad.phase = "failed";
+        updateScopeAvailability();
+        if (selectors.summary) {
+          selectors.summary.textContent = "DATA UNAVAILABLE · 页面资料未完整生成";
+        }
+        if (selectors.scopePanel) {
+          selectors.scopePanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>页面资料未完整生成</h2><p>建议重新 build。</p>';
+        }
+        return;
+      }
+      snapshot = {
+        records: [],
+        issue: "无法读取本机离线季度状态，未显示未经验证的资料。",
+      };
     }
+    if (intent !== scopeLoad.intent) return;
+    setScopeRecords(scope, snapshot);
+    scopeLoad.phase = "idle";
+    updateScopeAvailability();
+    restoreLoadedArchiveLocation(routeOptions);
   }
 
-  load();
+  root.dataset.viewMode = state.viewMode;
+  bindScopeTabs();
+  bindControls();
+  void restoreArchiveLocation();
 })();

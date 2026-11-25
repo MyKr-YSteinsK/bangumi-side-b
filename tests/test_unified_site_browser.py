@@ -24,13 +24,17 @@ pytestmark = [pytest.mark.browser, pytest.mark.deep_regression]
 _NEXT_SAFE_PORT = 18280
 
 
+class _BrowserTestServer(http.server.ThreadingHTTPServer):
+    allow_reuse_address = False
+
+
 def _server(handler: object) -> http.server.ThreadingHTTPServer:
     global _NEXT_SAFE_PORT
     for _ in range(100):
         port = _NEXT_SAFE_PORT
         _NEXT_SAFE_PORT += 1
         try:
-            return http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
+            return _BrowserTestServer(("127.0.0.1", port), handler)
         except OSError:
             continue
     raise RuntimeError("could not allocate a safe browser test port")
@@ -2186,14 +2190,15 @@ def test_archive_initial_load_errors_and_empty_state_clear_busy(
                 assert page.locator("[data-archive-pending]").is_hidden()
                 assert page.locator(".subject-row").count() == 0
                 if outcome == "index":
-                    assert "DATA UNAVAILABLE" in page.locator("body").inner_text()
-                    assert page.locator("[data-archive-browser]").is_hidden()
-                    assert page.locator("[data-archive-quarter-selector]").is_visible()
-                    page.locator('[data-scope-choice="year"]').click()
-                    assert page.locator("[data-archive-quarter-selector]").is_visible()
-                    assert "DATA UNAVAILABLE" in page.locator(
-                        "[data-archive-quarter-selector]"
+                    assert "无法读取年度档案目录" in page.locator(
+                        "[data-scope-panel]"
                     ).inner_text()
+                    assert page.locator("[data-archive-browser]").is_visible()
+                    assert page.locator(".master-pane").evaluate("node => node.inert")
+                    assert page.locator('[data-scope-choice="local"]').is_visible()
+                    page.locator('[data-scope-choice="year"]').click()
+                    _wait_archive_scope(page, "YEAR / 2026")
+                    assert page.locator(".subject-row").count() == 2
                 elif outcome == "catalog":
                     assert "DATA UNAVAILABLE" in page.locator("body").inner_text()
                     assert page.locator("[data-archive-browser]").is_visible()
@@ -2609,7 +2614,7 @@ def test_mobile_filter_workspace_keeps_facets_active_filters_and_scroll(
     page = chromium.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8000)
     page.route(
-        "**/data/quarters/2026-07.json",
+        "**/data/quarters/2026-07.json*",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -2675,7 +2680,7 @@ def test_mobile_filter_draft_requires_apply_and_cancel_preserves_results(
     page = chromium.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8000)
     page.route(
-        "**/data/quarters/2026-07.json",
+        "**/data/quarters/2026-07.json*",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -2841,7 +2846,7 @@ def test_mobile_short_detail_locks_document_and_long_detail_scrolls_own_panel(
     page = chromium.new_page(viewport={"width": 393, "height": 852})
     page.set_default_timeout(8000)
     page.route(
-        "**/data/quarters/2026-07.json",
+        "**/data/quarters/2026-07.json*",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -2888,11 +2893,15 @@ def test_mobile_short_detail_locks_document_and_long_detail_scrolls_own_panel(
     )
 
 
+@pytest.mark.parametrize("page_kind", ["quarter", "archive"])
 def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
-    chromium: BrowserContext,
+    preview_browser: Browser,
     site_server: str,
+    page_kind: str,
 ) -> None:
-    page = chromium.new_page(viewport={"width": 393, "height": 852})
+    page = preview_browser.new_page(
+        service_workers="block", has_touch=True, viewport={"width": 393, "height": 852}
+    )
     page.set_default_timeout(8000)
     page.add_init_script(
         """
@@ -2907,12 +2916,19 @@ def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
         """
     )
     page.emulate_media(reduced_motion="reduce")
-    _open_quarter(page, site_server, (393, 852))
-    page.locator('[data-subject-id="101"] [data-open-subject]').click()
+    if page_kind == "quarter":
+        _open_quarter(page, site_server, (393, 852))
+    else:
+        page.goto(f"{site_server}/archive/index.html?year=2026")
+        _wait_archive_scope(page, "YEAR / 2026")
+    page.locator('[data-subject-id="101"] [data-open-subject]').first.click()
     page.wait_for_selector('[data-detail-panel]:not([hidden])')
     detail = page.locator("[data-detail-panel]")
-    surface = page.locator("[data-quarter-layout] .workspace")
-    master = page.locator("[data-quarter-layout] .master-pane")
+    page_root = (
+        "[data-quarter-layout]" if page_kind == "quarter" else "[data-archive-app]"
+    )
+    surface = page.locator(f"{page_root} .workspace")
+    master = page.locator(f"{page_root} .master-pane")
     saved_scroll = page.evaluate("window.scrollY")
     assert (
         page.evaluate("getComputedStyle(document.documentElement).overflow")
@@ -3026,7 +3042,8 @@ def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
         gesture, {"id": 13, "points": [[10, 360], [150, 360], [150, 360]]}
     )
     page.wait_for_function(
-        "document.querySelector('[data-detail-panel]')?.hidden === true"
+        "document.querySelector('[data-detail-panel]')?.hidden === true "
+        "&& !location.hash.startsWith('#bgm-')"
     )
     assert detail.get_attribute("data-detail-gesture") == "commit"
     assert "#bgm-" not in page.url
@@ -3150,7 +3167,7 @@ def test_query_and_media_changes_close_detail_outside_current_result(
     page = chromium.new_page(viewport={"width": 1440, "height": 900})
     page.set_default_timeout(8000)
     page.route(
-        "**/data/quarters/2026-07.json",
+        "**/data/quarters/2026-07.json*",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -3197,7 +3214,7 @@ def test_detail_omits_missing_facts_and_uses_safe_fallback_labels(
     page = chromium.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8000)
     page.route(
-        "**/data/quarters/2026-07.json",
+        "**/data/quarters/2026-07.json*",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -3250,7 +3267,7 @@ def test_rating_format_is_consistent_in_lists_and_details(
     page = chromium.new_page(viewport={"width": 1440, "height": 900})
     page.set_default_timeout(8000)
     page.route(
-        "**/data/quarters/2026-07.json",
+        "**/data/quarters/2026-07.json*",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -3425,7 +3442,7 @@ def test_shared_pagination_tokens_are_compact_and_deterministic(
         for index in range(160)
     ]
     page.route(
-        "**/data/quarters/2026-07.json",
+        "**/data/quarters/2026-07.json*",
         lambda route: route.fulfill(
             status=200, content_type="application/json", body=json.dumps(quarter)
         ),
@@ -3488,7 +3505,7 @@ def test_quarter_filters_are_media_local_and_normalized(
     page = chromium.new_page(viewport={"width": 1440, "height": 900})
     page.set_default_timeout(8000)
     page.route(
-        "**/data/quarters/2026-07.json",
+        "**/data/quarters/2026-07.json*",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -3625,7 +3642,7 @@ def test_filter_options_wrap_and_selected_chip_survives_option_search(
         _facet_record(base, 301, "source-b", "tag-b"),
     ]
     page.route(
-        "**/data/quarters/2026-07.json",
+        "**/data/quarters/2026-07.json*",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -3703,7 +3720,7 @@ def test_large_archive_renders_only_the_current_page_and_restores_deep_link(
         ),
     )
     page.route(
-        "**/data/quarters/2026-07.json",
+        "**/data/quarters/2026-07.json*",
         lambda route: route.fulfill(
             status=200, content_type="application/json", body=json.dumps(detail)
         ),
@@ -3966,7 +3983,7 @@ def test_tv_sort_reorders_one_dom_sequence_and_preserves_identity(
     page = chromium.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8000)
     page.route(
-        "**/data/quarters/2026-07.json",
+        "**/data/quarters/2026-07.json*",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -4681,7 +4698,7 @@ def test_quarter_and_archive_details_show_all_aliases_and_search_them(
     page = chromium.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8000)
     page.route(
-        "**/data/quarters/2026-07.json",
+        "**/data/quarters/2026-07.json*",
         lambda route: route.fulfill(
             status=200, content_type="application/json", body=json.dumps(quarter)
         ),
@@ -4713,7 +4730,7 @@ def test_quarter_and_archive_details_show_all_aliases_and_search_them(
         ),
     )
     page.route(
-        "**/data/quarters/2026-04.json",
+        "**/data/quarters/2026-04.json*",
         lambda route: route.fulfill(
             status=200, content_type="application/json", body=json.dumps(premiere)
         ),
@@ -4738,11 +4755,14 @@ def test_quarter_and_archive_details_show_all_aliases_and_search_them(
 
 @pytest.mark.parametrize("page_kind", ["quarter", "archive"])
 def test_search_input_paste_rapid_changes_and_ime_commit(
-    chromium: BrowserContext,
+    preview_browser: Browser,
     site_server_mixed: str,
     page_kind: str,
 ) -> None:
-    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page = preview_browser.new_page(
+        service_workers="block", viewport={"width": 390, "height": 844},
+        reduced_motion="reduce",
+    )
     page.set_default_timeout(8000)
     if page_kind == "quarter":
         _open_quarter(page, site_server_mixed, (390, 844))
@@ -4873,10 +4893,13 @@ def test_archive_detail_failure_stays_same_origin_and_reports_rebuild(
 
 
 def test_quarter_and_archive_close_restore_keyboard_focus(
-    chromium: BrowserContext,
+    preview_browser: Browser,
     site_server: str,
 ) -> None:
-    page = chromium.new_page(viewport={"width": 390, "height": 844})
+    page = preview_browser.new_page(
+        service_workers="block", viewport={"width": 390, "height": 844},
+        reduced_motion="reduce",
+    )
     page.set_default_timeout(8000)
 
     _open_quarter(page, site_server, (390, 844))

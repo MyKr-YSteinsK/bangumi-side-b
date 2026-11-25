@@ -110,6 +110,12 @@ file identities. The page and offline manifest both take `data_revision` from
 the planned quarter JSON. A healthy no-op leaves both manifests and the Service
 Worker on their reuse path.
 
+Archive routing and loading logic ship inside the single application script.
+A script-only change uses a new content-addressed path and updates the pages,
+package manifests, shell manifest, and worker that refer to it. The quarter
+JSON and its `data_revision` stay identical when the facts stay identical.
+Retained quarters continue to use their recorded script.
+
 | Check | Evidence it uses |
 | --- | --- |
 | Full build | Materialized bytes and references within the generated tree. |

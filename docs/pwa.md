@@ -131,6 +131,9 @@ same in-memory verified snapshot as the result list. `?local=1` can restore the
 scope, but the saved quarter packages remain specific to that browser profile;
 the URL does not transfer offline data to another device. YEAR and RANGE keep
 their generated-catalog behavior, and the default online Archive is unchanged.
+If navigation leaves Local while verification is pending, the completed check
+cannot take over the newly selected scope. An online catalog whose rows were
+cleared for Local is loaded again when that history entry is restored.
 
 ## Cover cache identity
 

@@ -50,7 +50,7 @@ def test_help_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_version_exits_successfully(capsys: pytest.CaptureFixture[str]) -> None:
-    assert __version__ == "0.10.0"
+    assert __version__ == "0.10.1"
 
     with pytest.raises(SystemExit) as result:
         main(["--version"])

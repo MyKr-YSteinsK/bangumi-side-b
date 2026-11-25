@@ -2893,7 +2893,9 @@ def test_mobile_short_detail_locks_document_and_long_detail_scrolls_own_panel(
     )
 
 
-@pytest.mark.parametrize("page_kind", ["quarter", "archive"])
+@pytest.mark.parametrize(
+    "page_kind", ["quarter", "archive", "archive-pending", "archive-failed"],
+)
 def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
     preview_browser: Browser,
     site_server: str,
@@ -2921,9 +2923,21 @@ def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
     else:
         page.goto(f"{site_server}/archive/index.html?year=2026")
         _wait_archive_scope(page, "YEAR / 2026")
-    page.locator('[data-subject-id="101"] [data-open-subject]').first.click()
+    if page_kind == "archive-pending":
+        # Leave the request pending until after the gesture has closed the detail.
+        page.route("**/data/quarters/*.json", lambda _route: None)
+    elif page_kind == "archive-failed":
+        page.route("**/data/quarters/*.json", lambda route: route.fulfill(status=503))
+    trigger = page.locator('[data-subject-id="101"] [data-open-subject]').first
+    trigger.click()
     page.wait_for_selector('[data-detail-panel]:not([hidden])')
     detail = page.locator("[data-detail-panel]")
+    if page_kind == "archive-pending":
+        detail.get_by_text("正在读取季度详情", exact=False).wait_for()
+    elif page_kind == "archive-failed":
+        detail.get_by_text("当前资料详情未完整生成").wait_for()
+    else:
+        detail.locator(".detail-hero h2").wait_for()
     page_root = (
         "[data-quarter-layout]" if page_kind == "quarter" else "[data-archive-app]"
     )
@@ -3047,6 +3061,7 @@ def test_standalone_detail_edge_drag_threshold_direction_and_reduced_motion(
     )
     assert detail.get_attribute("data-detail-gesture") == "commit"
     assert "#bgm-" not in page.url
+    assert trigger.evaluate("node => node === document.activeElement")
 
 
 def test_mobile_archive_filter_workspace_is_full_width(
@@ -4869,27 +4884,38 @@ def test_search_input_paste_rapid_changes_and_ime_commit(
 
 
 def test_archive_detail_failure_stays_same_origin_and_reports_rebuild(
-    chromium: BrowserContext,
+    preview_browser: Browser,
     site_server: str,
 ) -> None:
-    page = chromium.new_page(viewport={"width": 1440, "height": 900})
+    page = preview_browser.new_page(
+        viewport={"width": 1440, "height": 900}, service_workers="block",
+    )
     page.set_default_timeout(8000)
     page.route(
         "**/data/quarters/*.json",
         lambda route: route.fulfill(status=404, body="missing"),
     )
-    page.goto(f"{site_server}/archive/index.html?year=2026")
-    page.wait_for_function(
-        "document.querySelector('[data-results-summary]')?.textContent.includes('appearance')"
-    )
-    page.locator('[data-subject-id="101"] [data-open-subject]').first.click()
+    list_url = f"{site_server}/archive/index.html?year=2026"
+    page.goto(list_url)
+    _wait_archive_scope(page, "YEAR / 2026")
+    trigger = page.locator('[data-subject-id="101"] [data-open-subject]').first
+    trigger.click()
     page.wait_for_function(
         "document.querySelector('[data-detail-panel]')"
         "?.textContent.includes('DATA UNAVAILABLE')"
     )
-    detail = page.locator("[data-detail-panel]").inner_text()
-    assert "当前资料详情未完整生成" in detail
-    assert "重新 build" in detail
+    detail = page.locator("[data-detail-panel]")
+    assert "当前资料详情未完整生成" in detail.inner_text()
+    assert "重新 build" in detail.inner_text()
+    close = detail.get_by_role("button", name="返回结果")
+    assert close.is_visible()
+    close.click()
+    page.wait_for_url(list_url)
+    assert detail.is_hidden()
+    assert trigger.evaluate("node => node === document.activeElement")
+    page.unroute("**/data/quarters/*.json")
+    trigger.click()
+    detail.get_by_role("heading", name="中文 101").wait_for()
 
 
 def test_quarter_and_archive_close_restore_keyboard_focus(

@@ -1,8 +1,23 @@
 # Bangumi Side B 当前状态
 
-观察日为 2026-11-25。源码应用版本 `0.10.2`，处于 Production 维护。Plan-78 开始时，本机 `main`、配置上游与实际远端源码 HEAD 均为 `5eb8cc1958b8bc879eef590c011821d0d69d1b92`。[Plan-78 · Issue #6](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/6)
+观察日为 2026-11-25。源码应用版本 `0.10.3`，处于 Production 维护。Plan-79 开始时，本机 `main`、配置上游和实际远端源码 HEAD 均为 `2e3a59fdbbb097e18b38036f871e95a79376773f`。[Plan-79 · Issue #7](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/7)
+
+## Plan-79 详情等待与失败时返回结果
+
+从合成 SQLite 和封面生成 `0.10.2` 的 v2 站点。Chromium、WebKit 用真实的同源季度请求复现了等待和 404 详情中没有返回按钮。新版在选中作品时立即显示原有详情顶栏。等待转为成功或 503 时只替换详情内容和状态文字。按钮节点、键盘焦点和位置保持一致，手机模拟触控目标至少 44×44 CSS 像素。
+
+从列表打开的详情共用关闭路径。返回一层历史后保留搜索、筛选、排序、页码、每页数量和 Grid / List，恢复实际播出记录和滚动位置。浏览器 Back / Forward 可复原相应结果或详情。此前访问过 Settings 时，直接打开旧 `#bgm-ID` 或精确续播链接，返回按钮仅替换该 Archive 历史条目的详情标识，浏览器 Back 仍会回到 Settings。关掉详情后迟到的成功或失败不改变面板、焦点或 URL，重新打开会按有效请求读取。桌面快速换到另一个作品时，按钮对应最新选中的卡片。[交互合同](../visual-system.md#archive-地址栏与加载)
+
+固定 `0.10.3`、更新日志、事实、封面与其它构建输入，仅替换 Git 基线与新主脚本。两棵健康站点各 23 个文件。13 个同路径文件逐字节一致，包含索引、年度目录、季度事实 JSON 和封面。5 个 HTML、两个离线包清单、应用壳清单和 worker 共 9 个同路径文件变化。新应用脚本按实际 SHA-256 使用 `assets/app.6f9f177d…js`。两个季度的 `data_revision` 一致，包和应用壳 `revision` 随新资源变化。增量写 10 项且与干净全量一致，无变化重跑零写入且文件时间一致。四月受阻时原有季度包和旧脚本通过校验，恢复后移除旧路径并与干净全量收敛。
+
+验收在 Windows 的 Chromium 149.0.7827.55 与 WebKit 26.5 上使用隔离站点和回环服务。移动端用 393×852 触摸、键盘和 standalone 模拟，桌面用 1440×900 主从工作区。真实 Safari、实际安装的 PWA 和生产页面另行验收。[重验命令](RUNBOOK.md#验证与接续)
+
+- 26 项路由回归、71 项浏览器交互回归通过。覆盖等待、错误、重试、迟到响应、旧 hash 与精确续播直达、原卡片焦点、分页复用、滚动及 Back / Forward。两种引擎均验证 standalone 左缘手势的方向、取消、确认与 reduced-motion，并复验 Quarter 详情返回。
+- Ruff、JavaScript 语法检查、454 项非浏览器测试和 21 项 Chromium 发布冒烟通过。完整 PWA 组 81 项、保留资源和三代站点 10 项通过。断网时仅本机详情从已验证的活动包打开并返回，沿用活动包保护。非浏览器回归包含写锁和中断恢复。
 
 ## Plan-78 浏览性能与界面对照
+
+该批开始时，本机 `main`、配置上游和实际远端源码 HEAD 均为 `5eb8cc1958b8bc879eef590c011821d0d69d1b92`，完成于 `2e3a59f`。[Plan-78 · Issue #6](https://github.com/MyKr-YSteinsK/bangumi-side-b/issues/6)
 
 Archive 根据当前页创建作品卡片和计算封面路径。已访问的卡片在同一批结果内按实际播出记录复用，打开筛选面板时才计算选项。接收新一批结果时清除卡片缓存。基线从 YEAR 改为同年份的 RANGE 并重新取得目录时，旧行会因 occurrence 相同而显示旧标题。新版从新目录生成对应行。[测试入口](../../tests/test_archive_routing_browser.py)
 
@@ -32,7 +47,7 @@ Chromium 手机回环中，最后一个目录响应到结果 DOM 就绪由 91 �
 
 本机 Ruff、JavaScript 语法检查、454 项非浏览器、21 项 Chromium 发布冒烟及 Markdown 相对链接检查通过。另有 68 项浏览器定向回归，覆盖 360–430px 与桌面上的范围失败恢复、日期和封面、页码、分享链接、移动筛选与详情、IME、键盘和 reduced-motion。完整 PWA 测试 81 项，保留资源和三代站点 10 项，全部通过。PWA 组实际注入下载中断、损坏响应和配额故障，校验活动包保护、续传和应用壳更新。非浏览器回归覆盖写锁与中断恢复。
 
-运行入口与样本口径见 [运行手册](RUNBOOK.md#重测-archive-浏览性能) 和 [浏览性能脚本](../../tests/bench_browse.py)。本机 `workspace/reports/plan78-review/index.html` 提供测量原始记录和界面对照。建议优先选择详情等待或失败时的返回入口，其次比较范围控件旁的分阶段提示，来源与工具栏可暂缓。界面方案处于待确认状态。[升级路线](升级路线与技术审查.md#4-浏览状态组件与界面体验)
+运行入口与样本口径见 [运行手册](RUNBOOK.md#重测-archive-浏览性能) 和 [浏览性能脚本](../../tests/bench_browse.py)。本机 `workspace/reports/plan78-review/index.html` 提供测量原始记录和当时的界面对照。详情返回方案已由 Plan-79 采用。范围控件旁的分阶段提示、来源与工具栏仍待确认。[升级路线](升级路线与技术审查.md#4-浏览状态组件与界面体验)
 
 ## Plan-77 浏览状态与异步加载
 

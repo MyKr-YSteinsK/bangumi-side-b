@@ -6,7 +6,7 @@ import json
 import threading
 from collections.abc import Iterator
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from playwright.sync_api import Page, expect, sync_playwright
@@ -301,3 +301,230 @@ def test_archive_refreshes_row_data_when_occurrence_keys_are_unchanged(
         page.locator("[data-range-apply]").click()
         _wait_archive_scope(page, "RANGE / 2026—2026")
         expect(title).to_have_text("Updated catalog title")
+
+
+@pytest.mark.parametrize("status", [200, 503])
+def test_archive_detail_return_keeps_focus_and_position_when_response_arrives(
+    route_page: Page, routing_site: Path, status: int,
+) -> None:
+    page = route_page
+    gate = _catalog_gate(status=status)
+    requested, release = gate["requested"], gate["release"]
+    assert isinstance(requested, threading.Event)
+    assert isinstance(release, threading.Event)
+    with _archive_catalog_server(routing_site, {"quarter:2026-04": [gate]}) as server:
+        list_url = f"{server}/archive/index.html?year=2026"
+        page.goto(list_url)
+        _wait_archive_scope(page, "YEAR / 2026")
+        trigger = page.locator(
+            '[data-subject-id="101"][data-quarter="2026-04"] [data-open-subject]'
+        )
+        trigger.press("Enter")
+        assert requested.wait(timeout=10)
+        detail = page.locator("[data-detail-panel]")
+        expect(detail).to_contain_text("正在读取季度详情")
+        close = detail.get_by_role("button", name="返回结果")
+        expect(close).to_be_visible()
+        close.focus()
+        assert close.evaluate("node => node.matches(':focus-visible')")
+        close.evaluate("node => { window.focusedReturnButton = node; }")
+        pending_box = close.bounding_box()
+        assert pending_box is not None
+        if page.viewport_size["width"] < 768:
+            assert min(pending_box["width"], pending_box["height"]) >= 44
+        else:
+            expect(page.locator(".master-pane")).to_be_visible()
+
+        release.set()
+        heading = detail.get_by_role("heading", level=2)
+        expected_heading = "中文 101" if status == 200 else "当前资料详情未完整生成"
+        expect(heading).to_have_text(expected_heading)
+        expect(close).to_be_focused()
+        assert close.evaluate("node => node === window.focusedReturnButton")
+        assert close.bounding_box() == pytest.approx(pending_box, abs=1)
+        detail_url = page.url
+        close.press("Enter")
+        expect(page).to_have_url(list_url)
+        expect(detail).to_be_hidden()
+        expect(trigger).to_be_focused()
+
+        page.go_forward()
+        expect(page).to_have_url(detail_url)
+        expect(heading).to_have_text("中文 101")
+        page.go_back()
+        expect(page).to_have_url(list_url)
+        expect(detail).to_be_hidden()
+        expect(trigger).to_be_focused()
+
+
+@pytest.mark.parametrize("status", [200, 503])
+def test_archive_closes_pending_detail_without_applying_late_response(
+    route_page: Page, tmp_path: Path, status: int,
+) -> None:
+    page = route_page
+    builder, _ = _build_fixture(
+        tmp_path, include_same_quarter_tv=True, extra_same_quarter_tv=26,
+    )
+    builder.build()
+    validate_site(builder.site_directory, workspace=builder.workspace_directory)
+    gate = _catalog_gate(status=status)
+    requested, release = gate["requested"], gate["release"]
+    assert isinstance(requested, threading.Event)
+    assert isinstance(release, threading.Event)
+    page.add_init_script("""(() => {
+      const fetchResource = window.fetch.bind(window);
+      window.fetch = async (input, options) => {
+        const response = await fetchResource(input, options);
+        if (!new URL(response.url).pathname.endsWith('/data/quarters/2026-07.json')) {
+          return response;
+        }
+        const delivered = () => setTimeout(() => { window.detailDelivered = true; }, 0);
+        if (!response.ok) delivered();
+        else {
+          const read = response.json.bind(response);
+          response.json = async () => {
+            const value = await read();
+            delivered();
+            return value;
+          };
+        }
+        return response;
+      };
+    })();""")
+    parameters = {
+        "year": "2026", "q": "中文", "sort": "score-asc", "section": "premiere",
+        "page": "2", "size": "10",
+    }
+    with _archive_catalog_server(
+        builder.site_directory, {"quarter:2026-07": [gate]},
+    ) as server:
+        previous = f"{server}/settings/index.html"
+        page.goto(previous)
+        page.goto(f"{server}/archive/index.html?{urlencode(parameters)}")
+        _wait_archive_scope(page, "YEAR / 2026")
+        page.locator('button[data-view-mode="list"]').click()
+        list_url = page.url
+        assert parse_qs(urlsplit(list_url).query) == {
+            key: [value] for key, value in parameters.items()
+        }
+        rows = page.locator("[data-list-sections] .subject-row")
+        expect(rows).to_have_count(10)
+        trigger = rows.nth(6).locator("[data-open-subject]")
+        trigger.scroll_into_view_if_needed()
+        trigger.evaluate("node => { window.originalCard = node; }")
+        saved_scroll = page.evaluate("scrollY")
+        if page.viewport_size["width"] < 768:
+            assert saved_scroll > 0
+
+        trigger.press("Enter")
+        assert requested.wait(timeout=10)
+        detail = page.locator("[data-detail-panel]")
+        expect(detail).to_contain_text("正在读取季度详情")
+        detail_url = page.url
+        close = detail.get_by_role("button", name="返回结果")
+        if page.viewport_size["width"] < 768:
+            close.tap()
+        else:
+            close.press("Enter")
+        expect(page).to_have_url(list_url)
+        expect(detail).to_be_hidden()
+        expect(trigger).to_be_focused()
+        assert trigger.evaluate("node => node === window.originalCard")
+        expect(page.locator('button[data-view-mode="list"]')).to_have_attribute(
+            "aria-pressed", "true",
+        )
+        page.wait_for_function(
+            "value => Math.abs(scrollY - value) <= 2", arg=saved_scroll,
+        )
+
+        release.set()
+        page.wait_for_function("window.detailDelivered === true")
+        expect(page).to_have_url(list_url)
+        expect(detail).to_be_hidden()
+        expect(trigger).to_be_focused()
+
+        with page.expect_request(lambda req: "/data/quarters/2026-07.json" in req.url):
+            page.go_forward()
+        expect(page).to_have_url(detail_url)
+        expect(detail.locator(".detail-hero h2")).to_be_visible()
+        page.go_back()
+        expect(page).to_have_url(list_url)
+        expect(detail).to_be_hidden()
+        page.go_back()
+        expect(page).to_have_url(previous)
+
+
+@pytest.mark.parametrize("occurrence", ["", "2026-07.continuing"])
+def test_archive_direct_detail_return_replaces_only_its_own_entry(
+    route_page: Page, routing_site: Path, occurrence: str,
+) -> None:
+    page = route_page
+    quarter = "2026-07" if occurrence else "2026-04"
+    gate = _catalog_gate()
+    requested = gate["requested"]
+    assert isinstance(requested, threading.Event)
+    gates = {f"quarter:{quarter}": [gate]}
+    with _archive_catalog_server(routing_site, gates) as server:
+        previous = f"{server}/settings/index.html"
+        list_url = f"{server}/archive/index.html?year=2026&q=101&sort=score-asc&size=10"
+        page.goto(previous)
+        suffix = f"&occ={occurrence}" if occurrence else ""
+        page.goto(f"{list_url}{suffix}#bgm-101")
+        assert requested.wait(timeout=10)
+        detail = page.locator("[data-detail-panel]")
+        expect(detail).to_contain_text("正在读取季度详情")
+        trigger = page.locator(
+            f'[data-subject-id="101"][data-quarter="{quarter}"] [data-open-subject]'
+        )
+        expect(trigger).to_have_attribute("aria-expanded", "true")
+        assert page.evaluate("history.state?.bsbDetailEntry !== true")
+        detail.get_by_role("button", name="返回结果").click()
+        expect(page).to_have_url(list_url)
+        expect(detail).to_be_hidden()
+        expect(trigger).to_be_focused()
+        page.go_back()
+        expect(page).to_have_url(previous)
+        page.go_forward()
+        expect(page).to_have_url(list_url)
+        _wait_archive_scope(page, "YEAR / 2026")
+        expect(detail).to_be_hidden()
+
+
+def test_archive_desktop_return_uses_the_latest_selected_card(
+    route_page: Page, routing_site: Path,
+) -> None:
+    page = route_page
+    page.set_viewport_size({"width": 1440, "height": 900})
+    gate = _catalog_gate()
+    requested, release = gate["requested"], gate["release"]
+    assert isinstance(requested, threading.Event)
+    assert isinstance(release, threading.Event)
+    with _archive_catalog_server(routing_site, {"quarter:2026-04": [gate]}) as server:
+        list_url = f"{server}/archive/index.html?year=2026"
+        page.goto(list_url)
+        _wait_archive_scope(page, "YEAR / 2026")
+        page.locator(
+            '[data-subject-id="101"][data-quarter="2026-04"] [data-open-subject]'
+        ).click()
+        assert requested.wait(timeout=10)
+        detail = page.locator("[data-detail-panel]")
+        expect(detail).to_contain_text("正在读取季度详情")
+        close = detail.get_by_role("button", name="返回结果")
+        close.evaluate("node => { window.pendingReturnButton = node; }")
+        length = page.evaluate("history.length")
+
+        latest = page.locator('[data-subject-id="303"] [data-open-subject]')
+        latest.click()
+        expect(detail.get_by_role("heading", name="中文 303")).to_be_visible()
+        expect(latest).to_have_attribute("aria-expanded", "true")
+        assert page.evaluate("history.length") == length
+        assert close.evaluate("node => node === window.pendingReturnButton")
+        with page.expect_response(
+            lambda response: "/quarters/2026-04.json" in response.url,
+        ):
+            release.set()
+        close.click()
+        expect(page).to_have_url(list_url)
+        expect(latest).to_be_focused()
+        page.go_forward()
+        expect(detail.get_by_role("heading", name="中文 303")).to_be_visible()

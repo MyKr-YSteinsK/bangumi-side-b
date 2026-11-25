@@ -2651,7 +2651,11 @@
   }
 
   function restoreLoadedArchiveLocation(routeOptions = {}) {
-    restoreAppliedState(new URL(window.location.href));
+    const url = new URL(window.location.href);
+    const returnKey = !url.hash && !routeOptions.suppressFocusAndScroll
+      ? state.selectedOccurrence
+      : null;
+    restoreAppliedState(url);
     renderFilterPanel();
     render();
     archive.releaseBrowsePrepaint(root, state.viewMode);
@@ -2662,6 +2666,7 @@
     // Selection updates synchronously. Its detail request renders later and
     // has no say over the history entry this navigation belongs to.
     openHash(routeOptions);
+    if (returnKey) focusRecordTrigger(returnKey);
     if (!routeOptions.preserveHistory) {
       const detail = decodeArchiveDetail(new URL(window.location.href));
       const selected = recordByKey.get(state.selectedOccurrence);
@@ -3512,7 +3517,25 @@
     restoreListScroll();
   }
 
-  function detailHtml(record) {
+  function renderDetailPanel(contextHtml, bodyHtml, heroHtml = "") {
+    const panel = selectors.detailPanel;
+    if (!panel) return;
+    let head = panel.querySelector(".detail-head");
+    if (!head) {
+      panel.innerHTML = `<div class="detail-head"><div class="detail-topbar" role="navigation" aria-label="详情导航"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span class="detail-close__icon" aria-hidden="true">←</span><span class="detail-close__back">返回结果</span></button><p class="workspace-panel__code detail-topbar__context"></p></div></div>`;
+      head = panel.firstElementChild;
+      head.querySelector("[data-detail-close]").addEventListener("click", closeDetail);
+    }
+    // Keep the return button mounted while a response updates the detail.
+    const context = head.querySelector(".detail-topbar__context");
+    if (context.innerHTML !== contextHtml) context.innerHTML = contextHtml;
+    head.querySelector(".detail-hero")?.remove();
+    while (head.nextSibling) head.nextSibling.remove();
+    if (heroHtml) head.insertAdjacentHTML("beforeend", heroHtml);
+    head.insertAdjacentHTML("afterend", bodyHtml);
+  }
+
+  function renderRecordDetail(record) {
     const aliases = record.aliases || [];
     const cover = record.cover || record.cover_url;
     const coverHtml = cover
@@ -3530,14 +3553,17 @@
       record.rating_count !== null && record.rating_count !== undefined ? ["评分人数", record.rating_count] : null,
       ["来源", archive.sourceLabel(record.source)],
     ].filter(Boolean).map(([label, value, className]) => `<div><dt>${label}</dt><dd${className ? ` class="${className}"` : ""}>${esc(value)}</dd></div>`).join("");
-    return `<div class="detail-head"><div class="detail-topbar" role="navigation" aria-label="详情导航"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span class="detail-close__icon" aria-hidden="true">←</span><span class="detail-close__back">返回结果</span></button><p class="workspace-panel__code detail-topbar__context">${esc(record.media)} / ${esc(record.appearance)}${record.appearance === "continuing" ? ' <span class="detail-appearance-badge">续播</span>' : ""}</p></div>
-      <div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}<p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div></div>
-      <dl class="detail-facts">${facts}</dl>
+    const badge = record.appearance === "continuing" ? ' <span class="detail-appearance-badge">续播</span>' : "";
+    const context = `${esc(record.media)} / ${esc(record.appearance)}${badge}`;
+    const hero = `<div class="detail-hero">${coverHtml}<div><h2>${esc(record.preferred_title)}</h2>${record.original_title ? `<p class="detail-original">${esc(record.original_title)}</p>` : ""}<p class="detail-id">SUBJECT / ${esc(record.id)}</p></div></div>`;
+    const body = `<dl class="detail-facts">${facts}</dl>
       ${record.appearance === "continuing" ? `<p class="detail-continuing">当前归档：续播${record.premiere_quarter ? ` · 首播 ${esc(record.premiere_quarter)}` : ""}</p>` : ""}
       ${aliases.length ? `<section class="detail-section"><h3>别名</h3><div class="detail-tags">${aliases.map((alias) => `<span class="tag">${esc(alias)}</span>`).join("")}</div></section>` : ""}
       ${tags ? `<section class="detail-section"><h3>标签</h3><div class="detail-tags">${tags}</div></section>` : ""}
       ${summary ? `<section class="detail-section detail-summary"><h3>简介</h3><p>${esc(summary).replaceAll("\n", "<br>")}</p></section>` : ""}
       <p class="detail-footer"><a class="text-link" href="${esc(record.bangumi_url || ("https://" + "bgm.tv/subject/" + record.id))}" target="_blank" rel="noreferrer">在 Bangumi 查看 ↗</a></p>`;
+    renderDetailPanel(context, body, hero);
+    selectors.detailPanel?.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(record));
   }
 
   function openLightbox(record) {
@@ -3583,10 +3609,8 @@
       else setDetailHash(record, replace, nextDetailHistoryEntry);
     }
     detailHistoryEntry = nextDetailHistoryEntry;
-    if (selectors.detailPanel) {
-      selectors.detailPanel.innerHTML = '<p class="workspace-panel__code">DETAIL</p><p class="loading-state">正在读取季度详情…</p>';
-      selectors.detailPanel.scrollTop = 0;
-    }
+    renderDetailPanel("DETAIL", '<p class="loading-state">正在读取季度详情…</p>');
+    if (selectors.detailPanel) selectors.detailPanel.scrollTop = 0;
     if (replace) {
       render();
     } else {
@@ -3612,37 +3636,22 @@
         detail = quarterRecords.find((item) => item.key === record.key);
       }
       if (!detail) throw new Error("quarter detail record unavailable");
-      if (selectors.detailPanel) {
-        selectors.detailPanel.innerHTML = detailHtml(detail);
-        selectors.detailPanel.querySelector("[data-detail-close]")?.addEventListener("click", () => closeDetail(record.key));
-        selectors.detailPanel.querySelector("[data-lightbox]")?.addEventListener("click", () => openLightbox(detail));
-      }
+      renderRecordDetail(detail);
     } catch {
       if (!isCurrent()) return;
-      if (selectors.detailPanel) {
-        selectors.detailPanel.innerHTML = '<p class="workspace-panel__code">DATA UNAVAILABLE</p><h2>当前资料详情未完整生成</h2><p>建议重新 build。</p>';
-      }
+      renderDetailPanel("DATA UNAVAILABLE", "<h2>当前资料详情未完整生成</h2><p>建议重新 build。</p>");
     }
   }
 
-  function closeDetail(recordKey) {
-    const currentHash = window.location.hash === `#bgm-${state.selectedSubjectId}`;
+  function closeDetail() {
+    const goBack = detailHistoryEntry && window.location.hash === `#bgm-${state.selectedSubjectId}`;
     const previousSelection = state.selectedOccurrence;
-    if (detailHistoryEntry && currentHash) {
-      detailHistoryEntry = false;
-      clearSelection(false);
-      if (previousSelection) updateRowSelection(previousSelection, false);
-      renderWorkspaceVisibility();
-      if (recordKey) focusRecordTrigger(recordKey);
-      restoreListScroll();
-      window.history.back();
-      return;
-    }
-    clearSelection(true);
+    clearSelection(!goBack);
     if (previousSelection) updateRowSelection(previousSelection, false);
     renderWorkspaceVisibility();
-    if (recordKey) focusRecordTrigger(recordKey);
+    if (previousSelection) focusRecordTrigger(previousSelection);
     restoreListScroll();
+    if (goBack) window.history.back();
   }
 
   function bindDetailGesture() {
@@ -3650,7 +3659,7 @@
       root,
       panel: selectors.detailPanel,
       surface: selectors.detailPanel?.closest(".workspace"),
-      onComplete: () => closeDetail(state.selectedOccurrence),
+      onComplete: closeDetail,
     }) || null;
   }
 
@@ -3728,13 +3737,10 @@
       renderWorkspaceVisibility();
       return;
     }
-    if (selectors.detailPanel) {
-      selectors.detailPanel.innerHTML = `<div class="detail-head"><div class="detail-topbar" role="navigation" aria-label="详情导航"><button type="button" class="detail-close" data-detail-close aria-label="返回结果"><span class="detail-close__icon" aria-hidden="true">←</span><span class="detail-close__back">返回结果</span></button><p class="workspace-panel__code detail-topbar__context">APPEARANCE / ${esc(occurrence)}</p></div></div><h2>播出记录当前不可用</h2><p class="detail-summary">${esc(localMessage)} 查询条件只恢复浏览意图，不会补造或从其他季度替代。</p>`;
-      selectors.detailPanel.querySelector("[data-detail-close]")?.addEventListener(
-        "click",
-        () => closeDetail(null),
-      );
-    }
+    renderDetailPanel(
+      `APPEARANCE / ${esc(occurrence)}`,
+      `<h2>播出记录当前不可用</h2><p class="detail-summary">${esc(localMessage)} 查询条件只恢复浏览意图，不会补造或从其他季度替代。</p>`,
+    );
     renderWorkspaceVisibility();
   }
 
